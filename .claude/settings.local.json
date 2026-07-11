@@ -12,7 +12,12 @@
       "PowerShell(git config user.email \"lukeheffner4@gmail.com\")",
       "PowerShell(git add -A)",
       "PowerShell(git rm --cached -q .claude/settings.local.json)",
-      "PowerShell(Remove-Item .gitignore -Confirm:$false)"
+      "PowerShell(Remove-Item .gitignore -Confirm:$false)",
+      "PowerShell(git remote add origin https://github.com/Trtle4/Parametric-App.git)",
+      "PowerShell(git push -u origin main)",
+      "PowerShell(git config --show-origin --get-all credential.helper; $env:GIT_TERMINAL_PROMPT='0'; git push -u origin main)",
+      "Bash(git credential *)",
+      "PowerShell($env:GIT_TERMINAL_PROMPT='0'; git push -u origin main)"
     ]
   }
 }
