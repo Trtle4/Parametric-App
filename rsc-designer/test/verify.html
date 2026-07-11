@@ -3,7 +3,7 @@
 <title>golden verify</title>
 <pre id="out">running…</pre>
 <script type="module">
-import {fefco201} from '../src/core/styles/fefco201.js';
+import {styleById} from '../src/core/styles/index.js';
 import {fitInto} from '../src/core/containment.js';
 import {toMM, fromMM} from '../src/core/units.js';
 
@@ -27,11 +27,10 @@ function cmp(caseName, path, expected, actual){
 
 for(const [name, c] of Object.entries(golden.cases)){
   const u = c.unit;
-  const params = {
-    L: toMM(c.inputs.L, u), W: toMM(c.inputs.W, u), H: toMM(c.inputs.H, u),
-    caliper: toMM(c.inputs.cal, u), glue: toMM(c.inputs.glue, u), slot: toMM(c.inputs.slot, u)
-  };
-  const g = fefco201(params);
+  const params = {};
+  for(const [k, v] of Object.entries(c.inputs))
+    params[k === 'cal' ? 'caliper' : k] = toMM(v, u);   // 'cal' is the legacy golden key
+  const g = styleById(c.style || 'fefco201').geometry(params);
   const d = v => fromMM(v, u);          // core mm -> the unit golden was recorded in
 
   cmp(name, 'F', c.F, d(g.meta.flapDepth));

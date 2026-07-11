@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "capturedFrom": "pre-refactor single-file app (commit faa1ef9); mm_100x60x150_thin captured post-MIN_CALIPER-fix (raw caliper feeds compensation)",
+    "capturedFrom": "pre-refactor single-file app (commit faa1ef9); mm_100x60x150_thin captured post-MIN_CALIPER-fix (raw caliper feeds compensation); in_8x6x5 re-baselined 2026-07-11 per engineering ruling: 15mm chamfer cap and raw caliper are the correct semantics, old inch-mode values (0.75in chamfer, 0.6in caliper floor) preserved in git history at commit 41d66bc",
     "note": "cut/crease/F/bbox are in the DISPLAY unit of each case (mm for cases 1-2 and the thin case, inches for case 3), exactly as the original geometry() produced them. Pallet: 48x40 in deck, 60 in max load height, all three stack patterns.",
     "date": "2026-07-11"
   },
@@ -36,12 +36,12 @@
       "inputs": { "L": 8, "W": 6, "H": 5, "cal": 0.125, "glue": 1.5, "slot": 0.25 },
       "F": 3,
       "bbox": { "minX": 0, "minY": 0, "maxX": 29.5, "maxY": 11 },
-      "cut": [[1.5,3],[0,3.75],[0,7.25],[1.5,8],[1.5,11],[9.375,11],[9.375,8],[9.625,8],[9.625,11],[15.375,11],[15.375,8],[15.625,8],[15.625,11],[23.375,11],[23.375,8],[23.625,8],[23.625,11],[29.5,11],[29.5,0],[23.625,0],[23.625,3],[23.375,3],[23.375,0],[15.625,0],[15.625,3],[15.375,3],[15.375,0],[9.625,0],[9.625,3],[9.375,3],[9.375,0],[1.5,0]],
+      "cut": [[1.5,3],[0,3.590551181102362],[0,7.409448818897638],[1.5,8],[1.5,11],[9.375,11],[9.375,8],[9.625,8],[9.625,11],[15.375,11],[15.375,8],[15.625,8],[15.625,11],[23.375,11],[23.375,8],[23.625,8],[23.625,11],[29.5,11],[29.5,0],[23.625,0],[23.625,3],[23.375,3],[23.375,0],[15.625,0],[15.625,3],[15.375,3],[15.375,0],[9.625,0],[9.625,3],[9.375,3],[9.375,0],[1.5,0]],
       "crease": [[1.5,3,1.5,8],[9.5,3,9.5,8],[15.5,3,15.5,8],[23.5,3,23.5,8],[1.5,3,29.5,3],[1.5,8,29.5,8]],
       "pallet": {
-        "column":    { "label": "5 × 5 grid", "perLayer": 25, "layers": 7, "total": 175, "coveragePct": 86 },
-        "optimal":   { "label": "12+15 mixed", "perLayer": 27, "layers": 7, "total": 189, "coveragePct": 93 },
-        "interlock": { "label": "12+15 mixed · interlocked", "perLayer": 27, "layers": 7, "total": 189, "coveragePct": 93 }
+        "column":    { "label": "5 × 6 grid", "perLayer": 30, "layers": 10, "total": 300, "coveragePct": 81 },
+        "optimal":   { "label": "30+4 mixed", "perLayer": 34, "layers": 10, "total": 340, "coveragePct": 91 },
+        "interlock": { "label": "30+4 mixed · interlocked", "perLayer": 34, "layers": 10, "total": 340, "coveragePct": 91 }
       }
     },
     "mm_100x60x150_thin": {
@@ -56,6 +56,34 @@
         "column":    { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
         "optimal":   { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
         "interlock": { "label": "20 × 10 rotated grid · interlocked", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 }
+      }
+    },
+    "a6120_18pt_sbs": {
+      "style": "a6120",
+      "unit": "mm",
+      "inputs": { "L": 100, "W": 60, "H": 150, "cal": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+      "bbox": { "minX": 0, "minY": 0, "maxX": 335, "maxY": 301.086 },
+      "outer": { "L": 100.914, "W": 60.914, "H": 151.828 },
+      "cut": [[15,75.543],[0,80.543],[0,220.543],[15,225.543],[115,225.543],[128.6488837849826,263.043],[161.3511162150174,263.043],[175,225.543],[175,296.086],[180,301.086],[270,301.086],[275,296.086],[275,225.543],[288.64888378498256,263.043],[321.35111621501744,263.043],[335,225.543],[335,75.543],[321.35111621501744,38.043],[288.64888378498256,38.043],[275,75.543],[175,75.543],[161.3511162150174,38.043],[128.6488837849826,38.043],[115,75.543],[115,5],[110,0],[20,0],[15,5]],
+      "crease": [[15,75.543,15,225.543],[115,75.543,115,225.543],[175,75.543,175,225.543],[275,75.543,275,225.543],[115,225.543,335,225.543],[175,285.086,275,285.086],[15,75.543,175,75.543],[275,75.543,335,75.543],[15,16,115,16]],
+      "pallet": {
+        "column":    { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
+        "optimal":   { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
+        "interlock": { "label": "20 × 10 rotated grid · interlocked", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 }
+      }
+    },
+    "a6120_24pt": {
+      "style": "a6120",
+      "unit": "mm",
+      "inputs": { "L": 100, "W": 60, "H": 150, "cal": 0.61, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.39, "tuckTab": 16 },
+      "bbox": { "minX": 0, "minY": 0, "maxX": 335, "maxY": 300.78 },
+      "outer": { "L": 101.22, "W": 61.22, "H": 152.44 },
+      "cut": [[15,75.39],[0,80.39],[0,220.39],[15,225.39],[115,225.39],[128.6488837849826,262.89],[161.3511162150174,262.89],[175,225.39],[175,295.78],[180,300.78],[270,300.78],[275,295.78],[275,225.39],[288.64888378498256,262.89],[321.35111621501744,262.89],[335,225.39],[335,75.39],[321.35111621501744,37.89],[288.64888378498256,37.89],[275,75.39],[175,75.39],[161.3511162150174,37.89],[128.6488837849826,37.89],[115,75.39],[115,5],[110,0],[20,0],[15,5]],
+      "crease": [[15,75.39,15,225.39],[115,75.39,115,225.39],[175,75.39,175,225.39],[275,75.39,275,225.39],[115,225.39,335,225.39],[175,284.78,275,284.78],[15,75.39,175,75.39],[275,75.39,335,75.39],[15,16,115,16]],
+      "pallet": {
+        "column":    { "label": "12 × 16 grid", "perLayer": 192, "layers": 9, "total": 1728, "coveragePct": 96 },
+        "optimal":   { "label": "16+180 mixed", "perLayer": 196, "layers": 9, "total": 1764, "coveragePct": 98 },
+        "interlock": { "label": "16+180 mixed · interlocked", "perLayer": 196, "layers": 9, "total": 1764, "coveragePct": 98 }
       }
     }
   }

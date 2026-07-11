@@ -1,8 +1,10 @@
 /**
- * The ONLY module that touches the DOM for parameters. Reads inputs once,
+ * The ONLY module that touches the DOM for parameters. Builds the input
+ * fields from the active style's registry descriptors, reads them once,
  * converts to mm, and produces plain objects for everything below ui/.
  */
-import {toMM, fmtInputValue} from '../core/units.js';
+import {toMM, fromMM, fmtInputValue} from '../core/units.js';
+import {styles} from '../core/styles/index.js';
 
 export const el = id => document.getElementById(id);
 
@@ -11,49 +13,85 @@ const PAL_RE = /(\d+(?:\.\d+)?)\s*[x×*,]\s*(\d+(?:\.\d+)?)/i;
 // display-unit state (what the fields currently show)
 let unit = 'mm';
 let palUnit = 'in';
+let style = styles[0];
+let fields = [];   // {descriptor, input, unitSpan}  numeric length params
+let selects = [];  // {descriptor, input}            select params + options
 
 export const getUnit = () => unit;
-export const getPalUnit = () => palUnit;
+export const currentStyle = () => style;
 
-/**
- * Snapshot of everything the app needs, lengths all in mm.
- * @returns {{
- *   params: import('../core/types.js').Params,
- *   unit: 'mm'|'in', palUnit: 'mm'|'in',
- *   printText: string, outerFlaps: 'L'|'W',
- *   pattern: 'optimal'|'column'|'interlock',
- *   pallet: {L:number, W:number, maxH:number}
- * }}
- */
+/* ---------- dynamic field construction ---------- */
+function lengthField(d){
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}</span></label>
+    <div class="inp"><input id="p_${d.key}" type="number" min="${d.min}" step="${d.step}"><span class="unit">${unit}</span></div>`;
+  const input = wrap.querySelector('input'), unitSpan = wrap.querySelector('.unit');
+  input.value = fmtInputValue(fromMM(d.default, unit), unit);
+  fields.push({d, input, unitSpan});
+  return wrap;
+}
+function selectField(d, origin){
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}</span></label>
+    <div class="inp"><select id="p_${d.key}">${
+      d.choices.map(c => `<option value="${c.value}">${c.label}</option>`).join('')
+    }</select></div>`;
+  const input = wrap.querySelector('select');
+  input.value = d.default;
+  selects.push({d, input, origin});
+  return wrap;
+}
+
+/** (Re)build all style-driven fields. onInput/onChange wire app refreshes. */
+export function setStyle(s, onInput, onChange){
+  style = s;
+  fields = []; selects = [];
+  const dims = el('dimFields'), mat = el('matFields'), opt = el('optFields');
+  dims.innerHTML = ''; mat.innerHTML = ''; opt.innerHTML = '';
+  for(const d of s.params){
+    const target = d.group === 'dims' ? dims : mat;
+    target.appendChild(d.type === 'select' ? selectField(d, 'param') : lengthField(d));
+  }
+  for(const d of s.options || []){
+    opt.appendChild(selectField(d, 'option'));
+  }
+  fields.forEach(f => f.input.addEventListener('input', onInput));
+  selects.forEach(f => f.input.addEventListener('change', onChange));
+}
+
+/* ---------- state snapshot (mm) ---------- */
 export function readState(){
-  const n = id => +el(id).value || 0;
-  const params = {
-    L: toMM(n('L'), unit), W: toMM(n('W'), unit), H: toMM(n('H'), unit),
-    caliper: toMM(n('cal'), unit), glue: toMM(n('glue'), unit), slot: toMM(n('slot'), unit)
-  };
+  const params = {};
+  for(const f of fields) params[f.d.key] = toMM(+f.input.value || 0, unit);
+  const options = {};
+  for(const s2 of selects)
+    (s2.origin === 'param' ? params : options)[s2.d.key] = s2.input.value;
+
   const m = (el('pal').value || '').match(PAL_RE);
   const a = m ? +m[1] : (palUnit === 'mm' ? 1219.2 : 48); // fall back to 48x40 in
   const b = m ? +m[2] : (palUnit === 'mm' ? 1016 : 40);
   return {
-    params, unit, palUnit,
+    style, params, options, unit, palUnit,
     printText: (el('txt').value || '').trim(),
-    outerFlaps: el('outer').value,
     pattern: el('palPattern').value,
-    pallet: {L: toMM(a, palUnit), W: toMM(b, palUnit), maxH: toMM(n('palMaxH'), palUnit)}
+    pallet: {L: toMM(a, palUnit), W: toMM(b, palUnit), maxH: toMM(+el('palMaxH').value || 0, palUnit)}
   };
 }
 
-/** Convert the box input fields to the unit currently selected in #units. */
+/* ---------- unit switching ---------- */
+/** Convert the style input fields to the unit currently selected in #units. */
 export function switchUnits(){
   const next = el('units').value;
   if(next === unit) return false;
   const k = (unit === 'mm' && next === 'in') ? 1/25.4 : (unit === 'in' && next === 'mm') ? 25.4 : 1;
-  ['L', 'W', 'H', 'cal', 'glue', 'slot'].forEach(id => {
-    const v = +el(id).value || 0;
-    el(id).value = fmtInputValue(v*k, next);
-  });
+  for(const f of fields){
+    const v = +f.input.value || 0;
+    f.input.value = fmtInputValue(v*k, next);
+    f.unitSpan.textContent = next;
+  }
   unit = next;
-  ['uL', 'uW', 'uH', 'uCal', 'uGlue', 'uSlot'].forEach(id => el(id).textContent = unit);
   return true;
 }
 

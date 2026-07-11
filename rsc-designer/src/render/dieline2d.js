@@ -19,14 +19,15 @@ export function apply2dView(svg){
 }
 
 /**
+ * Style-agnostic: everything drawn beyond the cut/crease paths comes from
+ * the style's generic meta annotations (labels, hDims, vDims, print).
  * @param {SVGElement} svg
  * @param {import('../core/types.js').Geometry} g
- * @param {import('../core/types.js').Params} p   mm
  * @param {'mm'|'in'} unit    display unit for labels only
  * @param {string} printText
- * @returns {{w:number, h:number, F:number}} blank extents + flap depth, mm
+ * @returns {{w:number, h:number}} blank extents, mm
  */
-export function draw2d(svg, g, p, unit, printText){
+export function draw2d(svg, g, unit, printText){
   // margin: the mm constant matches the old per-unit margins exactly
   // (old: +24 in mm mode, +1 inch = +25.4 mm in inch mode)
   const m = Math.max(g.bbox.maxX, g.bbox.maxY)*0.14 + (unit === 'mm' ? 24 : 25.4);
@@ -44,20 +45,19 @@ export function draw2d(svg, g, p, unit, printText){
     creases += `<line x1="${fx(c[0]).toFixed(2)}" y1="${fy(c[1]).toFixed(2)}" x2="${fx(c[2]).toFixed(2)}" y2="${fy(c[3]).toFixed(2)}" stroke="var(--crease)" stroke-width="${strokeW}" stroke-dasharray="${strokeW*4} ${strokeW*3}"/>`;
   });
 
-  // panel labels
-  const pn = g.meta.panels, midY = fy((pn.yb1 + pn.yt1)/2);
-  const labels = [
-    [(pn.x1 + pn.x2)/2, 'L'], [(pn.x2 + pn.x3)/2, 'W'],
-    [(pn.x3 + pn.x4)/2, 'L'], [(pn.x4 + pn.x5)/2, 'W']
-  ].map(([x, t]) => `<text x="${fx(x).toFixed(1)}" y="${midY.toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${strokeW*11}" text-anchor="middle" dominant-baseline="middle">${t}</text>`).join('');
+  // panel labels (style-provided)
+  const labels = (g.meta.labels || []).map(l =>
+    `<text x="${fx(l.x).toFixed(1)}" y="${fy(l.y).toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${strokeW*11}" text-anchor="middle" dominant-baseline="middle">${esc(l.text)}</text>`
+  ).join('');
 
-  // free print text on front (first L) panel
+  // free print text on the style's print panel
   let printTxt = '';
-  if(printText){
-    const cx = fx((pn.x1 + pn.x2)/2);
-    const cy = fy((pn.yb1 + pn.yt1)/2) + strokeW*16;
-    const maxW = (pn.x2 - pn.x1)*0.86;
-    let fs = Math.min(strokeW*14, p.H*0.28);
+  const pr = g.meta.print;
+  if(printText && pr){
+    const cx = fx((pr.x0 + pr.x1)/2);
+    const cy = fy((pr.y0 + pr.y1)/2) + strokeW*16;
+    const maxW = (pr.x1 - pr.x0)*0.86;
+    let fs = Math.min(strokeW*14, (pr.y1 - pr.y0)*0.28);
     // crude width fit: ~0.62em average glyph width
     if(printText.length*fs*0.62 > maxW) fs = maxW/(printText.length*0.62);
     printTxt = `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" fill="var(--ink)" font-family="var(--sans)" font-weight="700" font-size="${fs.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.06em">${esc(printText)}</text>`;
@@ -82,13 +82,10 @@ export function draw2d(svg, g, p, unit, printText){
       `<line x1="${x - tick}" y1="${y2}" x2="${x + tick}" y2="${y2}" stroke="${dimC}" stroke-width="${dw}"/>` +
       `<text x="${tx}" y="${cy}" fill="${dimC}" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle" transform="rotate(-90 ${tx} ${cy})">${val}</text>`;
   };
-  const F = g.meta.flapDepth;
   const yRow = fy(0) + m*0.30, xCol = fx(w) + m*0.30;
   let dims = '';
-  if(p.glue > 0) dims += dimH(0, pn.x1, yRow, fmt(p.glue));
-  dims += dimH(pn.x1, pn.x2, yRow, fmt(p.L)) + dimH(pn.x2, pn.x3, yRow, fmt(p.W))
-        + dimH(pn.x3, pn.x4, yRow, fmt(p.L)) + dimH(pn.x4, pn.x5, yRow, fmt(p.W));
-  dims += dimV(0, F, xCol, fmt(F)) + dimV(F, F + p.H, xCol, fmt(p.H)) + dimV(F + p.H, h, xCol, fmt(F));
+  for(const dd of g.meta.hDims || []) dims += dimH(dd.from, dd.to, yRow, fmt(dd.v));
+  for(const dd of g.meta.vDims || []) dims += dimV(dd.from, dd.to, xCol, fmt(dd.v));
 
   // overall dimension labels
   const overall = `
@@ -101,5 +98,5 @@ export function draw2d(svg, g, p, unit, printText){
     <polygon points="${pts}" fill="rgba(229,72,77,0.04)" stroke="var(--cut)" stroke-width="${strokeW}" stroke-linejoin="round"/>
     ${labels}${printTxt}${dims}${overall}`;
 
-  return {w, h, F};
+  return {w, h};
 }

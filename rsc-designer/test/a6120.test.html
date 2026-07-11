@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a6120 carton tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for the ECMA A6120 reverse tuck end geometry (DOM-free module).
+   Reference case, hand-derived: L=100 W=60 H=150 t=0.457 glueTab=15
+   dustDepth=37.5 tuckDepth=59.543 tuckTab=16
+   -> x-landmarks 15|115|175|275|335, ext=T+TT=75.543, yb=75.543, yt=225.543,
+      dust sweep di = 37.5*tan(20°), tab chamfer 5, glue chamfer 5 */
+import {a6120} from '../src/core/styles/a6120.js';
+import {buildDXF} from '../src/export/dxf.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(actual, expected, msg = ''){
+  if(Math.abs(actual - expected) > 1e-9) throw new Error(`${msg} expected ${expected}, got ${actual}`);
+}
+function approxPt(actual, expected, msg = ''){
+  approx(actual[0], expected[0], msg + '.x'); approx(actual[1], expected[1], msg + '.y');
+}
+
+const P = {L:100, W:60, H:150, caliper:0.457, glueTab:15, dustDepth:37.5, tuckDepth:59.543, tuckTab:16};
+const g = a6120(P);
+const di = 37.5*Math.tan(20*Math.PI/180);
+const yb = 75.543, yt = 225.543;
+
+t('blank bbox', () => {
+  approx(g.bbox.maxX, 335, 'maxX'); approx(g.bbox.maxY, 301.086, 'maxY');
+  approx(g.bbox.minX, 0); approx(g.bbox.minY, 0);
+});
+t('outer compensation: +2t / +2t / +4t derived from tuck-over-dust stack', () => {
+  approx(g.outer.L, 100.914, 'L'); approx(g.outer.W, 60.914, 'W'); approx(g.outer.H, 151.828, 'H');
+});
+t('perimeter has 28 points and closes', () => {
+  if(g.cut.length !== 28) throw new Error(`expected 28 cut points, got ${g.cut.length}`);
+  // last point [15, 5] closes vertically to first [15, yb]
+  approxPt(g.cut[27], [15, 5], 'cut[27]');
+  approxPt(g.cut[0], [15, yb], 'cut[0]');
+});
+t('glue tab with 5mm end chamfers', () => {
+  approxPt(g.cut[1], [0, yb + 5], 'cut[1]');
+  approxPt(g.cut[2], [0, yt - 5], 'cut[2]');
+});
+t('top dust flaps: 20° swept trapezoids on both side panels', () => {
+  approxPt(g.cut[5], [115 + di, yt + 37.5], 'cut[5]');
+  approxPt(g.cut[6], [175 - di, yt + 37.5], 'cut[6]');
+  approxPt(g.cut[13], [275 + di, yt + 37.5], 'cut[13]');
+  approxPt(g.cut[14], [335 - di, yt + 37.5], 'cut[14]');
+});
+t('top tuck on FRONT panel: T then tab with 45°×5 chamfers', () => {
+  approxPt(g.cut[8],  [175, 296.086], 'shoulder');   // yt + T + TT - 5
+  approxPt(g.cut[9],  [180, 301.086], 'chamfer in');
+  approxPt(g.cut[10], [270, 301.086], 'tab top far');
+  approxPt(g.cut[11], [275, 296.086], 'chamfer out');
+});
+t('bottom tuck on BACK panel (reverse of top)', () => {
+  approxPt(g.cut[24], [115, 5], 'shoulder');          // yb - (T+TT) + 5
+  approxPt(g.cut[25], [110, 0], 'chamfer in');
+  approxPt(g.cut[26], [20, 0], 'tab bottom far');
+  approxPt(g.cut[27], [15, 5], 'chamfer out');
+});
+t('reverse-tuck mirror symmetry: top-front extension == bottom-back extension', () => {
+  approx(g.cut[10][1] - yt, yb - g.cut[26][1], 'tab reach');
+  approx(g.cut[8][1] - yt, yb - g.cut[24][1], 'shoulder reach');
+});
+t('creases: 4 panel folds + closure roots + 2 tab folds', () => {
+  if(g.crease.length !== 9) throw new Error(`expected 9 creases, got ${g.crease.length}`);
+  const has = (a) => g.crease.some(c => c.every((v, i) => Math.abs(v - a[i]) < 1e-9));
+  if(!has([175, yt + 59.543, 275, yt + 59.543])) throw new Error('missing top tab fold');
+  if(!has([15, yb - 59.543, 115, yb - 59.543])) throw new Error('missing bottom tab fold');
+  if(!has([115, yt, 335, yt])) throw new Error('missing top roots crease');
+  if(!has([15, yb, 175, yb])) throw new Error('missing bottom roots crease');
+});
+t('24pt board (0.61): compensation follows raw caliper', () => {
+  const g2 = a6120({...P, caliper: 0.61, tuckDepth: 59.39});
+  approx(g2.outer.L, 101.22, 'L'); approx(g2.outer.W, 61.22, 'W'); approx(g2.outer.H, 152.44, 'H');
+});
+t('DXF exporter emits unknown aux layers without modification', () => {
+  const dxf = buildDXF({...g, aux: {PERF: [[0, 0, 10, 0]], SCORE_HALF: [[0, 5, 10, 5]]}}, 'mm');
+  for(const layer of ['CUT', 'CREASE', 'PERF', 'SCORE_HALF'])
+    if(!dxf.includes(`0\nLAYER\n2\n${layer}\n`)) throw new Error(`missing layer table entry ${layer}`);
+  if(!dxf.includes(`8\nPERF\n10\n0`)) throw new Error('missing PERF entity');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

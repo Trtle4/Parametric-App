@@ -67,7 +67,21 @@ export function fefco201(p){
       style: 'fefco201',
       caliper: p.caliper,
       flapDepth: F,
-      panels: {x1, x2, x3, x4, x5, yb1, yt1, yt2}
+      panels: {x1, x2, x3, x4, x5, yb1, yt1, yt2},
+      // generic dieline annotations (style-agnostic renderer contract)
+      labels: [
+        {x: (x1+x2)/2, y: (yb1+yt1)/2, text: 'L'}, {x: (x2+x3)/2, y: (yb1+yt1)/2, text: 'W'},
+        {x: (x3+x4)/2, y: (yb1+yt1)/2, text: 'L'}, {x: (x4+x5)/2, y: (yb1+yt1)/2, text: 'W'}
+      ],
+      hDims: [
+        ...(glue > 0 ? [{from: 0, to: x1, v: glue}] : []),
+        {from: x1, to: x2, v: L}, {from: x2, to: x3, v: W},
+        {from: x3, to: x4, v: L}, {from: x4, to: x5, v: W}
+      ],
+      vDims: [
+        {from: 0, to: F, v: F}, {from: F, to: F + H, v: H}, {from: F + H, to: yt2, v: F}
+      ],
+      print: {x0: x1, x1: x2, y0: yb1, y1: yt1}   // first length panel
     }
   };
 }

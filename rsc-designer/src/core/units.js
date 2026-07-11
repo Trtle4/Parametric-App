@@ -16,10 +16,11 @@ export function fmtLen(vmm, unit){
   return (+fromMM(vmm, unit).toFixed(dp)).toString();
 }
 
-/** Format a value for an <input> after a unit switch — matches the original
- *  switchUnits() rounding: inches to 3 dp trimmed, mm to 2 dp. */
+/** Format a value for an <input>: inches to 3 dp trimmed, mm to 3 dp.
+ *  (mm was historically 2 dp, which silently quantised thin-board calipers
+ *  like 0.457 to 0.46 — 3 dp keeps folding-carton precision intact.) */
 export function fmtInputValue(v, unit){
   return unit === 'in'
     ? v.toFixed(3).replace(/\.?0+$/, '')
-    : (Math.round(v * 100) / 100).toString();
+    : (Math.round(v * 1000) / 1000).toString();
 }

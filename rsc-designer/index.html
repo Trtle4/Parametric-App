@@ -48,6 +48,11 @@
   }
   .btn:hover{background:#000}
   .btn:active{transform:translateY(1px)}
+  .styleSel{
+    font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+    padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);
+    color:var(--ink);cursor:pointer;max-width:260px;
+  }
   /* main layout */
   main{flex:1;display:grid;grid-template-columns:220px minmax(0,1fr) 220px;gap:0;min-height:0}
   .rail{
@@ -115,11 +120,12 @@
 
 <header>
   <div class="brand">
-    <span class="code">FEFCO 201</span>
-    <span class="name">Regular Slotted Container</span>
+    <span class="code" id="brandCode">FEFCO 201</span>
+    <span class="name" id="brandName">Regular Slotted Container</span>
     <span class="sub">Parametric dieline generator</span>
   </div>
   <div class="actions">
+    <select id="style" class="styleSel" title="Packaging style"></select>
     <div class="seg" role="tablist">
       <button id="tab2d" class="on">2D Dieline</button>
       <button id="tab3d">3D Fold</button>
@@ -130,32 +136,15 @@
 </header>
 
 <main>
-  <!-- LEFT: primary dimensions -->
+  <!-- LEFT: primary dimensions (fields built from the style registry) -->
   <aside class="rail left">
     <h2>Inside dimensions</h2>
-    <div class="field">
-      <label>Length <span class="hint">L</span></label>
-      <div class="inp"><input id="L" type="number" min="1" step="1" value="200"><span class="unit" id="uL">mm</span></div>
-    </div>
-    <div class="field">
-      <label>Width <span class="hint">W</span></label>
-      <div class="inp"><input id="W" type="number" min="1" step="1" value="150"><span class="unit" id="uW">mm</span></div>
-    </div>
-    <div class="field">
-      <label>Height <span class="hint">H</span></label>
-      <div class="inp"><input id="H" type="number" min="1" step="1" value="120"><span class="unit" id="uH">mm</span></div>
-    </div>
+    <div id="dimFields" style="display:contents"></div>
     <div class="field">
       <label>Print text <span class="hint">front panel</span></label>
       <div class="inp"><input id="txt" type="text" value="FRAGILE" maxlength="40" autocomplete="off"></div>
     </div>
-    <div class="field">
-      <label>Outer flaps <span class="hint">3D fold</span></label>
-      <div class="inp"><select id="outer">
-        <option value="L">Length panels (major)</option>
-        <option value="W">Width panels (minor)</option>
-      </select></div>
-    </div>
+    <div id="optFields" style="display:contents"></div>
 
     <h2 style="margin-top:6px">Pallet</h2>
     <div class="field">
@@ -195,21 +184,10 @@
     <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
   </section>
 
-  <!-- RIGHT: secondary params + readout -->
+  <!-- RIGHT: secondary params (from the style registry) + readout -->
   <aside class="rail right">
     <h2>Machine &amp; material</h2>
-    <div class="field">
-      <label>Board caliper <span class="hint">t</span></label>
-      <div class="inp"><input id="cal" type="number" min="0" step="0.1" value="3"><span class="unit" id="uCal">mm</span></div>
-    </div>
-    <div class="field">
-      <label>Glue flap <span class="hint">joint</span></label>
-      <div class="inp"><input id="glue" type="number" min="0" step="1" value="35"><span class="unit" id="uGlue">mm</span></div>
-    </div>
-    <div class="field">
-      <label>Slot width <span class="hint">knife</span></label>
-      <div class="inp"><input id="slot" type="number" min="0" step="0.5" value="6"><span class="unit" id="uSlot">mm</span></div>
-    </div>
+    <div id="matFields" style="display:contents"></div>
     <div class="field">
       <label>Units</label>
       <div class="inp"><select id="units">
@@ -220,7 +198,7 @@
 
     <div class="readout">
       <div class="stat"><span class="lab">Blank size</span><span class="val" id="blank">--</span></div>
-      <div class="stat"><span class="lab">Flap depth (W/2)</span><span class="val" id="flap">--</span></div>
+      <div id="styleStats" style="display:contents"></div>
       <div class="stat"><span class="lab">Board area</span><span class="val" id="area">--</span></div>
     </div>
     <div class="readout">

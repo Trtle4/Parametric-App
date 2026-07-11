@@ -1,14 +1,17 @@
 /**
- * Application wiring: view switching, event listeners, readouts.
- * Reads params via inputs.readState() (mm) and passes them down explicitly —
- * no module below ui/ touches the DOM for parameters.
+ * Application wiring: style selection, view switching, event listeners,
+ * readouts. Reads params via inputs.readState() (mm) and passes them down
+ * explicitly — no module below ui/ touches the DOM for parameters, and no
+ * renderer contains style conditionals (fold builders resolve via the
+ * registry-keyed map in render/folds/index.js).
  */
-import {fefco201} from '../core/styles/fefco201.js';
+import {styles, styleById} from '../core/styles/index.js';
 import {fromMM, fmtLen} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import * as fold from '../render/fold3d.js';
+import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet} from '../render/pallet3d.js';
 import {downloadDXF} from '../export/dxf.js';
 
@@ -17,30 +20,53 @@ let view = '2d';
 /* ---------- refreshers ---------- */
 function refresh2d(){
   const s = inputs.readState();
-  const g = fefco201(s.params);
-  const {w, h, F} = draw2d(el('svg'), g, s.params, s.unit, s.printText);
+  const g = s.style.geometry(s.params);
+  const {w, h} = draw2d(el('svg'), g, s.unit, s.printText);
 
-  // readout (blank size / flap depth / board area)
+  // readout (blank size / style stats / board area)
   const areaU = s.unit === 'mm' ? 'm²' : 'ft²';
   const wq = fromMM(w, s.unit), hq = fromMM(h, s.unit);
   const areaConv = s.unit === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
   el('blank').textContent = `${fmtLen(w, s.unit)} × ${fmtLen(h, s.unit)} ${s.unit}`;
-  el('flap').textContent  = `${fmtLen(F, s.unit)} ${s.unit}`;
   el('area').textContent  = `${areaConv.toFixed(3)} ${areaU}`;
+  el('styleStats').innerHTML = (s.style.readouts ? s.style.readouts(g) : []).map(r =>
+    `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
+      r.len !== undefined ? `${fmtLen(r.len, s.unit)} ${s.unit}` : r.text}</span></div>`
+  ).join('');
 }
 
 function refresh3d(){
   const s = inputs.readState();
-  fold.buildBox(fefco201(s.params), s.printText, s.outerFlaps);
+  fold.buildBox(foldBuilders[s.style.id], s.style.geometry(s.params), s.printText, s.options);
 }
 
 function refreshPal(){
   const s = inputs.readState();
-  const stats = buildPallet(fefco201(s.params), s.pallet, s.pattern, view === 'pal');
+  const stats = buildPallet(s.style.geometry(s.params), s.pallet, s.pattern, view === 'pal');
   el('palPat').textContent = stats.perLayer > 0 ? stats.label + (s.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
+}
+
+function refreshAll(){
+  refresh2d();
+  if(view === '3d') refresh3d();
+  if(view === 'pal') refreshPal();
+}
+
+/* ---------- style switching ---------- */
+function applyStyle(s){
+  el('brandCode').textContent = s.brand.code;
+  el('brandName').textContent = s.brand.sub;
+  inputs.setStyle(s, onParamInput, onParamChange);
+  refreshAll();
+}
+function onParamInput(){ refreshAll(); }
+function onParamChange(){ // select params & style options (e.g. outer flaps replay the fold)
+  refresh2d();
+  if(view === '3d'){ refresh3d(); fold.startFold(); }
+  if(view === 'pal') refreshPal();
 }
 
 /* ---------- view switching ---------- */
@@ -71,21 +97,19 @@ function setView(v){
 }
 
 /* ---------- wiring ---------- */
-['L', 'W', 'H', 'cal', 'glue', 'slot', 'txt'].forEach(id => {
-  el(id).addEventListener('input', () => { refresh2d(); if(view === '3d') refresh3d(); if(view === 'pal') refreshPal(); });
-});
+const styleSel = el('style');
+styleSel.innerHTML = styles.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+styleSel.addEventListener('change', () => applyStyle(styleById(styleSel.value)));
+
+el('txt').addEventListener('input', refreshAll);
 ['pal', 'palMaxH'].forEach(id => {
   el(id).addEventListener('input', () => { if(view === 'pal') refreshPal(); });
 });
 el('palPattern').addEventListener('change', () => { if(view === 'pal') refreshPal(); });
 
-el('units').addEventListener('change', () => {
-  if(!inputs.switchUnits()) return;
-  refresh2d(); if(view === '3d') refresh3d(); if(view === 'pal') refreshPal();
-});
+el('units').addEventListener('change', () => { if(inputs.switchUnits()) refreshAll(); });
 el('palUnits').addEventListener('change', () => {
-  if(!inputs.switchPalUnits()) return;
-  if(view === 'pal') refreshPal();
+  if(inputs.switchPalUnits() && view === 'pal') refreshPal();
 });
 
 el('tab2d').addEventListener('click', () => setView('2d'));
@@ -93,7 +117,7 @@ el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
 el('btnDXF').addEventListener('click', () => {
   const s = inputs.readState();
-  downloadDXF(fefco201(s.params), s.params, s.unit);
+  downloadDXF(s.style.geometry(s.params), s.params, s.unit, s.style.id.toUpperCase());
 });
 
 // 2D zoom & pan
@@ -122,11 +146,6 @@ wrap2.addEventListener('pointermove', e => {
 wrap2.addEventListener('pointerup', () => { p2drag = false; wrap2.style.cursor = ''; });
 wrap2.addEventListener('dblclick', () => { if(view !== '2d') return; view2d.z = 1; view2d.panX = 0; view2d.panY = 0; apply2dView(el('svg')); });
 
-el('outer').addEventListener('change', () => {
-  if(view !== '3d') return;
-  refresh3d();
-  fold.startFold(); // replay fold so the new order is visible
-});
 window.addEventListener('resize', () => { if(view === '3d') fold.resize3d(); });
 
-refresh2d();
+applyStyle(styles[0]);
