@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Directory | ForEach-Object { if \\(Test-Path \\(Join-Path $_.FullName '.git'\\)\\) { $_.Name } })",
+      "PowerShell(Get-ChildItem -Force | Select-Object Name, Mode, Length | Format-Table -AutoSize; $gh = Get-Command gh -ErrorAction SilentlyContinue; \"gh CLI: $\\(if\\($gh\\){'available'}else{'not installed'}\\)\")",
+      "PowerShell(git init -b main)",
+      "PowerShell(git config user.name)",
+      "PowerShell(git config user.email)",
+      "PowerShell(git config --global user.name)",
+      "PowerShell(git config --global user.email)",
+      "PowerShell(git config user.name \"Luke Heffner\")",
+      "PowerShell(git config user.email \"lukeheffner4@gmail.com\")",
+      "PowerShell(git add -A)",
+      "PowerShell(git rm --cached -q .claude/settings.local.json)",
+      "PowerShell(Remove-Item .gitignore -Confirm:$false)"
+    ]
+  }
+}

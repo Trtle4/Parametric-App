@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- FEFCO 201 Regular Slotted Container - parametric dieline generator -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FEFCO 201 RSC Dieline Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{
+    --paper:#EAEEF2; --card:#FFFFFF; --ink:#141A1F; --muted:#6B7682;
+    --line:#D3DAE1; --line2:#E4E9EE; --cut:#E5484D; --crease:#3E63DD;
+    --kraft:#C69C6D; --focus:#141A1F;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--paper);color:var(--ink);font-family:var(--sans);
+    display:flex;flex-direction:column;min-height:100vh;
+  }
+  /* top bar */
+  header{
+    display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);
+    flex-wrap:wrap;
+  }
+  .brand{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .brand .code{
+    font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--cut);font-weight:600;
+  }
+  .brand .name{font-size:15px;font-weight:600;letter-spacing:-.01em}
+  .brand .sub{font-size:12px;color:var(--muted)}
+  .actions{display:flex;align-items:center;gap:10px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
+  .seg button{
+    font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+    padding:8px 14px;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  }
+  .seg button.on{background:var(--ink);color:#fff}
+  .seg button:not(.on):hover{background:var(--line2);color:var(--ink)}
+  .btn{
+    font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+    padding:9px 16px;border:1px solid var(--ink);border-radius:8px;background:var(--ink);color:#fff;
+    cursor:pointer;
+  }
+  .btn:hover{background:#000}
+  .btn:active{transform:translateY(1px)}
+  /* main layout */
+  main{flex:1;display:grid;grid-template-columns:220px minmax(0,1fr) 220px;gap:0;min-height:0}
+  .rail{
+    padding:20px 18px;display:flex;flex-direction:column;gap:18px;background:var(--card);
+    overflow:auto;
+  }
+  .rail.left{border-right:1px solid var(--line)}
+  .rail.right{border-left:1px solid var(--line)}
+  .rail h2{
+    font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 2px;font-weight:600;
+  }
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;
+    display:flex;justify-content:space-between;align-items:baseline;
+  }
+  .field label .hint{font-family:var(--mono);font-weight:400;text-transform:none;letter-spacing:0;color:#9aa6b2}
+  .field .inp{position:relative;display:flex;align-items:center}
+  .field input, .field select{
+    width:100%;font-family:var(--mono);font-size:22px;font-weight:500;color:var(--ink);
+    padding:8px 42px 8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;
+    -moz-appearance:textfield;
+  }
+  .field select{font-size:14px;padding-right:10px;cursor:pointer}
+  .field input[type="text"]{font-size:14px;padding-right:10px;font-family:var(--sans)}
+  .field input::-webkit-outer-spin-button,.field input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .field input:focus,.field select:focus{outline:2px solid var(--focus);outline-offset:1px;border-color:var(--focus)}
+  .field .unit{
+    position:absolute;right:12px;font-family:var(--mono);font-size:12px;color:var(--muted);pointer-events:none;
+  }
+  .stage{
+    position:relative;display:flex;align-items:center;justify-content:center;
+    background:
+      linear-gradient(var(--line2) 1px,transparent 1px) 0 0/24px 24px,
+      linear-gradient(90deg,var(--line2) 1px,transparent 1px) 0 0/24px 24px,
+      var(--paper);
+    overflow:hidden;min-height:340px;
+  }
+  #svgWrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:24px}
+  #svg{width:100%;height:100%}
+  #cvWrap{position:absolute;inset:0;display:none}
+  #cvWrap canvas{display:block;width:100%;height:100%}
+  .hud{
+    position:absolute;left:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);
+    background:rgba(255,255,255,.82);border:1px solid var(--line);border-radius:7px;padding:7px 10px;
+    display:flex;gap:14px;align-items:center;backdrop-filter:blur(2px);
+  }
+  .hud .k{display:flex;align-items:center;gap:6px}
+  .swatch{width:16px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}
+  .readout{border-top:1px solid var(--line);padding-top:16px;display:flex;flex-direction:column;gap:12px}
+  .stat{display:flex;flex-direction:column;gap:2px}
+  .stat .lab{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .stat .val{font-family:var(--mono);font-size:16px;color:var(--ink)}
+  .orbithint{position:absolute;right:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);display:none}
+  @media (max-width:860px){
+    main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
+    .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
+    .rail.right{border-left:0;border-top:1px solid var(--line)}
+    .rail.left .field{flex:1;min-width:120px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="code">FEFCO 201</span>
+    <span class="name">Regular Slotted Container</span>
+    <span class="sub">Parametric dieline generator</span>
+  </div>
+  <div class="actions">
+    <div class="seg" role="tablist">
+      <button id="tab2d" class="on" onclick="setView('2d')">2D Dieline</button>
+      <button id="tab3d" onclick="setView('3d')">3D Fold</button>
+      <button id="tabPal" onclick="setView('pal')">Palletize</button>
+    </div>
+    <button class="btn" onclick="exportDXF()">Export DXF</button>
+  </div>
+</header>
+
+<main>
+  <!-- LEFT: primary dimensions -->
+  <aside class="rail left">
+    <h2>Inside dimensions</h2>
+    <div class="field">
+      <label>Length <span class="hint">L</span></label>
+      <div class="inp"><input id="L" type="number" min="1" step="1" value="200"><span class="unit" id="uL">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Width <span class="hint">W</span></label>
+      <div class="inp"><input id="W" type="number" min="1" step="1" value="150"><span class="unit" id="uW">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Height <span class="hint">H</span></label>
+      <div class="inp"><input id="H" type="number" min="1" step="1" value="120"><span class="unit" id="uH">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Print text <span class="hint">front panel</span></label>
+      <div class="inp"><input id="txt" type="text" value="FRAGILE" maxlength="40" autocomplete="off"></div>
+    </div>
+    <div class="field">
+      <label>Outer flaps <span class="hint">3D fold</span></label>
+      <div class="inp"><select id="outer">
+        <option value="L">Length panels (major)</option>
+        <option value="W">Width panels (minor)</option>
+      </select></div>
+    </div>
+
+    <h2 style="margin-top:6px">Pallet</h2>
+    <div class="field">
+      <label>Pallet size <span class="hint">L x W</span></label>
+      <div class="inp"><input id="pal" type="text" value="48 x 40" autocomplete="off" style="padding-right:42px"><span class="unit" id="uPal">in</span></div>
+    </div>
+    <div class="field">
+      <label>Max load height <span class="hint">incl. pallet</span></label>
+      <div class="inp"><input id="palMaxH" type="number" min="0" step="1" value="60"><span class="unit" id="uPalMaxH">in</span></div>
+    </div>
+    <div class="field">
+      <label>Pallet units</label>
+      <div class="inp"><select id="palUnits" onchange="switchPalUnits()">
+        <option value="in">Inches</option>
+        <option value="mm">Millimeters</option>
+      </select></div>
+    </div>
+    <div class="field">
+      <label>Stack pattern</label>
+      <div class="inp"><select id="palPattern">
+        <option value="optimal">Optimal (mixed)</option>
+        <option value="column">Column</option>
+        <option value="interlock">Interlock</option>
+      </select></div>
+    </div>
+  </aside>
+
+  <!-- CENTER: drawing -->
+  <section class="stage">
+    <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+    <div id="cvWrap"></div>
+    <div class="hud" id="hud">
+      <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
+      <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>
+      <span class="k">scroll zoom &middot; drag pan &middot; dblclick reset</span>
+    </div>
+    <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
+  </section>
+
+  <!-- RIGHT: secondary params + readout -->
+  <aside class="rail right">
+    <h2>Machine &amp; material</h2>
+    <div class="field">
+      <label>Board caliper <span class="hint">t</span></label>
+      <div class="inp"><input id="cal" type="number" min="0" step="0.1" value="3"><span class="unit" id="uCal">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Glue flap <span class="hint">joint</span></label>
+      <div class="inp"><input id="glue" type="number" min="0" step="1" value="35"><span class="unit" id="uGlue">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Slot width <span class="hint">knife</span></label>
+      <div class="inp"><input id="slot" type="number" min="0" step="0.5" value="6"><span class="unit" id="uSlot">mm</span></div>
+    </div>
+    <div class="field">
+      <label>Units</label>
+      <div class="inp"><select id="units" onchange="switchUnits()">
+        <option value="mm">Millimeters</option>
+        <option value="in">Inches</option>
+      </select></div>
+    </div>
+
+    <div class="readout">
+      <div class="stat"><span class="lab">Blank size</span><span class="val" id="blank">--</span></div>
+      <div class="stat"><span class="lab">Flap depth (W/2)</span><span class="val" id="flap">--</span></div>
+      <div class="stat"><span class="lab">Board area</span><span class="val" id="area">--</span></div>
+    </div>
+    <div class="readout">
+      <div class="stat"><span class="lab">Pallet pattern</span><span class="val" id="palPat">--</span></div>
+      <div class="stat"><span class="lab">Per layer × layers</span><span class="val" id="palCnt">--</span></div>
+      <div class="stat"><span class="lab">Total on pallet</span><span class="val" id="palTot">--</span></div>
+      <div class="stat"><span class="lab">Deck coverage</span><span class="val" id="palCov">--</span></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+/* ---------- state ---------- */
+const el = id => document.getElementById(id);
+let unit = 'mm';
+let view = '2d';
+
+function P(){ // read current params in current display unit
+  return {
+    L:+el('L').value||0, W:+el('W').value||0, H:+el('H').value||0,
+    cal:+el('cal').value||0, glue:+el('glue').value||0, slot:+el('slot').value||0
+  };
+}
+const esc = s => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+/* ---------- geometry (Y-up, current unit) ----------
+   FEFCO 201 RSC: panel run [glue | L | W | L | W].
+   Flap depth F = W/2 so outer (length-panel) flaps meet at centerline.
+   Returns ordered perimeter point list (cut) + crease segment list.        */
+function geometry(p){
+  const {L,W,H,glue,slot} = p;
+  const F = W/2;
+  const x1=glue, x2=glue+L, x3=glue+L+W, x4=glue+2*L+W, x5=glue+2*L+2*W;
+  const yb0=0, yb1=F, yt1=F+H, yt2=2*F+H;
+  const hs = Math.max(0, Math.min(slot/2, (Math.min(L,W))/2 - 0.5)); // keep slot inside panels
+  const ch = Math.max(0, Math.min(glue*0.5, F*0.4, 15)); // glue-flap chamfer
+
+  const cut = [
+    [x1,yb1],[0,yb1+ch],[0,yt1-ch],[x1,yt1],         // glue flap (chamfered) + up joint
+    [x1,yt2],                                        // left edge, panel-1 top flap
+    // top edge, left->right, notch down at x2,x3,x4
+    [x2-hs,yt2],[x2-hs,yt1],[x2+hs,yt1],[x2+hs,yt2],
+    [x3-hs,yt2],[x3-hs,yt1],[x3+hs,yt1],[x3+hs,yt2],
+    [x4-hs,yt2],[x4-hs,yt1],[x4+hs,yt1],[x4+hs,yt2],
+    [x5,yt2],
+    [x5,yb0],                                        // right edge (full height)
+    // bottom edge, right->left, notch up at x4,x3,x2
+    [x4+hs,yb0],[x4+hs,yb1],[x4-hs,yb1],[x4-hs,yb0],
+    [x3+hs,yb0],[x3+hs,yb1],[x3-hs,yb1],[x3-hs,yb0],
+    [x2+hs,yb0],[x2+hs,yb1],[x2-hs,yb1],[x2-hs,yb0],
+    [x1,yb0]                                         // bottom-left, panel-1 bottom flap
+  ]; // closes back to [x1,yb1]
+
+  const crease = [
+    [x1,yb1,x1,yt1],[x2,yb1,x2,yt1],[x3,yb1,x3,yt1],[x4,yb1,x4,yt1], // vertical panel folds
+    [x1,yb1,x5,yb1],[x1,yt1,x5,yt1]                                   // horizontal flap folds
+  ];
+
+  return {cut, crease, F, bbox:{minX:0,minY:0,maxX:x5,maxY:yt2},
+          panels:{x1,x2,x3,x4,x5,yb1,yt1,yt2}, dims:{L,W,H}};
+}
+
+/* ---------- 2D render ---------- */
+let z2d=1, pan2x=0, pan2y=0, vb2=[0,0,1000,1000]; // zoom/pan state + base viewBox
+function apply2dView(){
+  const VW=vb2[2], VH=vb2[3];
+  const vw=VW/z2d, vh=VH/z2d;
+  pan2x=Math.max(-(VW-vw)/2, Math.min((VW-vw)/2, pan2x));
+  pan2y=Math.max(-(VH-vh)/2, Math.min((VH-vh)/2, pan2y));
+  el('svg').setAttribute('viewBox',`${((VW-vw)/2+pan2x).toFixed(2)} ${((VH-vh)/2+pan2y).toFixed(2)} ${vw.toFixed(2)} ${vh.toFixed(2)}`);
+}
+function draw2d(){
+  const p = P(), g = geometry(p), svg = el('svg');
+  const m = Math.max(g.bbox.maxX,g.bbox.maxY)*0.14 + (unit==='mm'?24:1); // margin scales with the drawing, not fixed px
+  const w = g.bbox.maxX, h = g.bbox.maxY;
+  const VW = w+2*m, VH = h+2*m;
+  const fx = x => x - g.bbox.minX + m;              // world x -> svg x
+  const fy = y => (g.bbox.maxY - y) + m;            // world y -> svg y (flip)
+  const dp = unit==='mm'?0:2;
+  const fmt = v => (+v.toFixed(dp)).toString();
+
+  const pts = g.cut.map(pt=>`${fx(pt[0]).toFixed(2)},${fy(pt[1]).toFixed(2)}`).join(' ');
+  const strokeW = Math.max(VW,VH)/460;
+
+  let creases='';
+  g.crease.forEach(c=>{
+    creases += `<line x1="${fx(c[0]).toFixed(2)}" y1="${fy(c[1]).toFixed(2)}" x2="${fx(c[2]).toFixed(2)}" y2="${fy(c[3]).toFixed(2)}" stroke="var(--crease)" stroke-width="${strokeW}" stroke-dasharray="${strokeW*4} ${strokeW*3}"/>`;
+  });
+
+  // panel labels
+  const pn = g.panels, midY = fy((pn.yb1+pn.yt1)/2);
+  const labels = [
+    [ (pn.x1+pn.x2)/2, 'L'],[ (pn.x2+pn.x3)/2,'W'],
+    [ (pn.x3+pn.x4)/2,'L'],[ (pn.x4+pn.x5)/2,'W']
+  ].map(([x,t])=>`<text x="${fx(x).toFixed(1)}" y="${midY.toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${strokeW*11}" text-anchor="middle" dominant-baseline="middle">${t}</text>`).join('');
+
+  // free print text on front (first L) panel
+  const freeTxt = (el('txt').value||'').trim();
+  let printTxt = '';
+  if(freeTxt){
+    const cx = fx((pn.x1+pn.x2)/2);
+    const cy = fy((pn.yb1+pn.yt1)/2) + strokeW*16;
+    const maxW = (pn.x2-pn.x1)*0.86;
+    let fs = Math.min(strokeW*14, (p.H)*0.28);
+    // crude width fit: ~0.62em average glyph width
+    if(freeTxt.length*fs*0.62 > maxW) fs = maxW/(freeTxt.length*0.62);
+    printTxt = `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" fill="var(--ink)" font-family="var(--sans)" font-weight="700" font-size="${fs.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.06em">${esc(freeTxt)}</text>`;
+  }
+
+  // key dimensions: per-panel widths below the blank, flap/height on the right
+  const dimFS = strokeW*9, dimC='#8593a1', dw=strokeW*0.7, tick=dimFS*0.5;
+  const dimH=(a,b,y,val)=>{
+    const x1=fx(a), x2=fx(b);
+    if(x2-x1 < dimFS*0.9) return '';
+    return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<line x1="${x1}" y1="${y-tick}" x2="${x1}" y2="${y+tick}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<line x1="${x2}" y1="${y-tick}" x2="${x2}" y2="${y+tick}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<text x="${(x1+x2)/2}" y="${y-dimFS*0.45}" fill="${dimC}" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle">${val}</text>`;
+  };
+  const dimV=(a,b,x,val)=>{
+    const y1=fy(b), y2=fy(a);
+    if(y2-y1 < dimFS*0.9) return '';
+    const cy=(y1+y2)/2, tx=x-dimFS*0.45;
+    return `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<line x1="${x-tick}" y1="${y1}" x2="${x+tick}" y2="${y1}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<line x1="${x-tick}" y1="${y2}" x2="${x+tick}" y2="${y2}" stroke="${dimC}" stroke-width="${dw}"/>`+
+      `<text x="${tx}" y="${cy}" fill="${dimC}" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle" transform="rotate(-90 ${tx} ${cy})">${val}</text>`;
+  };
+  const yRow=fy(0)+m*0.30, xCol=fx(w)+m*0.30;
+  let dims='';
+  if(p.glue>0) dims+=dimH(0,pn.x1,yRow,fmt(p.glue));
+  dims+=dimH(pn.x1,pn.x2,yRow,fmt(p.L))+dimH(pn.x2,pn.x3,yRow,fmt(p.W))
+       +dimH(pn.x3,pn.x4,yRow,fmt(p.L))+dimH(pn.x4,pn.x5,yRow,fmt(p.W));
+  dims+=dimV(0,g.F,xCol,fmt(g.F))+dimV(g.F,g.F+p.H,xCol,fmt(p.H))+dimV(g.F+p.H,h,xCol,fmt(g.F));
+
+  // overall dimension labels
+  const overall = `
+    <text x="${(fx(0)+fx(w))/2}" y="${(fy(0)+m*0.68).toFixed(1)}" fill="var(--muted)" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle">blank ${fmt(w)} × ${fmt(h)} ${unit}</text>`;
+
+  vb2=[0,0,VW,VH];
+  apply2dView();
+  svg.innerHTML = `
+    ${creases}
+    <polygon points="${pts}" fill="rgba(229,72,77,0.04)" stroke="var(--cut)" stroke-width="${strokeW}" stroke-linejoin="round"/>
+    ${labels}${printTxt}${dims}${overall}`;
+
+  // readout
+  const areaU = unit==='mm' ? 'm²' : 'ft²';
+  const areaConv = unit==='mm' ? (w*h)/1e6 : (w*h)/144;
+  el('blank').textContent = `${fmt(w)} × ${fmt(h)} ${unit}`;
+  el('flap').textContent  = `${fmt(g.F)} ${unit}`;
+  el('area').textContent  = `${areaConv.toFixed(3)} ${areaU}`;
+}
+
+/* ---------- DXF export (R12, CUT + CREASE layers) ---------- */
+function dxfLine(x1,y1,x2,y2,layer){
+  return `0\nLINE\n8\n${layer}\n10\n${x1}\n20\n${y1}\n30\n0\n11\n${x2}\n21\n${y2}\n31\n0\n`;
+}
+function exportDXF(){
+  const p=P(), g=geometry(p);
+  let ents='';
+  for(let i=0;i<g.cut.length;i++){
+    const a=g.cut[i], b=g.cut[(i+1)%g.cut.length];
+    ents += dxfLine(a[0],a[1],b[0],b[1],'CUT');
+  }
+  g.crease.forEach(c=> ents += dxfLine(c[0],c[1],c[2],c[3],'CREASE'));
+  const insunits = unit==='mm' ? 4 : 1; // 4=mm, 1=inch
+  const dxf =
+`0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n${insunits}\n0\nENDSEC\n`+
+`0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n`+
+`0\nLAYER\n2\nCUT\n70\n0\n62\n1\n6\nCONTINUOUS\n`+
+`0\nLAYER\n2\nCREASE\n70\n0\n62\n5\n6\nDASHED\n`+
+`0\nENDTAB\n0\nENDSEC\n`+
+`0\nSECTION\n2\nENTITIES\n${ents}0\nENDSEC\n0\nEOF\n`;
+  const blob=new Blob([dxf],{type:'application/dxf'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`FEFCO201_${p.L}x${p.W}x${p.H}_${unit}.dxf`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ---------- units ---------- */
+function switchUnits(){
+  const next = el('units').value;
+  if(next===unit) return;
+  const k = (unit==='mm'&&next==='in') ? 1/25.4 : (unit==='in'&&next==='mm') ? 25.4 : 1;
+  ['L','W','H','cal','glue','slot'].forEach(id=>{
+    const v=+el(id).value||0;
+    el(id).value = next==='in' ? (v*k).toFixed(3).replace(/\.?0+$/,'') : Math.round(v*k*100)/100;
+  });
+  unit=next;
+  ['uL','uW','uH','uCal','uGlue','uSlot'].forEach(id=>el(id).textContent=unit);
+  draw2d(); if(view==='3d') buildBox(); if(view==='pal') buildPallet();
+}
+
+/* ---------- 3D fold ---------- */
+let renderer,scene,camera,pivot,boxGroup,raf,folding=false,foldT=0;
+let dragging=false,lastX=0,lastY=0,rotX=-0.5,rotY=0.7,dist=1;
+
+function init3d(){
+  const wrap=el('cvWrap');
+  renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  wrap.appendChild(renderer.domElement);
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(38,1,0.1,100000);
+  pivot=new THREE.Group(); scene.add(pivot);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x8a949e,0.85));
+  const d1=new THREE.DirectionalLight(0xffffff,0.7); d1.position.set(1,2,1.4); scene.add(d1);
+  const d2=new THREE.DirectionalLight(0xffffff,0.28); d2.position.set(-1.3,0.6,-1); scene.add(d2);
+
+  const c=renderer.domElement;
+  c.style.cursor='grab';
+  c.addEventListener('pointerdown',e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;c.setPointerCapture(e.pointerId);c.style.cursor='grabbing';});
+  c.addEventListener('pointerup',e=>{dragging=false;c.style.cursor='grab';});
+  c.addEventListener('pointermove',e=>{
+    if(!dragging)return;
+    rotY-=(e.clientX-lastX)*0.008; rotX+=(e.clientY-lastY)*0.008; // horizontal inverted per user preference
+    rotX=Math.max(-1.35,Math.min(1.35,rotX)); lastX=e.clientX;lastY=e.clientY;
+  });
+  c.addEventListener('wheel',e=>{e.preventDefault();dist*=(1+Math.sign(e.deltaY)*0.08);dist=Math.max(0.55,Math.min(3,dist));},{passive:false});
+  new ResizeObserver(resize3d).observe(wrap);
+}
+function resize3d(){
+  if(!renderer)return;
+  const w=el('cvWrap').clientWidth,h=el('cvWrap').clientHeight;
+  if(!w||!h)return;
+  renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+
+const kraft = new THREE.MeshStandardMaterial({color:0xC69C6D,roughness:0.9,metalness:0,side:THREE.DoubleSide});
+const kraft2= new THREE.MeshStandardMaterial({color:0xB98A55,roughness:0.92,metalness:0,side:THREE.DoubleSide});
+
+// solid box with rounded vertical edges AND rounded top/bottom (bevel) — reads as one
+// continuous carton instead of separate panels meeting at hard, gappy corners.
+// Returns geometry sized w(x) × h(y) × d(z), centred on origin.
+function roundedBoxGeo(w,h,d,r,seg){
+  seg = seg||3;
+  // NB: extrude bevels GROW the cross-section by bevelSize, so the base shape
+  // is shrunk by the radius on every side — final solid is exactly w × h × d.
+  const rr = Math.max(0.01, Math.min(r, w/4, d/4, h/4));
+  const hw=w/2-rr, hd=d/2-rr, cr=rr*0.35, s=new THREE.Shape();
+  s.moveTo(-hw+cr,-hd);
+  s.lineTo(hw-cr,-hd);  s.quadraticCurveTo(hw,-hd, hw,-hd+cr);
+  s.lineTo(hw,hd-cr);   s.quadraticCurveTo(hw,hd, hw-cr,hd);
+  s.lineTo(-hw+cr,hd);  s.quadraticCurveTo(-hw,hd, -hw,hd-cr);
+  s.lineTo(-hw,-hd+cr); s.quadraticCurveTo(-hw,-hd, -hw+cr,-hd);
+  const g=new THREE.ExtrudeGeometry(s,{
+    depth:Math.max(0.01,h-2*rr), bevelEnabled:true,
+    bevelThickness:rr, bevelSize:rr, bevelSegments:seg, curveSegments:seg
+  });
+  g.center(); g.rotateX(-Math.PI/2); // extrude runs along +Z; stand it up so height is +Y
+  return g;
+}
+
+// canvas texture carrying the free print text. Opaque (kraft-toned) for a full wall face,
+// or transparent so it can sit as a decal on the continuous closed box.
+function makeTextMaterial(L,H,transparent){
+  const txt=(el('txt').value||'').trim();
+  const cw=1024, chh=Math.max(96, Math.min(1024, Math.round(cw*H/Math.max(L,1))));
+  const c=document.createElement('canvas'); c.width=cw; c.height=chh;
+  const g=c.getContext('2d');
+  if(!transparent){ g.fillStyle='#C69C6D'; g.fillRect(0,0,cw,chh); }
+  if(txt){
+    g.fillStyle='#4a3826';
+    let fs=Math.min(chh*0.4, 180);
+    g.font=`700 ${fs}px system-ui, sans-serif`;
+    while(g.measureText(txt).width>cw*0.88 && fs>18){ fs-=6; g.font=`700 ${fs}px system-ui, sans-serif`; }
+    g.textAlign='center'; g.textBaseline='middle';
+    g.fillText(txt,cw/2,chh/2);
+  }
+  const tex=new THREE.CanvasTexture(c);
+  tex.anisotropy=4;
+  return new THREE.MeshStandardMaterial({map:tex,roughness:0.9,metalness:0,side:THREE.DoubleSide,
+    transparent:!!transparent, alphaTest:transparent?0.35:0});
+}
+
+// flap that folds about an axis; open state coplanar with its wall
+// phase 0 = inner (folds first), phase 1 = outer (folds second, on top)
+function makeFlap(hinge,axis,closedAngle,openOffset,geo,mat,phase){
+  const grp=new THREE.Group();
+  grp.position.set(hinge[0],hinge[1],hinge[2]);
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.position.set(openOffset[0],openOffset[1],openOffset[2]);
+  grp.add(mesh);
+  grp.userData={axis,closedAngle,phase};
+  return grp;
+}
+
+let flaps=[], boxOpenParts=[], boxClosedParts=[];
+function buildBox(){
+  if(boxGroup){
+    pivot.remove(boxGroup);
+    boxGroup.traverse(o=>{
+      if(o.geometry)o.geometry.dispose();
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      mats.forEach(m=>{ if(m.map){ m.map.dispose(); m.dispose(); } }); // only the per-build text material owns a texture
+    });
+  }
+  boxGroup=new THREE.Group(); flaps=[];
+  const p=P(); const L=p.L,W=p.W,H=p.H,t=Math.max(p.cal,0.6),F=W/2;
+
+  // 4 walls (base at y=0); front wall carries the print-text texture on its +z face
+  const textMat = makeTextMaterial(L,H);
+  const frontMats = [kraft,kraft,kraft,kraft,textMat,kraft]; // +x,-x,+y,-y,+z,-z
+  const walls=[
+    [new THREE.BoxGeometry(L,H,t),[0,H/2, W/2], frontMats], // front (length wall)
+    [new THREE.BoxGeometry(L,H,t),[0,H/2,-W/2], kraft],     // back
+    [new THREE.BoxGeometry(t,H,W),[ L/2,H/2,0], kraft],     // right (width wall)
+    [new THREE.BoxGeometry(t,H,W),[-L/2,H/2,0], kraft],     // left
+  ];
+  walls.forEach(([geo,pos,mat])=>{const m=new THREE.Mesh(geo,mat);m.position.set(...pos);boxGroup.add(m);});
+
+  const gW=new THREE.BoxGeometry(t,F,W), gL=new THREE.BoxGeometry(L,F,t); // W-wall / L-wall flap blanks
+  const off=t*0.55; // stagger: inner flaps sit one board thickness toward the box interior
+
+  // role assignment: which pair folds on the outside (standard RSC = length panels)
+  const wInner = el('outer').value!=='W';           // width-wall flaps are the inner (minor) pair
+  const yWb = wInner?off:0,   yWt = wInner?H-off:H; // width-flap hinge heights (bottom/top)
+  const yLb = wInner?0:off,   yLt = wInner?H:H-off; // length-flap hinge heights
+  const wMat = wInner?kraft2:kraft, lMat = wInner?kraft:kraft2;
+  const wPh  = wInner?0:1,          lPh  = wInner?1:0;
+
+  // width-wall flaps
+  flaps.push(makeFlap([ L/2,yWb,0],'z',-Math.PI/2,[0,-F/2,0],gW,wMat,wPh));
+  flaps.push(makeFlap([-L/2,yWb,0],'z', Math.PI/2,[0,-F/2,0],gW,wMat,wPh));
+  flaps.push(makeFlap([ L/2,yWt,0],'z', Math.PI/2,[0, F/2,0],gW,wMat,wPh));
+  flaps.push(makeFlap([-L/2,yWt,0],'z',-Math.PI/2,[0, F/2,0],gW,wMat,wPh));
+  // length-wall flaps
+  flaps.push(makeFlap([0,yLb, W/2],'x', Math.PI/2,[0,-F/2,0],gL,lMat,lPh));
+  flaps.push(makeFlap([0,yLb,-W/2],'x',-Math.PI/2,[0,-F/2,0],gL,lMat,lPh));
+  flaps.push(makeFlap([0,yLt, W/2],'x',-Math.PI/2,[0, F/2,0],gL,lMat,lPh));
+  flaps.push(makeFlap([0,yLt,-W/2],'x', Math.PI/2,[0, F/2,0],gL,lMat,lPh));
+
+  flaps.forEach(f=>boxGroup.add(f));
+  boxOpenParts=[...boxGroup.children];   // separate panels & flaps: shown while folding
+
+  // continuous closed carton, swapped in when the fold completes — one rounded
+  // shell (no gaps at the creases), print decal, and outer-flap seam lines
+  boxClosedParts=[];
+  const rr=Math.min(t*1.6, Math.min(L,W,H)*0.1);
+  const shell=new THREE.Mesh(roundedBoxGeo(L+t,H+t,W+t,rr,3),kraft);
+  shell.position.y=H/2;
+  boxClosedParts.push(shell);
+  const decal=new THREE.Mesh(new THREE.PlaneGeometry(L*0.92,H*0.92),makeTextMaterial(L,H,true));
+  decal.position.set(0,H/2,(W+t)/2+Math.max(t*0.1,0.25));
+  boxClosedParts.push(decal);
+  const seamW=Math.max(t*0.6,1), seamT=t*0.35;
+  const seamGeo = wInner ? new THREE.BoxGeometry(L*0.9,seamT,seamW)   // L-flaps outer: seam runs along length
+                         : new THREE.BoxGeometry(seamW,seamT,W*0.9);  // W-flaps outer: seam runs along width
+  [H+t/2, -t/2].forEach(y=>{
+    const s=new THREE.Mesh(seamGeo,kraft2);
+    s.position.set(0,y,0); boxClosedParts.push(s);
+  });
+  boxClosedParts.forEach(o=>{o.visible=false; boxGroup.add(o);});
+
+  boxGroup.position.y=-H/2;         // centre vertically for orbit
+  pivot.add(boxGroup);
+  camSpan=Math.max(L,W,H);
+
+  applyFold(foldT);
+}
+
+/* ---------- palletize ----------
+   Simple grid stack: floor-fit boxes in both orientations, keep the better
+   count, centre the grid on the deck. floor() + centring guarantees no
+   overhang. (Mixed / interlocked patterns are a future optimisation.)     */
+let palletGroup=null, camSpan=250, palUnit='in';
+const wood = new THREE.MeshStandardMaterial({color:0xA0815A,roughness:0.95,metalness:0});
+
+function switchPalUnits(){
+  const next=el('palUnits').value;
+  if(next===palUnit) return;
+  const k = next==='mm' ? 25.4 : 1/25.4;
+  const fmtP = v => next==='mm' ? Math.round(v).toString() : (+v.toFixed(3)).toString();
+  const m=(el('pal').value||'').match(/(\d+(?:\.\d+)?)\s*[x×*,]\s*(\d+(?:\.\d+)?)/i);
+  if(m) el('pal').value = `${fmtP(+m[1]*k)} x ${fmtP(+m[2]*k)}`;
+  el('palMaxH').value = fmtP((+el('palMaxH').value||0)*k);
+  palUnit=next;
+  ['uPal','uPalMaxH'].forEach(id=>el(id).textContent=palUnit);
+  if(view==='pal') buildPallet();
+}
+
+function palParams(){ // pallet size converted into the box display unit
+  const m=(el('pal').value||'').match(/(\d+(?:\.\d+)?)\s*[x×*,]\s*(\d+(?:\.\d+)?)/i);
+  const a = m?+m[1] : (palUnit==='mm'?1219.2:48); // fall back to 48x40 in
+  const b = m?+m[2] : (palUnit==='mm'?1016:40);
+  const k = (palUnit===unit) ? 1 : (palUnit==='in' ? 25.4 : 1/25.4);
+  return {pl:a*k, pw:b*k, maxH:(+el('palMaxH').value||0)*k, valid:!!m};
+}
+
+function buildPallet(){
+  if(!renderer) return;
+  if(palletGroup){
+    pivot.remove(palletGroup);
+    palletGroup.traverse(o=>{ if(o.geometry)o.geometry.dispose(); });
+  }
+  palletGroup=new THREE.Group();
+  const p=P(), pp=palParams(), t=Math.max(p.cal,0.6);
+  const ol=p.L+2*t, ow=p.W+2*t, oh=p.H+4*t;            // outside box dims (walls / stacked flaps)
+  const mm=v=>unit==='in'?v/25.4:v;                    // constants defined in mm
+  const dt=mm(16), sh=mm(95), bt=mm(16), ph=dt+sh+bt;  // deck board, stringer, bottom board, pallet height
+  const sw=mm(38), bw=mm(140);                         // stringer / board widths
+  const {pl,pw}=pp;
+
+  // timber: bottom boards + stringers along length + deck boards across width
+  [-pl/2+bw/2, 0, pl/2-bw/2].forEach(x=>{
+    const b=new THREE.Mesh(new THREE.BoxGeometry(bw,bt,pw),wood);
+    b.position.set(x,bt/2,0); palletGroup.add(b);
+  });
+  [-pw/2+sw/2, 0, pw/2-sw/2].forEach(z=>{
+    const s=new THREE.Mesh(new THREE.BoxGeometry(pl,sh,sw),wood);
+    s.position.set(0,bt+sh/2,z); palletGroup.add(s);
+  });
+  const deckN=Math.max(3,(Math.round(pl/mm(190))|1));
+  for(let i=0;i<deckN;i++){
+    const x=-pl/2+bw/2 + i*((pl-bw)/(deckN-1));
+    const d=new THREE.Mesh(new THREE.BoxGeometry(bw,dt,pw),wood);
+    d.position.set(x,bt+sh+dt/2,0); palletGroup.add(d);
+  }
+
+  // ---- layer layout ----------------------------------------------------
+  // Every candidate places centred, floor-fitted blocks, so nothing can
+  // overhang the deck. Box = {x,z,fx,fz} (centre + footprint).
+  const pattern = el('palPattern') ? el('palPattern').value : 'optimal';
+
+  const colGrid=(a,b)=>{ // uniform grid, footprint a×b (x×z)
+    const nx=Math.floor(pl/a), nz=Math.floor(pw/b), out=[];
+    for(let i=0;i<nx;i++)for(let j=0;j<nz;j++)
+      out.push({x:(i+0.5)*a-nx*a/2, z:(j+0.5)*b-nz*b/2, fx:a, fz:b});
+    return {boxes:out, label:`${nx} × ${nz}${a===ow&&ol!==ow?' rotated':''} grid`};
+  };
+  const gA=colGrid(ol,ow), gB=colGrid(ow,ol);
+  const column = gA.boxes.length>=gB.boxes.length ? gA : gB;
+
+  const mixed=()=>{ // two-block guillotine: k strips of a×b along one axis, remainder filled rotated
+    let best=column;
+    const fam=(U,V,a,b,swap)=>{
+      const rows=Math.floor(V/b), nz2=Math.floor(V/a);
+      for(let k=0;k<=Math.floor(U/a);k++){
+        const nx2=Math.floor((U-k*a)/b);
+        const n1=k*rows, n2=nx2*nz2;
+        if(n1+n2<=best.boxes.length) continue;
+        const maxU=k*a+nx2*b, boxes=[];
+        for(let i=0;i<k;i++)for(let j=0;j<rows;j++){
+          const u=(i+0.5)*a-maxU/2, v=(j+0.5)*b-rows*b/2;
+          boxes.push(swap?{x:v,z:u,fx:b,fz:a}:{x:u,z:v,fx:a,fz:b});
+        }
+        for(let i=0;i<nx2;i++)for(let j=0;j<nz2;j++){
+          const u=k*a+(i+0.5)*b-maxU/2, v=(j+0.5)*a-nz2*a/2;
+          boxes.push(swap?{x:v,z:u,fx:a,fz:b}:{x:u,z:v,fx:b,fz:a});
+        }
+        best={boxes, label:`${n1}+${n2} mixed`};
+      }
+    };
+    fam(pl,pw,ol,ow,false); fam(pl,pw,ow,ol,false);
+    fam(pw,pl,ol,ow,true);  fam(pw,pl,ow,ol,true);
+    return best;
+  };
+
+  const layer = pattern==='column' ? column : mixed();
+  const perLayer=layer.boxes.length;
+  const layers=perLayer>0?Math.max(0,Math.floor((pp.maxH-ph)/oh)):0;
+  const total=perLayer*layers;
+
+  if(total>0){
+    const shown=Math.min(total,4000);                  // instancing cap for absurd inputs
+    const gap=mm(2);                                   // small gap = visible seams
+    const g=roundedBoxGeo(ol-gap,oh-gap,ow-gap,Math.min(mm(4),t*1.6),2);
+    const inst=new THREE.InstancedMesh(g,kraft,shown);
+    const M=new THREE.Matrix4(), R=new THREE.Matrix4().makeRotationY(Math.PI/2);
+    let i=0;
+    outer: for(let ly=0;ly<layers;ly++){
+      const flip = pattern==='interlock' && (ly&1);    // mirror odd layers (180° turn)
+      for(const b of layer.boxes){
+        if(i>=shown) break outer;
+        if(b.fx===ol) M.identity(); else M.copy(R);    // rotated boxes turn 90° about y
+        M.setPosition(flip?-b.x:b.x, ph+oh/2+ly*oh, flip?-b.z:b.z);
+        inst.setMatrixAt(i++,M);
+      }
+    }
+    palletGroup.add(inst);
+  }
+
+  const loadH=ph+layers*oh;
+  palletGroup.position.y=-loadH/2;                     // centre vertically for orbit
+  palletGroup.visible = view==='pal';
+  pivot.add(palletGroup);
+  camSpan=Math.max(pl,pw,loadH)*0.85;
+
+  // readout
+  el('palPat').textContent = perLayer>0 ? layer.label+(pattern==='interlock'?' · interlocked':'') : 'does not fit';
+  el('palCnt').textContent = perLayer>0 ? `${perLayer} × ${layers}` : '--';
+  el('palTot').textContent = total>0 ? `${total} boxes` : '0';
+  el('palCov').textContent = perLayer>0 ? `${Math.round(perLayer*ol*ow/(pl*pw)*100)}%` : '--';
+}
+
+function applyFold(t){
+  flaps.forEach(f=>{
+    const {axis,closedAngle,phase}=f.userData;
+    const lt=Math.min(1,Math.max(0,(t-(phase?0.5:0))*2)); // inner pair folds in first half, outer in second
+    f.rotation[axis]=closedAngle*lt;
+  });
+  // fully folded → swap the panel construction for the continuous rounded carton
+  const closed = t>=1;
+  boxOpenParts.forEach(o=>o.visible=!closed);
+  boxClosedParts.forEach(o=>o.visible=closed);
+}
+
+function frameCamera(){
+  const span=camSpan||100; // set by buildBox / buildPallet for the active scene
+  const r=span*2.4*dist;
+  camera.position.set(Math.sin(rotY)*Math.cos(rotX)*r, Math.sin(rotX)*r, Math.cos(rotY)*Math.cos(rotX)*r);
+  camera.lookAt(0,0,0);
+  camera.far=r*10; camera.updateProjectionMatrix();
+}
+function loop(){
+  raf=requestAnimationFrame(loop);
+  if(folding){ foldT=Math.min(1,foldT+0.02); applyFold(foldT); if(foldT>=1)folding=false; }
+  frameCamera(); renderer.render(scene,camera);
+}
+
+/* ---------- view switching ---------- */
+function setView(v){
+  view=v;
+  el('tab2d').classList.toggle('on',v==='2d');
+  el('tab3d').classList.toggle('on',v==='3d');
+  el('tabPal').classList.toggle('on',v==='pal');
+  const canvas = v==='3d'||v==='pal';
+  el('svgWrap').style.display   = v==='2d'?'flex':'none';
+  el('cvWrap').style.display    = canvas?'block':'none';
+  el('hud').style.display       = v==='2d'?'flex':'none';
+  el('orbithint').style.display = canvas?'block':'none';
+  if(canvas){
+    if(!renderer) init3d();
+    if(v==='3d'){
+      if(palletGroup) palletGroup.visible=false;
+      const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+      foldT = reduce?1:0; folding=!reduce;
+      buildBox(); boxGroup.visible=true;
+    }else{
+      if(boxGroup) boxGroup.visible=false;
+      folding=false;
+      buildPallet();
+    }
+    resize3d();
+    if(!raf) loop();
+  }
+}
+
+/* ---------- wiring ---------- */
+['L','W','H','cal','glue','slot','txt'].forEach(id=>{
+  el(id).addEventListener('input',()=>{ draw2d(); if(view==='3d') buildBox(); if(view==='pal') buildPallet(); });
+});
+['pal','palMaxH'].forEach(id=>{
+  el(id).addEventListener('input',()=>{ if(view==='pal') buildPallet(); });
+});
+el('palPattern').addEventListener('change',()=>{ if(view==='pal') buildPallet(); });
+
+// 2D zoom & pan
+const wrap2=el('svgWrap');
+wrap2.addEventListener('wheel',e=>{
+  if(view!=='2d') return;
+  e.preventDefault();
+  z2d*= e.deltaY<0 ? 1.12 : 1/1.12;
+  z2d=Math.max(1,Math.min(16,z2d));
+  if(z2d===1){ pan2x=0; pan2y=0; }
+  apply2dView();
+},{passive:false});
+let p2drag=false,p2x=0,p2y=0;
+wrap2.addEventListener('pointerdown',e=>{
+  if(view!=='2d'||z2d===1) return;
+  p2drag=true; p2x=e.clientX; p2y=e.clientY;
+  wrap2.setPointerCapture(e.pointerId); wrap2.style.cursor='grabbing';
+});
+wrap2.addEventListener('pointermove',e=>{
+  if(!p2drag) return;
+  const r=el('svg').getBoundingClientRect();
+  const scale=Math.min(r.width/(vb2[2]/z2d), r.height/(vb2[3]/z2d)); // px per svg unit
+  pan2x-=(e.clientX-p2x)/scale; pan2y-=(e.clientY-p2y)/scale;
+  p2x=e.clientX; p2y=e.clientY; apply2dView();
+});
+wrap2.addEventListener('pointerup',()=>{ p2drag=false; wrap2.style.cursor=''; });
+wrap2.addEventListener('dblclick',()=>{ if(view!=='2d') return; z2d=1; pan2x=0; pan2y=0; apply2dView(); });
+el('outer').addEventListener('change',()=>{
+  if(view!=='3d') return;
+  buildBox();
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  foldT=reduce?1:0; folding=!reduce; applyFold(foldT); // replay fold so the new order is visible
+});
+window.addEventListener('resize',()=>{ if(view==='3d') resize3d(); });
+draw2d();
+</script>
+</body>
+</html>
