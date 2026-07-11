@@ -1,0 +1,15 @@
+# archives
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+# build / deps
+node_modules/
+dist/
+
+# OS cruft
+Thumbs.db
+Desktop.ini
+.DS_Store
