@@ -10,8 +10,14 @@ import {toMM, fromMM} from '../src/core/units.js';
 const golden = await (await fetch('golden.json')).json();
 const report = {pass: 0, fail: 0, mismatches: []};
 
+// numeric tolerance 1e-9 (in the golden case's own unit): inch->mm->inch
+// round-trip noise sits at ~1e-14, real deviations at >= 0.15, so this
+// separates IEEE 754 artifacts from dimensional changes with 5 orders of
+// headroom on each side. Strings and integers still compare exactly.
+const TOL = 1e-9;
 function cmp(caseName, path, expected, actual){
-  if(expected === actual){ report.pass++; return; }
+  const numOK = typeof expected === 'number' && typeof actual === 'number' && Math.abs(expected - actual) <= TOL;
+  if(expected === actual || numOK){ report.pass++; return; }
   report.fail++;
   report.mismatches.push({
     case: caseName, path, expected, actual,
