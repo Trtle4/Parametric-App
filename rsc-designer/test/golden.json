@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "capturedFrom": "pre-refactor single-file app (commit faa1ef9)",
-    "note": "cut/crease/F/bbox are in the DISPLAY unit of each case (mm for cases 1-2, inches for case 3), exactly as the original geometry() produced them. Pallet: 48x40 in deck, 60 in max load height, all three stack patterns.",
+    "capturedFrom": "pre-refactor single-file app (commit faa1ef9); mm_100x60x150_thin captured post-MIN_CALIPER-fix (raw caliper feeds compensation)",
+    "note": "cut/crease/F/bbox are in the DISPLAY unit of each case (mm for cases 1-2 and the thin case, inches for case 3), exactly as the original geometry() produced them. Pallet: 48x40 in deck, 60 in max load height, all three stack patterns.",
     "date": "2026-07-11"
   },
   "cases": {
@@ -42,6 +42,20 @@
         "column":    { "label": "5 × 5 grid", "perLayer": 25, "layers": 7, "total": 175, "coveragePct": 86 },
         "optimal":   { "label": "12+15 mixed", "perLayer": 27, "layers": 7, "total": 189, "coveragePct": 93 },
         "interlock": { "label": "12+15 mixed · interlocked", "perLayer": 27, "layers": 7, "total": 189, "coveragePct": 93 }
+      }
+    },
+    "mm_100x60x150_thin": {
+      "unit": "mm",
+      "inputs": { "L": 100, "W": 60, "H": 150, "cal": 0.457, "glue": 15, "slot": 3 },
+      "F": 30,
+      "bbox": { "minX": 0, "minY": 0, "maxX": 335, "maxY": 210 },
+      "outer": { "L": 100.914, "W": 60.914, "H": 151.828 },
+      "cut": [[15,30],[0,37.5],[0,172.5],[15,180],[15,210],[113.5,210],[113.5,180],[116.5,180],[116.5,210],[173.5,210],[173.5,180],[176.5,180],[176.5,210],[273.5,210],[273.5,180],[276.5,180],[276.5,210],[335,210],[335,0],[276.5,0],[276.5,30],[273.5,30],[273.5,0],[176.5,0],[176.5,30],[173.5,30],[173.5,0],[116.5,0],[116.5,30],[113.5,30],[113.5,0],[15,0]],
+      "crease": [[15,30,15,180],[115,30,115,180],[175,30,175,180],[275,30,275,180],[15,30,335,30],[15,180,335,180]],
+      "pallet": {
+        "column":    { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
+        "optimal":   { "label": "20 × 10 rotated grid", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 },
+        "interlock": { "label": "20 × 10 rotated grid · interlocked", "perLayer": 200, "layers": 9, "total": 1800, "coveragePct": 99 }
       }
     }
   }

@@ -13,10 +13,6 @@ const SLOT_EDGE_INSET = 0.5;   // mm
 /** Glue-flap chamfer cap. */
 const CHAMFER_MAX = 15;        // mm
 
-/** Boards thinner than this still behave like board, not paper — floor
- *  used for all material compensation. */
-const MIN_CALIPER = 0.6;       // mm
-
 /**
  * @param {import('../types.js').Params} p
  * @returns {import('../types.js').Geometry}
@@ -57,7 +53,10 @@ export function fefco201(p){
   //  * H gains the flap stack-up: at the top an inner (minor) flap layer
   //    plus an outer (major) flap layer lie flat across the opening (2t),
   //    and the same again at the bottom                          -> +4t
-  const t = Math.max(p.caliper, MIN_CALIPER);
+  // caliper is a true material property and feeds compensation with NO
+  // floor — folding carton board runs 0.3–0.6 mm. Rendering guards against
+  // degenerate meshes live in render/fold3d.js (RENDER_MIN_THICKNESS).
+  const t = p.caliper;
 
   return {
     cut, crease,
@@ -66,6 +65,7 @@ export function fefco201(p){
     outer: {L: L + 2*t, W: W + 2*t, H: H + 4*t},
     meta: {
       style: 'fefco201',
+      caliper: p.caliper,
       flapDepth: F,
       panels: {x1, x2, x3, x4, x5, yb1, yt1, yt2}
     }

@@ -4,7 +4,7 @@
 <pre id="out">running…</pre>
 <script type="module">
 import {fefco201} from '../src/core/styles/fefco201.js';
-import {packLayer, stack} from '../src/core/pack.js';
+import {fitInto} from '../src/core/containment.js';
 import {toMM, fromMM} from '../src/core/units.js';
 
 const golden = await (await fetch('golden.json')).json();
@@ -29,6 +29,11 @@ for(const [name, c] of Object.entries(golden.cases)){
   const d = v => fromMM(v, u);          // core mm -> the unit golden was recorded in
 
   cmp(name, 'F', c.F, d(g.meta.flapDepth));
+  if(c.outer){ // outside dims (raw-caliper compensation — the MIN_CALIPER regression pin)
+    cmp(name, 'outer.L', c.outer.L, d(g.outer.L));
+    cmp(name, 'outer.W', c.outer.W, d(g.outer.W));
+    cmp(name, 'outer.H', c.outer.H, d(g.outer.H));
+  }
   cmp(name, 'bbox.minX', c.bbox.minX, d(g.bbox.minX));
   cmp(name, 'bbox.minY', c.bbox.minY, d(g.bbox.minY));
   cmp(name, 'bbox.maxX', c.bbox.maxX, d(g.bbox.maxX));
@@ -41,19 +46,24 @@ for(const [name, c] of Object.entries(golden.cases)){
   cmp(name, 'crease.length', c.crease.length, g.crease.length);
   c.crease.forEach((s, i) => s.forEach((v, j) => cmp(name, `crease[${i}][${j}]`, v, d(g.crease[i][j]))));
 
-  // pallet: 48x40in deck, 60in max height (as recorded)
+  // pallet: 48x40in deck, 60in max height (as recorded) — through fitInto,
+  // the same path the app takes (vertical-axis rotation only, zero clearance)
   const pallet = {L: toMM(48, 'in'), W: toMM(40, 'in'), maxH: toMM(60, 'in')};
   const PALLET_BASE_H = 16 + 95 + 16; // deck+stringer+bottom, mm (matches pallet3d)
   for(const pattern of ['column', 'optimal', 'interlock']){
-    const layer = packLayer({childL: g.outer.L, childW: g.outer.W, parentL: pallet.L, parentW: pallet.W, pattern});
-    const s = stack({perLayer: layer.perLayer, childH: g.outer.H, parentMaxH: pallet.maxH, baseH: PALLET_BASE_H});
-    const label = layer.perLayer > 0 ? layer.label + (pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
-    const cov = Math.round(layer.perLayer*g.outer.L*g.outer.W/(pallet.L*pallet.W)*100);
+    const arr = fitInto(
+      {outer: g.outer, allowedOrientations: ['LWH', 'WLH']},
+      {L: pallet.L, W: pallet.W, H: pallet.maxH - PALLET_BASE_H},
+      {wall: 0, between: 0},
+      pattern
+    );
+    const label = arr.perLayer > 0 ? arr.label + (pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
+    const cov = Math.round(arr.perLayer*g.outer.L*g.outer.W/(pallet.L*pallet.W)*100);
     const gp = c.pallet[pattern];
     cmp(name, `pallet.${pattern}.label`, gp.label, label);
-    cmp(name, `pallet.${pattern}.perLayer`, gp.perLayer, layer.perLayer);
-    cmp(name, `pallet.${pattern}.layers`, gp.layers, s.layers);
-    cmp(name, `pallet.${pattern}.total`, gp.total, s.total);
+    cmp(name, `pallet.${pattern}.perLayer`, gp.perLayer, arr.perLayer);
+    cmp(name, `pallet.${pattern}.layers`, gp.layers, arr.layers);
+    cmp(name, `pallet.${pattern}.total`, gp.total, arr.total);
     cmp(name, `pallet.${pattern}.coveragePct`, gp.coveragePct, cov);
   }
 }

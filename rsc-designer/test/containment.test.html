@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>containment tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/containment.js + core/pack.js clearance math.
+   The modules under test are DOM-free; this page is only a runner.
+   Every expected value is hand-checked (see comments). */
+import {fitInto, solveParent, orientDims, ORIENTATIONS} from '../src/core/containment.js';
+import {packLayer, stack} from '../src/core/pack.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(actual, expected, msg = ''){
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
+}
+function throws(fn, msg = ''){
+  try{ fn(); }catch(e){ return; }
+  throw new Error(`${msg} expected to throw`);
+}
+const box = (L, W, H, allowed) => ({outer: {L, W, H}, allowedOrientations: allowed});
+
+/* ---------- validation ---------- */
+t('missing allowedOrientations throws', () =>
+  throws(() => fitInto({outer: {L:1, W:1, H:1}}, {L:10, W:10, H:10})));
+t('empty allowedOrientations throws (no all-six default)', () =>
+  throws(() => fitInto(box(1, 1, 1, []), {L:10, W:10, H:10})));
+t('unknown orientation throws', () =>
+  throws(() => fitInto(box(1, 1, 1, ['XYZ']), {L:10, W:10, H:10})));
+t('fitInto with unbounded H throws', () =>
+  throws(() => fitInto(box(1, 1, 1, ['LWH']), {L:10, W:10, H:null})));
+t('orientDims maps axes', () => {
+  eq(orientDims({L:30, W:20, H:10}, 'LWH'), {l:30, w:20, h:10});
+  eq(orientDims({L:30, W:20, H:10}, 'WLH'), {l:20, w:30, h:10});
+  eq(orientDims({L:30, W:20, H:10}, 'LHW'), {l:30, w:10, h:20});
+  eq(orientDims({L:30, W:20, H:10}, 'HWL'), {l:10, w:20, h:30});
+});
+
+/* ---------- orientation filtering ---------- */
+// child 30×20×10 into 20×90×100: upright-along-L cannot fit (30 > 20);
+// the 90°-rotated mapping fits 1 × 3 per layer × 10 layers = 30
+t('solver only tries allowed orientations', () => {
+  const cav = {L:20, W:90, H:100};
+  eq(fitInto(box(30, 20, 10, ['LWH']), cav).total, 0, 'LWH only:');
+  const a = fitInto(box(30, 20, 10, ['WLH']), cav);
+  eq(a.total, 30, 'WLH only:');
+  eq(a.perLayer, 3); eq(a.layers, 10);
+  eq([...new Set(a.placements.map(p => p.orientation))], ['WLH'], 'placement orientations:');
+});
+// lying on the W face: 'LHW' → in-plane 30×10, height 20.
+// 100×100×100: floor(100/30)*floor(100/10) = 3*10 = 30/layer, 5 layers = 150
+t('vertical-axis groups (LHW = on its side)', () => {
+  const a = fitInto(box(30, 20, 10, ['LHW']), {L:100, W:100, H:100});
+  eq(a.perLayer, 30); eq(a.layers, 5); eq(a.total, 150);
+});
+// single orientation forbids in-plane rotation even when rotation would win:
+// covered by 'LWH only' = 0 above, where WLH would fit 30.
+
+/* ---------- clearance math ---------- */
+// packLayer: 30-wide child in 100 parent, wall 2, between 5:
+// n*30+(n-1)*5 <= 96  → n=2 (3 needs 100 > 96)
+t('packLayer wall+between counts', () => {
+  const r = packLayer({childL:30, childW:20, parentL:100, parentW:70, pattern:'column',
+                       wall:2, between:5, allowRotate:false});
+  eq(r.perLayer, 4, 'unrotated grid 2×2:');   // x: 2 (above), y: 2*20+5=45 <= 66
+});
+// stack: budget 25-0-4+5 = 26, cell 15 → 1 layer; loadHeight 2*2+10 = 14
+t('stack wall+between', () => {
+  eq(stack({perLayer:1, childH:10, parentMaxH:25, baseH:0, wall:2, between:5}),
+     {layers:1, total:1, loadHeight:14});
+});
+// full fitInto hand-check: child 30×20×10, cavity 100×70×25, wall 2, between 5,
+// rotation allowed. Rotated grid wins: x floor(101/25)=4 (4*20+3*5=95<=96),
+// y floor(71/35)=2 (2*30+5=65<=66) → 8/layer; 1 layer → 8.
+t('fitInto with clearance (hand-checked)', () => {
+  const a = fitInto(box(30, 20, 10, ['LWH', 'WLH']), {L:100, W:70, H:25},
+                    {wall:2, between:5}, 'column');
+  eq(a.perLayer, 8); eq(a.layers, 1); eq(a.total, 8);
+  eq(a.label, '4 × 2 rotated grid');
+  // geometry: every face stays >= wall from the cavity wall, gaps >= between
+  for(const p of a.placements){
+    const {l, w} = orientDims({L:30, W:20, H:10}, p.orientation);
+    if(Math.abs(p.x) + l/2 > 50 - 2 + 1e-9) throw new Error(`x overflow at ${p.x}`);
+    if(Math.abs(p.y) + w/2 > 35 - 2 + 1e-9) throw new Error(`y overflow at ${p.y}`);
+  }
+  eq(a.envelope, {L:95, W:65, H:10});
+});
+t('zero clearance is bit-identical (golden case 1)', () => {
+  // 200×150×120 + caliper 3 → outer 206×156×132; 48×40in deck, 60in budget
+  const child = box(206, 156, 132, ['LWH', 'WLH']);
+  const cav = {L:1219.2, W:1016, H:1524 - 127};
+  const col = fitInto(child, cav, {wall:0, between:0}, 'column');
+  eq([col.perLayer, col.layers, col.total, col.label], [30, 10, 300, '5 × 6 grid']);
+  const opt = fitInto(child, cav, {wall:0, between:0}, 'optimal');
+  eq([opt.perLayer, opt.total, opt.label], [34, 340, '30+4 mixed']);
+});
+
+/* ---------- interlock ---------- */
+// 3 in a row, 2 layers; odd layers mirror 180°: x sequence flips sign
+t('interlock mirrors odd layers', () => {
+  const a = fitInto(box(10, 20, 10, ['LWH']), {L:30, W:20, H:25}, {wall:0, between:0}, 'interlock');
+  eq(a.perLayer, 3); eq(a.layers, 2);
+  eq(a.placements.slice(0, 3).map(p => p.x), [-10, 0, 10], 'layer 0:');
+  eq(a.placements.slice(3, 6).map(p => p.x), [10, 0, -10], 'layer 1 mirrored:');
+});
+
+/* ---------- solveParent ---------- */
+t('solveParent: 8 cubes -> 2×2×2 cube (volume, aspect tie-break)', () => {
+  const {cavity, arrangement} = solveParent(box(10, 10, 10, ['LWH']), 8);
+  eq(cavity, {L:20, W:20, H:20});
+  eq(arrangement.label, '2 × 2 × 2');
+  eq(arrangement.total, 8);
+  eq(arrangement.placements.length, 8);
+  eq(arrangement.utilization, 1);
+});
+t('solveParent objectives differ: volume vs footprint', () => {
+  const child = box(10, 10, 10, ['LWH']);
+  // all exact grids of 4 cubes have equal volume -> aspect+layers tie-break -> 2×2×1
+  eq(solveParent(child, 4, undefined, {objective:'volume'}).cavity, {L:20, W:20, H:10});
+  // footprint minimiser stacks them into a single column
+  eq(solveParent(child, 4, undefined, {objective:'footprint'}).cavity, {L:10, W:10, H:40});
+});
+t('solveParent clearance sizes the cavity', () => {
+  // 2×2×1 grid of 10-cubes, wall 5, between 2:
+  // L = W = 2*10 + 1*2 + 2*5 = 32; H = 10 + 2*5 = 20
+  const {cavity, arrangement} = solveParent(box(10, 10, 10, ['LWH']), 4,
+    {wall:5, between:2}, {layers:1});
+  eq(cavity, {L:32, W:32, H:20});
+  eq(arrangement.label, '2 × 2 × 1');
+});
+t('solveParent orientation preference', () => {
+  const child = box(10, 10, 50, ['LWH', 'LHW']);
+  // default: upright 2×2 wins the aspect tie-break
+  eq(solveParent(child, 4).cavity, {L:20, W:20, H:50});
+  // preference restricted to on-its-side: best aspect grid is 4×1 -> 40×50×10
+  const pref = solveParent(child, 4, undefined, {orientations:['LHW']});
+  eq(pref.cavity, {L:40, W:50, H:10});
+  eq([...new Set(pref.arrangement.placements.map(p => p.orientation))], ['LHW']);
+});
+t('solveParent rejects orientation preference outside allowed', () =>
+  throws(() => solveParent(box(1, 1, 1, ['LWH']), 2, undefined, {orientations:['HWL']})));
+t('solveParent count < 1 throws', () =>
+  throws(() => solveParent(box(1, 1, 1, ['LWH']), 0)));
+
+/* ---------- report ---------- */
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

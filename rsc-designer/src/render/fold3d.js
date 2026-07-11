@@ -5,6 +5,11 @@
  * All geometry in mm.
  */
 
+/** Rendering-only floor for mesh thickness: guards against degenerate
+ *  (z-fighting, invisible) thin meshes. It may NEVER influence any
+ *  dimension the packer or exporter sees — that math uses raw caliper. */
+const RENDER_MIN_THICKNESS = 0.6; // mm
+
 let renderer, scene, camera, pivot, boxGroup, raf, folding = false, foldT = 0;
 let dragging = false, lastX = 0, lastY = 0, rotX = -0.5, rotY = 0.7, dist = 1;
 let camSpan = 250;
@@ -123,7 +128,7 @@ export function buildBox(geo, printText, outerFlaps){
   }
   boxGroup = new THREE.Group(); flaps = [];
   const {L, W, H} = geo.inner;
-  const t = (geo.outer.L - geo.inner.L)/2;   // board thickness, floored by the style
+  const t = Math.max(geo.meta.caliper, RENDER_MIN_THICKNESS); // mesh thickness only
   const F = geo.meta.flapDepth;
 
   // 4 walls (base at y=0); front wall carries the print-text texture on its +z face

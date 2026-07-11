@@ -38,7 +38,7 @@
  * @property {BBox} bbox               // blank extents
  * @property {Dims} inner              // internal L/W/H, the usable cavity
  * @property {Dims} outer              // external L/W/H, material-compensated
- * @property {Object} meta             // style id, panel landmarks, flap depth
+ * @property {Object} meta             // style id, caliper (raw material property), panel landmarks, flap depth
  */
 
 /**

@@ -1,10 +1,12 @@
 /**
  * Pallet view: timber model + instanced case rendering.
- * Layer layout comes from core/pack.js; case outside dimensions come from
- * the style's Geometry.outer — this module never adds caliper itself.
+ * One consumer of core/containment.js: the deck is a fixed cavity, the case
+ * outer envelope is the child, and cases may rotate about the vertical axis
+ * only (a case has a designed top and bottom). Pallet-specific knowledge
+ * (timber, deck, GMA sizes) lives here and nowhere else.
  * All lengths in mm.
  */
-import {packLayer, stack} from '../core/pack.js';
+import {fitInto} from '../core/containment.js';
 import {getPivot, setCamSpan, kraft, roundedBoxGeo} from './fold3d.js';
 
 // GMA-style timber, mm
@@ -34,7 +36,6 @@ export function buildPallet(geo, pallet, pattern, visible){
   palletGroup = new THREE.Group();
 
   const ol = geo.outer.L, ow = geo.outer.W, oh = geo.outer.H;
-  const t = (geo.outer.L - geo.inner.L)/2;             // board thickness (corner radius only)
   const ph = BOTTOM_T + STRINGER_H + DECK_T;           // pallet height
   const pl = pallet.L, pw = pallet.W;
 
@@ -54,38 +55,42 @@ export function buildPallet(geo, pallet, pattern, visible){
     d.position.set(x, BOTTOM_T + STRINGER_H + DECK_T/2, 0); palletGroup.add(d);
   }
 
-  // layout + stacking (generic solver; parent = deck, child = case footprint)
-  const layer = packLayer({childL: ol, childW: ow, parentL: pl, parentW: pw, pattern});
-  const {layers, total, loadHeight} = stack({perLayer: layer.perLayer, childH: oh, parentMaxH: pallet.maxH, baseH: ph});
+  // containment does the layout: fixed cavity above the deck, cases rotate
+  // about the vertical axis only, flush stacking (zero clearance)
+  const arr = fitInto(
+    {outer: geo.outer, allowedOrientations: ['LWH', 'WLH'], styleId: geo.meta.style},
+    {L: pl, W: pw, H: pallet.maxH - ph},
+    {wall: 0, between: 0},
+    pattern
+  );
 
-  if(total > 0){
-    const shown = Math.min(total, SHOWN_CAP);
-    const g = roundedBoxGeo(ol - CASE_GAP, oh - CASE_GAP, ow - CASE_GAP, Math.min(4, t*1.6), 2);
+  if(arr.total > 0){
+    const shown = Math.min(arr.total, SHOWN_CAP);
+    const g = roundedBoxGeo(ol - CASE_GAP, oh - CASE_GAP, ow - CASE_GAP,
+                            Math.min(4, geo.meta.caliper*1.6), 2);
     const inst = new THREE.InstancedMesh(g, kraft, shown);
     const M = new THREE.Matrix4(), R = new THREE.Matrix4().makeRotationY(Math.PI/2);
-    let i = 0;
-    outer: for(let ly=0; ly<layers; ly++){
-      const flip = pattern === 'interlock' && (ly & 1);   // mirror odd layers (180° turn)
-      for(const b of layer.positions){
-        if(i >= shown) break outer;
-        if(b.rot) M.copy(R); else M.identity();           // rotated cases turn 90° about y
-        M.setPosition(flip ? -b.x : b.x, ph + oh/2 + ly*oh, flip ? -b.y : b.y);
-        inst.setMatrixAt(i++, M);
-      }
+    for(let i=0; i<shown; i++){
+      const p = arr.placements[i];
+      if(p.orientation === 'WLH') M.copy(R); else M.identity(); // 90° about vertical
+      M.setPosition(p.x, ph + p.z, p.y);   // containment (x,y,z) -> world (x,z,y)
+      inst.setMatrixAt(i, M);
     }
     palletGroup.add(inst);
   }
 
-  palletGroup.position.y = -loadHeight/2;               // centre vertically for orbit
+  const loadH = ph + arr.layers*oh;
+  palletGroup.position.y = -loadH/2;                   // centre vertically for orbit
   palletGroup.visible = visible;
   pivot.add(palletGroup);
-  setCamSpan(Math.max(pl, pw, loadHeight)*0.85);
+  setCamSpan(Math.max(pl, pw, loadH)*0.85);
 
   return {
-    label: layer.label,
-    perLayer: layer.perLayer,
-    layers, total,
-    coveragePct: Math.round(layer.perLayer*ol*ow/(pl*pw)*100)
+    label: arr.label,
+    perLayer: arr.perLayer,
+    layers: arr.layers,
+    total: arr.total,
+    coveragePct: Math.round(arr.perLayer*ol*ow/(pl*pw)*100)
   };
 }
 
