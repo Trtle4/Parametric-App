@@ -1,49 +1,79 @@
 /**
- * The Build view: the configuration surface for the carton -> case -> pallet
- * chain. Owns its own DOM (inside #buildWrap), maintains the Project, runs
- * candidateCases, and renders the sortable comparison table. All Build
- * inputs are mm (labelled as such) regardless of the main display unit.
+ * The Build view: the configuration surface for the
+ * collation -> carton -> case -> pallet chain. Owns its own DOM (inside
+ * #buildWrap), maintains the Project, runs candidateCases, and renders the
+ * sortable comparison table.
+ *
+ * Length inputs follow the app's unit toggle (mm/in); values are converted
+ * in place on switch and read back to mm. Counts and grid numbers are
+ * dimensionless and never convert.
  *
  * Never auto-selects a winner: rows are ranked visibly, the engineer picks.
  */
-import {newProject, candidateCases, checkLockedCase, nestArrangement, ROUNDING} from '../core/project.js';
+import {newProject, candidateCases, checkLockedCase, nestArrangement, productNest, ROUNDING, linkFor} from '../core/project.js';
+import {collate, orientationLabel, PRESETS} from '../core/collation.js';
+import {ORIENTATIONS} from '../core/containment.js';
 import {styleById} from '../core/styles/index.js';
+import {toMM, fromMM, fmtInputValue, fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
 
 export const project = newProject();
+let unit = 'mm';
 let rounding = '1mm';
 let rows = [];
 let selected = null;          // a row object, user-picked
 let sortKey = 'cartonsPerPallet', sortDir = -1;
 let onSelectCb = null;
 
-// orientation checkbox groups: explicit axis mappings, no hidden defaults.
-// "Inverted" occupies the same space as upright (the orientation model
-// captures axis mapping, not flip parity) — recorded for future use.
-const ORIENT_GROUPS = [
-  {key: 'upright',  label: 'Upright (H vertical)',            orients: ['LWH', 'WLH'], default: true},
-  {key: 'onSide',   label: 'On side (W vertical)',            orients: ['LHW', 'HLW'], default: false},
-  {key: 'onEnd',    label: 'On end (L vertical)',             orients: ['WHL', 'HWL'], default: false},
-  {key: 'inverted', label: 'Inverted (H vertical, flipped)',  orients: ['LWH', 'WLH'], default: false}
-];
+// ids of LENGTH inputs (unit-convertible); counts stay dimensionless
+const LEN_IDS = ['bpL', 'bpW', 'bpH', 'bpD', 'bpT', 'bsg', 'bpg',
+                 'bpWall', 'bpBetween', 'bpHead',
+                 'bCal', 'bCL', 'bCW', 'bCH',
+                 'bWall', 'bBetween', 'bcHead',
+                 'bTCal', 'bTGlue', 'bTSlot', 'bTL', 'bTW', 'bTH'];
 
 const html = String.raw;
+const lenVal = mm => fmtInputValue(fromMM(mm, unit), unit);
+const U = () => `<span class="bunit">${unit}</span>`;
 
-export function initBuild(onSelect){
+export function initBuild(onSelect, startUnit){
   onSelectCb = onSelect;
-  const sec = project.secondary, ter = project.tertiary;
-  const sp = sec.params, tp = ter.params;
+  unit = startUnit || 'mm';
+  const col = project.primary.collation;
+  const tp = project.tertiary.params;
   el('buildWrap').innerHTML = html`
   <div class="bpanel">
     <div class="bcols">
-      <fieldset><legend>Carton (ECMA A6120)</legend>
-        <div class="brow"><label>L</label><input id="bL" type="number" value="${sp.L}"><span>mm</span>
-          <label>W</label><input id="bW" type="number" value="${sp.W}"><span>mm</span>
-          <label>H</label><input id="bH" type="number" value="${sp.H}"><span>mm</span></div>
-        <div class="brow"><label>Caliper</label><input id="bCal" type="number" step="0.001" value="${sp.caliper}"><span>mm</span></div>
-        <div class="brow bnote">Other carton params follow the A6120 style view.</div>
-        <div class="brow"><label>Orientations</label></div>
-        ${ORIENT_GROUPS.map(o => html`<div class="brow bchk"><label><input type="checkbox" id="bo_${o.key}" ${o.default ? 'checked' : ''}> ${o.label}</label></div>`).join('')}
+      <fieldset><legend>Product · collation</legend>
+        <div class="brow"><label>Piece</label>
+          <select id="bKind"><option value="box">Box</option><option value="cylinder">Cylinder (round)</option></select></div>
+        <div class="brow" id="bBoxDims"><label>L</label><input id="bpL" type="number" value="${lenVal(col.piece.L)}">${U()}
+          <label>W</label><input id="bpW" type="number" value="${lenVal(col.piece.W)}">${U()}
+          <label>H</label><input id="bpH" type="number" value="${lenVal(col.piece.H)}">${U()}</div>
+        <div class="brow" id="bCylDims" style="display:none"><label>Dia</label><input id="bpD" type="number" value="${lenVal(50)}">${U()}
+          <label>Thick</label><input id="bpT" type="number" value="${lenVal(6)}">${U()}</div>
+        <div class="brow"><label>Preset</label>
+          <select id="bPreset">${PRESETS.map(p => `<option value="${p.id}">${p.label}</option>`).join('')}</select></div>
+        <div class="brow"><label>Per stack</label><input id="bPer" type="number" min="1" value="${col.perStack}" class="bshort">
+          <label>Axis</label><select id="bAxis"><option>X</option><option>Y</option><option selected>Z</option></select>
+          <label>Stacks</label><input id="bnx" type="number" min="1" value="${col.nx}" class="bshort"> ×
+          <input id="bny" type="number" min="1" value="${col.ny}" class="bshort"></div>
+        <div class="brow"><label>Stack gap</label><input id="bsg" type="number" step="0.5" value="${lenVal(col.stackGap)}">${U()}
+          <label>Piece gap</label><input id="bpg" type="number" step="0.5" value="${lenVal(col.pieceGap)}">${U()}</div>
+        <div class="brow bnote" id="bEnvInfo"></div>
+      </fieldset>
+      <fieldset><legend>Carton content</legend>
+        <div class="brow"><label>Envelope orientation</label></div>
+        <div id="bOrients"></div>
+        <div class="brow"><label>Clearance wall</label><input id="bpWall" type="number" step="0.1" value="${lenVal(0)}">${U()}
+          <label>between</label><input id="bpBetween" type="number" step="0.1" value="${lenVal(0)}">${U()}</div>
+        <div class="brow"><label>Headspace</label><input id="bpHead" type="number" step="0.5" value="${lenVal(0)}">${U()}</div>
+        <div class="brow bnote">Clearances default 0 — review. Headspace is a design decision, not a fit tolerance.</div>
+        <div class="brow"><label>Carton caliper</label><input id="bCal" type="number" step="0.001" value="${lenVal(project.secondary.params.caliper)}">${U()}</div>
+        <div class="brow bchk"><label><input type="checkbox" id="bCLock"> Lock carton dims (check fit only)</label></div>
+        <div class="brow" id="bCLockDims" style="display:none"><label>L</label><input id="bCL" type="number" value="${lenVal(100)}">${U()}
+          <label>W</label><input id="bCW" type="number" value="${lenVal(100)}">${U()}
+          <label>H</label><input id="bCH" type="number" value="${lenVal(60)}">${U()}</div>
       </fieldset>
       <fieldset><legend>Case content</legend>
         <div class="brow"><label>Cartons/case</label>
@@ -55,21 +85,22 @@ export function initBuild(onSelect){
             <input id="bNx" type="number" min="1" value="4" class="bshort"> ×
             <input id="bNy" type="number" min="1" value="3" class="bshort"> ×
             <input id="bNz" type="number" min="1" value="1" class="bshort"></span></div>
-        <div class="brow"><label>Clearance wall</label><input id="bWall" type="number" step="0.1" value="1.5"><span>mm</span>
-          <label>between</label><input id="bBetween" type="number" step="0.1" value="0"><span>mm</span></div>
+        <div class="brow"><label>Clearance wall</label><input id="bWall" type="number" step="0.1" value="${lenVal(1.5)}">${U()}
+          <label>between</label><input id="bBetween" type="number" step="0.1" value="${lenVal(0)}">${U()}</div>
+        <div class="brow"><label>Headspace</label><input id="bcHead" type="number" step="0.5" value="${lenVal(0)}">${U()}</div>
         <div class="brow bnote">Clearance defaults are placeholders to review, not truth.
-          Vertical is non-uniform: cartons bear on the case floor (0), no headspace (0).</div>
-        <div class="brow"><label>Round cavity up to</label>
+          Cartons bear on the case floor (bottom 0).</div>
+        <div class="brow"><label>Round cavities up to</label>
           <select id="bRound">${Object.keys(ROUNDING).map(k => `<option${k === rounding ? ' selected' : ''}>${k}</option>`).join('')}</select></div>
       </fieldset>
       <fieldset><legend>Case (FEFCO 201)</legend>
-        <div class="brow"><label>Caliper</label><input id="bTCal" type="number" step="0.1" value="${tp.caliper}"><span>mm</span></div>
-        <div class="brow"><label>Glue flap</label><input id="bTGlue" type="number" value="${tp.glue}"><span>mm</span>
-          <label>Slot</label><input id="bTSlot" type="number" step="0.5" value="${tp.slot}"><span>mm</span></div>
+        <div class="brow"><label>Caliper</label><input id="bTCal" type="number" step="0.1" value="${lenVal(tp.caliper)}">${U()}</div>
+        <div class="brow"><label>Glue flap</label><input id="bTGlue" type="number" value="${lenVal(tp.glue)}">${U()}
+          <label>Slot</label><input id="bTSlot" type="number" step="0.5" value="${lenVal(tp.slot)}">${U()}</div>
         <div class="brow bchk"><label><input type="checkbox" id="bLock"> Lock case dims (check fit only)</label></div>
-        <div class="brow" id="bLockDims" style="display:none"><label>L</label><input id="bTL" type="number" value="407"><span>mm</span>
-          <label>W</label><input id="bTW" type="number" value="186"><span>mm</span>
-          <label>H</label><input id="bTH" type="number" value="152"><span>mm</span></div>
+        <div class="brow" id="bLockDims" style="display:none"><label>L</label><input id="bTL" type="number" value="${lenVal(407)}">${U()}
+          <label>W</label><input id="bTW" type="number" value="${lenVal(186)}">${U()}
+          <label>H</label><input id="bTH" type="number" value="${lenVal(152)}">${U()}</div>
         <div class="brow"><button class="btn bapply" id="bUse" disabled>Use selected as case</button></div>
       </fieldset>
     </div>
@@ -77,9 +108,27 @@ export function initBuild(onSelect){
     <div class="btablewrap"><table id="bTable"></table></div>
   </div>`;
 
+  renderOrientChecks();
+
   const rewire = ids => ids.forEach(id => el(id).addEventListener('input', recompute));
-  rewire(['bL', 'bW', 'bH', 'bCal', 'bCount', 'bWall', 'bBetween', 'bNx', 'bNy', 'bNz', 'bTCal', 'bTGlue', 'bTSlot', 'bTL', 'bTW', 'bTH']);
-  ORIENT_GROUPS.forEach(o => el('bo_' + o.key).addEventListener('change', recompute));
+  rewire(LEN_IDS.concat(['bPer', 'bnx', 'bny', 'bCount', 'bNx', 'bNy', 'bNz']));
+  el('bKind').addEventListener('change', () => {
+    const cyl = el('bKind').value === 'cylinder';
+    el('bBoxDims').style.display = cyl ? 'none' : '';
+    el('bCylDims').style.display = cyl ? '' : 'none';
+    recompute();
+  });
+  el('bPreset').addEventListener('change', () => {
+    const p = PRESETS.find(x => x.id === el('bPreset').value);
+    if(p){
+      if(p.set.perStack !== undefined) el('bPer').value = p.set.perStack;
+      if(p.set.stackAxis) el('bAxis').value = p.set.stackAxis;
+      if(p.set.nx !== undefined) el('bnx').value = p.set.nx;
+      if(p.set.ny !== undefined) el('bny').value = p.set.ny;
+    }
+    renderOrientChecks(); recompute();
+  });
+  el('bAxis').addEventListener('change', () => { renderOrientChecks(); recompute(); });
   el('bCountSel').addEventListener('change', () => {
     const custom = el('bCountSel').value === 'custom';
     el('bCount').style.display = custom ? '' : 'none';
@@ -95,61 +144,113 @@ export function initBuild(onSelect){
     el('bLockDims').style.display = el('bLock').checked ? '' : 'none';
     recompute();
   });
+  el('bCLock').addEventListener('change', () => {
+    el('bCLockDims').style.display = el('bCLock').checked ? '' : 'none';
+    recompute();
+  });
+  recompute();
+}
+
+/** Envelope-orientation checkboxes: plain language first, axis code beside
+ *  it — unmistakable, but traceable. Labels re-render when the stack axis
+ *  changes because the plain meaning depends on it. */
+function renderOrientChecks(){
+  const axis = el('bAxis') ? el('bAxis').value : 'Z';
+  const checked = new Set(project.primary.allowedOrientations);
+  el('bOrients').innerHTML = ORIENTATIONS.map(o => html`
+    <div class="brow bchk"><label><input type="checkbox" id="bor_${o}" ${checked.has(o) ? 'checked' : ''}>
+      ${orientationLabel(axis, o)} <span class="bcode">${o}</span></label></div>`).join('');
+  ORIENTATIONS.forEach(o => el('bor_' + o).addEventListener('change', recompute));
+}
+
+/** Convert every length field in place when the app unit toggle changes. */
+export function onUnitsChanged(next){
+  if(next === unit) return;
+  const k = next === 'in' ? 1/25.4 : 25.4;
+  for(const id of LEN_IDS){
+    const e = el(id); if(!e) continue;
+    e.value = fmtInputValue((+e.value || 0)*k, next);
+  }
+  unit = next;
+  document.querySelectorAll('#buildWrap .bunit').forEach(s => s.textContent = unit);
   recompute();
 }
 
 function readIntoProject(){
-  const n = id => +el(id).value || 0;
-  const sec = project.secondary, ter = project.tertiary, link = project.links[0];
-  sec.params = {...sec.params, L: n('bL'), W: n('bW'), H: n('bH'), caliper: n('bCal')};
-  const orients = [];
-  for(const o of ORIENT_GROUPS)
-    if(el('bo_' + o.key).checked) for(const s of o.orients) if(!orients.includes(s)) orients.push(s);
-  sec.allowedOrientations = orients;
-  sec.clearance = {wall: n('bWall'), between: n('bBetween'), bottom: 0, top: 0, betweenZ: 0};
+  const n = id => toMM(+el(id).value || 0, unit);      // length, -> mm
+  const c = id => Math.max(1, Math.round(+el(id).value || 1)); // count
+  const prim = project.primary, sec = project.secondary, ter = project.tertiary;
+  const caseLink = linkFor(project, 'tertiary'), cartonLink = linkFor(project, 'secondary');
+
+  prim.collation = {
+    piece: el('bKind').value === 'cylinder'
+      ? {kind: 'cylinder', diameter: n('bpD'), thickness: n('bpT')}
+      : {kind: 'box', L: n('bpL'), W: n('bpW'), H: n('bpH')},
+    perStack: c('bPer'), stackAxis: el('bAxis').value,
+    nx: c('bnx'), ny: c('bny'),
+    stackGap: n('bsg'), pieceGap: n('bpg')
+  };
+  prim.allowedOrientations = ORIENTATIONS.filter(o => el('bor_' + o) && el('bor_' + o).checked);
+  prim.clearance = {wall: n('bpWall'), between: n('bpBetween'), bottom: 0, top: n('bpHead'), betweenZ: 0};
+
+  sec.params = {...sec.params, caliper: n('bCal')};
+  cartonLink.locked = el('bCLock').checked;
+  if(cartonLink.locked) sec.params = {...sec.params, L: n('bCL'), W: n('bCW'), H: n('bCH')};
+
+  sec.clearance = {wall: n('bWall'), between: n('bBetween'), bottom: 0, top: n('bcHead'), betweenZ: 0};
   ter.params = {...ter.params, caliper: n('bTCal'), glue: n('bTGlue'), slot: n('bTSlot')};
-  link.count = Math.max(1, Math.round(n('bCount')));
-  link.locked = el('bLock').checked;
-  link.arrangement = el('bArr').value === 'auto' ? 'auto'
-    : {nx: Math.max(1, n('bNx')), ny: Math.max(1, n('bNy')), nz: Math.max(1, n('bNz'))};
-  if(link.locked) ter.params = {...ter.params, L: n('bTL'), W: n('bTW'), H: n('bTH')};
+  caseLink.count = c('bCount');
+  caseLink.locked = el('bLock').checked;
+  caseLink.arrangement = el('bArr').value === 'auto' ? 'auto'
+    : {nx: c('bNx'), ny: c('bNy'), nz: c('bNz')};
+  if(caseLink.locked) ter.params = {...ter.params, L: n('bTL'), W: n('bTW'), H: n('bTH')};
 }
 
 export function recompute(){
   readIntoProject();
-  const link = project.links[0];
+  const caseLink = linkFor(project, 'tertiary');
   const status = el('bStatus');
   selected = null; el('bUse').disabled = true;
+  let envInfo = '';
   try{
-    if(project.secondary.allowedOrientations.length === 0)
-      throw new Error('select at least one carton orientation');
-    if(link.locked){
+    if(project.primary.allowedOrientations.length === 0)
+      throw new Error('select at least one envelope orientation');
+    const col = collate(project.primary.collation);
+    envInfo = `Envelope ${fmtLen(col.envelope.L, unit)} × ${fmtLen(col.envelope.W, unit)} × ${fmtLen(col.envelope.H, unit)} ${unit}` +
+      ` · ${col.count} pieces · fill ${Math.round(col.fillEfficiency*100)}% (informational — never feeds pallet numbers)`;
+    if(caseLink.locked){
       const row = checkLockedCase(project, rounding);
       rows = [row];
       status.textContent = row.fits
-        ? `Locked case holds ${row.capacity} cartons (${link.count} required) — OK`
-        : `Locked case holds only ${row.capacity} of ${link.count} cartons — DOES NOT FIT`;
+        ? `Locked case holds ${row.capacity} cartons (${caseLink.count} required) — OK`
+        : `Locked case: holds ${row.capacity} of ${caseLink.count} cartons` +
+          (row.primaryFits ? '' : '; collation does not fit the carton') + ' — DOES NOT FIT';
       status.className = row.fits ? 'bnote' : 'bnote bbad';
     }else{
       rows = candidateCases(project, rounding);
-      status.textContent = `${rows.length} candidate arrangements for ${link.count} cartons — click a row to select`;
-      status.className = 'bnote';
+      const bad = rows.filter(r => !r.primaryFits).length;
+      status.textContent = `${rows.length} candidate arrangements for ${caseLink.count} cartons — click a row to select` +
+        (bad ? ` · ${bad} rows: collation does NOT fit the locked carton` : '');
+      status.className = bad ? 'bnote bbad' : 'bnote';
     }
   }catch(e){
     rows = [];
     status.textContent = 'Error: ' + (e.message || e);
     status.className = 'bnote bbad';
   }
+  el('bEnvInfo').textContent = envInfo;
   renderTable();
   if(onSelectCb) onSelectCb(null);
 }
 
 const COLS = [
-  {key: 'arrangementLabel', label: 'Arrangement', txt: r => r.arrangementLabel},
-  {key: 'outerL',  label: 'Case outer L×W×H (mm)', txt: r => `${r.outer.L.toFixed(1)} × ${r.outer.W.toFixed(1)} × ${r.outer.H.toFixed(1)}`, val: r => r.outer.L*r.outer.W*r.outer.H},
+  {key: 'arrangementLabel', label: 'Case fill', txt: r => r.arrangementLabel},
+  {key: 'primaryLabel', label: 'Stacks in carton', txt: r => r.primaryLabel ? `${r.primaryLabel} (${r.primaryOrientation})` : '—'},
+  {key: 'outerL',  label: 'Case outer L×W×H', txt: r => `${fmtLen(r.outer.L, unit)} × ${fmtLen(r.outer.W, unit)} × ${fmtLen(r.outer.H, unit)}`, val: r => r.outer.L*r.outer.W*r.outer.H},
   {key: 'boardAreaM2', label: 'Board m²/case', txt: r => r.boardAreaM2.toFixed(3)},
   {key: 'casesPerPallet', label: 'Cases/pallet', txt: r => `${r.casesPerPallet} (${r.casesPerLayer}×${r.caseLayers})`},
   {key: 'cartonsPerPallet', label: 'Cartons/pallet', txt: r => r.cartonsPerPallet},
+  {key: 'piecesPerPallet', label: 'Pieces/pallet', txt: r => r.piecesPerPallet !== null && r.piecesPerPallet !== undefined ? r.piecesPerPallet : '—'},
   {key: 'coveragePct', label: 'Deck %', txt: r => r.coveragePct},
   {key: 'cubeUtilPct', label: 'Cube %', txt: r => r.cubeUtilPct}
 ];
@@ -164,8 +265,8 @@ function renderTable(){
   tbl.innerHTML =
     `<thead><tr>${COLS.map(c =>
       `<th data-k="${c.key}">${c.label}${c.key === sortKey ? (sortDir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>` +
-    `<tbody>${sorted.map((r, i) =>
-      `<tr data-i="${rows.indexOf(r)}"${r === selected ? ' class="bsel"' : ''}>${
+    `<tbody>${sorted.map(r =>
+      `<tr data-i="${rows.indexOf(r)}" class="${r === selected ? 'bsel' : ''}${r.primaryFits === false ? ' bmisfit' : ''}">${
         COLS.map(c => `<td>${c.txt(r)}</td>`).join('')}</tr>`).join('')}</tbody>`;
   tbl.querySelectorAll('th').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.k;
@@ -187,3 +288,4 @@ export const getNest = () => {
   const caseGeo = styleById(project.tertiary.styleId).geometry(selected.caseParams);
   return {caseGeo, cartonGeo: arr.cartonGeo, placements: arr.placements};
 };
+export const getProductNest = () => selected ? productNest(project, selected) : null;

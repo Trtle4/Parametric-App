@@ -74,10 +74,18 @@ for(const [name, c] of Object.entries(golden.cases)){
   }
 }
 
-// full-chain regression pins: carton -> case -> pallet
+// full-chain regression pins: [collation ->] carton -> case -> pallet
 for(const [name, ch] of Object.entries(golden.chains || {})){
   const p = newProject();
-  p.secondary.params = {...ch.config.carton};
+  if(ch.config.collation){
+    p.primary.collation = {...ch.config.collation, piece: {...ch.config.collation.piece}};
+    p.primary.allowedOrientations = ch.config.primaryOrientations;
+    p.primary.clearance = {...ch.config.primaryClearance};
+    p.secondary.params = {...p.secondary.params, ...ch.config.cartonMaterial};
+  }else{
+    p.primary = null;                       // legacy carton-driven pin
+    p.secondary.params = {...ch.config.carton};
+  }
   p.secondary.allowedOrientations = ch.config.orientations;
   p.secondary.clearance = {...ch.config.clearance};
   p.links[0].count = ch.config.count;
@@ -86,6 +94,12 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
   const r = candidateCases(p, ch.config.rounding)
     .find(x => x.nx === a.nx && x.ny === a.ny && x.nz === a.nz && x.orientation === ch.config.orientations[0]);
   const e = ch.expected;
+  if(e.cartonOuter){
+    cmp(name, 'cartonOuter.L', e.cartonOuter.L, r.cartonOuter.L);
+    cmp(name, 'cartonOuter.W', e.cartonOuter.W, r.cartonOuter.W);
+    cmp(name, 'cartonOuter.H', e.cartonOuter.H, r.cartonOuter.H);
+  }
+  if(e.piecesPerPallet !== undefined) cmp(name, 'piecesPerPallet', e.piecesPerPallet, r.piecesPerPallet);
   cmp(name, 'cavity.L', e.cavity.L, r.cavity.L); cmp(name, 'cavity.W', e.cavity.W, r.cavity.W); cmp(name, 'cavity.H', e.cavity.H, r.cavity.H);
   cmp(name, 'outer.L', e.outer.L, r.outer.L); cmp(name, 'outer.W', e.outer.W, r.outer.W); cmp(name, 'outer.H', e.outer.H, r.outer.H);
   cmp(name, 'boardAreaM2', e.boardAreaM2, +r.boardAreaM2.toFixed(6));

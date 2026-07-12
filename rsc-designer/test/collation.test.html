@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>collation tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/collation.js — hand-checked envelope per preset.
+   Box piece 90×50×20; cylinder piece d50 × t6 (biscuit). DOM-free module. */
+import {collate, orientationLabel} from '../src/core/collation.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function env(r, L, W, H){ approx(r.envelope.L, L, 'L'); approx(r.envelope.W, W, 'W'); approx(r.envelope.H, H, 'H'); }
+const box = {kind: 'box', L: 90, W: 50, H: 20};
+const cyl = {kind: 'cylinder', diameter: 50, thickness: 6};
+
+t('Standard: 1 piece, envelope = piece', () => {
+  const r = collate({piece: box, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  env(r, 90, 50, 20);
+  if(r.count !== 1) throw new Error('count');
+  approx(r.placements[0].x, 0); approx(r.placements[0].y, 0); approx(r.placements[0].z, 10);
+});
+t('In line: 4 across with 5mm stack gap', () => {
+  const r = collate({piece: box, perStack: 1, stackAxis: 'Z', nx: 4, ny: 1, stackGap: 5, pieceGap: 0});
+  env(r, 4*90 + 3*5, 50, 20);   // 375
+  if(r.count !== 4) throw new Error('count');
+  approx(r.placements[0].x, -142.5, 'first stack centre');   // -375/2 + 45
+});
+t('In line on edge: 10 cylinders axis X', () => {
+  const r = collate({piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  env(r, 60, 50, 50);           // 10×6 slug lying on edge
+  if(r.count !== 10) throw new Error('count');
+  approx(r.placements[0].x, -27, 'first biscuit centre');    // -30 + 3
+  approx(r.placements[0].z, 25, 'resting height');
+  if(r.placements.some(p => p.axis !== 'X')) throw new Error('cylinder axis must follow the stack');
+});
+t('Stacked: 25 cylinders vertical', () => {
+  const r = collate({piece: cyl, perStack: 25, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  env(r, 50, 50, 150);
+  approx(r.placements[0].z, 3); approx(r.placements[24].z, 147);
+  approx(r.fillEfficiency, Math.PI/4, 'π/4 for gapless pucks:');
+});
+t('Side by side: 3×2 cylinders flat, 2mm gaps', () => {
+  const r = collate({piece: cyl, perStack: 1, stackAxis: 'Z', nx: 3, ny: 2, stackGap: 2, pieceGap: 0});
+  env(r, 3*50 + 2*2, 2*50 + 2, 6);   // 154 × 102 × 6
+  if(r.count !== 6) throw new Error('count');
+});
+t('Multiple pieces collated: 6-stacks in 2×3, 4mm stack gap', () => {
+  const r = collate({piece: box, perStack: 6, stackAxis: 'Z', nx: 2, ny: 3, stackGap: 4, pieceGap: 0});
+  env(r, 2*90 + 4, 3*50 + 8, 6*20);  // 184 × 158 × 120
+  if(r.count !== 36) throw new Error('count');
+});
+t('pieceGap participates in the stack pitch', () => {
+  const r = collate({piece: cyl, perStack: 3, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 1});
+  env(r, 50, 50, 3*6 + 2);
+  approx(r.placements[1].z, 3 + 7, 'second puck at pitch 7');
+});
+t('validation: bad kinds and axes throw', () => {
+  let threw = 0;
+  try{ collate({piece: {kind: 'sphere'}, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1}); }catch(e){ threw++; }
+  try{ collate({piece: cyl, perStack: 1, stackAxis: 'Q', nx: 1, ny: 1}); }catch(e){ threw++; }
+  try{ collate({piece: {kind: 'box', L: 0, W: 1, H: 1}, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1}); }catch(e){ threw++; }
+  if(threw !== 3) throw new Error(`expected 3 throws, got ${threw}`);
+});
+t('orientation labels: plain language per stack axis', () => {
+  const eq = (a, e) => { if(a !== e) throw new Error(`expected "${e}", got "${a}"`); };
+  eq(orientationLabel('Z', 'LWH'), 'Stacks upright');
+  eq(orientationLabel('Z', 'WLH'), 'Stacks upright, envelope turned 90°');
+  eq(orientationLabel('Z', 'HLW'), 'Stacks lengthwise in the carton, width face up');
+  eq(orientationLabel('Z', 'LHW'), 'Stacks crosswise in the carton, width face up');
+  eq(orientationLabel('X', 'LWH'), 'Stacks lengthwise in the carton');
+  eq(orientationLabel('X', 'WHL'), 'Stacks upright');
+  eq(orientationLabel('X', 'HWL'), 'Stacks upright, envelope turned 90°');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

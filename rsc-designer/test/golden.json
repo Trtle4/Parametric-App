@@ -105,6 +105,29 @@
         "casesPerPallet": 112, "cartonsPerPallet": 1344,
         "coveragePct": 90, "cubeUtilPct": 77
       }
+    },
+    "cylinder40_2x2x10_upright_4x3x1": {
+      "note": "cylindrical product through the full chain: d50 x t6 pucks, 'multiple pieces collated' 10/stack Z 2x2 (envelope 100x100x60, 40 pieces, fill pi/4), upright into an a6120 @0.457 with zero allowances, 12 cartons 4x3x1 into a fefco201 @3, GMA pallet, optimal pattern",
+      "config": {
+        "collation": { "piece": { "kind": "cylinder", "diameter": 50, "thickness": 6 }, "perStack": 10, "stackAxis": "Z", "nx": 2, "ny": 2, "stackGap": 0, "pieceGap": 0 },
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": { "wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "cartonMaterial": { "caliper": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+        "count": 12, "arrangement": { "nx": 4, "ny": 3, "nz": 1 },
+        "orientations": ["LWH", "WLH"],
+        "clearance": { "wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "rounding": "1mm"
+      },
+      "expected": {
+        "cartonOuter": { "L": 100.914, "W": 100.914, "H": 61.828 },
+        "cavity": { "L": 407, "W": 306, "H": 62 },
+        "outer": { "L": 413, "W": 312, "H": 74 },
+        "boardAreaM2": 0.537648,
+        "casesPerLayer": 8, "caseLayers": 18,
+        "casesPerPallet": 144, "cartonsPerPallet": 1728,
+        "piecesPerPallet": 69120,
+        "coveragePct": 83, "cubeUtilPct": 66
+      }
     }
   }
 }

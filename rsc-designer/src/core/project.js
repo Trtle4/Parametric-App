@@ -8,8 +8,9 @@
  * DOM-free, THREE-free, mm-only. The pallet's physical height (timber) is
  * passed in via PalletConfig.baseH so this module knows nothing about decks.
  */
-import {fitInto, parentCandidates} from './containment.js';
+import {fitInto, parentCandidates, solveParent} from './containment.js';
 import {styleById} from './styles/index.js';
+import {collate, orientationLabel} from './collation.js';
 
 /**
  * @typedef {import('./containment.js').Orientation} Orientation
@@ -59,16 +60,27 @@ export function styleDefaults(styleId){
   return out;
 }
 
-/** A fresh project: carton (defaults) driving a case, on a GMA pallet. */
+/** A fresh project: collated product driving a carton driving a case, on a
+ *  GMA pallet. `primary: null` reverts to the carton-driven chain. */
 export function newProject(){
   return {
+    primary: {
+      collation: {
+        piece: {kind: 'box', L: 90, W: 50, H: 20},
+        perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0
+      },
+      allowedOrientations: ['LWH'],                  // product is usually orientation-critical
+      // product-in-carton allowances: 0/0/0 are review-me placeholders, not
+      // conventions. top is HEADSPACE — a design decision, exposed in Build.
+      clearance: {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0}
+    },
     secondary: {
       styleId: 'a6120',
-      params: styleDefaults('a6120'),
+      params: styleDefaults('a6120'),                // L/W/H overwritten when solved from the collation
       allowedOrientations: ['LWH', 'WLH'],           // upright; set deliberately in Build
       // wall/between are the review-me defaults; vertical is explicitly
-      // non-uniform: cartons bear on the case floor (bottom 0), no default
-      // headspace (top 0), layers stack directly (betweenZ 0)
+      // non-uniform: cartons bear on the case floor (bottom 0), headspace
+      // (top) is a first-class Build input, layers stack directly (betweenZ 0)
       clearance: {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0}
     },
     tertiary: {
@@ -78,9 +90,14 @@ export function newProject(){
       clearance: {wall: 0, between: 0}
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal'},
-    links: [{parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false}]
+    links: [
+      {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
+      {parent: 'secondary', child: 'primary', count: 1, arrangement: 'auto', locked: false}
+    ]
   };
 }
+
+export const linkFor = (project, parent) => project.links.find(l => l.parent === parent);
 
 /* ---------------- candidate enumeration + full-chain metrics ------------ */
 
@@ -102,49 +119,126 @@ function irreducible(c, count){
  * @param {string} rounding  key of ROUNDING
  * @returns {Object[]} rows (see fields below), enumeration order
  */
-export function candidateCases(project, rounding = '1mm'){
-  const link = project.links[0];
-  const sec = project.secondary, ter = project.tertiary;
-  const step = ROUNDING[rounding] || 1;
-
-  const cartonGeo = styleById(sec.styleId).geometry(sec.params);
-  const child = {outer: cartonGeo.outer, allowedOrientations: sec.allowedOrientations};
-  const cartonVol = cartonGeo.outer.L*cartonGeo.outer.W*cartonGeo.outer.H;
-
-  let cands;
-  if(link.arrangement === 'auto'){
-    cands = parentCandidates(child, link.count, sec.clearance).filter(c => irreducible(c, link.count));
-  }else{
-    const {nx, ny, nz} = link.arrangement;
-    cands = parentCandidates(child, nx*ny*nz, sec.clearance, {layers: nz})
-      .filter(c => c.nx === nx && c.ny === ny);
+/**
+ * Resolve the carton variants that feed the case stage. Without a primary
+ * level there is exactly one (the carton as configured). With one, the
+ * collation envelope drives — or is checked against — the carton, once per
+ * allowed primary orientation. Solved cavities use solveParent's volume
+ * objective (the case stage is where enumeration + ranking happen).
+ */
+function cartonVariants(project, step){
+  const sec = project.secondary;
+  if(!project.primary){
+    const geo = styleById(sec.styleId).geometry(sec.params);
+    return [{params: sec.params, geo, orientation: null, label: null, piecesPerCarton: null, fits: true}];
   }
-
-  return cands.map(c => {
-    const cavity = roundCavityUp(c.cavity, step);
-    const caseParams = {...ter.params, L: cavity.L, W: cavity.W, H: cavity.H};
-    const caseGeo = styleById(ter.styleId).geometry(caseParams);
-    const row = chainMetrics(project, c, cavity, caseParams, caseGeo, cartonVol, link.count);
-    return row;
+  const prim = project.primary;
+  const link = linkFor(project, 'secondary');
+  const col = collate(prim.collation);
+  const piecesPerCarton = col.count*link.count;
+  return prim.allowedOrientations.map(o => {
+    const child = {outer: col.envelope, allowedOrientations: [o]};
+    let params, fits = true, capacity = null;
+    if(link.locked){
+      params = sec.params;                                        // user-fixed carton
+      const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
+      capacity = chk.total; fits = chk.total >= link.count;
+    }else{
+      const solved = solveParent(child, link.count, prim.clearance);
+      const cavity = roundCavityUp(solved.cavity, step);
+      params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
+    }
+    return {
+      params, geo: styleById(sec.styleId).geometry(params),
+      orientation: o, label: orientationLabel(prim.collation.stackAxis, o),
+      piecesPerCarton, fits, capacity
+    };
   });
 }
 
-/** Locked direction: the case dims are fixed; check the carton against them. */
-export function checkLockedCase(project, rounding = '1mm'){
-  const link = project.links[0];
+export function candidateCases(project, rounding = '1mm'){
+  const link = linkFor(project, 'tertiary');
   const sec = project.secondary, ter = project.tertiary;
-  const cartonGeo = styleById(sec.styleId).geometry(sec.params);
-  const child = {outer: cartonGeo.outer, allowedOrientations: sec.allowedOrientations};
+  const step = ROUNDING[rounding] || 1;
+  const rows = [];
+
+  for(const variant of cartonVariants(project, step)){
+    const child = {outer: variant.geo.outer, allowedOrientations: sec.allowedOrientations};
+    const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
+
+    let cands;
+    if(link.arrangement === 'auto'){
+      cands = parentCandidates(child, link.count, sec.clearance).filter(c => irreducible(c, link.count));
+    }else{
+      const {nx, ny, nz} = link.arrangement;
+      cands = parentCandidates(child, nx*ny*nz, sec.clearance, {layers: nz})
+        .filter(c => c.nx === nx && c.ny === ny);
+    }
+
+    for(const c of cands){
+      const cavity = roundCavityUp(c.cavity, step);
+      const caseParams = {...ter.params, L: cavity.L, W: cavity.W, H: cavity.H};
+      const caseGeo = styleById(ter.styleId).geometry(caseParams);
+      const row = chainMetrics(project, c, cavity, caseParams, caseGeo, cartonVol, link.count);
+      row.cartonParams = variant.params;
+      row.cartonOuter = variant.geo.outer;
+      row.primaryOrientation = variant.orientation;
+      row.primaryLabel = variant.label;
+      row.primaryFits = variant.fits;
+      row.piecesPerCarton = variant.piecesPerCarton;
+      row.piecesPerPallet = variant.piecesPerCarton !== null
+        ? variant.piecesPerCarton*row.cartonsPerPallet : null;
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+/** Locked direction: the case dims are fixed; check the carton against them.
+ *  With a primary level, the carton itself is first derived from (or checked
+ *  against) the collation using the FIRST allowed primary orientation. */
+export function checkLockedCase(project, rounding = '1mm'){
+  const link = linkFor(project, 'tertiary');
+  const sec = project.secondary, ter = project.tertiary;
+  const step = ROUNDING[rounding] || 1;
+  const variant = cartonVariants(project, step)[0];
+  const child = {outer: variant.geo.outer, allowedOrientations: sec.allowedOrientations};
   const cavity = {L: ter.params.L, W: ter.params.W, H: ter.params.H};
   const fit = fitInto(child, cavity, sec.clearance, 'column');
   const caseGeo = styleById(ter.styleId).geometry(ter.params);
-  const cartonVol = cartonGeo.outer.L*cartonGeo.outer.W*cartonGeo.outer.H;
+  const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
   const cand = {nx: '—', ny: '—', layers: fit.layers, o: fit.placements[0] ? fit.placements[0].orientation : '—'};
   const row = chainMetrics(project, cand, cavity, ter.params, caseGeo, cartonVol, link.count);
   row.capacity = fit.total;
-  row.fits = fit.total >= link.count;
+  row.fits = fit.total >= link.count && variant.fits;
   row.arrangementLabel = `locked (${fit.label})`;
+  row.cartonParams = variant.params;
+  row.cartonOuter = variant.geo.outer;
+  row.primaryOrientation = variant.orientation;
+  row.primaryLabel = variant.label;
+  row.primaryFits = variant.fits;
+  row.piecesPerCarton = variant.piecesPerCarton;
+  row.piecesPerPallet = variant.piecesPerCarton !== null
+    ? variant.piecesPerCarton*row.cartonsPerPallet : null;
   return row;
+}
+
+/**
+ * Everything the Carton + product 3D view needs for one table row: the
+ * carton geometry, the collation result (real piece placements), and the
+ * chosen envelope orientation into the carton.
+ */
+export function productNest(project, row){
+  if(!project.primary) return null;
+  const col = collate(project.primary.collation);
+  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
+  return {
+    cartonGeo,
+    collation: project.primary.collation,
+    result: col,
+    orientation: row.primaryOrientation || project.primary.allowedOrientations[0],
+    clearance: project.primary.clearance
+  };
 }
 
 function chainMetrics(project, cand, cavity, caseParams, caseGeo, cartonVol, count){

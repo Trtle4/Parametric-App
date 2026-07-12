@@ -134,6 +134,9 @@
   #bTable tbody tr:hover{background:var(--line2)}
   #bTable tr.bsel{background:#fbe9d3}
   #bTable tr.bsel td{font-weight:600}
+  #bTable tr.bmisfit td{color:var(--cut)}
+  .bcode{font-family:var(--mono);font-size:11px;color:#9aa6b2;margin-left:4px}
+  .bunit{font-family:var(--mono);font-size:11px;color:var(--muted)}
   .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%)}
   @media (max-width:860px){
     main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
@@ -208,6 +211,7 @@
     <div class="seg mode3d" id="mode3d" style="display:none">
       <button id="m3fold" class="on">Fold</button>
       <button id="m3nest">Case + cartons</button>
+      <button id="m3prod">Carton + product</button>
     </div>
     <div class="hud" id="hud">
       <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>

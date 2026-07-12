@@ -27,6 +27,8 @@ function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw n
 
 function refProject(){
   const p = newProject();
+  p.primary = null;                     // legacy carton-driven chain
+  p.secondary.params = {...p.secondary.params, L: 100, W: 60, H: 150, caliper: 0.457};
   p.pallet.pattern = 'column';          // hand-checkable pallet math
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   return p;
@@ -93,6 +95,59 @@ t('nest placements: 12 cartons, on the floor, inside the walls', () => {
     if(Math.abs(p.x) + 100.914/2 > 407/2 - 1.5 + 1e-9) throw new Error(`x overflow at ${p.x}`);
     if(Math.abs(p.y) + 60.914/2 > 186/2 - 1.5 + 1e-9) throw new Error(`y overflow at ${p.y}`);
   }
+});
+
+/* ---- primary (collation) chain -------------------------------------
+   Cylinder d50×t6, "multiple pieces collated": 10/stack, Z, 2×2, no gaps
+   -> envelope 100×100×60, 40 pieces.  Orientation LWH, clearances 0,
+   headspace 0 -> carton cavity 100×100×60 -> a6120 @0.457
+   -> carton outer 100.914 × 100.914 × 61.828.
+   Case: 12 cartons 4×3×1, wall 1.5 -> cavity 407×306×62 -> outer 413×312×74.
+   Pallet (column): 2×3 = 6/layer, floor(1397/74) = 18 layers -> 108 cases,
+   1296 cartons, 40×1296 = 51840 pieces. */
+function cylProject(){
+  const p = newProject();
+  p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6},
+                         perStack: 10, stackAxis: 'Z', nx: 2, ny: 2, stackGap: 0, pieceGap: 0};
+  p.primary.allowedOrientations = ['LWH'];
+  p.primary.clearance = {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0};
+  p.pallet.pattern = 'column';
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  return p;
+}
+
+t('primary chain: cylinder collation drives carton then case (hand-checked)', () => {
+  const rows = candidateCases(cylProject(), '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('4×3×1 row missing');
+  eq(r.cartonParams.L, 100); eq(r.cartonParams.W, 100); eq(r.cartonParams.H, 60);
+  approx(r.cartonOuter.L, 100.914); approx(r.cartonOuter.H, 61.828);
+  eq(r.cavity, {L: 407, W: 306, H: 62}, 'case cavity:');
+  eq(r.outer, {L: 413, W: 312, H: 74}, 'case outer:');
+  eq([r.casesPerLayer, r.caseLayers, r.casesPerPallet], [6, 18, 108], 'pallet:');
+  eq(r.cartonsPerPallet, 1296);
+  eq(r.piecesPerCarton, 40);
+  eq(r.piecesPerPallet, 51840);
+  eq(r.primaryLabel, 'Stacks upright');
+});
+
+t('headspace is added to the carton cavity height (design input, not clearance)', () => {
+  const p = cylProject();
+  p.primary.clearance.top = 8;
+  const rows = candidateCases(p, '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  eq(r.cartonParams.H, 68, 'cavity H = envelope 60 + headspace 8:');
+});
+
+t('locked carton: collation checked against fixed dims, both verdicts', () => {
+  const p = cylProject();
+  p.links[1].locked = true;
+  p.secondary.params = {...p.secondary.params, L: 100, W: 100, H: 60};
+  let rows = candidateCases(p, '1mm');
+  if(!rows.every(r => r.primaryFits)) throw new Error('exact carton should fit the envelope');
+  p.secondary.params = {...p.secondary.params, L: 90};
+  rows = candidateCases(p, '1mm');
+  if(rows.some(r => r.primaryFits)) throw new Error('90-wide carton cannot hold a 100-wide envelope');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

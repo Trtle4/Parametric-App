@@ -13,7 +13,7 @@ import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import * as fold from '../render/fold3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
-import {buildNest, showNest} from '../render/nest3d.js';
+import {buildNest, showNest, buildProductNest, showProduct} from '../render/nest3d.js';
 import {downloadDXF} from '../export/dxf.js';
 import * as build from './build.js';
 
@@ -81,19 +81,26 @@ function syncPalletToProject(){
 function apply3dMode(){
   el('m3fold').classList.toggle('on', mode3d === 'fold');
   el('m3nest').classList.toggle('on', mode3d === 'nest');
+  el('m3prod').classList.toggle('on', mode3d === 'product');
   if(view !== '3d') return;
-  if(mode3d === 'nest'){
+  if(mode3d === 'nest' || mode3d === 'product'){
     fold.stopFold(); fold.showBox(false); showPallet(false);
-    const nest = build.getNest();
-    if(!nest){
-      showNest(false);
+    const data = mode3d === 'nest' ? build.getNest() : build.getProductNest();
+    if(!data){
+      showNest(false); showProduct(false);
       el('orbithint').textContent = 'select a candidate row in Build first';
       return;
     }
     el('orbithint').textContent = 'drag to orbit · scroll to zoom';
-    buildNest(nest.caseGeo, nest.cartonGeo, nest.placements, true);
+    if(mode3d === 'nest'){
+      showProduct(false);
+      buildNest(data.caseGeo, data.cartonGeo, data.placements, true);
+    }else{
+      showNest(false);
+      buildProductNest(data, true);
+    }
   }else{
-    showNest(false);
+    showNest(false); showProduct(false);
     el('orbithint').textContent = 'drag to orbit · scroll to zoom';
     fold.startFold();
     refresh3d(); fold.showBox(true);
@@ -124,7 +131,7 @@ function setView(v){
       showPallet(false);
       apply3dMode();
     }else{
-      fold.showBox(false); showNest(false);
+      fold.showBox(false); showNest(false); showProduct(false);
       fold.stopFold();
       refreshPal();
     }
@@ -144,7 +151,11 @@ el('txt').addEventListener('input', refreshAll);
 });
 el('palPattern').addEventListener('change', () => { if(view === 'pal') refreshPal(); });
 
-el('units').addEventListener('change', () => { if(inputs.switchUnits()) refreshAll(); });
+el('units').addEventListener('change', () => {
+  if(!inputs.switchUnits()) return;
+  build.onUnitsChanged(inputs.getUnit());   // Build length fields follow the toggle
+  refreshAll();
+});
 el('palUnits').addEventListener('change', () => {
   if(inputs.switchPalUnits() && view === 'pal') refreshPal();
 });
@@ -155,6 +166,7 @@ el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
 el('m3nest').addEventListener('click', () => { mode3d = 'nest'; apply3dMode(); });
+el('m3prod').addEventListener('click', () => { mode3d = 'product'; apply3dMode(); });
 el('btnDXF').addEventListener('click', () => {
   const s = inputs.readState();
   downloadDXF(s.style.geometry(s.params), s.params, s.unit, s.style.id.toUpperCase());
@@ -190,8 +202,8 @@ window.addEventListener('resize', () => { if(view === '3d') fold.resize3d(); });
 
 applyStyle(styles[0]);
 
-// Build view: candidate table + selection -> nest 3D / apply-to-case
-build.initBuild(() => { if(view === '3d' && mode3d === 'nest') apply3dMode(); });
+// Build view: candidate table + selection -> nest/product 3D / apply-to-case
+build.initBuild(() => { if(view === '3d' && mode3d !== 'fold') apply3dMode(); }, inputs.getUnit());
 el('bUse').addEventListener('click', () => {
   const row = build.getSelected();
   if(!row) return;
