@@ -39,9 +39,26 @@ export const ORIENTATIONS = ['LWH', 'WLH', 'LHW', 'HLW', 'WHL', 'HWL'];
 
 /**
  * @typedef {Object} Clearance       // mm, per level
- * @property {number} wall           // child to parent inner wall (all six faces)
- * @property {number} between        // child to child (all three axes)
+ * @property {number} wall           // child to parent inner wall, LATERAL faces
+ * @property {number} between        // child to child, in plane
+ * @property {number} [bottom]       // under the first layer (default: wall — legacy uniform)
+ * @property {number} [top]          // headspace above the last layer (default: wall)
+ * @property {number} [betweenZ]     // layer to layer (default: between)
+ *
+ * Vertical clearance is not the same animal as lateral: children normally
+ * bear directly on the parent floor (bottom = 0) and headspace is a
+ * deliberate design parameter. The legacy uniform shape (wall/between on
+ * every axis) is preserved when the vertical fields are omitted.
  */
+function normClearance(c){
+  const wall = c.wall || 0, between = c.between || 0;
+  return {
+    wall, between,
+    bottom:   c.bottom   !== undefined ? c.bottom   : wall,
+    top:      c.top      !== undefined ? c.top      : wall,
+    betweenZ: c.betweenZ !== undefined ? c.betweenZ : between
+  };
+}
 
 /**
  * @typedef {Object} Placement
@@ -109,7 +126,7 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
   validateOrientations(child.allowedOrientations);
   if(cavity.H == null)
     throw new Error('fitInto needs a bounded cavity height; use solveParent to size a parent');
-  const wall = clearance.wall || 0, between = clearance.between || 0;
+  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
 
   // try each vertical-axis group; keep the best total (first group wins ties)
   let best = null;
@@ -117,7 +134,8 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
     const {l, w, h} = orientDims(child.outer, grp.base);
     const layer = packLayer({childL: l, childW: w, parentL: cavity.L, parentW: cavity.W,
                              pattern, wall, between, allowRotate: grp.allowRotate});
-    const st = stack({perLayer: layer.perLayer, childH: h, parentMaxH: cavity.H, baseH: 0, wall, between});
+    const st = stack({perLayer: layer.perLayer, childH: h, parentMaxH: cavity.H, baseH: 0,
+                      between: betweenZ, gapBelow: bottom, gapAbove: top});
     if(!best || st.total > best.st.total) best = {grp, dims: {l, w, h}, layer, st};
   }
   const {grp, dims, layer, st} = best;
@@ -126,7 +144,7 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
   const placements = [];
   outer: for(let ly = 0; ly < st.layers; ly++){
     const flip = pattern === 'interlock' && (ly & 1);
-    const z = wall + dims.h/2 + ly*(dims.h + between);
+    const z = bottom + dims.h/2 + ly*(dims.h + betweenZ);
     for(const p of layer.positions){
       if(placements.length >= PLACEMENT_CAP) break outer;
       placements.push({
@@ -146,7 +164,7 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
     minY = Math.min(minY, p.y - fy/2); maxY = Math.max(maxY, p.y + fy/2);
   }
   const envelope = st.layers > 0 && layer.perLayer > 0
-    ? {L: maxX - minX, W: maxY - minY, H: st.layers*dims.h + (st.layers - 1)*between}
+    ? {L: maxX - minX, W: maxY - minY, H: st.layers*dims.h + (st.layers - 1)*betweenZ}
     : {L: 0, W: 0, H: 0};
 
   const childVol = child.outer.L*child.outer.W*child.outer.H;
@@ -178,12 +196,20 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
  * @param {Orientation[]} [opts.orientations]  preference-ordered subset of allowedOrientations
  * @returns {{cavity: Cavity, arrangement: Arrangement}}
  */
-export function solveParent(child, count, clearance = {wall: 0, between: 0}, opts = {}){
+/**
+ * Enumerate every candidate parent cavity for N children — the raw grid ×
+ * orientation × layer-count search space that solveParent scores. Exposed
+ * so a consumer can rank candidates by downstream outcomes (e.g. how each
+ * case palletizes) instead of collapsing to one winner here.
+ * Same argument contract as solveParent; returns candidates in the same
+ * deterministic order solveParent evaluates them.
+ * @returns {{cavity: Cavity, nx: number, ny: number, layers: number,
+ *            oi: number, o: Orientation, l: number, w: number, h: number}[]}
+ */
+export function parentCandidates(child, count, clearance = {wall: 0, between: 0}, opts = {}){
   validateOrientations(child.allowedOrientations);
-  if(!(count >= 1)) throw new Error('solveParent needs count >= 1');
-  const wall = clearance.wall || 0, between = clearance.between || 0;
-  const objective = opts.objective || 'volume';
-  const aspect = opts.aspect || 1;
+  if(!(count >= 1)) throw new Error('parentCandidates needs count >= 1');
+  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
 
   let orientations = child.allowedOrientations;
   if(opts.orientations){
@@ -193,31 +219,43 @@ export function solveParent(child, count, clearance = {wall: 0, between: 0}, opt
     orientations = opts.orientations;
   }
 
-  const score = (cavity, arr) =>
-    typeof objective === 'function' ? objective(cavity, arr) :
-    objective === 'footprint' ? cavity.L*cavity.W :
-    cavity.L*cavity.W*cavity.H;                       // 'volume'
-
   const layerChoices = opts.layers ? [opts.layers] : Array.from({length: count}, (_, i) => i + 1);
-
-  let best = null;
+  const out = [];
   for(let oi = 0; oi < orientations.length; oi++){
     const {l, w, h} = orientDims(child.outer, orientations[oi]);
     for(const layers of layerChoices){
       const perLayer = Math.ceil(count/layers);
       for(let nx = 1; nx <= perLayer; nx++){
         const ny = Math.ceil(perLayer/nx);
-        const cavity = {
-          L: nx*l + (nx - 1)*between + 2*wall,
-          W: ny*w + (ny - 1)*between + 2*wall,
-          H: layers*h + (layers - 1)*between + 2*wall
-        };
-        const cand = {cavity, nx, ny, layers, oi, o: orientations[oi], l, w, h};
-        cand.score = score(cavity, cand);
-        cand.aspectDev = Math.abs(Math.log((cavity.L/cavity.W)/aspect));
-        if(!best || better(cand, best)) best = cand;
+        out.push({
+          cavity: {
+            L: nx*l + (nx - 1)*between + 2*wall,
+            W: ny*w + (ny - 1)*between + 2*wall,
+            H: layers*h + (layers - 1)*betweenZ + bottom + top
+          },
+          nx, ny, layers, oi, o: orientations[oi], l, w, h
+        });
       }
     }
+  }
+  return out;
+}
+
+export function solveParent(child, count, clearance = {wall: 0, between: 0}, opts = {}){
+  const objective = opts.objective || 'volume';
+  const aspect = opts.aspect || 1;
+  const {between, bottom, betweenZ} = normClearance(clearance);
+
+  const score = (cavity, arr) =>
+    typeof objective === 'function' ? objective(cavity, arr) :
+    objective === 'footprint' ? cavity.L*cavity.W :
+    cavity.L*cavity.W*cavity.H;                       // 'volume'
+
+  let best = null;
+  for(const cand of parentCandidates(child, count, clearance, opts)){
+    cand.score = score(cand.cavity, cand);
+    cand.aspectDev = Math.abs(Math.log((cand.cavity.L/cand.cavity.W)/aspect));
+    if(!best || better(cand, best)) best = cand;
   }
 
   // deterministic comparator: objective, then aspect preference, then fewer
@@ -235,7 +273,7 @@ export function solveParent(child, count, clearance = {wall: 0, between: 0}, opt
   const placements = [];
   let remaining = count;
   outer: for(let ly = 0; ly < layers; ly++){
-    const z = wall + h/2 + ly*(h + between);
+    const z = bottom + h/2 + ly*(h + betweenZ);
     for(let j = 0; j < ny; j++) for(let i = 0; i < nx; i++){
       if(remaining-- <= 0) break outer;
       if(placements.length >= PLACEMENT_CAP) break outer;
@@ -253,7 +291,7 @@ export function solveParent(child, count, clearance = {wall: 0, between: 0}, opt
     perLayer: nx*ny,                     // designed grid capacity per layer
     layers,
     total: count,
-    envelope: {L: nx*l + (nx - 1)*between, W: ny*w + (ny - 1)*between, H: layers*h + (layers - 1)*between},
+    envelope: {L: nx*l + (nx - 1)*between, W: ny*w + (ny - 1)*between, H: layers*h + (layers - 1)*betweenZ},
     utilization: count*(child.outer.L*child.outer.W*child.outer.H)/(cavity.L*cavity.W*cavity.H),
     label: `${nx} × ${ny} × ${layers}`
   };

@@ -12,10 +12,13 @@ import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import * as fold from '../render/fold3d.js';
 import {foldBuilders} from '../render/folds/index.js';
-import {buildPallet, showPallet} from '../render/pallet3d.js';
+import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {buildNest, showNest} from '../render/nest3d.js';
 import {downloadDXF} from '../export/dxf.js';
+import * as build from './build.js';
 
 let view = '2d';
+let mode3d = 'fold';   // 'fold' | 'nest' (Case + cartons)
 
 /* ---------- refreshers ---------- */
 function refresh2d(){
@@ -69,25 +72,59 @@ function onParamChange(){ // select params & style options (e.g. outer flaps rep
   if(view === 'pal') refreshPal();
 }
 
+/* ---------- 3D mode: fold vs case+cartons nesting ---------- */
+function syncPalletToProject(){
+  const s = inputs.readState();
+  build.project.pallet = {L: s.pallet.L, W: s.pallet.W, maxH: s.pallet.maxH,
+                          baseH: PALLET_HEIGHT, pattern: s.pattern};
+}
+function apply3dMode(){
+  el('m3fold').classList.toggle('on', mode3d === 'fold');
+  el('m3nest').classList.toggle('on', mode3d === 'nest');
+  if(view !== '3d') return;
+  if(mode3d === 'nest'){
+    fold.stopFold(); fold.showBox(false); showPallet(false);
+    const nest = build.getNest();
+    if(!nest){
+      showNest(false);
+      el('orbithint').textContent = 'select a candidate row in Build first';
+      return;
+    }
+    el('orbithint').textContent = 'drag to orbit · scroll to zoom';
+    buildNest(nest.caseGeo, nest.cartonGeo, nest.placements, true);
+  }else{
+    showNest(false);
+    el('orbithint').textContent = 'drag to orbit · scroll to zoom';
+    fold.startFold();
+    refresh3d(); fold.showBox(true);
+  }
+}
+
 /* ---------- view switching ---------- */
 function setView(v){
   view = v;
   el('tab2d').classList.toggle('on', v === '2d');
   el('tab3d').classList.toggle('on', v === '3d');
   el('tabPal').classList.toggle('on', v === 'pal');
+  el('tabBuild').classList.toggle('on', v === 'build');
   const canvas = v === '3d' || v === 'pal';
   el('svgWrap').style.display   = v === '2d' ? 'flex' : 'none';
   el('cvWrap').style.display    = canvas ? 'block' : 'none';
+  el('buildWrap').style.display = v === 'build' ? 'block' : 'none';
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
+  el('mode3d').style.display    = v === '3d' ? 'inline-flex' : 'none';
+  if(v === 'build'){
+    syncPalletToProject();
+    build.recompute();
+  }
   if(canvas){
     if(!fold.isInit()) fold.init3d(el('cvWrap'));
     if(v === '3d'){
       showPallet(false);
-      fold.startFold();
-      refresh3d(); fold.showBox(true);
+      apply3dMode();
     }else{
-      fold.showBox(false);
+      fold.showBox(false); showNest(false);
       fold.stopFold();
       refreshPal();
     }
@@ -115,6 +152,9 @@ el('palUnits').addEventListener('change', () => {
 el('tab2d').addEventListener('click', () => setView('2d'));
 el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
+el('tabBuild').addEventListener('click', () => setView('build'));
+el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
+el('m3nest').addEventListener('click', () => { mode3d = 'nest'; apply3dMode(); });
 el('btnDXF').addEventListener('click', () => {
   const s = inputs.readState();
   downloadDXF(s.style.geometry(s.params), s.params, s.unit, s.style.id.toUpperCase());
@@ -149,3 +189,22 @@ wrap2.addEventListener('dblclick', () => { if(view !== '2d') return; view2d.z = 
 window.addEventListener('resize', () => { if(view === '3d') fold.resize3d(); });
 
 applyStyle(styles[0]);
+
+// Build view: candidate table + selection -> nest 3D / apply-to-case
+build.initBuild(() => { if(view === '3d' && mode3d === 'nest') apply3dMode(); });
+el('bUse').addEventListener('click', () => {
+  const row = build.getSelected();
+  if(!row) return;
+  el('style').value = 'fefco201';
+  applyStyle(styleById('fefco201'));
+  inputs.setParamValues(row.caseParams);
+  refreshAll();
+  setView('2d');
+});
+// pallet inputs feed the Build chain too
+['pal', 'palMaxH'].forEach(id => el(id).addEventListener('input', () => {
+  if(view === 'build'){ syncPalletToProject(); build.recompute(); }
+}));
+el('palPattern').addEventListener('change', () => {
+  if(view === 'build'){ syncPalletToProject(); build.recompute(); }
+});

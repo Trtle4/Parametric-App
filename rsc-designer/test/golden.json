@@ -86,5 +86,25 @@
         "interlock": { "label": "16+180 mixed · interlocked", "perLayer": 196, "layers": 9, "total": 1764, "coveragePct": 98 }
       }
     }
+  },
+  "chains": {
+    "carton12_4x3x1_upright": {
+      "note": "full chain: a6120 100x60x150 @0.457 (outer 100.914x60.914x151.828), 12 cartons upright, wall 1.5 / between 0, vertical 0/0/0, explicit 4x3x1, cavity rounded up 1mm, case caliper 3 / glue 35 / slot 6, GMA pallet 48x40in 60in budget, optimal pattern",
+      "config": {
+        "carton": { "L": 100, "W": 60, "H": 150, "caliper": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+        "count": 12, "arrangement": { "nx": 4, "ny": 3, "nz": 1 },
+        "orientations": ["LWH", "WLH"],
+        "clearance": { "wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "rounding": "1mm"
+      },
+      "expected": {
+        "cavity": { "L": 407, "W": 186, "H": 152 },
+        "outer": { "L": 413, "W": 192, "H": 164 },
+        "boardAreaM2": 0.412698,
+        "casesPerLayer": 14, "caseLayers": 8,
+        "casesPerPallet": 112, "cartonsPerPallet": 1344,
+        "coveragePct": 90, "cubeUtilPct": 77
+      }
+    }
   }
 }

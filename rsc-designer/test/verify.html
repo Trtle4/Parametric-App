@@ -6,6 +6,7 @@
 import {styleById} from '../src/core/styles/index.js';
 import {fitInto} from '../src/core/containment.js';
 import {toMM, fromMM} from '../src/core/units.js';
+import {newProject, candidateCases} from '../src/core/project.js';
 
 const golden = await (await fetch('golden.json')).json();
 const report = {pass: 0, fail: 0, mismatches: []};
@@ -71,6 +72,29 @@ for(const [name, c] of Object.entries(golden.cases)){
     cmp(name, `pallet.${pattern}.total`, gp.total, arr.total);
     cmp(name, `pallet.${pattern}.coveragePct`, gp.coveragePct, cov);
   }
+}
+
+// full-chain regression pins: carton -> case -> pallet
+for(const [name, ch] of Object.entries(golden.chains || {})){
+  const p = newProject();
+  p.secondary.params = {...ch.config.carton};
+  p.secondary.allowedOrientations = ch.config.orientations;
+  p.secondary.clearance = {...ch.config.clearance};
+  p.links[0].count = ch.config.count;
+  p.links[0].arrangement = ch.config.arrangement;
+  const a = ch.config.arrangement;
+  const r = candidateCases(p, ch.config.rounding)
+    .find(x => x.nx === a.nx && x.ny === a.ny && x.nz === a.nz && x.orientation === ch.config.orientations[0]);
+  const e = ch.expected;
+  cmp(name, 'cavity.L', e.cavity.L, r.cavity.L); cmp(name, 'cavity.W', e.cavity.W, r.cavity.W); cmp(name, 'cavity.H', e.cavity.H, r.cavity.H);
+  cmp(name, 'outer.L', e.outer.L, r.outer.L); cmp(name, 'outer.W', e.outer.W, r.outer.W); cmp(name, 'outer.H', e.outer.H, r.outer.H);
+  cmp(name, 'boardAreaM2', e.boardAreaM2, +r.boardAreaM2.toFixed(6));
+  cmp(name, 'casesPerLayer', e.casesPerLayer, r.casesPerLayer);
+  cmp(name, 'caseLayers', e.caseLayers, r.caseLayers);
+  cmp(name, 'casesPerPallet', e.casesPerPallet, r.casesPerPallet);
+  cmp(name, 'cartonsPerPallet', e.cartonsPerPallet, r.cartonsPerPallet);
+  cmp(name, 'coveragePct', e.coveragePct, r.coveragePct);
+  cmp(name, 'cubeUtilPct', e.cubeUtilPct, r.cubeUtilPct);
 }
 
 // classify numeric mismatches: FP round-trip noise vs real behavioural change

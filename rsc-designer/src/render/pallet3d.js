@@ -18,6 +18,9 @@ const SHOWN_CAP = 4000;                              // instancing cap for absur
 
 const wood = new THREE.MeshStandardMaterial({color:0xA0815A, roughness:0.95, metalness:0});
 
+/** Deck assembly height — exported so the project chain can budget for it. */
+export const PALLET_HEIGHT = BOTTOM_T + STRINGER_H + DECK_T;
+
 let palletGroup = null;
 
 /**

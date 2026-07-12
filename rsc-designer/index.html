@@ -108,6 +108,33 @@
   .stat .lab{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
   .stat .val{font-family:var(--mono);font-size:16px;color:var(--ink)}
   .orbithint{position:absolute;right:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);display:none}
+  /* Build view */
+  #buildWrap{position:absolute;inset:0;display:none;overflow:auto;background:var(--paper);padding:18px}
+  .bpanel{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  .bcols{display:flex;gap:14px;flex-wrap:wrap}
+  .bpanel fieldset{flex:1;min-width:260px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px 14px}
+  .bpanel legend{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:0 6px}
+  .brow{display:flex;align-items:center;gap:6px;margin:7px 0;flex-wrap:wrap;font-size:13px}
+  .brow label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .brow input[type="number"]{width:76px;font-family:var(--mono);font-size:14px;padding:5px 7px;border:1px solid var(--line);border-radius:6px}
+  .brow input.bshort{width:52px}
+  .brow select{font-family:var(--mono);font-size:13px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#fff}
+  .brow span{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .bchk label{text-transform:none;font-weight:400;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:7px}
+  .bnote{font-size:12px;color:var(--muted)}
+  .bbad{color:var(--cut);font-weight:600}
+  .bapply{width:100%}
+  .bapply:disabled{opacity:.4;cursor:default}
+  .btablewrap{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:52vh}
+  #bTable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  #bTable th{position:sticky;top:0;background:var(--card);text-align:left;padding:9px 12px;font-size:10.5px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+  #bTable td{padding:7px 12px;border-bottom:1px solid var(--line2);white-space:nowrap}
+  #bTable tbody tr{cursor:pointer}
+  #bTable tbody tr:hover{background:var(--line2)}
+  #bTable tr.bsel{background:#fbe9d3}
+  #bTable tr.bsel td{font-weight:600}
+  .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%)}
   @media (max-width:860px){
     main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
     .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
@@ -130,6 +157,7 @@
       <button id="tab2d" class="on">2D Dieline</button>
       <button id="tab3d">3D Fold</button>
       <button id="tabPal">Palletize</button>
+      <button id="tabBuild">Build</button>
     </div>
     <button class="btn" id="btnDXF">Export DXF</button>
   </div>
@@ -176,6 +204,11 @@
   <section class="stage">
     <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
     <div id="cvWrap"></div>
+    <div id="buildWrap"></div>
+    <div class="seg mode3d" id="mode3d" style="display:none">
+      <button id="m3fold" class="on">Fold</button>
+      <button id="m3nest">Case + cartons</button>
+    </div>
     <div class="hud" id="hud">
       <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
       <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>

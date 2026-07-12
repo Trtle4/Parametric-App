@@ -86,13 +86,15 @@ export function packLayer({childL, childW, parentL, parentW, pattern, wall = 0, 
  * @param {number} o.childH      child height
  * @param {number} o.parentMaxH  total height budget, including the base
  * @param {number} o.baseH       height consumed by the base (e.g. a deck)
- * @param {number} [o.wall=0]     child-to-parent clearance (top & bottom)
+ * @param {number} [o.wall=0]     symmetric vertical clearance (legacy shorthand)
  * @param {number} [o.between=0]  layer-to-layer clearance
+ * @param {number} [o.gapBelow=wall]  clearance under the first layer
+ * @param {number} [o.gapAbove=wall]  clearance above the last layer (headspace)
  * @returns {{layers: number, total: number, loadHeight: number}}
  */
-export function stack({perLayer, childH, parentMaxH, baseH, wall = 0, between = 0}){
-  const budget = parentMaxH - baseH - 2*wall + between;
+export function stack({perLayer, childH, parentMaxH, baseH, wall = 0, between = 0, gapBelow = wall, gapAbove = wall}){
+  const budget = parentMaxH - baseH - gapBelow - gapAbove + between;
   const layers = perLayer > 0 ? Math.max(0, Math.floor(budget/(childH + between))) : 0;
-  const loadHeight = baseH + (layers > 0 ? 2*wall + layers*childH + (layers - 1)*between : 0);
+  const loadHeight = baseH + (layers > 0 ? gapBelow + gapAbove + layers*childH + (layers - 1)*between : 0);
   return {layers, total: perLayer*layers, loadHeight};
 }

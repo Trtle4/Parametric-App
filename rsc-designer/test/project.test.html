@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>project chain tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/project.js — the carton -> case -> pallet chain.
+   Reference config, hand-derived:
+     carton a6120 100×60×150 @ 0.457 -> outer 100.914 × 60.914 × 151.828
+     count 12, upright only, clearance wall 1.5 / between 0, vertical 0/0/0
+     explicit 4×3×1 -> cavity L 4*100.914+3 = 406.656 -> 407 (1mm up)
+                       cavity W 3*60.914+3  = 185.742 -> 186
+                       cavity H 151.828 (NO vertical allowance) -> 152
+     case outer 413 × 192 × 164 (caliper 3: +6/+6/+12)
+     blank 2*(407+186)+35 = 1221 × (152+186) = 338 -> 0.412698 m²
+     pallet 1219.2×1016, budget 1524-127, pattern column:
+       grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
+       -> 96 cases, 1152 cartons, coverage 77%                     */
+import {newProject, candidateCases, checkLockedCase, nestArrangement, roundCavityUp, ROUNDING} from '../src/core/project.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+function refProject(){
+  const p = newProject();
+  p.pallet.pattern = 'column';          // hand-checkable pallet math
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  return p;
+}
+
+t('roundCavityUp steps', () => {
+  approx(roundCavityUp({L: 151.828, W: 1, H: 1}, 1).L, 152);
+  approx(roundCavityUp({L: 406.656, W: 1, H: 1}, 5).L, 410);
+  approx(roundCavityUp({L: 100, W: 1, H: 1}, ROUNDING['1/16in']).L, 100.0125);
+  approx(roundCavityUp({L: 407.0000000000001, W: 1, H: 1}, 1).L, 407, 'FP residue absorbed:');
+});
+
+t('explicit 4×3×1: full chain matches hand derivation', () => {
+  const rows = candidateCases(refProject(), '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('4×3×1 LWH row missing');
+  eq(r.cavity, {L: 407, W: 186, H: 152}, 'cavity:');
+  eq(r.outer, {L: 413, W: 192, H: 164}, 'outer:');
+  approx(r.boardAreaM2, 0.412698, 'board:');
+  eq([r.casesPerLayer, r.caseLayers, r.casesPerPallet, r.cartonsPerPallet],
+     [12, 8, 96, 1152], 'pallet:');
+  eq(r.coveragePct, 77, 'coverage:');
+});
+
+t('vertical clearance is NOT applied to cavity height (cartons bear on floor)', () => {
+  const rows = candidateCases(refProject(), '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  // wall 1.5 went into L and W (+3 each) but H is bare carton height, rounded
+  approx(r.cavity.H, 152, 'no 2*wall on H:');
+});
+
+t('auto enumeration keeps only irreducible grids', () => {
+  const p = refProject();
+  p.links[0].arrangement = 'auto';
+  const rows = candidateCases(p, '1mm');
+  if(rows.length === 0) throw new Error('no candidates');
+  for(const r of rows){
+    const cap = (a, b, c) => a*b*c >= 12;
+    if(!cap(r.nx, r.ny, r.nz)) throw new Error(`${r.arrangementLabel} under capacity`);
+    if(r.nx > 1 && cap(r.nx - 1, r.ny, r.nz)) throw new Error(`${r.arrangementLabel} reducible in nx`);
+    if(r.ny > 1 && cap(r.nx, r.ny - 1, r.nz)) throw new Error(`${r.arrangementLabel} reducible in ny`);
+    if(r.nz > 1 && cap(r.nx, r.ny, r.nz - 1)) throw new Error(`${r.arrangementLabel} reducible in nz`);
+  }
+});
+
+t('locked case: both directions work', () => {
+  const p = refProject();
+  p.links[0].locked = true;
+  p.tertiary.params = {...p.tertiary.params, L: 407, W: 186, H: 152};
+  const ok = checkLockedCase(p, '1mm');
+  if(!ok.fits || ok.capacity !== 12) throw new Error(`expected fits with capacity 12, got ${ok.fits}/${ok.capacity}`);
+  p.tertiary.params = {...p.tertiary.params, L: 300, W: 150, H: 152};
+  const bad = checkLockedCase(p, '1mm');
+  if(bad.fits) throw new Error('300×150×152 cannot hold 12 cartons but reported fits');
+});
+
+t('nest placements: 12 cartons, on the floor, inside the walls', () => {
+  const rows = candidateCases(refProject(), '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  const nest = nestArrangement(refProject(), r);
+  eq(nest.placements.length, 12, 'count:');
+  for(const p of nest.placements){
+    approx(p.z, 75.914, 'z = h/2, bottom clearance 0:');
+    if(Math.abs(p.x) + 100.914/2 > 407/2 - 1.5 + 1e-9) throw new Error(`x overflow at ${p.x}`);
+    if(Math.abs(p.y) + 60.914/2 > 186/2 - 1.5 + 1e-9) throw new Error(`y overflow at ${p.y}`);
+  }
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

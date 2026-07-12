@@ -80,6 +80,15 @@ export function readState(){
   };
 }
 
+/** Write param values (mm) into the current style's fields (e.g. a solved
+ *  case from the Build view). Keys not present in the fields are ignored. */
+export function setParamValues(values){
+  for(const f of fields)
+    if(values[f.d.key] !== undefined) f.input.value = fmtInputValue(fromMM(values[f.d.key], unit), unit);
+  for(const s2 of selects)
+    if(values[s2.d.key] !== undefined) s2.input.value = values[s2.d.key];
+}
+
 /* ---------- unit switching ---------- */
 /** Convert the style input fields to the unit currently selected in #units. */
 export function switchUnits(){

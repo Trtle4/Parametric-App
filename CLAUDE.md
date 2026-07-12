@@ -27,12 +27,12 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
 
 ## Known simplifications to revisit
 
-- **Uniform clearance (`core/containment.js`)**: `wall` currently applies to
-  all six cavity faces and `between` to all three axes. That is wrong for
-  the secondary/primary levels: vertical clearance is not the same animal as
-  lateral — headspace above product in a carton is a deliberate design
-  parameter (not a fit tolerance), bottom clearance is normally zero because
-  the product sits on the deck, and vertical `between` is usually zero since
-  children stack directly on each other. Inert today because the pallet
-  level passes zeros. **Split vertical from lateral clearance when the
-  secondary (carton) level lands — do not let this bake into three levels.**
+- **RESOLVED (case-builder task): clearance is split.** `Clearance` now
+  carries optional `bottom` / `top` / `betweenZ`; when omitted they default
+  to `wall` / `wall` / `between` (the legacy uniform shape, so the pallet
+  level is untouched). The carton->case chain passes vertical zeros:
+  cartons bear on the case floor, no default headspace. Headspace as a
+  first-class design input is still pending an engineering ruling.
+- **Orientation flip parity**: `Orientation` strings capture axis mapping
+  only, not up/down flips — "inverted" occupies identical space to upright
+  in the solver. Recorded in the Build UI but geometrically inert.
