@@ -88,6 +88,98 @@
     }
   },
   "chains": {
+    "wrap_fin_standing": {
+      "note": "box collation 90x50x20 x6 Z (env 90x50x120), fin seal STANDING 8/5, ends 10+3, rect girth, gauge 30 density 0.92; carton a6120 0.457; case 12 @ 4x3x1 wall 1.5; GMA pallet optimal",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 110, "W": 50, "H": 128},
+        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 129.828},
+        "cavity": {"L": 447, "W": 156, "H": 130}, "outer": {"L": 453, "W": 162, "H": 142},
+        "boardAreaM2": 0.354926, "casesPerLayer": 14, "caseLayers": 9,
+        "casesPerPallet": 126, "cartonsPerPallet": 1512, "piecesPerPallet": 9072,
+        "coveragePct": 83, "cubeUtilPct": 70,
+        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.748
+      }
+    },
+    "wrap_fin_folded": {
+      "note": "same as wrap_fin_standing but fin FOLDED: H gains gauge only; one more case layer fits",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "folded", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 110, "W": 50, "H": 120.03},
+        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 122.828},
+        "cavity": {"L": 447, "W": 156, "H": 123}, "outer": {"L": 453, "W": 162, "H": 135},
+        "boardAreaM2": 0.346239, "casesPerLayer": 14, "caseLayers": 10,
+        "casesPerPallet": 140, "cartonsPerPallet": 1680, "piecesPerPallet": 10080,
+        "coveragePct": 83, "cubeUtilPct": 70,
+        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.942
+      }
+    },
+    "wrap_lap": {
+      "note": "same collation, LAP seal overlap 12: no envelope gain, narrower web",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "lap", "finHeight": 8, "finSealBand": 5, "finTreatment": "folded", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 110, "W": 50, "H": 120},
+        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 121.828},
+        "cavity": {"L": 447, "W": 156, "H": 122}, "outer": {"L": 453, "W": 162, "H": 134},
+        "boardAreaM2": 0.344998, "casesPerLayer": 14, "caseLayers": 10,
+        "casesPerPallet": 140, "cartonsPerPallet": 1680, "piecesPerPallet": 10080,
+        "coveragePct": 83, "cubeUtilPct": 70,
+        "filmAreaM2": 0.040832, "filmKgPerPallet": 1.893
+      }
+    },
+    "wrap_round_slug": {
+      "note": "cylindrical slug d50 t6 x10 on edge (stackAxis X, env 60x50x50), fin standing, ROUND girth pi*50",
+      "config": {
+        "collation": {"piece": {"kind": "cylinder", "diameter": 50, "thickness": 6}, "perStack": 10, "stackAxis": "X", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "round", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 80, "W": 50, "H": 58},
+        "cartonOuter": {"L": 80.914, "W": 50.914, "H": 59.828},
+        "cavity": {"L": 327, "W": 156, "H": 60}, "outer": {"L": 333, "W": 162, "H": 72},
+        "boardAreaM2": 0.216216, "casesPerLayer": 21, "caseLayers": 19,
+        "casesPerPallet": 399, "cartonsPerPallet": 4788, "piecesPerPallet": 47880,
+        "coveragePct": 91, "cubeUtilPct": 70,
+        "filmAreaM2": 0.015315, "filmKgPerPallet": 2.024
+      }
+    },
     "carton12_4x3x1_upright": {
       "note": "full chain: a6120 100x60x150 @0.457 (outer 100.914x60.914x151.828), 12 cartons upright, wall 1.5 / between 0, vertical 0/0/0, explicit 4x3x1, cavity rounded up 1mm, case caliper 3 / glue 35 / slot 6, GMA pallet 48x40in 60in budget, optimal pattern",
       "config": {

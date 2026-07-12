@@ -59,6 +59,7 @@ export function fefco201(p){
   const t = p.caliper;
 
   return {
+    structure: 'rigid',
     cut, crease,
     bbox: {minX: 0, minY: 0, maxX: x5, maxY: yt2},
     inner: {L, W, H},

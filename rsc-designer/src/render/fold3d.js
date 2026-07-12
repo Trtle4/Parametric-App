@@ -132,7 +132,9 @@ export function buildBox(build, geo, printText, options){
   }
   boxGroup = new THREE.Group(); flaps = [];
   const {L, W, H} = geo.inner;
-  const t = Math.max(geo.meta.caliper, RENDER_MIN_THICKNESS); // mesh thickness only
+  // flexible styles have no caliper (film gauge is not caliper); the render
+  // floor keeps the shell drawable either way — mesh thickness only
+  const t = Math.max(geo.meta.caliper || 0, RENDER_MIN_THICKNESS);
 
   const built = build(geo, printText, options || {}, {t, kraft, kraft2, makeFlap, makeTextMaterial});
   built.parts.forEach(o => boxGroup.add(o));
@@ -179,6 +181,8 @@ export function startFold(){
   applyFold(foldT);
 }
 export function stopFold(){ folding = false; }
+/** Jump straight to the closed state (flexible styles have no fold sequence). */
+export function jumpClosed(){ folding = false; foldT = 1; applyFold(1); }
 export function showBox(v){ if(boxGroup) boxGroup.visible = v; }
 
 function frameCamera(){

@@ -33,12 +33,18 @@
 
 /**
  * @typedef {Object} Geometry          // what every style returns
+ * @property {'rigid'|'flexible'} structure
+ *   rigid:    cut + crease dieline, caliper-based compensation
+ *   flexible: cut is the blank outline ONLY, crease is EMPTY (film is folded
+ *             and sealed, never scored — fold positions may appear in
+ *             meta.refLines as reference annotations), compensation is
+ *             seal-based and owned by the style
  * @property {[number,number][]} cut   // ordered closed perimeter (Y-up, mm)
  * @property {Segment[]} crease
  * @property {BBox} bbox               // blank extents
  * @property {Dims} inner              // internal L/W/H, the usable cavity
- * @property {Dims} outer              // external L/W/H, material-compensated
- * @property {Object} meta             // style id, caliper (raw material property), panel landmarks, flap depth
+ * @property {Dims} outer              // external L/W/H, compensated
+ * @property {Object} meta             // style id, material properties, annotations
  */
 
 /**

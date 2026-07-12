@@ -69,7 +69,18 @@ export function newProject(){
         piece: {kind: 'box', L: 90, W: 50, H: 20},
         perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0
       },
-      allowedOrientations: ['LWH'],                  // product is usually orientation-critical
+      // the flow wrap around the collation. null = bare envelope (legacy).
+      // Seal values are editable defaults, not conventions.
+      wrap: {
+        styleId: 'flowwrap',
+        params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded',
+                 lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
+                 girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92},
+        locked: false
+      },
+      // H up, rotation allowed: product is often orientation-free in plan,
+      // but which face is UP stays a hard user constraint (verticalToOrientations)
+      allowedOrientations: ['LWH', 'WLH'],
       // product-in-carton allowances: 0/0/0 are review-me placeholders, not
       // conventions. top is HEADSPACE — a design decision, exposed in Build.
       clearance: {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0}
@@ -98,6 +109,29 @@ export function newProject(){
 }
 
 export const linkFor = (project, parent) => project.links.find(l => l.parent === parent);
+
+/**
+ * Resolve user intent — "which child axis points up" + "may the solver
+ * rotate it in plan" — into the orientation set containment consumes.
+ * Which face is up is a HARD CONSTRAINT (print, product settle, closure),
+ * never an optimization variable; in-plan rotation is the only freedom the
+ * solver may be granted, and only explicitly.
+ * @param {'H'|'L'|'W'} verticalAxis  child dimension that points up
+ * @param {boolean} mayRotate         solver may turn the child 90° in plan
+ */
+export function verticalToOrientations(verticalAxis, mayRotate){
+  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
+  const pair = pairs[verticalAxis];
+  if(!pair) throw new Error(`unknown vertical axis "${verticalAxis}"`);
+  return mayRotate ? [...pair] : [pair[0]];
+}
+
+/** Plain-language labels for the vertical-axis choice, code alongside. */
+export const VERTICAL_CHOICES = [
+  {axis: 'H', label: 'H up — upright, as designed', codes: 'LWH·WLH'},
+  {axis: 'L', label: 'L up — on end',               codes: 'WHL·HWL'},
+  {axis: 'W', label: 'W up — on side',              codes: 'LHW·HLW'}
+];
 
 /* ---------------- candidate enumeration + full-chain metrics ------------ */
 
@@ -136,24 +170,54 @@ function cartonVariants(project, step){
   const link = linkFor(project, 'secondary');
   const col = collate(prim.collation);
   const piecesPerCarton = col.count*link.count;
-  return prim.allowedOrientations.map(o => {
-    const child = {outer: col.envelope, allowedOrientations: [o]};
-    let params, fits = true, capacity = null;
-    if(link.locked){
-      params = sec.params;                                        // user-fixed carton
-      const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
-      capacity = chk.total; fits = chk.total >= link.count;
-    }else{
-      const solved = solveParent(child, link.count, prim.clearance);
-      const cavity = roundCavityUp(solved.cavity, step);
-      params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
+
+  // the wrap (if any) sits between the collation and the carton: it takes
+  // the envelope as content and hands up its seal-compensated outer
+  let wrapGeo = null, wrapFits = true;
+  if(prim.wrap){
+    const wp = {...prim.wrap.params};
+    // round girth basis is only meaningful when the wrap tube cross-section
+    // is a single circle: cylindrical piece, one stack, running along the
+    // pack length (stackAxis X). Anything else falls back to rectangular.
+    if(wp.girthBasis === 'round'){
+      const c = prim.collation;
+      if(c.piece.kind === 'cylinder' && c.nx === 1 && c.ny === 1 && c.stackAxis === 'X')
+        wp.roundDiameter = c.piece.diameter;
+      else wp.girthBasis = 'rectangular';
     }
-    return {
-      params, geo: styleById(sec.styleId).geometry(params),
-      orientation: o, label: orientationLabel(prim.collation.stackAxis, o),
-      piecesPerCarton, fits, capacity
-    };
-  });
+    if(prim.wrap.locked){
+      // locked wrap: content dims are user-fixed; check the envelope fits
+      wrapFits = col.envelope.L <= wp.L && col.envelope.W <= wp.W && col.envelope.H <= wp.H;
+    }else{
+      wp.L = col.envelope.L; wp.W = col.envelope.W; wp.H = col.envelope.H;
+    }
+    wrapGeo = styleById(prim.wrap.styleId).geometry(wp);
+  }
+  const content = wrapGeo ? wrapGeo.outer : col.envelope;
+
+  // ONE variant: the vertical axis is user-locked and the orientation set
+  // already encodes whether in-plan rotation is allowed — the solver picks
+  // within that set only, never across vertical axes
+  const child = {outer: content, allowedOrientations: prim.allowedOrientations};
+  let params, fits = true, capacity = null, chosen;
+  if(link.locked){
+    params = sec.params;                                        // user-fixed carton
+    const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
+    capacity = chk.total; fits = chk.total >= link.count;
+    chosen = chk.placements[0] ? chk.placements[0].orientation : prim.allowedOrientations[0];
+  }else{
+    const solved = solveParent(child, link.count, prim.clearance);
+    const cavity = roundCavityUp(solved.cavity, step);
+    params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
+    chosen = solved.arrangement.placements[0]
+      ? solved.arrangement.placements[0].orientation : prim.allowedOrientations[0];
+  }
+  return [{
+    params, geo: styleById(sec.styleId).geometry(params),
+    orientation: chosen, label: orientationLabel(prim.collation.stackAxis, chosen),
+    piecesPerCarton, fits: fits && wrapFits, capacity,
+    wrapGeo, wrapFits, wrapsPerCarton: prim.wrap ? link.count : null
+  }];
 }
 
 export function candidateCases(project, rounding = '1mm'){
@@ -188,6 +252,16 @@ export function candidateCases(project, rounding = '1mm'){
       row.piecesPerCarton = variant.piecesPerCarton;
       row.piecesPerPallet = variant.piecesPerCarton !== null
         ? variant.piecesPerCarton*row.cartonsPerPallet : null;
+      if(variant.wrapGeo){
+        // film cost columns — board vs film trade against each other.
+        // fillEfficiency and film numbers NEVER touch cube utilization.
+        const film = variant.wrapGeo.meta.film;
+        row.filmAreaM2 = film.filmAreaM2;
+        row.filmKgPerPallet = (film.massPer1000g/1000)*variant.wrapsPerCarton*row.cartonsPerPallet/1000;
+        row.wrapOuter = variant.wrapGeo.outer;
+      }else{
+        row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
+      }
       rows.push(row);
     }
   }
@@ -220,6 +294,14 @@ export function checkLockedCase(project, rounding = '1mm'){
   row.piecesPerCarton = variant.piecesPerCarton;
   row.piecesPerPallet = variant.piecesPerCarton !== null
     ? variant.piecesPerCarton*row.cartonsPerPallet : null;
+  if(variant.wrapGeo){
+    const film = variant.wrapGeo.meta.film;
+    row.filmAreaM2 = film.filmAreaM2;
+    row.filmKgPerPallet = (film.massPer1000g/1000)*variant.wrapsPerCarton*row.cartonsPerPallet/1000;
+    row.wrapOuter = variant.wrapGeo.outer;
+  }else{
+    row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
+  }
   return row;
 }
 

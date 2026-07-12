@@ -24,10 +24,13 @@ export const currentStyle = () => style;
 function lengthField(d){
   const wrap = document.createElement('div');
   wrap.className = 'field';
+  // fixedUnit params (film gauge µm, density g/cm³, …) are NOT lengths:
+  // they keep their own unit chip and never convert with the mm/in toggle
+  const chip = d.fixedUnit || unit;
   wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}</span></label>
-    <div class="inp"><input id="p_${d.key}" type="number" min="${d.min}" step="${d.step}"><span class="unit">${unit}</span></div>`;
+    <div class="inp"><input id="p_${d.key}" type="number" min="${d.min}" step="${d.step}"><span class="unit">${chip}</span></div>`;
   const input = wrap.querySelector('input'), unitSpan = wrap.querySelector('.unit');
-  input.value = fmtInputValue(fromMM(d.default, unit), unit);
+  input.value = d.fixedUnit ? d.default : fmtInputValue(fromMM(d.default, unit), unit);
   fields.push({d, input, unitSpan});
   return wrap;
 }
@@ -64,7 +67,8 @@ export function setStyle(s, onInput, onChange){
 /* ---------- state snapshot (mm) ---------- */
 export function readState(){
   const params = {};
-  for(const f of fields) params[f.d.key] = toMM(+f.input.value || 0, unit);
+  for(const f of fields)
+    params[f.d.key] = f.d.fixedUnit ? (+f.input.value || 0) : toMM(+f.input.value || 0, unit);
   const options = {};
   for(const s2 of selects)
     (s2.origin === 'param' ? params : options)[s2.d.key] = s2.input.value;
@@ -96,6 +100,7 @@ export function switchUnits(){
   if(next === unit) return false;
   const k = (unit === 'mm' && next === 'in') ? 1/25.4 : (unit === 'in' && next === 'mm') ? 25.4 : 1;
   for(const f of fields){
+    if(f.d.fixedUnit) continue;                 // film substance etc. never converts
     const v = +f.input.value || 0;
     f.input.value = fmtInputValue(v*k, next);
     f.unitSpan.textContent = next;

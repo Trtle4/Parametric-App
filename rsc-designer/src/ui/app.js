@@ -15,6 +15,7 @@ import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {buildNest, showNest, buildProductNest, showProduct} from '../render/nest3d.js';
 import {downloadDXF} from '../export/dxf.js';
+import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 
 let view = '2d';
@@ -62,6 +63,14 @@ function refreshAll(){
 function applyStyle(s){
   el('brandCode').textContent = s.brand.code;
   el('brandName').textContent = s.brand.sub;
+  // flexible styles have no die, so there is no DXF — disabled with the
+  // reason, never a silently meaningless file. Their deliverables are the
+  // film spec and the artwork template.
+  const flex = s.structure === 'flexible';
+  el('btnDXF').disabled = flex;
+  el('btnDXF').title = flex ? 'No die for a flexible style — export the artwork template instead' : '';
+  el('btnArt').style.display = flex ? '' : 'none';
+  el('btnSpec').style.display = flex ? '' : 'none';
   inputs.setStyle(s, onParamInput, onParamChange);
   refreshAll();
 }
@@ -102,8 +111,10 @@ function apply3dMode(){
   }else{
     showNest(false); showProduct(false);
     el('orbithint').textContent = 'drag to orbit · scroll to zoom';
-    fold.startFold();
     refresh3d(); fold.showBox(true);
+    // a wrapped pack is a continuous sealed surface: no fold sequence
+    if(inputs.currentStyle().structure === 'flexible') fold.jumpClosed();
+    else fold.startFold();
   }
 }
 
@@ -169,7 +180,18 @@ el('m3nest').addEventListener('click', () => { mode3d = 'nest'; apply3dMode(); }
 el('m3prod').addEventListener('click', () => { mode3d = 'product'; apply3dMode(); });
 el('btnDXF').addEventListener('click', () => {
   const s = inputs.readState();
+  if(s.style.structure === 'flexible') return;   // no die, no DXF
   downloadDXF(s.style.geometry(s.params), s.params, s.unit, s.style.id.toUpperCase());
+});
+el('btnArt').addEventListener('click', () => {
+  const s = inputs.readState();
+  downloadArtwork(s.style.geometry(s.params), s.unit);
+});
+el('btnSpec').addEventListener('click', () => {
+  const s = inputs.readState();
+  navigator.clipboard.writeText(filmSpecText(s.style.geometry(s.params), s.unit));
+  el('btnSpec').textContent = 'Copied ✓';
+  setTimeout(() => el('btnSpec').textContent = 'Copy film spec', 1200);
 });
 
 // 2D zoom & pan

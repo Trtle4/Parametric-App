@@ -11,6 +11,7 @@
  */
 import {fefco201} from './fefco201.js';
 import {a6120} from './a6120.js';
+import {flowwrap} from './flowwrap.js';
 
 export const styles = [
   {
@@ -19,6 +20,7 @@ export const styles = [
     brand: {code: 'FEFCO 201', sub: 'Regular Slotted Container'},
     tier: 'tertiary',
     material: 'corrugated',
+    structure: 'rigid',
     params: [
       {key: 'L',       label: 'Length',        hint: 'L',     group: 'dims',     min: 1, step: 1,   default: 200},
       {key: 'W',       label: 'Width',         hint: 'W',     group: 'dims',     min: 1, step: 1,   default: 150},
@@ -42,6 +44,7 @@ export const styles = [
     brand: {code: 'ECMA A6120', sub: 'Reverse Tuck End'},
     tier: 'secondary',
     material: 'folding-carton',
+    structure: 'rigid',
     params: [
       {key: 'L',         label: 'Length',        hint: 'L',      group: 'dims',     min: 1, step: 1,    default: 100},
       {key: 'W',         label: 'Width',         hint: 'W',      group: 'dims',     min: 1, step: 1,    default: 60},
@@ -64,6 +67,45 @@ export const styles = [
     // before the nesting task consumes these (flagged, not engineer-ruled)
     defaultOrientations: ['LWH', 'WLH', 'LHW', 'HLW'],
     defaultClearance: {wall: 0.5, between: 0}
+  },
+  {
+    id: 'flowwrap',
+    name: 'Flow Wrap (film)',
+    brand: {code: 'FLOW WRAP', sub: 'Horizontal film wrap'},
+    tier: 'primary',
+    material: 'film',
+    structure: 'flexible',
+    params: [
+      {key: 'L', label: 'Pack length',   hint: 'repeat', group: 'dims', min: 1, step: 1, default: 90},
+      {key: 'W', label: 'Pack width',    hint: 'front',  group: 'dims', min: 1, step: 1, default: 50},
+      {key: 'H', label: 'Pack height',   hint: 'sides',  group: 'dims', min: 1, step: 1, default: 120},
+      {key: 'sealType', label: 'Long. seal', hint: 'back', group: 'material', type: 'select', default: 'fin',
+       choices: [{value: 'fin', label: 'Fin seal'}, {value: 'lap', label: 'Lap seal'}]},
+      {key: 'finHeight',   label: 'Fin height',    hint: 'proud', group: 'material', min: 0, step: 0.5, default: 8},
+      {key: 'finSealBand', label: 'Fin seal band', hint: 'sealed', group: 'material', min: 0, step: 0.5, default: 5},
+      {key: 'finTreatment', label: 'Fin treatment', hint: '', group: 'material', type: 'select', default: 'folded',
+       choices: [{value: 'folded', label: 'Folded down'}, {value: 'standing', label: 'Standing'}]},
+      {key: 'lapOverlap',   label: 'Lap overlap',   hint: 'lap only', group: 'material', min: 0, step: 0.5, default: 12},
+      {key: 'endSealWidth', label: 'End seal width', hint: 'per end', group: 'material', min: 0, step: 0.5, default: 10},
+      {key: 'endSealBleed', label: 'End seal bleed', hint: 'print',   group: 'material', min: 0, step: 0.5, default: 3},
+      {key: 'girthBasis', label: 'Girth basis', hint: '', group: 'material', type: 'select', default: 'rectangular',
+       choices: [{value: 'rectangular', label: 'Rectangular 2(W+H)'}, {value: 'round', label: 'Round π·d'}]},
+      {key: 'roundDiameter', label: 'Round Ø', hint: 'round basis', group: 'material', min: 0, step: 0.5, default: 50},
+      // film substance — NOT caliper; fixed units, never mm/in converted
+      {key: 'gauge',   label: 'Film gauge', hint: '', group: 'material', min: 1, step: 1,    default: 30,   fixedUnit: 'µm'},
+      {key: 'density', label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'}
+    ],
+    options: [],
+    geometry: flowwrap,
+    readouts: geo => [
+      {label: 'Web width',  len: geo.meta.film.webWidth},
+      {label: 'Repeat (cut length)', len: geo.meta.film.cutLength},
+      {label: 'Film area / pack', text: `${geo.meta.film.filmAreaM2.toFixed(4)} m²`},
+      {label: 'Packs / metre of web', text: geo.meta.film.packsPerMetre.toFixed(2)},
+      {label: 'Film mass / 1000 packs', text: `${Math.round(geo.meta.film.massPer1000g)} g`}
+    ],
+    defaultOrientations: ['LWH', 'WLH'],
+    defaultClearance: {wall: 0, between: 0}
   }
 ];
 

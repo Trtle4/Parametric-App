@@ -81,6 +81,9 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     p.primary.collation = {...ch.config.collation, piece: {...ch.config.collation.piece}};
     p.primary.allowedOrientations = ch.config.primaryOrientations;
     p.primary.clearance = {...ch.config.primaryClearance};
+    p.primary.wrap = ch.config.wrap
+      ? {styleId: 'flowwrap', params: {...ch.config.wrap}, locked: false}
+      : null;                                    // pins that predate the wrap
     p.secondary.params = {...p.secondary.params, ...ch.config.cartonMaterial};
   }else{
     p.primary = null;                       // legacy carton-driven pin
@@ -100,6 +103,13 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     cmp(name, 'cartonOuter.H', e.cartonOuter.H, r.cartonOuter.H);
   }
   if(e.piecesPerPallet !== undefined) cmp(name, 'piecesPerPallet', e.piecesPerPallet, r.piecesPerPallet);
+  if(e.wrapOuter){
+    cmp(name, 'wrapOuter.L', e.wrapOuter.L, r.wrapOuter.L);
+    cmp(name, 'wrapOuter.W', e.wrapOuter.W, r.wrapOuter.W);
+    cmp(name, 'wrapOuter.H', e.wrapOuter.H, r.wrapOuter.H);
+  }
+  if(e.filmAreaM2 !== undefined) cmp(name, 'filmAreaM2', e.filmAreaM2, +r.filmAreaM2.toFixed(6));
+  if(e.filmKgPerPallet !== undefined) cmp(name, 'filmKgPerPallet', e.filmKgPerPallet, +r.filmKgPerPallet.toFixed(3));
   cmp(name, 'cavity.L', e.cavity.L, r.cavity.L); cmp(name, 'cavity.W', e.cavity.W, r.cavity.W); cmp(name, 'cavity.H', e.cavity.H, r.cavity.H);
   cmp(name, 'outer.L', e.outer.L, r.outer.L); cmp(name, 'outer.W', e.outer.W, r.outer.W); cmp(name, 'outer.H', e.outer.H, r.outer.H);
   cmp(name, 'boardAreaM2', e.boardAreaM2, +r.boardAreaM2.toFixed(6));

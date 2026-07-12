@@ -5,8 +5,10 @@
  */
 import {fefco201Fold} from './fefco201.js';
 import {a6120Fold} from './a6120.js';
+import {flowwrapFold} from './flowwrap.js';
 
 export const foldBuilders = {
   fefco201: fefco201Fold,
-  a6120: a6120Fold
+  a6120: a6120Fold,
+  flowwrap: flowwrapFold
 };

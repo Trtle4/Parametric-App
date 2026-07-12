@@ -15,7 +15,9 @@
      pallet 1219.2×1016, budget 1524-127, pattern column:
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
-import {newProject, candidateCases, checkLockedCase, nestArrangement, roundCavityUp, ROUNDING} from '../src/core/project.js';
+import {newProject, candidateCases, checkLockedCase, nestArrangement, roundCavityUp, ROUNDING,
+        verticalToOrientations} from '../src/core/project.js';
+import {fitInto} from '../src/core/containment.js';
 
 const results = [];
 function t(name, fn){
@@ -97,6 +99,26 @@ t('nest placements: 12 cartons, on the floor, inside the walls', () => {
   }
 });
 
+/* ---- vertical-axis constraint --------------------------------------- */
+t('verticalToOrientations mapping', () => {
+  eq(verticalToOrientations('H', true), ['LWH', 'WLH']);
+  eq(verticalToOrientations('H', false), ['LWH']);
+  eq(verticalToOrientations('L', true), ['WHL', 'HWL']);
+  eq(verticalToOrientations('W', false), ['LHW']);
+});
+t('locked vertical axis constrains the solver (upright loses, upright returned)', () => {
+  // carton 50×50×120 in cavity 240×120×60: upright cannot fit at all
+  // (120 > 60); on its side it packs 4. H-up MUST return the upright result.
+  const child = o => ({outer: {L: 50, W: 50, H: 120}, allowedOrientations: o});
+  const cavity = {L: 240, W: 120, H: 60};
+  const upright = fitInto(child(verticalToOrientations('H', false)), cavity, {wall: 0, between: 0}, 'column');
+  eq(upright.total, 0, 'H up honored even when it fits nothing:');
+  const onSide = fitInto(child(verticalToOrientations('W', false)), cavity, {wall: 0, between: 0}, 'column');
+  eq(onSide.total, 4, 'W up packs 4:');
+  // and the orientation actually used is the constrained one
+  if(onSide.placements.some(p => p.orientation !== 'LHW')) throw new Error('unexpected orientation');
+});
+
 /* ---- primary (collation) chain -------------------------------------
    Cylinder d50×t6, "multiple pieces collated": 10/stack, Z, 2×2, no gaps
    -> envelope 100×100×60, 40 pieces.  Orientation LWH, clearances 0,
@@ -107,6 +129,7 @@ t('nest placements: 12 cartons, on the floor, inside the walls', () => {
    1296 cartons, 40×1296 = 51840 pieces. */
 function cylProject(){
   const p = newProject();
+  p.primary.wrap = null;                // bare envelope: pins predate the wrap
   p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6},
                          perStack: 10, stackAxis: 'Z', nx: 2, ny: 2, stackGap: 0, pieceGap: 0};
   p.primary.allowedOrientations = ['LWH'];
@@ -148,6 +171,23 @@ t('locked carton: collation checked against fixed dims, both verdicts', () => {
   p.secondary.params = {...p.secondary.params, L: 90};
   rows = candidateCases(p, '1mm');
   if(rows.some(r => r.primaryFits)) throw new Error('90-wide carton cannot hold a 100-wide envelope');
+});
+
+t('wrap seal compensation propagates into carton sizing', () => {
+  // default box collation env 90×50×120; end seals 10 -> wrap L 110
+  const p = newProject();
+  p.primary.allowedOrientations = ['LWH'];   // H up, no rotation: deterministic axes
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  let r = candidateCases(p, '1mm')[0];
+  eq(r.cartonParams.L, 110, 'L gains 2×endSeal:');
+  eq(r.cartonParams.H, 121, 'folded fin: +gauge only (120.03 -> 121 rounded):');
+  p.primary.wrap.params.finTreatment = 'standing';
+  r = candidateCases(p, '1mm')[0];
+  eq(r.cartonParams.H, 128, 'standing fin: +finHeight:');
+  p.primary.wrap.params.sealType = 'lap';
+  r = candidateCases(p, '1mm')[0];
+  eq(r.cartonParams.H, 120, 'lap seal: no envelope gain:');
+  if(!(r.filmAreaM2 > 0 && r.filmKgPerPallet > 0)) throw new Error('film metrics missing');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

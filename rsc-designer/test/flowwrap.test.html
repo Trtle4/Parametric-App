@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>flow wrap tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/styles/flowwrap.js — hand-checked derivations.
+   Content L=90 W=50 H=120, end seal 10, bleed 3 -> border 13, cutLength 116.
+   Rect girth = 2(50+120) = 340. */
+import {flowwrap} from '../src/core/styles/flowwrap.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+const base = {L: 90, W: 50, H: 120, sealType: 'fin', finHeight: 8, finSealBand: 5,
+              finTreatment: 'standing', lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
+              girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92};
+
+t('flexible contract: outline only, crease EMPTY, structure flagged', () => {
+  const g = flowwrap(base);
+  if(g.structure !== 'flexible') throw new Error('structure');
+  if(g.crease.length !== 0) throw new Error('film is never scored — crease must be empty');
+  if(g.cut.length !== 4) throw new Error('blank outline only');
+  if(!(g.meta.refLines.length > 0)) throw new Error('fold references belong in meta');
+});
+t('fin standing: web width, cut length, film area', () => {
+  const g = flowwrap(base), f = g.meta.film;
+  approx(f.girth, 340); approx(f.finAllowance, 21);          // 2*8 + 5
+  approx(f.webWidth, 361); approx(f.cutLength, 116);         // 90 + 2*13
+  approx(f.filmAreaM2, 41876/1e6, 'area');
+  approx(f.packsPerMetre, 1000/116);
+  approx(f.massPer1000g, (41876/1e6)*30*0.92*1000, 'mass');  // ≈ 1155.8 g
+});
+t('compensation, fin standing: L +2×endSeal, W +0, H +finHeight', () => {
+  const g = flowwrap(base);
+  approx(g.outer.L, 110); approx(g.outer.W, 50); approx(g.outer.H, 128);
+});
+t('compensation, fin folded: H gains only film gauge (µm→mm)', () => {
+  const g = flowwrap({...base, finTreatment: 'folded'});
+  approx(g.outer.H, 120.03);
+});
+t('lap seal: allowance = overlap, no envelope gain', () => {
+  const g = flowwrap({...base, sealType: 'lap'}), f = g.meta.film;
+  approx(f.finAllowance, 12); approx(f.webWidth, 352);
+  approx(g.outer.L, 110); approx(g.outer.W, 50); approx(g.outer.H, 120);
+});
+t('round girth basis: π·d instead of rectangular perimeter', () => {
+  const g = flowwrap({...base, W: 50, H: 50, girthBasis: 'round', roundDiameter: 50});
+  approx(g.meta.film.girth, Math.PI*50);
+  approx(g.meta.film.webWidth, Math.PI*50 + 21);
+  // bands still sum to the web width (scaled proportionally)
+  const v = g.meta.vDims.reduce((s, d) => s + d.v, 0) + g.meta.film.finAllowance/2;
+  approx(v, g.meta.film.webWidth, 'bands + fa/2 sum');
+});
+t('bleed and seal are modeled separately', () => {
+  const g = flowwrap(base), z = g.meta.sealZones;
+  approx(z.bleeds[0].x1, 3, 'bleed outermost');
+  approx(z.ends[0].x0, 3); approx(z.ends[0].x1, 13, 'seal inside the bleed');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

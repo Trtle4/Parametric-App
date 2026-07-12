@@ -75,6 +75,7 @@ export function a6120(p){
   //  but the stack is different: RSC = inner minor flap + outer major flap
   //  at each end; RTE = dust flap layer + tuck panel at each end.
   return {
+    structure: 'rigid',
     cut, crease,
     bbox: {minX: 0, minY: 0, maxX: x5, maxY: yt + Math.max(T + TT, D)},
     inner: {L, W, H},
