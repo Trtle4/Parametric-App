@@ -1,0 +1,164 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DXF export tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Proof, not assertion:
+   (A) a structural validator that parses the emitted DXF back and checks
+       section structure, layer/linetype cross-references, counts, and that
+       NO coordinate contains e/E; then
+   (B) an independent round-trip through the real `dxf-parser` npm package
+       (loaded via esm.sh CDN — node/npm are not installed on this machine,
+       so CDN delivery is the equivalent of `npm install dxf-parser`).
+   Run for FEFCO 201, a6120, and a synthetic geometry with PERF + SCORE_HALF. */
+import {styleById} from '../src/core/styles/index.js';
+import {buildDXF} from '../src/export/dxf.js';
+
+const results = [];
+function t(name, fn){
+  return Promise.resolve().then(fn).then(
+    () => results.push(`PASS  ${name}`),
+    e => results.push(`FAIL  ${name}: ${e.message || e}`));
+}
+function assert(c, msg){ if(!c) throw new Error(msg); }
+
+// tokenise DXF into [code,value] pairs
+function pairs(dxf){
+  const ln = dxf.split(/\r\n|\r|\n/);
+  if(ln.length && ln[ln.length - 1] === '') ln.pop();
+  assert(ln.length % 2 === 0, `odd token count ${ln.length} — group code/value mismatch`);
+  const p = [];
+  for(let i = 0; i < ln.length; i += 2) p.push([ln[i].trim(), ln[i + 1]]);
+  return p;
+}
+
+const COORD_CODES = new Set(['10','20','30','11','21','31','40','49']);
+
+/** Structural validator — independent of how buildDXF assembled the string. */
+function validate(dxf){
+  const p = pairs(dxf);
+  // section structure
+  const sections = [];
+  let cur = null;
+  for(let i = 0; i < p.length; i++){
+    const [code, val] = p[i];
+    if(code === '0' && val === 'SECTION'){ cur = p[i + 1][1]; sections.push(cur); }
+    if(code === '0' && val === 'EOF') sections.push('EOF');
+  }
+  assert(sections.includes('HEADER'), 'no HEADER section');
+  assert(sections.includes('TABLES'), 'no TABLES section');
+  assert(sections.includes('ENTITIES'), 'no ENTITIES section');
+  assert(sections[sections.length - 1] === 'EOF', 'file does not end with EOF');
+  assert(p[p.length - 1][0] === '0' && p[p.length - 1][1] === 'EOF', 'last token is not 0/EOF');
+
+  // header must declare R12 and must NOT carry $INSUNITS (invalid in R12)
+  const hdr = {};
+  for(let i = 0; i < p.length; i++) if(p[i][0] === '9') hdr[p[i][1]] = p[i + 1] ? p[i + 1][1] : null;
+  assert(hdr['$ACADVER'] === 'AC1009', `$ACADVER must be AC1009, got ${hdr['$ACADVER']}`);
+  assert(!('$INSUNITS' in hdr), '$INSUNITS present but invalid in R12');
+  assert('$EXTMIN' in hdr && '$EXTMAX' in hdr, 'missing $EXTMIN/$EXTMAX');
+
+  // walk tables: collect LTYPE names, LAYER names + each layer's linetype,
+  // and verify declared 70-counts match actual record counts
+  const ltypes = new Set(), layers = new Map();
+  let table = null, declared = null, seen = 0;
+  for(let i = 0; i < p.length; i++){
+    const [code, val] = p[i];
+    if(code === '0' && val === 'TABLE'){ table = p[i + 1][1]; declared = null; seen = 0; }
+    else if(code === '70' && table && declared === null){ declared = +val; }
+    else if(code === '0' && val === 'LTYPE' && table === 'LTYPE'){ ltypes.add(p[i + 1][1]); seen++; }
+    else if(code === '0' && val === 'LAYER' && table === 'LAYER'){
+      const name = p[i + 1][1];
+      let lt = null;
+      for(let j = i + 2; j < p.length && !(p[j][0] === '0'); j++) if(p[j][0] === '6') lt = p[j][1];
+      layers.set(name, lt); seen++;
+    }
+    else if(code === '0' && val === 'ENDTAB'){
+      assert(declared === seen, `${table} table declared ${declared} but has ${seen} records`);
+      table = null;
+    }
+  }
+  assert(layers.size > 0, 'no layers defined');
+
+  // entities: every LINE's layer exists; collect per-layer counts
+  const perLayer = {};
+  let inEnt = false;
+  for(let i = 0; i < p.length; i++){
+    const [code, val] = p[i];
+    if(code === '0' && val === 'SECTION' && p[i + 1][1] === 'ENTITIES') inEnt = true;
+    if(inEnt && code === '0' && val === 'LINE'){
+      let layer = null;
+      for(let j = i + 1; j < p.length && !(p[j][0] === '0'); j++) if(p[j][0] === '8') layer = p[j][1];
+      assert(layers.has(layer), `entity references layer "${layer}" not in LAYER table`);
+      perLayer[layer] = (perLayer[layer] || 0) + 1;
+    }
+  }
+
+  // every layer's linetype exists in the LTYPE table
+  for(const [name, lt] of layers)
+    assert(ltypes.has(lt), `layer "${name}" references linetype "${lt}" not in LTYPE table`);
+
+  // NO coordinate value contains e/E
+  for(const [code, val] of p)
+    if(COORD_CODES.has(code)) assert(!/[eE]/.test(val), `coordinate ${code}=${val} contains exponential notation`);
+
+  return {perLayer, ltypes: [...ltypes], layers: [...layers.keys()]};
+}
+
+const cases = {
+  fefco201: styleById('fefco201').geometry({L:200,W:150,H:120,caliper:3,glue:35,slot:6}),
+  a6120:    styleById('a6120').geometry({L:100,W:60,H:150,caliper:0.457,glueTab:15,dustDepth:37.5,tuckDepth:59.543,tuckTab:16}),
+  synthetic: {cut:[[0,0],[10,0],[10,10],[0,10]], crease:[[0,5,10,5]],
+              aux:{PERF:[[2,2,8,2]], SCORE_HALF:[[2,8,8,8]]}, bbox:{minX:0,minY:0,maxX:10,maxY:10}}
+};
+// expected entity counts derived from the geometry (not hardcoded magic)
+function expectedCounts(geo){
+  const e = {CUT: geo.cut.length};
+  if(geo.crease && geo.crease.length) e.CREASE = geo.crease.length;
+  for(const [k, v] of Object.entries(geo.aux || {})) if(v.length) e[k] = v.length;
+  return e;
+}
+
+const parserMod = await import('https://esm.sh/dxf-parser@1.1.2');
+const DxfParser = parserMod.DxfParser || parserMod.default;
+window.__parserOutputs = {};
+
+for(const [name, geo] of Object.entries(cases)){
+  const dxf = buildDXF(geo, 'mm');
+  const expected = expectedCounts(geo);
+
+  await t(`${name}: structural validator`, () => {
+    const v = validate(dxf);
+    for(const [layer, n] of Object.entries(expected))
+      assert(v.perLayer[layer] === n, `${layer}: expected ${n} lines, validator found ${v.perLayer[layer]}`);
+  });
+
+  await t(`${name}: dxf-parser round-trip`, () => {
+    const parser = new DxfParser();
+    const parsed = parser.parseSync(dxf);          // throws on malformed input
+    assert(parsed && parsed.entities, 'parser returned no entities');
+    const byLayer = {};
+    for(const ent of parsed.entities){
+      assert(ent.type === 'LINE', `unexpected entity type ${ent.type}`);
+      byLayer[ent.layer] = (byLayer[ent.layer] || 0) + 1;
+    }
+    for(const [layer, n] of Object.entries(expected))
+      assert(byLayer[layer] === n, `${layer}: dxf-parser saw ${byLayer[layer]}, expected ${n}`);
+    // record a compact view of what the independent parser understood
+    window.__parserOutputs[name] = {
+      totalEntities: parsed.entities.length,
+      perLayer: byLayer,
+      layersInTable: Object.keys(parsed.tables.layer.layers),
+      ltypesInTable: Object.keys(parsed.tables.lineType.lineTypes),
+      acadVer: parsed.header['$ACADVER'],
+      extMin: parsed.header['$EXTMIN'], extMax: parsed.header['$EXTMAX']
+    };
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n') +
+  `\n\n--- dxf-parser output ---\n` + JSON.stringify(window.__parserOutputs, null, 2);
+window.__tests = {total: results.length, fails, results};
+</script>
