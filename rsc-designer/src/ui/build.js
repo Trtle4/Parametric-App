@@ -336,6 +336,7 @@ function renderTable(){
 }
 
 export const getSelected = () => selected;
+export const getRows = () => rows;
 export const getNest = () => {
   if(!selected) return null;
   const arr = nestArrangement(project, selected);

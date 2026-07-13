@@ -323,6 +323,75 @@ export function productNest(project, row){
   };
 }
 
+/* ---------------- hierarchy assembly for the 3D cascade view ------------
+ * The full chain's Arrangements composed for rendering. Every placement here
+ * comes from the model's own solvers (collate / solveParent / fitInto) — the
+ * same calls the chain already makes. The chain DISCARDS two of these
+ * (wraps-in-carton from solveParent in cartonVariants; cases-on-pallet from
+ * fitInto in chainMetrics); this re-exposes them the way nestArrangement()
+ * already re-exposes cartons-in-case. No new packaging math; the renderer
+ * consumes placements only.
+ */
+
+/** Wraps arranged inside one carton (solveParent Arrangement), plus the seal
+ *  descriptor and pieces the renderer needs to draw a wrap as a wrap. */
+export function wrapsInCarton(project, row){
+  const prim = project.primary;
+  if(!prim || !prim.wrap) return null;
+  const link = linkFor(project, 'secondary');
+  const col = collate(prim.collation);
+  const wp = {...prim.wrap.params};
+  if(wp.girthBasis === 'round'){
+    const c = prim.collation;
+    if(c.piece.kind === 'cylinder' && c.nx === 1 && c.ny === 1 && c.stackAxis === 'X') wp.roundDiameter = c.piece.diameter;
+    else wp.girthBasis = 'rectangular';
+  }
+  wp.L = col.envelope.L; wp.W = col.envelope.W; wp.H = col.envelope.H;
+  const wrapGeo = styleById(prim.wrap.styleId).geometry(wp);
+  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
+  const child = {outer: wrapGeo.outer, allowedOrientations: prim.allowedOrientations};
+  const solved = solveParent(child, link.count, prim.clearance);
+  return {
+    cartonGeo, wrapGeo,
+    placements: solved.arrangement.placements,      // wraps inside the carton
+    envelope: col.envelope,
+    pieces: col.placements,                         // pieces inside the wrap envelope
+    piece: prim.collation.piece,
+    stackAxis: prim.collation.stackAxis,
+    seals: {sealType: wp.sealType, finTreatment: wp.finTreatment, finHeight: wp.finHeight,
+            endSealWidth: wp.endSealWidth},
+    counts: {wrapsPerCarton: link.count, piecesPerWrap: col.count}
+  };
+}
+
+/** Cartons arranged inside the case for a chosen row. Unlike the legacy
+ *  nestArrangement (which fits the UNSOLVED secondary.params), this fits the
+ *  row's own SOLVED carton — the only one consistent with row.cavity. */
+export function cartonsInCase(project, row){
+  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
+  const child = {
+    outer: cartonGeo.outer,
+    allowedOrientations: typeof row.orientation === 'string' && row.orientation.length === 3
+      ? [row.orientation] : project.secondary.allowedOrientations
+  };
+  const fit = fitInto(child, row.cavity, project.secondary.clearance, 'column');
+  return {cartonGeo, placements: fit.placements, count: fit.total};
+}
+
+/** Cases arranged on the pallet (fitInto Arrangement) for the chosen row. */
+export function casesOnPallet(project, row){
+  const p = project.pallet;
+  const caseGeo = styleById(project.tertiary.styleId).geometry(row.caseParams);
+  const fit = fitInto(
+    {outer: caseGeo.outer, allowedOrientations: project.tertiary.allowedOrientations},
+    {L: p.L, W: p.W, H: p.maxH - p.baseH},
+    project.tertiary.clearance,
+    p.pattern
+  );
+  return {caseGeo, placements: fit.placements, count: fit.total,
+          deck: {L: p.L, W: p.W, baseH: p.baseH}};
+}
+
 function chainMetrics(project, cand, cavity, caseParams, caseGeo, cartonVol, count){
   const p = project.pallet;
   const fit = fitInto(

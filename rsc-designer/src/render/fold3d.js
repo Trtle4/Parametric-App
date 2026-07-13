@@ -20,7 +20,13 @@ export const kraft2 = new THREE.MeshStandardMaterial({color:0xB98A55,roughness:0
 
 export const isInit = () => !!renderer;
 export const getPivot = () => pivot;
+export const getCamera = () => camera;
+export const getDomElement = () => renderer && renderer.domElement;
 export const setCamSpan = v => { camSpan = v; };
+
+// per-frame callbacks (e.g. hierarchy cutaway faces track the orbiting camera)
+const frameCbs = new Set();
+export const onFrame = cb => { frameCbs.add(cb); return () => frameCbs.delete(cb); };
 
 export function init3d(container){
   cvWrap = container;
@@ -181,6 +187,8 @@ export function startFold(){
   applyFold(foldT);
 }
 export function stopFold(){ folding = false; }
+/** Set the orbit camera (elevated 3/4 view for the hierarchy cutaway). */
+export function setOrbit(rx, ry, d){ rotX = rx; rotY = ry; dist = d; }
 /** Jump straight to the closed state (flexible styles have no fold sequence). */
 export function jumpClosed(){ folding = false; foldT = 1; applyFold(1); }
 export function showBox(v){ if(boxGroup) boxGroup.visible = v; }
@@ -198,7 +206,9 @@ export function startLoop(){
   const loop = () => {
     raf = requestAnimationFrame(loop);
     if(folding){ foldT = Math.min(1, foldT + 0.02); applyFold(foldT); if(foldT >= 1) folding = false; }
-    frameCamera(); renderer.render(scene, camera);
+    frameCamera();
+    for(const cb of frameCbs) cb(camera);   // cutaway faces etc. track the camera
+    renderer.render(scene, camera);
   };
   loop();
 }

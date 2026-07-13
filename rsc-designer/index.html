@@ -140,7 +140,9 @@
   #bTable tr.bmisfit td{color:var(--cut)}
   .bcode{font-family:var(--mono);font-size:11px;color:#9aa6b2;margin-left:4px}
   .bunit{font-family:var(--mono);font-size:11px;color:var(--muted)}
-  .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%)}
+  .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  .depthsel button{letter-spacing:.04em}
+  .hud.hier{left:16px;bottom:auto;top:14px;max-width:340px;line-height:1.5;display:block}
   @media (max-width:860px){
     main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
     .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
@@ -213,16 +215,20 @@
     <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
     <div id="cvWrap"></div>
     <div id="buildWrap"></div>
-    <div class="seg mode3d" id="mode3d" style="display:none">
-      <button id="m3fold" class="on">Fold</button>
-      <button id="m3nest">Case + cartons</button>
-      <button id="m3prod">Carton + product</button>
+    <div class="mode3d" id="mode3d" style="display:none">
+      <div class="seg"><button id="m3fold">Fold</button></div>
+      <div class="seg depthsel">
+        <button id="d_product">Product</button><button id="d_wrap">Wrap</button
+        ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
+        ><button id="d_pallet">Pallet</button>
+      </div>
     </div>
     <div class="hud" id="hud">
       <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
       <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>
       <span class="k">scroll zoom &middot; drag pan &middot; dblclick reset</span>
     </div>
+    <div class="hud hier" id="hierHud" style="display:none"></div>
     <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
   </section>
 

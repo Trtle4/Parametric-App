@@ -13,13 +13,17 @@ import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import * as fold from '../render/fold3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
-import {buildNest, showNest, buildProductNest, showProduct} from '../render/nest3d.js';
+import {showNest, showProduct} from '../render/nest3d.js';
+import * as hier from '../render/hierarchy3d.js';
+import {wrapsInCarton, casesOnPallet, cartonsInCase} from '../core/project.js';
 import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 
 let view = '2d';
-let mode3d = 'fold';   // 'fold' | 'nest' (Case + cartons)
+let mode3d = 'hier';           // 'fold' | 'hier'
+let depth = 'case';            // hierarchy depth: product|wrap|carton|case|pallet
+let hierSel = {};              // opened index per tier {case,carton,wrap}
 
 /* ---------- refreshers ---------- */
 function refresh2d(){
@@ -81,42 +85,100 @@ function onParamChange(){ // select params & style options (e.g. outer flaps rep
   if(view === 'pal') refreshPal();
 }
 
-/* ---------- 3D mode: fold vs case+cartons nesting ---------- */
+/* ---------- 3D mode: FOLD (blank->box) vs HIERARCHY (the full nest) ------ */
 function syncPalletToProject(){
   const s = inputs.readState();
   build.project.pallet = {L: s.pallet.L, W: s.pallet.W, maxH: s.pallet.maxH,
                           baseH: PALLET_HEIGHT, pattern: s.pattern};
 }
-function apply3dMode(){
-  el('m3fold').classList.toggle('on', mode3d === 'fold');
-  el('m3nest').classList.toggle('on', mode3d === 'nest');
-  el('m3prod').classList.toggle('on', mode3d === 'product');
-  if(view !== '3d') return;
-  if(mode3d === 'nest' || mode3d === 'product'){
-    fold.stopFold(); fold.showBox(false); showPallet(false);
-    const data = mode3d === 'nest' ? build.getNest() : build.getProductNest();
-    if(!data){
-      showNest(false); showProduct(false);
-      el('orbithint').textContent = 'select a candidate row in Build first';
-      return;
+
+/** Assemble the hierarchy bundle purely from model functions (no packaging
+ *  math here). Uses the current Build config + selected (or first) case row. */
+function hierarchyBundle(){
+  const proj = build.project;
+  syncPalletToProject();                                // pallet from the main rails
+  if(build.getRows().length === 0) build.recompute();   // ensure rows exist (not every call: avoids reentrancy)
+  const rows = build.getRows();
+  // default to the freight-optimal row (max cartons/pallet) so the cascade
+  // shows a representative case, not the first enumerated candidate
+  const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+  const row = build.getSelected() || best;
+  if(!row) return null;
+  const cop = casesOnPallet(proj, row);                 // fitInto: cases on pallet
+  const cartons = cartonsInCase(proj, row);             // fitInto: the row's solved cartons in the case
+  const wraps = wrapsInCarton(proj, row);               // solveParent: wraps in carton (+ pieces)
+  const link0 = proj.links[0].count;
+  return {
+    caseGeo: cop.caseGeo,
+    cartonGeo: styleById(proj.secondary.styleId).geometry(row.cartonParams),
+    wrapGeo: wraps ? wraps.wrapGeo : null,
+    cases: cop,
+    cartons: {placements: cartons.placements},
+    wraps: wraps ? {
+      placements: wraps.placements, envelope: wraps.envelope, pieces: wraps.pieces,
+      piece: wraps.piece, stackAxis: wraps.stackAxis, seals: wraps.seals
+    } : null,
+    counts: {
+      cases: cop.count, cartonsPerCase: link0,
+      wrapsPerCarton: wraps ? wraps.counts.wrapsPerCarton : 0,
+      piecesPerWrap: wraps ? wraps.counts.piecesPerWrap : 0
     }
-    el('orbithint').textContent = 'drag to orbit · scroll to zoom';
-    if(mode3d === 'nest'){
-      showProduct(false);
-      buildNest(data.caseGeo, data.cartonGeo, data.placements, true);
-    }else{
-      showNest(false);
-      buildProductNest(data, true);
-    }
-  }else{
-    showNest(false); showProduct(false);
-    el('orbithint').textContent = 'drag to orbit · scroll to zoom';
-    refresh3d(); fold.showBox(true);
-    // a wrapped pack is a continuous sealed surface: no fold sequence
-    if(inputs.currentStyle().structure === 'flexible') fold.jumpClosed();
-    else fold.startFold();
-  }
+  };
 }
+
+// depths reachable given the config (Product/Wrap need a primary/wrap level)
+function depthAvailable(bundle, d){
+  if(d === 'product' || d === 'wrap') return !!(bundle && bundle.wraps);
+  return !!bundle;
+}
+
+function hudText(bundle, opened){
+  const c = bundle.counts;
+  const parts = [];
+  if(depth === 'pallet') parts.push(`Pallet: ${c.cases} cases`);
+  else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
+  else if(depth === 'carton') parts.push(`Carton: ${c.wrapsPerCarton} wrap${c.wrapsPerCarton === 1 ? '' : 's'}`);
+  else if(depth === 'wrap') parts.push(`Wrap: ${c.piecesPerWrap} pieces`);
+  else parts.push('Product: 1 piece');
+  const chan = [];
+  if(depth === 'pallet') chan.push(`case ${(opened.case ?? 0) + 1} of ${c.cases}`);
+  if(depth === 'pallet' || depth === 'case') chan.push(`carton ${(opened.carton ?? 0) + 1} of ${c.cartonsPerCase}`);
+  if((depth === 'pallet' || depth === 'case' || depth === 'carton') && c.wrapsPerCarton)
+    chan.push(`wrap ${(opened.wrap ?? 0) + 1} of ${c.wrapsPerCarton}`);
+  return parts.join(' · ') + (chan.length ? `. Opened: ${chan.join(', ')}` : '');
+}
+
+function applyHierarchy(resetCam){
+  el('m3fold').classList.remove('on');
+  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
+    el('d_' + d).classList.toggle('on', mode3d === 'hier' && depth === d));
+  if(view !== '3d') return;
+  fold.stopFold(); fold.showBox(false); showPallet(false); showNest(false); showProduct(false);
+  const bundle = hierarchyBundle();
+  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
+    el('d_' + d).disabled = !depthAvailable(bundle, d));
+  if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; return; }
+  if(!depthAvailable(bundle, depth)) depth = 'case';
+  if(resetCam) fold.setOrbit(0.5, 0.65, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
+  const res = hier.buildHierarchy(bundle, depth, hierSel);
+  hier.show(true);
+  el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
+  el('hierHud').style.display = 'block';
+  el('hierHud').textContent = hudText(bundle, res.opened);
+}
+
+function applyFoldMode(){
+  el('m3fold').classList.add('on');
+  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d => el('d_' + d).classList.remove('on'));
+  if(view !== '3d') return;
+  hier.show(false); el('hierHud').style.display = 'none';
+  el('orbithint').textContent = 'drag to orbit · scroll to zoom';
+  refresh3d(); fold.showBox(true);
+  if(inputs.currentStyle().structure === 'flexible') fold.jumpClosed();
+  else fold.startFold();
+}
+
+function apply3dMode(){ if(mode3d === 'fold') applyFoldMode(); else applyHierarchy(true); }
 
 /* ---------- view switching ---------- */
 function setView(v){
@@ -131,7 +193,8 @@ function setView(v){
   el('buildWrap').style.display = v === 'build' ? 'block' : 'none';
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
-  el('mode3d').style.display    = v === '3d' ? 'inline-flex' : 'none';
+  el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  if(v !== '3d') el('hierHud').style.display = 'none';
   if(v === 'build'){
     syncPalletToProject();
     build.recompute();
@@ -142,7 +205,7 @@ function setView(v){
       showPallet(false);
       apply3dMode();
     }else{
-      fold.showBox(false); showNest(false); showProduct(false);
+      fold.showBox(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
       refreshPal();
     }
@@ -176,8 +239,38 @@ el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
-el('m3nest').addEventListener('click', () => { mode3d = 'nest'; apply3dMode(); });
-el('m3prod').addEventListener('click', () => { mode3d = 'product'; apply3dMode(); });
+['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
+  el('d_' + d).addEventListener('click', () => {
+    if(el('d_' + d).disabled) return;
+    mode3d = 'hier'; depth = d; hierSel = {};   // fresh depth resets the open channel to defaults
+    apply3dMode();
+  }));
+
+// click a unit in the hierarchy to open it; the cascade re-opens below it
+(function wireHierPick(){
+  const canvas = () => fold.getDomElement();
+  let downX = 0, downY = 0, moved = false;
+  document.addEventListener('pointerdown', e => {
+    if(view === '3d' && mode3d === 'hier' && e.target === canvas()){ downX = e.clientX; downY = e.clientY; moved = false; }
+  });
+  document.addEventListener('pointermove', e => {
+    if(Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 5) moved = true;
+  });
+  document.addEventListener('pointerup', e => {
+    if(view !== '3d' || mode3d !== 'hier' || moved || e.target !== canvas()) return;
+    const r = canvas().getBoundingClientRect();
+    const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+    const ny = -((e.clientY - r.top) / r.height) * 2 + 1;
+    const hit = hier.pick(nx, ny);
+    if(!hit) return;
+    // set the picked tier and clear deeper tiers so they default under it
+    const order = ['case', 'carton', 'wrap'];
+    const at = order.indexOf(hit.tier);
+    hierSel[hit.tier] = hit.index;
+    for(let i = at + 1; i < order.length; i++) delete hierSel[order[i]];
+    applyHierarchy(false);   // keep the camera where the user left it
+  });
+})();
 el('btnDXF').addEventListener('click', () => {
   const s = inputs.readState();
   if(s.style.structure === 'flexible') return;   // no die, no DXF
@@ -224,8 +317,10 @@ window.addEventListener('resize', () => { if(view === '3d') fold.resize3d(); });
 
 applyStyle(styles[0]);
 
-// Build view: candidate table + selection -> nest/product 3D / apply-to-case
-build.initBuild(() => { if(view === '3d' && mode3d !== 'fold') apply3dMode(); }, inputs.getUnit());
+// Build view: candidate table + selection -> hierarchy 3D / apply-to-case.
+// Only a real row selection (non-null) rebuilds the hierarchy; recompute's
+// null callback is ignored to avoid reentrancy.
+build.initBuild(row => { if(row && view === '3d' && mode3d === 'hier') applyHierarchy(false); }, inputs.getUnit());
 el('bUse').addEventListener('click', () => {
   const row = build.getSelected();
   if(!row) return;
