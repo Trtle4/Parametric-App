@@ -11,7 +11,7 @@
  * Never auto-selects a winner: rows are ranked visibly, the engineer picks.
  */
 import {newProject, candidateCases, checkLockedCase, ROUNDING, linkFor,
-        verticalToOrientations, VERTICAL_CHOICES} from '../core/project.js';
+        verticalToOrientations, VERTICAL_CHOICES, TIER_NOUN, roundGirthEligible} from '../core/project.js';
 import {collate, PRESETS} from '../core/collation.js';
 import {toMM, fromMM, fmtInputValue, fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
@@ -50,12 +50,53 @@ function vertControl(idp, defAxis, disabledAxes = [], disabledReason = ''){
 const html = String.raw;
 const lenVal = mm => fmtInputValue(fromMM(mm, unit), unit);
 const U = () => `<span class="bunit">${unit}</span>`;
+const cap = s => s[0].toUpperCase() + s.slice(1);
+
+/** Every child-count/arrangement label is DERIVED from the actual Link
+ *  (parent/child tier names) via TIER_NOUN, never a hardcoded per-level
+ *  string — so "Cartons/case" and "Wraps/carton" come from the same code. */
+const countLabel = link => `${cap(TIER_NOUN[link.child])}s / ${TIER_NOUN[link.parent]}`;
+const arrLabel = link => `Arrangement (${TIER_NOUN[link.child]}s in ${TIER_NOUN[link.parent]})`;
+
+/** Uniform child-count + arrangement control block for a Link. `presets` are
+ *  just convenience shortcuts (typed values always work via "custom"). */
+function countArrangementControl(idp, link, presets, defNx, defNy, defNz){
+  return html`
+  <div class="brow"><label>${countLabel(link)}</label>
+    <select id="${idp}CountSel">${presets.map(p => `<option${p === link.count ? ' selected' : ''}>${p}</option>`).join('')}<option value="custom"${presets.includes(link.count) ? '' : ' selected'}>custom</option></select>
+    <input id="${idp}Count" type="number" min="1" value="${link.count}" style="display:${presets.includes(link.count) ? 'none' : ''}"></div>
+  <div class="brow"><label>${arrLabel(link)}</label>
+    <select id="${idp}Arr"><option value="auto">auto</option><option value="explicit">nx × ny × nz</option></select>
+    <span id="${idp}ArrN" style="display:none">
+      <input id="${idp}Nx" type="number" min="1" value="${defNx}" class="bshort"> ×
+      <input id="${idp}Ny" type="number" min="1" value="${defNy}" class="bshort"> ×
+      <input id="${idp}Nz" type="number" min="1" value="${defNz}" class="bshort"></span></div>`;
+}
+
+/** When arrangement is explicit, the count field would otherwise sit there
+ *  silently ignored (the grid determines the real count) — disable it and
+ *  show the derived total instead, so the UI never displays a number the
+ *  model isn't actually using. */
+function syncCountWithArrangement(idp){
+  const arr = el(idp + 'Arr').value;
+  const countSel = el(idp + 'CountSel'), countInput = el(idp + 'Count');
+  const explicit = arr === 'explicit';
+  countSel.disabled = explicit; countInput.disabled = explicit;
+  if(explicit){
+    const total = Math.max(1, +el(idp + 'Nx').value || 1)*Math.max(1, +el(idp + 'Ny').value || 1)*Math.max(1, +el(idp + 'Nz').value || 1);
+    countSel.style.display = 'none'; countInput.style.display = ''; countInput.value = total;
+  }else{
+    const custom = countSel.value === 'custom';
+    countSel.style.display = ''; countInput.style.display = custom ? '' : 'none';
+  }
+}
 
 export function initBuild(onSelect, startUnit){
   onSelectCb = onSelect;
   unit = startUnit || 'mm';
   const col = project.primary.collation;
   const tp = project.tertiary.params;
+  const cartonLink = linkFor(project, 'secondary'), caseLink = linkFor(project, 'tertiary');
   el('buildWrap').innerHTML = html`
   <div class="bpanel">
     <div class="bcols">
@@ -102,6 +143,7 @@ export function initBuild(onSelect, startUnit){
       </fieldset>
       <fieldset><legend>Carton content</legend>
         ${vertControl('bp', 'H')}
+        ${countArrangementControl('bp', cartonLink, [1, 2, 4, 6, 8], 2, 1, 1)}
         <div class="brow"><label>Clearance wall</label><input id="bpWall" type="number" step="0.1" value="${lenVal(0)}">${U()}
           <label>between</label><input id="bpBetween" type="number" step="0.1" value="${lenVal(0)}">${U()}</div>
         <div class="brow"><label>Headspace</label><input id="bpHead" type="number" step="0.5" value="${lenVal(0)}">${U()}</div>
@@ -114,15 +156,7 @@ export function initBuild(onSelect, startUnit){
       </fieldset>
       <fieldset><legend>Case content</legend>
         ${vertControl('bs', 'H')}
-        <div class="brow"><label>Cartons/case</label>
-          <select id="bCountSel"><option>12</option><option>24</option><option>36</option><option value="custom">custom</option></select>
-          <input id="bCount" type="number" min="1" value="12" style="display:none"></div>
-        <div class="brow"><label>Arrangement</label>
-          <select id="bArr"><option value="auto">auto</option><option value="explicit">nx × ny × nz</option></select>
-          <span id="bArrN" style="display:none">
-            <input id="bNx" type="number" min="1" value="4" class="bshort"> ×
-            <input id="bNy" type="number" min="1" value="3" class="bshort"> ×
-            <input id="bNz" type="number" min="1" value="1" class="bshort"></span></div>
+        ${countArrangementControl('bs', caseLink, [12, 24, 36], 4, 3, 1)}
         <div class="brow"><label>Clearance wall</label><input id="bWall" type="number" step="0.1" value="${lenVal(1.5)}">${U()}
           <label>between</label><input id="bBetween" type="number" step="0.1" value="${lenVal(0)}">${U()}</div>
         <div class="brow"><label>Headspace</label><input id="bcHead" type="number" step="0.5" value="${lenVal(0)}">${U()}</div>
@@ -150,7 +184,11 @@ export function initBuild(onSelect, startUnit){
   </div>`;
 
   const rewire = ids => ids.forEach(id => el(id).addEventListener('input', recompute));
-  rewire(LEN_IDS.concat(['bPer', 'bnx', 'bny', 'bCount', 'bNx', 'bNy', 'bNz', 'bwGauge', 'bwDens']));
+  rewire(LEN_IDS.concat(['bPer', 'bnx', 'bny', 'bwGauge', 'bwDens', 'bpCount', 'bsCount']));
+  // nx/ny/nz also refresh the (disabled, derived) count display so it never
+  // shows a stale total while the fields are being edited
+  ['bp', 'bs'].forEach(idp => ['Nx', 'Ny', 'Nz'].forEach(k =>
+    el(idp + k).addEventListener('input', () => { syncCountWithArrangement(idp); recompute(); })));
   ['bpVert', 'bpRot', 'bsVert', 'bsRot', 'btVert', 'btRot', 'bwSeal', 'bwTreat', 'bwFace', 'bwBasis']
     .forEach(id => el(id).addEventListener('change', recompute));
   el('bwLock').addEventListener('change', () => {
@@ -161,11 +199,8 @@ export function initBuild(onSelect, startUnit){
     const cyl = el('bKind').value === 'cylinder';
     el('bBoxDims').style.display = cyl ? 'none' : '';
     el('bCylDims').style.display = cyl ? '' : 'none';
-    el('bwBasisRound').disabled = !cyl;         // round girth: cylindrical only
-    if(!cyl && el('bwBasis').value === 'round') el('bwBasis').value = 'rectangular';
-    recompute();
+    recompute();   // round-girth eligibility is centrally re-checked in recompute()
   });
-  el('bwBasisRound').disabled = true;           // default piece is a box
   el('bPreset').addEventListener('change', () => {
     const p = PRESETS.find(x => x.id === el('bPreset').value);
     if(p){
@@ -177,15 +212,21 @@ export function initBuild(onSelect, startUnit){
     recompute();
   });
   el('bAxis').addEventListener('change', recompute);
-  el('bCountSel').addEventListener('change', () => {
-    const custom = el('bCountSel').value === 'custom';
-    el('bCount').style.display = custom ? '' : 'none';
-    if(!custom) el('bCount').value = el('bCountSel').value;
-    recompute();
-  });
-  el('bArr').addEventListener('change', () => {
-    el('bArrN').style.display = el('bArr').value === 'explicit' ? '' : 'none';
-    recompute();
+
+  // uniform child-count + arrangement wiring, shared by the carton (bp) and
+  // case (bs) levels — same behavior, derived labels, nothing hardcoded per level
+  ['bp', 'bs'].forEach(idp => {
+    el(idp + 'CountSel').addEventListener('change', () => {
+      const custom = el(idp + 'CountSel').value === 'custom';
+      el(idp + 'Count').style.display = custom ? '' : 'none';
+      if(!custom) el(idp + 'Count').value = el(idp + 'CountSel').value;
+      recompute();
+    });
+    el(idp + 'Arr').addEventListener('change', () => {
+      el(idp + 'ArrN').style.display = el(idp + 'Arr').value === 'explicit' ? '' : 'none';
+      syncCountWithArrangement(idp);
+      recompute();
+    });
   });
   el('bRound').addEventListener('change', () => { rounding = el('bRound').value; recompute(); });
   el('bLock').addEventListener('change', () => {
@@ -196,6 +237,7 @@ export function initBuild(onSelect, startUnit){
     el('bCLockDims').style.display = el('bCLock').checked ? '' : 'none';
     recompute();
   });
+  syncCountWithArrangement('bp'); syncCountWithArrangement('bs');
   recompute();
 }
 
@@ -245,6 +287,9 @@ function readIntoProject(){
 
   sec.params = {...sec.params, caliper: n('bCal')};
   cartonLink.locked = el('bCLock').checked;
+  cartonLink.count = c('bpCount');
+  cartonLink.arrangement = el('bpArr').value === 'auto' ? 'auto'
+    : {nx: c('bpNx'), ny: c('bpNy'), nz: c('bpNz')};
   if(cartonLink.locked) sec.params = {...sec.params, L: n('bCL'), W: n('bCW'), H: n('bCH')};
 
   sec.allowedOrientations = verticalToOrientations(el('bsVert').value, el('bsRot').checked);
@@ -252,10 +297,10 @@ function readIntoProject(){
   ter.allowedOrientations = verticalToOrientations(el('btVert').value, el('btRot').checked);
   ter.clearance = {wall: n('btWall'), between: n('btBetween')};
   ter.params = {...ter.params, caliper: n('bTCal'), glue: n('bTGlue'), slot: n('bTSlot')};
-  caseLink.count = c('bCount');
+  caseLink.count = c('bsCount');
   caseLink.locked = el('bLock').checked;
-  caseLink.arrangement = el('bArr').value === 'auto' ? 'auto'
-    : {nx: c('bNx'), ny: c('bNy'), nz: c('bNz')};
+  caseLink.arrangement = el('bsArr').value === 'auto' ? 'auto'
+    : {nx: c('bsNx'), ny: c('bsNy'), nz: c('bsNz')};
   if(caseLink.locked) ter.params = {...ter.params, L: n('bTL'), W: n('bTW'), H: n('bTH')};
 }
 
@@ -264,6 +309,20 @@ export function recompute(){
   const caseLink = linkFor(project, 'tertiary');
   const status = el('bStatus');
   selected = null; el('bUse').disabled = true;
+
+  // Bug 2: round girth is only valid for a single cylindrical slug. Grey the
+  // option out whenever the current collation can't support it, and if a
+  // stale 'round' selection is now invalid (nx/ny/axis edited after the
+  // fact), fall back to rectangular and say so — never compute silently.
+  const eligible = roundGirthEligible(project.primary.collation);
+  el('bwBasisRound').disabled = !eligible;
+  let girthWarning = '';
+  if(!eligible && el('bwBasis').value === 'round'){
+    el('bwBasis').value = 'rectangular';
+    project.primary.wrap.params.girthBasis = 'rectangular';
+    girthWarning = 'Round girth needs a single cylindrical slug (1 stack, 1×1, along the pack length) — reverted to rectangular.';
+  }
+
   let envInfo = '';
   try{
     if(project.primary.allowedOrientations.length === 0)
@@ -277,18 +336,20 @@ export function recompute(){
       status.textContent = row.fits
         ? `Locked case holds ${row.capacity} cartons (${caseLink.count} required) — OK`
         : `Locked case: holds ${row.capacity} of ${caseLink.count} cartons` +
-          (row.primaryFits ? '' : '; collation does not fit the carton') + ' — DOES NOT FIT';
+          (row.primaryFits ? '' : '; collation/wrap does not fit as configured') + ' — DOES NOT FIT';
       status.className = row.fits ? 'bnote' : 'bnote bbad';
     }else{
       rows = candidateCases(project, rounding);
       const bad = rows.filter(r => !r.primaryFits).length;
       status.textContent = `${rows.length} candidate arrangements for ${caseLink.count} cartons — click a row to select` +
-        (bad ? ` · ${bad} rows: collation does NOT fit the locked carton` : '');
+        (bad ? ` · ${bad} rows: collation/wrap does NOT fit as configured` : '');
       status.className = bad ? 'bnote bbad' : 'bnote';
     }
+    if(girthWarning) status.textContent += ' · ' + girthWarning;
+    if(girthWarning) status.className = 'bnote bbad';
   }catch(e){
     rows = [];
-    status.textContent = 'Error: ' + (e.message || e);
+    status.textContent = 'Error: ' + (e.message || e) + (girthWarning ? ' · ' + girthWarning : '');
     status.className = 'bnote bbad';
   }
   el('bEnvInfo').textContent = envInfo;

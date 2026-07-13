@@ -91,40 +91,139 @@ function cutawayBox(outer, inner, mat){
   return g;
 }
 
-/** A wrap body: rounded conforming surface over the collation envelope, plus
- *  the seals drawn at their TRUE model dimensions.
- *
- *  end-seal crimp: L-extent = endSealWidth (the exact per-end L compensation),
- *    over the pack end face (envelope W × H). Nothing eyeballed.
- *  fin seal: stands finHeight proud (exact — the H compensation for a standing
- *    fin), runs the full pack length L. Its ONLY non-true dimension is
- *    thickness, which is film gauge (sub-visible) rendered at a floor and
- *    labelled as such in the report — it is film, not a seal parameter.
- *  Fin sits on the back face by default (seals.finFace: 'back'|'top'|'front'). */
-function wrapBody(envelope, seals, opened){
-  const g = new THREE.Group();
-  const {L, W, H} = envelope;
-  g.add(new THREE.Mesh(roundedBoxGeo(L, H, W, Math.min(W, H) * 0.22, 3), opened ? filmMat : filmClosedMat));
+/* ---------- flow-wrap geometry: conforming pillow body + tapered, crimped
+   ends. Dimensional truth: the overall bounding box of body+tapers always
+   equals the wrap style's own outer L×W×H (flowwrap.js's L+2*endSealWidth
+   compensation; H+finHeight is added separately by the unchanged fin mesh,
+   exactly as before). The pillow rounding, the taper, and the fin's
+   serration are cosmetic geometry INSIDE that envelope — nothing here
+   invents or alters a dimension. ---------------------------------------- */
 
-  const esw = seals.endSealWidth || 0;
-  if(esw > 0){
-    const crimp = new THREE.BoxGeometry(esw, H, W);         // true endSealWidth × pack end face
-    for(const sx of [ (L + esw)/2, -(L + esw)/2 ]){
-      const m = new THREE.Mesh(crimp, sealMat); m.position.set(sx, 0, 0); g.add(m);
+const WRAP_N = 20;           // profile sample count per loft ring
+const WRAP_SERR = 9;         // serration cycles around the crimped fin tip
+const WRAP_SERR_AMT = 0.16;  // serration amplitude, fraction of the tip's own half-size
+
+// one closed ring of WRAP_N points around a superellipse profile
+// (|h/hH|^expo + |w/hW|^expo = 1): expo~2 reads as an ellipse (round
+// product), expo>2 reads as a soft rounded rectangle (pillow over a stack).
+function superRing(xPos, hH, hW, expo, serrate){
+  const pts = [];
+  for(let k = 0; k < WRAP_N; k++){
+    const a = k/WRAP_N*Math.PI*2;
+    let h = Math.sign(Math.cos(a))*Math.pow(Math.abs(Math.cos(a)), 2/expo)*hH;
+    let w = Math.sign(Math.sin(a))*Math.pow(Math.abs(Math.sin(a)), 2/expo)*hW;
+    if(serrate){
+      const m = 1 + WRAP_SERR_AMT*Math.sin(a*WRAP_SERR);
+      h *= m; w *= m;
+    }
+    pts.push(new THREE.Vector3(xPos, h, w));
+  }
+  return pts;
+}
+
+// hand-built loft: N-point rings connected by quads, capped at both ends.
+// Every material in this file is DoubleSide, so winding direction only
+// affects computeVertexNormals()'s lighting side, never visibility.
+function loftGeometry(rings){
+  const N = rings[0].length;
+  const pos = [];
+  rings.forEach(r => r.forEach(p => pos.push(p.x, p.y, p.z)));
+  const idx = (ri, k) => ri*N + (k % N);
+  const indices = [];
+  for(let r = 0; r < rings.length - 1; r++)
+    for(let k = 0; k < N; k++){
+      const a = idx(r, k), b = idx(r, k + 1), c = idx(r + 1, k), d = idx(r + 1, k + 1);
+      indices.push(a, c, b,  b, c, d);
+    }
+  function cap(ri, flip){
+    const base = pos.length/3;
+    let cx = 0, cy = 0, cz = 0;
+    rings[ri].forEach(p => { cx += p.x; cy += p.y; cz += p.z; });
+    cx /= N; cy /= N; cz /= N;
+    pos.push(cx, cy, cz);
+    for(let k = 0; k < N; k++){
+      const a = ri*N + k, b = ri*N + ((k + 1) % N);
+      indices.push(base, flip ? b : a, flip ? a : b);
     }
   }
+  cap(0, true); cap(rings.length - 1, false);
+  const geo = new THREE.BufferGeometry();
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
 
-  const fh = seals.finHeight || 0;
-  if(seals.sealType !== 'lap' && fh > 0){
-    const standing = seals.finTreatment === 'standing';
-    const thick = T_FLOOR;                                  // film gauge — not to scale (only non-true dim)
-    const proud = standing ? fh : thick;                    // standing: true finHeight; folded: ~flat
-    const face = seals.finFace || 'back';
-    const zEdge = face === 'front' ? W/2 : face === 'top' ? 0 : -W/2;   // back by default
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(L, proud, thick), sealMat);
-    fin.position.set(0, H/2 + proud/2, zEdge);
-    g.add(fin);
+/** Body (constant cross-section over the product span, envelope.L) + two
+ *  end tapers (shoulder at ±envelope.L/2 -> crimped fin tip at
+ *  ±(envelope.L/2 + endSealWidth) — each taper spans EXACTLY endSealWidth,
+ *  so body+tapers together span envelope.L + 2*endSealWidth = the wrap's
+ *  true outer.L). envelope = the collation/product envelope, the SAME input
+ *  the previous box-based renderer used; only the shape changes. */
+function wrapPartsGeometry(envelope, seals, roundish){
+  const {L, W, H} = envelope;
+  const esw = Math.max(seals.endSealWidth || 0, 0.01);
+  const gaugeMM = Math.max((seals.gauge || 0)/1000, 0.01);
+  const finThk = Math.max(gaugeMM*2, 0.15);        // ~2x film gauge, floored only for visibility
+  const finW = W*0.42;                             // pinched tip width — cosmetic, stays inside W
+  const expo = roundish ? 2.05 : 3.4;              // ~2 = ellipse (round product); >2 = soft pillow
+
+  const hH = H/2, hW = W/2;   // body half-dims — every taper ring stays AT OR INSIDE these, never bulges past them
+  const bodyGeo = loftGeometry([
+    superRing(-L/2, hH, hW, expo, false),
+    superRing( L/2, hH, hW, expo, false)
+  ]);
+
+  function taper(sign){
+    const shoulder = sign*(L/2), tip = sign*(L/2 + esw);
+    const mid = shoulder + (tip - shoulder)*0.45;
+    // mid ring: a fraction of the BODY's own half-dims (strictly < hH,hW,
+    // so the taper only ever narrows toward the fin, never bulges outward)
+    const rings = [
+      superRing(shoulder, hH, hW, expo, false),
+      superRing(mid, hH*0.7, hW*0.7, expo, false),
+      superRing(tip, finThk/2, finW/2, expo, true)
+    ];
+    return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
+  return {bodyGeo, taperPos: taper(1), taperNeg: taper(-1)};
+}
+
+/** The fin seal — UNCHANGED geometry/placement logic from the box-render
+ *  era, just factored into a standalone (nx4-baked) geometry so it can be
+ *  shared by instanced (closed) and single (opened) wraps alike. Height is
+ *  ~2x gauge (folded) or the true finHeight (standing) — the same values
+ *  the H-compensation readout reports. Fin sits on the back face by
+ *  default (seals.finFace: 'back'|'top'|'front'). */
+function wrapFinGeometry(envelope, seals){
+  const {H, W, L} = envelope;
+  const fh = seals.finHeight || 0;
+  if(seals.sealType === 'lap' || fh <= 0) return null;
+  const standing = seals.finTreatment === 'standing';
+  const thick = T_FLOOR;
+  const proud = standing ? fh : thick;
+  const face = seals.finFace || 'back';
+  const zEdge = face === 'front' ? W/2 : face === 'top' ? 0 : -W/2;   // back by default
+  const geo = new THREE.BoxGeometry(L, proud, thick);
+  geo.translate(0, H/2 + proud/2, zEdge);          // bake the offset into the geometry (needed for instancing)
+  return geo;
+}
+
+// true when the collation is a single cylindrical slug — the one case
+// where the wrap's cross-section is genuinely circular, not just softened
+function isRoundishWrap(w){ return w.piece.kind === 'cylinder' && w.nx === 1 && w.ny === 1; }
+
+/** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
+ *  the single opened wrap. Closed (repeated) wraps use the instanced path
+ *  in buildContainer instead, sharing these same geometries. */
+function buildWrapMeshes(envelope, seals, roundish, opened){
+  const parts = wrapPartsGeometry(envelope, seals, roundish);
+  const finGeo = wrapFinGeometry(envelope, seals);
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(parts.bodyGeo, opened ? filmMat : filmClosedMat));
+  g.add(new THREE.Mesh(parts.taperPos, sealMat));
+  g.add(new THREE.Mesh(parts.taperNeg, sealMat));
+  if(finGeo) g.add(new THREE.Mesh(finGeo, sealMat));
   return g;
 }
 
@@ -150,7 +249,7 @@ function buildWrapOpened(bundle){
   const g = new THREE.Group();
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
-  g.add(wrapBody(envelope, bundle.wraps.seals, true));
+  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), true));
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -161,12 +260,6 @@ function buildWrapOpened(bundle){
     inst.setMatrixAt(i, M);
   });
   g.add(inst);
-  return g;
-}
-
-function closedWrap(bundle){
-  const g = new THREE.Group();
-  g.add(wrapBody(bundle.wraps.envelope, bundle.wraps.seals, false));
   return g;
 }
 
@@ -182,9 +275,10 @@ function groupByOrientation(placements, skipIdx){
 }
 
 // generic: a container tier holding children, one opened, the rest closed.
-// Rigid children (cartons, cases) instance as one mesh per orientation; wrap
-// children are multi-mesh film bodies (film + fin + crimps) placed
-// individually — counts here are wrapsPerCarton, tiny by construction.
+// Both rigid children (cartons, cases) and wrap children instance — one
+// InstancedMesh per PART (body/taperPos/taperNeg/fin) for wraps, since a
+// wrap's shape doesn't vary by orientation the way a box's rendered
+// geometry does; the rotation is baked into each instance's own matrix.
 function buildContainer(tier, bundle, sel, path){
   const g = new THREE.Group();
   const {geo, children, childKind} = tier;
@@ -194,13 +288,33 @@ function buildContainer(tier, bundle, sel, path){
   const parentInnerH = geo.inner.H;
 
   if(childKind === 'wrap'){
-    children.forEach((pl, i) => {
-      if(i === openIdx) return;
-      const wb = closedWrap(bundle);
-      wb.position.copy(childPos(pl, parentInnerH));
-      wb.quaternion.copy(orientQuat(pl.orientation));
-      g.add(wb);
-    });
+    const w = bundle.wraps;
+    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w));
+    const finGeo = wrapFinGeometry(w.envelope, w.seals);
+    const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
+    if(closed.length){
+      const partDefs = [
+        {geo: parts.bodyGeo, mat: filmClosedMat},
+        {geo: parts.taperPos, mat: sealMat},
+        {geo: parts.taperNeg, mat: sealMat}
+      ];
+      if(finGeo) partDefs.push({geo: finGeo, mat: sealMat});
+      for(const pd of partDefs){
+        const inst = new THREE.InstancedMesh(pd.geo, pd.mat, closed.length);
+        const M = new THREE.Matrix4();
+        closed.forEach(({pl}, k) => {
+          M.makeRotationFromQuaternion(orientQuat(pl.orientation));
+          const p = childPos(pl, parentInnerH);
+          M.setPosition(p.x, p.y, p.z);
+          inst.setMatrixAt(k, M);
+        });
+        // a closed wrap is pickable too — click it to open it, same as any
+        // other level's closed child
+        inst.userData = {pick: closed.map(x => x.i), tierName: 'wrap'};
+        pickables.push({mesh: inst, tier: tier.name});
+        g.add(inst);
+      }
+    }
   }else{
     for(const [o, list] of groupByOrientation(children, openIdx)){
       const od = orient(tier.childOuter, o);

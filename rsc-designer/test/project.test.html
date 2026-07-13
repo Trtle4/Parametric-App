@@ -208,6 +208,45 @@ t('solved carton + wrap: stored cartons arrangement is non-zero and correct', ()
   eq(placements.length, r.nx*r.ny*r.nz, 'matches the candidate grid:');
 });
 
+/* ---- Bug 1: multiple wraps per carton (links[1], the wrap->carton link) —
+   previously ALWAYS 1 (cartonVariants never read link.arrangement). Same
+   collation/wrap as the "wrap seal compensation" case above (env 90x50x120,
+   fin folded, ends 10 -> wrap outer 110x50x120.03), now 8 wraps explicit
+   4x2x1, zero primary clearance:
+     cavity L = 4*110 = 440, W = 2*50 = 100, H = 120.03 -> 121 (1mm up)
+     piecesPerCarton = 6/wrap * 8 wraps = 48                                */
+function multiWrapProject(){
+  const p = newProject();
+  p.primary.allowedOrientations = ['LWH'];
+  p.links[1].count = 8;
+  p.links[1].arrangement = {nx: 4, ny: 2, nz: 1};
+  p.links[0].arrangement = {nx: 2, ny: 2, nz: 1};
+  return p;
+}
+
+t('multiple wraps per carton: explicit 4×2×1 sizes the carton around 8 wraps', () => {
+  const rows = candidateCases(multiWrapProject(), '1mm');
+  const r = rows.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('2×2×1 case row missing');
+  eq(r.cartonParams.L, 440, 'carton L = 4 wraps × 110:');
+  eq(r.cartonParams.W, 100, 'carton W = 2 wraps × 50:');
+  eq(r.cartonParams.H, 121, 'carton H = 120.03 rounded up 1mm:');
+  eq(r.piecesPerCarton, 48, '8 wraps × 6 pieces/wrap:');
+  eq(r.arr.wraps.count, 8, 'stored wrap arrangement count:');
+  eq(r.arr.wraps.placements.length, 8, 'one placement per wrap:');
+});
+
+t('multiple wraps per carton: the 8 wraps sit centred inside the carton, none overlapping', () => {
+  const rows = candidateCases(multiWrapProject(), '1mm');
+  const r = rows.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  const placements = r.arr.wraps.placements;
+  const xs = [...new Set(placements.map(p => p.x))].sort((a, b) => a - b);
+  const ys = [...new Set(placements.map(p => p.y))].sort((a, b) => a - b);
+  eq(xs.length, 4, 'four distinct X columns:'); eq(ys.length, 2, 'two distinct Y rows:');
+  approx(xs[1] - xs[0], 110, 'column pitch = wrap outer L:');
+  approx(ys[1] - ys[0], 50, 'row pitch = wrap outer W:');
+});
+
 /* ---- Bug 3: every orientation basis is a PROPER rotation (det +1) ---- */
 t('orientation basis is a proper rotation for all six orientations', () => {
   for(const o of ORIENTATIONS){

@@ -180,6 +180,31 @@
         "filmAreaM2": 0.015315, "filmKgPerPallet": 2.024
       }
     },
+    "wrap_multi_per_carton_4x2": {
+      "note": "Bug 1 regression: MULTIPLE WRAPS PER CARTON, not previously covered. Same box collation/wrap as wrap_fin_folded (env 90x50x120, fin folded, ends 10), but the carton now holds 8 wraps explicit 4x2x1 (wraps-per-carton link, links[1]) instead of the implicit single wrap every other wrap_* pin uses. Carton solves to 440x100x121 (4*110 x 2*50 x 120.03->121), carton a6120 @0.457 -> outer 440.914x100.914x122.828 (H unchanged from wrap_fin_folded since nz=1 in both). Case: 4 cartons @ 2x2x1, wall 1.5. GMA pallet, optimal pattern.",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "folded", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 8, "wrapArrangement": {"nx": 4, "ny": 2, "nz": 1},
+        "count": 4, "arrangement": {"nx": 2, "ny": 2, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 110, "W": 50, "H": 120.03},
+        "cartonOuter": {"L": 440.914, "W": 100.914, "H": 122.828},
+        "piecesPerCarton": 48,
+        "cavity": {"L": 885, "W": 205, "H": 123}, "outer": {"L": 891, "W": 211, "H": 135},
+        "boardAreaM2": 0.72652, "casesPerLayer": 5, "caseLayers": 10,
+        "casesPerPallet": 50, "cartonsPerPallet": 200, "piecesPerPallet": 9600,
+        "coveragePct": 76, "cubeUtilPct": 65,
+        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.849
+      }
+    },
     "carton12_4x3x1_upright": {
       "note": "full chain: a6120 100x60x150 @0.457 (outer 100.914x60.914x151.828), 12 cartons upright, wall 1.5 / between 0, vertical 0/0/0, explicit 4x3x1, cavity rounded up 1mm, case caliper 3 / glue 35 / slot 6, GMA pallet 48x40in 60in budget, optimal pattern",
       "config": {

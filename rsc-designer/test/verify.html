@@ -85,6 +85,10 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
       ? {styleId: 'flowwrap', params: {...ch.config.wrap}, locked: false}
       : null;                                    // pins that predate the wrap
     p.secondary.params = {...p.secondary.params, ...ch.config.cartonMaterial};
+    if(ch.config.wrapCount !== undefined){        // wraps-per-carton link (links[1]); pins that
+      p.links[1].count = ch.config.wrapCount;      // omit this keep the implicit single-wrap default
+      p.links[1].arrangement = ch.config.wrapArrangement;
+    }
   }else{
     p.primary = null;                       // legacy carton-driven pin
     p.secondary.params = {...ch.config.carton};
@@ -102,6 +106,7 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     cmp(name, 'cartonOuter.W', e.cartonOuter.W, r.cartonOuter.W);
     cmp(name, 'cartonOuter.H', e.cartonOuter.H, r.cartonOuter.H);
   }
+  if(e.piecesPerCarton !== undefined) cmp(name, 'piecesPerCarton', e.piecesPerCarton, r.piecesPerCarton);
   if(e.piecesPerPallet !== undefined) cmp(name, 'piecesPerPallet', e.piecesPerPallet, r.piecesPerPallet);
   if(e.wrapOuter){
     cmp(name, 'wrapOuter.L', e.wrapOuter.L, r.wrapOuter.L);

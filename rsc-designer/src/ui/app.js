@@ -114,7 +114,8 @@ function hierarchyBundle(){
     cartons: {placements: cartons.placements},
     wraps: pieces ? {
       placements: wraps.placements, envelope: pieces.envelope, pieces: pieces.placements,
-      piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals
+      piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
+      nx: pieces.nx, ny: pieces.ny            // collation grid — used to detect a single round slug
     } : null,
     counts: {
       cases: cases.count, cartonsPerCase: proj.links[0].count,

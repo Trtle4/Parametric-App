@@ -133,6 +133,25 @@ export const VERTICAL_CHOICES = [
   {axis: 'W', label: 'W up — on side',              codes: 'LHW·HLW'}
 ];
 
+/** Nouns for each tier, keyed by the tier name used in Link.parent/child.
+ *  Every child-count / arrangement control label is DERIVED from this map
+ *  plus the actual Link objects — never a hardcoded "Cartons/case" string
+ *  disconnected from the chain. */
+export const TIER_NOUN = {primary: 'wrap', secondary: 'carton', tertiary: 'case'};
+
+/**
+ * Round girth (π·d) is only physically meaningful for a single cylindrical
+ * slug: one stack, 1×1, running along the pack length (X) — the only
+ * geometry whose wrap path is actually a circle. Any other collation makes
+ * "round" report a fabricated film-area number. The Build UI uses this same
+ * predicate to grey out the option and to detect a stale selection, so the
+ * two can never silently disagree.
+ */
+export function roundGirthEligible(collation){
+  return collation.piece.kind === 'cylinder' && collation.nx === 1 && collation.ny === 1
+    && collation.stackAxis === 'X';
+}
+
 /* ---------------- candidate enumeration + full-chain metrics ------------ */
 
 // keep only irreducible grids: capacity >= count and no axis removable
@@ -167,22 +186,19 @@ function cartonVariants(project, step){
     return [{params: sec.params, geo, orientation: null, label: null, piecesPerCarton: null, fits: true}];
   }
   const prim = project.primary;
-  const link = linkFor(project, 'secondary');
+  const link = linkFor(project, 'secondary');   // parent='secondary'(carton), child='primary'(wrap) — the SAME uniform Link shape every other level uses
   const col = collate(prim.collation);
-  const piecesPerCarton = col.count*link.count;
 
   // the wrap (if any) sits between the collation and the carton: it takes
   // the envelope as content and hands up its seal-compensated outer
   let wrapGeo = null, wrapFits = true, wp = null;
   if(prim.wrap){
     wp = {...prim.wrap.params};
-    // round girth basis is only meaningful when the wrap tube cross-section
-    // is a single circle: cylindrical piece, one stack, running along the
-    // pack length (stackAxis X). Anything else falls back to rectangular.
+    // round girth basis is only meaningful for a single cylindrical slug —
+    // roundGirthEligible is the SAME predicate the Build UI checks, so the
+    // two can never silently disagree about what's valid.
     if(wp.girthBasis === 'round'){
-      const c = prim.collation;
-      if(c.piece.kind === 'cylinder' && c.nx === 1 && c.ny === 1 && c.stackAxis === 'X')
-        wp.roundDiameter = c.piece.diameter;
+      if(roundGirthEligible(prim.collation)) wp.roundDiameter = prim.collation.piece.diameter;
       else wp.girthBasis = 'rectangular';
     }
     if(prim.wrap.locked){
@@ -199,31 +215,68 @@ function cartonVariants(project, step){
   // already encodes whether in-plan rotation is allowed — the solver picks
   // within that set only, never across vertical axes
   const child = {outer: content, allowedOrientations: prim.allowedOrientations};
-  let params, fits = true, capacity = null, chosen, wrapsArrangement;
+  let params, fits = true, capacity = null, chosen, wrapsArrangement, requestedUnits;
   if(link.locked){
     params = sec.params;                                        // user-fixed carton
     const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
     capacity = chk.total; fits = chk.total >= link.count;
     chosen = chk.placements[0] ? chk.placements[0].orientation : prim.allowedOrientations[0];
     wrapsArrangement = chk;
-  }else{
+    requestedUnits = link.count;
+  }else if(link.arrangement === 'auto'){
     const solved = solveParent(child, link.count, prim.clearance);
     const cavity = roundCavityUp(solved.cavity, step);
     params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
     chosen = solved.arrangement.placements[0]
       ? solved.arrangement.placements[0].orientation : prim.allowedOrientations[0];
     wrapsArrangement = solved.arrangement;
+    requestedUnits = link.count;
+  }else{
+    // explicit nx×ny×nz: identical pattern to the case level's explicit
+    // arrangement (candidateCases below) — take the exact-grid candidate
+    // cavity, round it, then build the REAL Arrangement inside it via
+    // fitInto. No enumeration/ranking here (still one variant), just an
+    // exact layout instead of the solver's best-scored one.
+    const {nx, ny, nz} = link.arrangement;
+    requestedUnits = nx*ny*nz;
+    const cands = parentCandidates(child, requestedUnits, prim.clearance, {layers: nz})
+      .filter(c => c.nx === nx && c.ny === ny);
+    if(cands.length === 0){
+      // the typed grid isn't reachable for this child/orientation set —
+      // surface it as a mismatch rather than silently guessing a carton size
+      params = sec.params;
+      fits = false; capacity = 0;
+      chosen = prim.allowedOrientations[0];
+      wrapsArrangement = {placements: [], total: 0};
+    }else{
+      const cavity = roundCavityUp(cands[0].cavity, step);
+      params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
+      const fit = fitInto(child, cavity, prim.clearance, 'column');
+      chosen = fit.placements[0] ? fit.placements[0].orientation : prim.allowedOrientations[0];
+      wrapsArrangement = fit;
+      fits = fit.total >= requestedUnits; capacity = fit.total;
+    }
   }
+
+  // pieces/carton depends only on how many collation UNITS sit in the
+  // carton — true whether or not those units are wrapped in film.
+  // wrapsPerCarton (the "wrap" noun) is meaningful only when a wrap style
+  // is actually configured; it feeds film-mass math, which is itself
+  // skipped downstream whenever wrapGeo is null.
+  const piecesPerCarton = col.count*requestedUnits;
+  const wrapsPerCarton = prim.wrap ? requestedUnits : null;
+
   return [{
     params, geo: styleById(sec.styleId).geometry(params),
     orientation: chosen, label: orientationLabel(prim.collation.stackAxis, chosen),
     piecesPerCarton, fits: fits && wrapFits, capacity,
-    wrapGeo, wrapFits, wrapsPerCarton: prim.wrap ? link.count : null,
+    wrapGeo, wrapFits, wrapsPerCarton,
     // SINGLE SOURCE OF TRUTH: the arrangements this solve produced, retained
     // so the hierarchy view reads them instead of re-solving.
     wrapsArr: prim.wrap ? {placements: wrapsArrangement.placements, count: wrapsArrangement.total} : null,
     pieces: prim.wrap ? {placements: col.placements, envelope: col.envelope,
                          piece: prim.collation.piece, stackAxis: prim.collation.stackAxis,
+                         nx: prim.collation.nx, ny: prim.collation.ny,
                          seals: {sealType: wp.sealType, finTreatment: wp.finTreatment,
                                  finHeight: wp.finHeight, finSealBand: wp.finSealBand,
                                  endSealWidth: wp.endSealWidth, finFace: wp.finFace || 'back',
