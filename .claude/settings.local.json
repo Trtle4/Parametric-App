@@ -17,7 +17,18 @@
       "PowerShell(git push -u origin main)",
       "PowerShell(git config --show-origin --get-all credential.helper; $env:GIT_TERMINAL_PROMPT='0'; git push -u origin main)",
       "Bash(git credential *)",
-      "PowerShell($env:GIT_TERMINAL_PROMPT='0'; git push -u origin main)"
+      "PowerShell($env:GIT_TERMINAL_PROMPT='0'; git push -u origin main)",
+      "PowerShell(try { Remove-Item test -Recurse -Force -Confirm:$false -ErrorAction Stop; \"removed\" } catch { \"still locked: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(git add CLAUDE.md rsc-designer/test/verify.html)",
+      "PowerShell(git rm --cached -q rsc-designer/files.zip)",
+      "PowerShell(git add .gitignore)",
+      "PowerShell(\"---\")",
+      "PowerShell(git commit -F \"C:\\\\Users\\\\luke4\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-luke4-OneDrive-Personal-Coding-Claude\\\\eb3aca52-9e98-43fc-b556-b7eeeb7e3459\\\\scratchpad\\\\commitmsg.txt\")",
+      "PowerShell(git rev-list --left-right --count origin/main...HEAD 2>$null)",
+      "PowerShell(\"---BRANCH---\")",
+      "PowerShell(\"---AHEAD/BEHIND---\")",
+      "PowerShell(git add .claude/settings.local.json)",
+      "PowerShell(git commit -m \"Deploy current build\")"
     ]
   }
 }
