@@ -143,6 +143,10 @@
   .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
   .depthsel button{letter-spacing:.04em}
   .hud.hier{left:16px;bottom:auto;top:14px;max-width:340px;line-height:1.5;display:block}
+  .hud.hierlegend{left:16px;bottom:14px;top:auto;flex-direction:column;align-items:flex-start;gap:5px;line-height:1.4}
+  .hud.hierlegend .lg{display:flex;align-items:center;gap:7px}
+  .hud.hierlegend .sw{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.15)}
+  .hud.hierlegend .rd{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);color:var(--ink)}
   @media (max-width:860px){
     main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
     .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
@@ -229,6 +233,7 @@
       <span class="k">scroll zoom &middot; drag pan &middot; dblclick reset</span>
     </div>
     <div class="hud hier" id="hierHud" style="display:none"></div>
+    <div class="hud hierlegend" id="hierLegend" style="display:none"></div>
     <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
   </section>
 

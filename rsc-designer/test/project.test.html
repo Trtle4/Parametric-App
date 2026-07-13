@@ -15,9 +15,10 @@
      pallet 1219.2×1016, budget 1524-127, pattern column:
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
-import {newProject, candidateCases, checkLockedCase, nestArrangement, roundCavityUp, ROUNDING,
+import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
         verticalToOrientations} from '../src/core/project.js';
 import {fitInto} from '../src/core/containment.js';
+import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 
 const results = [];
 function t(name, fn){
@@ -87,12 +88,12 @@ t('locked case: both directions work', () => {
   if(bad.fits) throw new Error('300×150×152 cannot hold 12 cartons but reported fits');
 });
 
-t('nest placements: 12 cartons, on the floor, inside the walls', () => {
+t('stored cartons arrangement: 12 cartons, on the floor, inside the walls', () => {
   const rows = candidateCases(refProject(), '1mm');
   const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
-  const nest = nestArrangement(refProject(), r);
-  eq(nest.placements.length, 12, 'count:');
-  for(const p of nest.placements){
+  const placements = r.arr.cartons.placements;   // single source, read off the row
+  eq(placements.length, 12, 'count:');
+  for(const p of placements){
     approx(p.z, 75.914, 'z = h/2, bottom clearance 0:');
     if(Math.abs(p.x) + 100.914/2 > 407/2 - 1.5 + 1e-9) throw new Error(`x overflow at ${p.x}`);
     if(Math.abs(p.y) + 60.914/2 > 186/2 - 1.5 + 1e-9) throw new Error(`y overflow at ${p.y}`);
@@ -188,6 +189,40 @@ t('wrap seal compensation propagates into carton sizing', () => {
   r = candidateCases(p, '1mm')[0];
   eq(r.cartonParams.H, 120, 'lap seal: no envelope gain:');
   if(!(r.filmAreaM2 > 0 && r.filmKgPerPallet > 0)) throw new Error('film metrics missing');
+});
+
+/* ---- Bug 1 regression: a SOLVED carton with a wrap present must yield a
+        non-zero, correct cartons-in-case arrangement (nestArrangement used
+        the unsolved secondary.params and returned 0 here) ---- */
+t('solved carton + wrap: stored cartons arrangement is non-zero and correct', () => {
+  const p = newProject();                       // default: box collation + fin wrap, carton SOLVED
+  p.primary.allowedOrientations = ['LWH'];
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  const r = candidateCases(p, '1mm')[0];
+  // the carton is solved (≠ the a6120 default 100×60×150)
+  if(r.cartonParams.L === 100 && r.cartonParams.W === 60 && r.cartonParams.H === 150)
+    throw new Error('carton was not solved from the collation');
+  const placements = r.arr.cartons.placements;
+  eq(placements.length, 12, 'cartons in case (was 0 with the old nestArrangement):');
+  // count matches the arrangement grid nx*ny*nz
+  eq(placements.length, r.nx*r.ny*r.nz, 'matches the candidate grid:');
+});
+
+/* ---- Bug 3: every orientation basis is a PROPER rotation (det +1) ---- */
+t('orientation basis is a proper rotation for all six orientations', () => {
+  for(const o of ORIENTATIONS){
+    const d = det3(orientBasis(o));
+    if(Math.abs(d - 1) > 1e-9) throw new Error(`${o}: determinant ${d}, expected +1 (reflection = mirrored die)`);
+  }
+  // and the basis is orthonormal (columns are unit and mutually perpendicular)
+  for(const o of ORIENTATIONS){
+    const c = orientBasis(o);
+    const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    if(Math.abs(dot(c[0], c[0]) - 1) > 1e-9 || Math.abs(dot(c[1], c[1]) - 1) > 1e-9 || Math.abs(dot(c[2], c[2]) - 1) > 1e-9)
+      throw new Error(`${o}: columns not unit length`);
+    if(Math.abs(dot(c[0], c[1])) > 1e-9 || Math.abs(dot(c[0], c[2])) > 1e-9 || Math.abs(dot(c[1], c[2])) > 1e-9)
+      throw new Error(`${o}: columns not orthogonal`);
+  }
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

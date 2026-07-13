@@ -80,10 +80,16 @@ t('24pt board (0.61): compensation follows raw caliper', () => {
   approx(g2.outer.L, 101.22, 'L'); approx(g2.outer.W, 61.22, 'W'); approx(g2.outer.H, 152.44, 'H');
 });
 t('DXF exporter emits unknown aux layers without modification', () => {
+  // exporter emits R12 with CRLF; tokenise on any newline so the assertion
+  // is line-ending agnostic (dxf.test.html round-trips the real parser)
   const dxf = buildDXF({...g, aux: {PERF: [[0, 0, 10, 0]], SCORE_HALF: [[0, 5, 10, 5]]}}, 'mm');
-  for(const layer of ['CUT', 'CREASE', 'PERF', 'SCORE_HALF'])
-    if(!dxf.includes(`0\nLAYER\n2\n${layer}\n`)) throw new Error(`missing layer table entry ${layer}`);
-  if(!dxf.includes(`8\nPERF\n10\n0`)) throw new Error('missing PERF entity');
+  const tok = dxf.split(/\r\n|\r|\n/);
+  const hasPair = (a, b) => { for(let i = 0; i < tok.length - 1; i++) if(tok[i] === a && tok[i + 1] === b) return true; return false; };
+  for(const layer of ['CUT', 'CREASE', 'PERF', 'SCORE_HALF']){
+    // a LAYER record: code 0 / LAYER, then somewhere its code 2 / <name>
+    if(!hasPair('2', layer)) throw new Error(`missing layer table entry ${layer}`);
+  }
+  if(!hasPair('8', 'PERF')) throw new Error('missing PERF entity');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

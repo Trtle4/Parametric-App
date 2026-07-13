@@ -13,19 +13,32 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
+import {orientBasis} from './orient.js';
 
 const T_FLOOR = 0.6;                    // min rendered wall thickness, mm
 const IDX = {L: 0, W: 1, H: 2};
 const ENV_AXIS = {X: 'L', Y: 'W', Z: 'H'};
 
+// Colors chosen to be mutually distinct and, for film, clear of the CREASE
+// blue (#3E63DD) used in the 2D dieline. Seals are warm orange so they never
+// collide with any blue. The LEGEND export keeps the HUD swatches in sync.
+const C_PRODUCT = 0xE0C089, C_FILM = 0x8FD4C4, C_SEAL = 0xE08A2E, C_BOARD = 0xC69C6D;
+export const LEGEND = [
+  {name: 'Product',           hex: '#E0C089'},
+  {name: 'Film',              hex: '#8FD4C4'},
+  {name: 'Fin seal',          hex: '#E08A2E'},
+  {name: 'End seal',          hex: '#E08A2E'},
+  {name: 'Board (carton/case)', hex: '#C69C6D'}
+];
+
 const board   = kraft;                  // case/carton board (opaque)
 const board2  = kraft2;
-const pieceMat = new THREE.MeshStandardMaterial({color: 0xE0C089, roughness: 0.75, metalness: 0});
-const filmMat = new THREE.MeshStandardMaterial({color: 0xBcd8e6, roughness: 0.25, metalness: 0,
-  transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false});
-const filmClosedMat = new THREE.MeshStandardMaterial({color: 0xBcd8e6, roughness: 0.25, metalness: 0,
-  transparent: true, opacity: 0.72, side: THREE.DoubleSide});
-const sealMat = new THREE.MeshStandardMaterial({color: 0x8fb3c4, roughness: 0.4, metalness: 0, side: THREE.DoubleSide});
+const pieceMat = new THREE.MeshStandardMaterial({color: C_PRODUCT, roughness: 0.75, metalness: 0});
+const filmMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, metalness: 0,
+  transparent: true, opacity: 0.30, side: THREE.DoubleSide, depthWrite: false});
+const filmClosedMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, metalness: 0,
+  transparent: true, opacity: 0.7, side: THREE.DoubleSide});
+const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, metalness: 0, side: THREE.DoubleSide});
 const deckMat = new THREE.MeshStandardMaterial({color: 0xA0815A, roughness: 0.95, metalness: 0});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
 
@@ -40,15 +53,14 @@ let hud = null;
 // oriented outer dims of a child given a containment orientation string
 function orient(outer, o){ return {l: outer[o[0]], w: outer[o[1]], h: outer[o[2]]}; }
 
-// world rotation that stands a child (design x=L, y=H, z=W) into orientation o.
-// H-up cases use a proper Y rotation; other axes fall back to a basis (may
-// reflect a symmetric body — visually identical for our boxes/grids).
+// world rotation that stands a child (local x=L, y=H, z=W) into orientation o.
+// orientBasis guarantees a PROPER rotation (det +1) for all six orientations,
+// never a reflection — a reflected body is a mirrored dieline.
 function orientQuat(o){
-  const q = new THREE.Quaternion();
-  if(o[2] === 'H') return q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), o[0] === 'L' ? 0 : Math.PI/2);
-  const slot = a => a === 0 ? new THREE.Vector3(1, 0, 0) : a === 1 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
-  const m = new THREE.Matrix4().makeBasis(slot(o.indexOf('L')), slot(o.indexOf('H')), slot(o.indexOf('W')));
-  return q.setFromRotationMatrix(m);
+  const [cx, cy, cz] = orientBasis(o);
+  const m = new THREE.Matrix4().makeBasis(
+    new THREE.Vector3(...cx), new THREE.Vector3(...cy), new THREE.Vector3(...cz));
+  return new THREE.Quaternion().setFromRotationMatrix(m);
 }
 
 // child centre in the parent's local frame (parent cavity centred; z from floor)
@@ -79,30 +91,38 @@ function cutawayBox(outer, inner, mat){
   return g;
 }
 
-/** A wrap body: rounded conforming surface over the envelope, plus the fin
- *  seal (why H grows) and the two end-seal crimp tabs (why L grows). */
+/** A wrap body: rounded conforming surface over the collation envelope, plus
+ *  the seals drawn at their TRUE model dimensions.
+ *
+ *  end-seal crimp: L-extent = endSealWidth (the exact per-end L compensation),
+ *    over the pack end face (envelope W × H). Nothing eyeballed.
+ *  fin seal: stands finHeight proud (exact — the H compensation for a standing
+ *    fin), runs the full pack length L. Its ONLY non-true dimension is
+ *    thickness, which is film gauge (sub-visible) rendered at a floor and
+ *    labelled as such in the report — it is film, not a seal parameter.
+ *  Fin sits on the back face by default (seals.finFace: 'back'|'top'|'front'). */
 function wrapBody(envelope, seals, opened){
   const g = new THREE.Group();
   const {L, W, H} = envelope;
-  const body = new THREE.Mesh(roundedBoxGeo(L, H, W, Math.min(W, H) * 0.22, 3),
-                              opened ? filmMat : filmClosedMat);
-  g.add(body);
-  // end-seal crimps: flattened tabs proud of each L end, spanning the girth
+  g.add(new THREE.Mesh(roundedBoxGeo(L, H, W, Math.min(W, H) * 0.22, 3), opened ? filmMat : filmClosedMat));
+
   const esw = seals.endSealWidth || 0;
   if(esw > 0){
-    const crimp = new THREE.BoxGeometry(esw, H * 0.9, W * 0.96);
+    const crimp = new THREE.BoxGeometry(esw, H, W);         // true endSealWidth × pack end face
     for(const sx of [ (L + esw)/2, -(L + esw)/2 ]){
       const m = new THREE.Mesh(crimp, sealMat); m.position.set(sx, 0, 0); g.add(m);
     }
   }
-  // fin seal along the top-back, running the length; standing or folded flat
+
   const fh = seals.finHeight || 0;
   if(seals.sealType !== 'lap' && fh > 0){
     const standing = seals.finTreatment === 'standing';
-    const fin = new THREE.Mesh(
-      new THREE.BoxGeometry(L * 0.96, standing ? fh : Math.max(fh * 0.15, 0.4), standing ? Math.max(fh * 0.12, 0.4) : fh),
-      sealMat);
-    fin.position.set(0, H/2 + (standing ? fh/2 : 0), W/2 - (standing ? Math.max(fh * 0.06, 0.2) : fh/2));
+    const thick = T_FLOOR;                                  // film gauge — not to scale (only non-true dim)
+    const proud = standing ? fh : thick;                    // standing: true finHeight; folded: ~flat
+    const face = seals.finFace || 'back';
+    const zEdge = face === 'front' ? W/2 : face === 'top' ? 0 : -W/2;   // back by default
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(L, proud, thick), sealMat);
+    fin.position.set(0, H/2 + proud/2, zEdge);
     g.add(fin);
   }
   return g;
@@ -208,16 +228,21 @@ function buildContainer(tier, bundle, sel, path){
 
 function clampIdx(i, arr){ return Math.min(Math.max(i | 0, 0), Math.max(arr.length - 1, 0)); }
 
-// pick the top layer child nearest the camera (default open channel)
-function nearestTopCorner(children, parentInnerH){
+// Default open unit: the OUTER-CORNER unit of the top layer nearest the
+// camera — the one you can actually see into. Projecting each top-layer
+// unit's plan position onto the camera's horizontal direction is maximised
+// at the near corner (never an interior/near-face unit); a tiny radial
+// tiebreak keeps it a corner when the camera faces straight down an axis.
+function nearestCameraCorner(children){
   if(!children.length) return 0;
   const cam = getCamera();
-  let best = 0, bestScore = -Infinity;
   const maxZ = Math.max(...children.map(c => c.z));
+  let cdx = 1, cdy = 1;
+  if(cam){ cdx = cam.position.x; cdy = cam.position.z; const n = Math.hypot(cdx, cdy) || 1; cdx /= n; cdy /= n; }
+  let best = 0, bestScore = -Infinity;
   children.forEach((c, i) => {
-    const top = c.z > maxZ - 1e-6 ? 1e6 : 0;                // strongly prefer the top layer
-    const p = childPos(c, parentInnerH);
-    const score = top + (cam ? p.clone().normalize().dot(cam.position.clone().normalize()) : 0);
+    if(c.z < maxZ - 1e-6) return;                          // top layer only
+    const score = (c.x*cdx + c.y*cdy) + 1e-6*(c.x*c.x + c.y*c.y);
     if(score > bestScore){ bestScore = score; best = i; }
   });
   return best;
@@ -236,7 +261,8 @@ export function buildHierarchy(bundle, depth, sel){
   // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
   const cartonTier = {
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
-    children: bundle.wraps.placements, childOuter: bundle.wrapGeo.outer, childMat: filmClosedMat,
+    children: bundle.wraps ? bundle.wraps.placements : [],
+    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : bundle.cartonGeo.outer, childMat: filmClosedMat,
     buildChild: (b, s, path) => buildWrapOpened(b)
   };
   const caseTier = {
@@ -245,12 +271,14 @@ export function buildHierarchy(bundle, depth, sel){
     buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)
   };
 
-  // default openings (nearest top corner) where unset
-  const defaults = {
-    case: nearestTopCorner(bundle.cartons.placements, bundle.caseGeo.inner.H),
-    carton: nearestTopCorner(bundle.wraps.placements, bundle.cartonGeo.inner.H)
+  // default openings: outer-corner unit nearest the camera, per level, where
+  // the user hasn't clicked an override. Recomputed each build (app rebuilds
+  // on pointerup after an orbit, so the channel tracks the near corner).
+  const S = {
+    case:   sel.case   ?? nearestCameraCorner(bundle.cases.placements),
+    carton: sel.carton ?? nearestCameraCorner(bundle.cartons.placements),
+    wrap:   sel.wrap   ?? (bundle.wraps ? nearestCameraCorner(bundle.wraps.placements) : 0)
   };
-  const S = {case: sel.case ?? defaults.case, carton: sel.carton ?? defaults.carton, wrap: 0};
 
   let span = 100, opened = {};
   if(depth === 'product'){
@@ -286,7 +314,7 @@ function buildPallet(bundle, caseTier, S){
   const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
   const loadH = layers * co.H;
   const deckH = bundle.cases.deck.baseH;
-  const openIdx = S.case ?? nearestTopCorner(cases.placements, loadH);
+  const openIdx = S.case ?? nearestCameraCorner(cases.placements);
 
   // deck slab
   const deck = new THREE.Mesh(new THREE.BoxGeometry(bundle.cases.deck.L, deckH, bundle.cases.deck.W), deckMat);

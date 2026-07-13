@@ -15,7 +15,7 @@ import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
-import {wrapsInCarton, casesOnPallet, cartonsInCase} from '../core/project.js';
+import {LEGEND} from '../render/hierarchy3d.js';
 import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
@@ -92,8 +92,9 @@ function syncPalletToProject(){
                           baseH: PALLET_HEIGHT, pattern: s.pattern};
 }
 
-/** Assemble the hierarchy bundle purely from model functions (no packaging
- *  math here). Uses the current Build config + selected (or first) case row. */
+/** Assemble the hierarchy bundle by READING the arrangements the chain
+ *  already retained on the row (row.geo + row.arr). No re-solving here —
+ *  single source of truth with the Build table. */
 function hierarchyBundle(){
   const proj = build.project;
   syncPalletToProject();                                // pallet from the main rails
@@ -103,25 +104,22 @@ function hierarchyBundle(){
   // shows a representative case, not the first enumerated candidate
   const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
   const row = build.getSelected() || best;
-  if(!row) return null;
-  const cop = casesOnPallet(proj, row);                 // fitInto: cases on pallet
-  const cartons = cartonsInCase(proj, row);             // fitInto: the row's solved cartons in the case
-  const wraps = wrapsInCarton(proj, row);               // solveParent: wraps in carton (+ pieces)
-  const link0 = proj.links[0].count;
+  if(!row || !row.arr) return null;
+  const {cases, cartons, wraps, pieces} = row.arr;
   return {
-    caseGeo: cop.caseGeo,
-    cartonGeo: styleById(proj.secondary.styleId).geometry(row.cartonParams),
-    wrapGeo: wraps ? wraps.wrapGeo : null,
-    cases: cop,
+    caseGeo: row.geo.case,
+    cartonGeo: row.geo.carton,
+    wrapGeo: row.geo.wrap,
+    cases: {placements: cases.placements, count: cases.count, deck: cases.deck},
     cartons: {placements: cartons.placements},
-    wraps: wraps ? {
-      placements: wraps.placements, envelope: wraps.envelope, pieces: wraps.pieces,
-      piece: wraps.piece, stackAxis: wraps.stackAxis, seals: wraps.seals
+    wraps: pieces ? {
+      placements: wraps.placements, envelope: pieces.envelope, pieces: pieces.placements,
+      piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals
     } : null,
     counts: {
-      cases: cop.count, cartonsPerCase: link0,
-      wrapsPerCarton: wraps ? wraps.counts.wrapsPerCarton : 0,
-      piecesPerWrap: wraps ? wraps.counts.piecesPerWrap : 0
+      cases: cases.count, cartonsPerCase: proj.links[0].count,
+      wrapsPerCarton: wraps ? wraps.count : 0,
+      piecesPerWrap: pieces ? pieces.placements.length : 0
     }
   };
 }
@@ -165,13 +163,38 @@ function applyHierarchy(resetCam){
   el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened);
+  renderLegend(bundle);
+}
+
+/** Legend naming every coloured element, plus (at wrap depth) the seal
+ *  compensation read straight off the model geometry. */
+function renderLegend(bundle){
+  const s = inputs.readState();
+  const swatches = LEGEND
+    .filter(l => bundle.wrapGeo || (l.name !== 'Film' && !l.name.includes('seal')))
+    .map(l => `<span class="lg"><span class="sw" style="background:${l.hex}"></span>${l.name}</span>`).join('');
+  let readout = '';
+  if(depth === 'wrap' && bundle.wrapGeo){
+    const inr = bundle.wrapGeo.inner, out = bundle.wrapGeo.outer;   // model dims, mm
+    const u = s.unit, f = v => fmtLen(v, u);
+    const add = (a, b, note) => `${b - a >= 0 ? '+' : ''}${f(b - a)}${note ? ' ' + note : ''}`;
+    const sealsOn = bundle.wraps.seals;
+    const hNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
+      : sealsOn.finTreatment === 'standing' ? '(standing fin)' : '(folded fin, film gauge)';
+    readout = `<div class="rd">` +
+      `Envelope ${f(inr.L)} × ${f(inr.W)} × ${f(inr.H)} ${u}<br>` +
+      `Seal add: L ${add(inr.L, out.L, '(2×end seal)')} · W ${add(inr.W, out.W)} · H ${add(inr.H, out.H, hNote)}<br>` +
+      `Wrap outer ${f(out.L)} × ${f(out.W)} × ${f(out.H)} ${u} — grows the carton</div>`;
+  }
+  el('hierLegend').innerHTML = swatches + readout;
+  el('hierLegend').style.display = 'flex';
 }
 
 function applyFoldMode(){
   el('m3fold').classList.add('on');
   ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d => el('d_' + d).classList.remove('on'));
   if(view !== '3d') return;
-  hier.show(false); el('hierHud').style.display = 'none';
+  hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('orbithint').textContent = 'drag to orbit · scroll to zoom';
   refresh3d(); fold.showBox(true);
   if(inputs.currentStyle().structure === 'flexible') fold.jumpClosed();
@@ -194,7 +217,7 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
-  if(v !== '3d') el('hierHud').style.display = 'none';
+  if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
   if(v === 'build'){
     syncPalletToProject();
     build.recompute();
@@ -257,7 +280,13 @@ el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); }
     if(Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 5) moved = true;
   });
   document.addEventListener('pointerup', e => {
-    if(view !== '3d' || mode3d !== 'hier' || moved || e.target !== canvas()) return;
+    if(view !== '3d' || mode3d !== 'hier' || e.target !== canvas()) return;
+    if(moved){
+      // orbit ended: recompute the near-corner defaults for the new camera
+      // (rebuild once here, NOT every frame). Manual overrides persist.
+      applyHierarchy(false);
+      return;
+    }
     const r = canvas().getBoundingClientRect();
     const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
     const ny = -((e.clientY - r.top) / r.height) * 2 + 1;

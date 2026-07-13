@@ -73,7 +73,7 @@ export function newProject(){
       // Seal values are editable defaults, not conventions.
       wrap: {
         styleId: 'flowwrap',
-        params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded',
+        params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
                  girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92},
         locked: false
@@ -173,9 +173,9 @@ function cartonVariants(project, step){
 
   // the wrap (if any) sits between the collation and the carton: it takes
   // the envelope as content and hands up its seal-compensated outer
-  let wrapGeo = null, wrapFits = true;
+  let wrapGeo = null, wrapFits = true, wp = null;
   if(prim.wrap){
-    const wp = {...prim.wrap.params};
+    wp = {...prim.wrap.params};
     // round girth basis is only meaningful when the wrap tube cross-section
     // is a single circle: cylindrical piece, one stack, running along the
     // pack length (stackAxis X). Anything else falls back to rectangular.
@@ -199,24 +199,35 @@ function cartonVariants(project, step){
   // already encodes whether in-plan rotation is allowed — the solver picks
   // within that set only, never across vertical axes
   const child = {outer: content, allowedOrientations: prim.allowedOrientations};
-  let params, fits = true, capacity = null, chosen;
+  let params, fits = true, capacity = null, chosen, wrapsArrangement;
   if(link.locked){
     params = sec.params;                                        // user-fixed carton
     const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
     capacity = chk.total; fits = chk.total >= link.count;
     chosen = chk.placements[0] ? chk.placements[0].orientation : prim.allowedOrientations[0];
+    wrapsArrangement = chk;
   }else{
     const solved = solveParent(child, link.count, prim.clearance);
     const cavity = roundCavityUp(solved.cavity, step);
     params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
     chosen = solved.arrangement.placements[0]
       ? solved.arrangement.placements[0].orientation : prim.allowedOrientations[0];
+    wrapsArrangement = solved.arrangement;
   }
   return [{
     params, geo: styleById(sec.styleId).geometry(params),
     orientation: chosen, label: orientationLabel(prim.collation.stackAxis, chosen),
     piecesPerCarton, fits: fits && wrapFits, capacity,
-    wrapGeo, wrapFits, wrapsPerCarton: prim.wrap ? link.count : null
+    wrapGeo, wrapFits, wrapsPerCarton: prim.wrap ? link.count : null,
+    // SINGLE SOURCE OF TRUTH: the arrangements this solve produced, retained
+    // so the hierarchy view reads them instead of re-solving.
+    wrapsArr: prim.wrap ? {placements: wrapsArrangement.placements, count: wrapsArrangement.total} : null,
+    pieces: prim.wrap ? {placements: col.placements, envelope: col.envelope,
+                         piece: prim.collation.piece, stackAxis: prim.collation.stackAxis,
+                         seals: {sealType: wp.sealType, finTreatment: wp.finTreatment,
+                                 finHeight: wp.finHeight, finSealBand: wp.finSealBand,
+                                 endSealWidth: wp.endSealWidth, finFace: wp.finFace || 'back',
+                                 gauge: wp.gauge}} : null
   }];
 }
 
@@ -244,25 +255,8 @@ export function candidateCases(project, rounding = '1mm'){
       const caseParams = {...ter.params, L: cavity.L, W: cavity.W, H: cavity.H};
       const caseGeo = styleById(ter.styleId).geometry(caseParams);
       const row = chainMetrics(project, c, cavity, caseParams, caseGeo, cartonVol, link.count);
-      row.cartonParams = variant.params;
-      row.cartonOuter = variant.geo.outer;
-      row.primaryOrientation = variant.orientation;
-      row.primaryLabel = variant.label;
-      row.primaryFits = variant.fits;
-      row.piecesPerCarton = variant.piecesPerCarton;
-      row.piecesPerPallet = variant.piecesPerCarton !== null
-        ? variant.piecesPerCarton*row.cartonsPerPallet : null;
-      if(variant.wrapGeo){
-        // film cost columns — board vs film trade against each other.
-        // fillEfficiency and film numbers NEVER touch cube utilization.
-        const film = variant.wrapGeo.meta.film;
-        row.filmAreaM2 = film.filmAreaM2;
-        row.filmKgPerPallet = (film.massPer1000g/1000)*variant.wrapsPerCarton*row.cartonsPerPallet/1000;
-        row.wrapOuter = variant.wrapGeo.outer;
-      }else{
-        row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
-      }
-      rows.push(row);
+      const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, c.o);
+      rows.push(decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit));
     }
   }
   return rows;
@@ -276,25 +270,51 @@ export function checkLockedCase(project, rounding = '1mm'){
   const sec = project.secondary, ter = project.tertiary;
   const step = ROUNDING[rounding] || 1;
   const variant = cartonVariants(project, step)[0];
-  const child = {outer: variant.geo.outer, allowedOrientations: sec.allowedOrientations};
   const cavity = {L: ter.params.L, W: ter.params.W, H: ter.params.H};
-  const fit = fitInto(child, cavity, sec.clearance, 'column');
+  const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, variant.orientation);
   const caseGeo = styleById(ter.styleId).geometry(ter.params);
   const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
-  const cand = {nx: '—', ny: '—', layers: fit.layers, o: fit.placements[0] ? fit.placements[0].orientation : '—'};
+  const cand = {nx: '—', ny: '—', layers: cartonsFit.layers,
+                o: cartonsFit.placements[0] ? cartonsFit.placements[0].orientation : '—'};
   const row = chainMetrics(project, cand, cavity, ter.params, caseGeo, cartonVol, link.count);
-  row.capacity = fit.total;
-  row.fits = fit.total >= link.count && variant.fits;
-  row.arrangementLabel = `locked (${fit.label})`;
+  row.capacity = cartonsFit.total;
+  row.fits = cartonsFit.total >= link.count && variant.fits;
+  row.arrangementLabel = `locked (${cartonsFit.label})`;
+  return decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit);
+}
+
+/* ---------------- single-source-of-truth row decoration -----------------
+ * The chain retains the Arrangement it solves at each link, ON THE ROW.
+ * The Build table reads the row's counts; the 3D hierarchy reads the row's
+ * stored placements. Nothing downstream re-solves — one computation, one
+ * truth. (Fixes the old split where nestArrangement/wrapsInCarton/... each
+ * re-solved and could diverge, and where nestArrangement fit the UNSOLVED
+ * carton — see git history / the report.)
+ */
+
+/** Cartons fitted into a case cavity, in the candidate's carton orientation
+ *  (cand.o, the orientation that sized the cavity). */
+function fitCartonsInCase(project, cartonGeo, cavity, cartonOrientation){
+  const child = {
+    outer: cartonGeo.outer,
+    allowedOrientations: typeof cartonOrientation === 'string' && cartonOrientation.length === 3
+      ? [cartonOrientation] : project.secondary.allowedOrientations
+  };
+  return fitInto(child, cavity, project.secondary.clearance, 'column');
+}
+
+/** Attach every derived field + the retained arrangements to a metrics row. */
+function decorateRow(row, project, variant, caseGeo, casesFit, cartonsFit){
   row.cartonParams = variant.params;
   row.cartonOuter = variant.geo.outer;
   row.primaryOrientation = variant.orientation;
   row.primaryLabel = variant.label;
   row.primaryFits = variant.fits;
   row.piecesPerCarton = variant.piecesPerCarton;
-  row.piecesPerPallet = variant.piecesPerCarton !== null
-    ? variant.piecesPerCarton*row.cartonsPerPallet : null;
+  row.piecesPerPallet = variant.piecesPerCarton !== null ? variant.piecesPerCarton*row.cartonsPerPallet : null;
   if(variant.wrapGeo){
+    // film cost columns — board vs film trade against each other. film
+    // numbers and fillEfficiency NEVER touch cube utilization.
     const film = variant.wrapGeo.meta.film;
     row.filmAreaM2 = film.filmAreaM2;
     row.filmKgPerPallet = (film.massPer1000g/1000)*variant.wrapsPerCarton*row.cartonsPerPallet/1000;
@@ -302,94 +322,16 @@ export function checkLockedCase(project, rounding = '1mm'){
   }else{
     row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
   }
-  return row;
-}
-
-/**
- * Everything the Carton + product 3D view needs for one table row: the
- * carton geometry, the collation result (real piece placements), and the
- * chosen envelope orientation into the carton.
- */
-export function productNest(project, row){
-  if(!project.primary) return null;
-  const col = collate(project.primary.collation);
-  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
-  return {
-    cartonGeo,
-    collation: project.primary.collation,
-    result: col,
-    orientation: row.primaryOrientation || project.primary.allowedOrientations[0],
-    clearance: project.primary.clearance
-  };
-}
-
-/* ---------------- hierarchy assembly for the 3D cascade view ------------
- * The full chain's Arrangements composed for rendering. Every placement here
- * comes from the model's own solvers (collate / solveParent / fitInto) — the
- * same calls the chain already makes. The chain DISCARDS two of these
- * (wraps-in-carton from solveParent in cartonVariants; cases-on-pallet from
- * fitInto in chainMetrics); this re-exposes them the way nestArrangement()
- * already re-exposes cartons-in-case. No new packaging math; the renderer
- * consumes placements only.
- */
-
-/** Wraps arranged inside one carton (solveParent Arrangement), plus the seal
- *  descriptor and pieces the renderer needs to draw a wrap as a wrap. */
-export function wrapsInCarton(project, row){
-  const prim = project.primary;
-  if(!prim || !prim.wrap) return null;
-  const link = linkFor(project, 'secondary');
-  const col = collate(prim.collation);
-  const wp = {...prim.wrap.params};
-  if(wp.girthBasis === 'round'){
-    const c = prim.collation;
-    if(c.piece.kind === 'cylinder' && c.nx === 1 && c.ny === 1 && c.stackAxis === 'X') wp.roundDiameter = c.piece.diameter;
-    else wp.girthBasis = 'rectangular';
-  }
-  wp.L = col.envelope.L; wp.W = col.envelope.W; wp.H = col.envelope.H;
-  const wrapGeo = styleById(prim.wrap.styleId).geometry(wp);
-  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
-  const child = {outer: wrapGeo.outer, allowedOrientations: prim.allowedOrientations};
-  const solved = solveParent(child, link.count, prim.clearance);
-  return {
-    cartonGeo, wrapGeo,
-    placements: solved.arrangement.placements,      // wraps inside the carton
-    envelope: col.envelope,
-    pieces: col.placements,                         // pieces inside the wrap envelope
-    piece: prim.collation.piece,
-    stackAxis: prim.collation.stackAxis,
-    seals: {sealType: wp.sealType, finTreatment: wp.finTreatment, finHeight: wp.finHeight,
-            endSealWidth: wp.endSealWidth},
-    counts: {wrapsPerCarton: link.count, piecesPerWrap: col.count}
-  };
-}
-
-/** Cartons arranged inside the case for a chosen row. Unlike the legacy
- *  nestArrangement (which fits the UNSOLVED secondary.params), this fits the
- *  row's own SOLVED carton — the only one consistent with row.cavity. */
-export function cartonsInCase(project, row){
-  const cartonGeo = styleById(project.secondary.styleId).geometry(row.cartonParams);
-  const child = {
-    outer: cartonGeo.outer,
-    allowedOrientations: typeof row.orientation === 'string' && row.orientation.length === 3
-      ? [row.orientation] : project.secondary.allowedOrientations
-  };
-  const fit = fitInto(child, row.cavity, project.secondary.clearance, 'column');
-  return {cartonGeo, placements: fit.placements, count: fit.total};
-}
-
-/** Cases arranged on the pallet (fitInto Arrangement) for the chosen row. */
-export function casesOnPallet(project, row){
+  // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
-  const caseGeo = styleById(project.tertiary.styleId).geometry(row.caseParams);
-  const fit = fitInto(
-    {outer: caseGeo.outer, allowedOrientations: project.tertiary.allowedOrientations},
-    {L: p.L, W: p.W, H: p.maxH - p.baseH},
-    project.tertiary.clearance,
-    p.pattern
-  );
-  return {caseGeo, placements: fit.placements, count: fit.total,
-          deck: {L: p.L, W: p.W, baseH: p.baseH}};
+  row.geo = {case: caseGeo, carton: variant.geo, wrap: variant.wrapGeo};
+  row.arr = {
+    cases:   {placements: casesFit.placements, count: casesFit.total, deck: {L: p.L, W: p.W, baseH: p.baseH}},
+    cartons: {placements: cartonsFit.placements, count: cartonsFit.total},
+    wraps:   variant.wrapsArr,     // {placements, count} | null
+    pieces:  variant.pieces        // {placements, envelope, piece, stackAxis, seals} | null
+  };
+  return row;
 }
 
 function chainMetrics(project, cand, cavity, caseParams, caseGeo, cartonVol, count){
@@ -419,26 +361,8 @@ function chainMetrics(project, cand, cavity, caseParams, caseGeo, cartonVol, cou
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
-    cubeUtilPct: loadH > 0 ? Math.round(cartonVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0
+    cubeUtilPct: loadH > 0 ? Math.round(cartonVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
+    casesFit: fit                            // retained for decorateRow (single source)
   };
 }
 
-/**
- * Placements of the cartons inside a chosen (rounded) case cavity — via
- * fitInto, so the 3D nest view exercises the real containment path and
- * doubles as a post-rounding capacity check.
- * @returns {{placements: import('./containment.js').Placement[], capacity: number, cavity: Object}}
- */
-export function nestArrangement(project, row){
-  const sec = project.secondary;
-  const cartonGeo = styleById(sec.styleId).geometry(sec.params);
-  const child = {
-    outer: cartonGeo.outer,
-    allowedOrientations: typeof row.orientation === 'string' && row.orientation.length === 3
-      ? [row.orientation] : sec.allowedOrientations
-  };
-  const fit = fitInto(child, row.cavity, sec.clearance, 'column');
-  const count = project.links[0].count;
-  return {placements: fit.placements.slice(0, Math.min(count, fit.placements.length)),
-          capacity: fit.total, cavity: row.cavity, cartonGeo};
-}

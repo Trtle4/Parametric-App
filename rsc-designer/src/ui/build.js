@@ -10,10 +10,9 @@
  *
  * Never auto-selects a winner: rows are ranked visibly, the engineer picks.
  */
-import {newProject, candidateCases, checkLockedCase, nestArrangement, productNest, ROUNDING, linkFor,
+import {newProject, candidateCases, checkLockedCase, ROUNDING, linkFor,
         verticalToOrientations, VERTICAL_CHOICES} from '../core/project.js';
 import {collate, PRESETS} from '../core/collation.js';
-import {styleById} from '../core/styles/index.js';
 import {toMM, fromMM, fmtInputValue, fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
 
@@ -84,7 +83,9 @@ export function initBuild(onSelect, startUnit){
           <label>Treatment</label>
           <select id="bwTreat"><option value="folded" selected>Folded down</option><option value="standing">Standing</option></select></div>
         <div class="brow"><label>Fin height</label><input id="bwFinH" type="number" step="0.5" value="${lenVal(8)}">${U()}
-          <label>Seal band</label><input id="bwBand" type="number" step="0.5" value="${lenVal(5)}">${U()}</div>
+          <label>Seal band</label><input id="bwBand" type="number" step="0.5" value="${lenVal(5)}">${U()}
+          <label>Fin face</label>
+          <select id="bwFace"><option value="back" selected>Back</option><option value="top">Top</option><option value="front">Front</option></select></div>
         <div class="brow"><label>Lap overlap</label><input id="bwLap" type="number" step="0.5" value="${lenVal(12)}">${U()}</div>
         <div class="brow"><label>End seal</label><input id="bwEndW" type="number" step="0.5" value="${lenVal(10)}">${U()}
           <label>Bleed</label><input id="bwBleed" type="number" step="0.5" value="${lenVal(3)}">${U()}</div>
@@ -150,7 +151,7 @@ export function initBuild(onSelect, startUnit){
 
   const rewire = ids => ids.forEach(id => el(id).addEventListener('input', recompute));
   rewire(LEN_IDS.concat(['bPer', 'bnx', 'bny', 'bCount', 'bNx', 'bNy', 'bNz', 'bwGauge', 'bwDens']));
-  ['bpVert', 'bpRot', 'bsVert', 'bsRot', 'btVert', 'btRot', 'bwSeal', 'bwTreat', 'bwBasis']
+  ['bpVert', 'bpRot', 'bsVert', 'bsRot', 'btVert', 'btRot', 'bwSeal', 'bwTreat', 'bwFace', 'bwBasis']
     .forEach(id => el(id).addEventListener('change', recompute));
   el('bwLock').addEventListener('change', () => {
     el('bwLockDims').style.display = el('bwLock').checked ? '' : 'none';
@@ -232,7 +233,7 @@ function readIntoProject(){
   prim.wrap = {
     styleId: 'flowwrap',
     params: {
-      sealType: el('bwSeal').value, finTreatment: el('bwTreat').value,
+      sealType: el('bwSeal').value, finTreatment: el('bwTreat').value, finFace: el('bwFace').value,
       finHeight: n('bwFinH'), finSealBand: n('bwBand'), lapOverlap: n('bwLap'),
       endSealWidth: n('bwEndW'), endSealBleed: n('bwBleed'),
       girthBasis: el('bwBasis').value, roundDiameter: 0,
@@ -337,10 +338,3 @@ function renderTable(){
 
 export const getSelected = () => selected;
 export const getRows = () => rows;
-export const getNest = () => {
-  if(!selected) return null;
-  const arr = nestArrangement(project, selected);
-  const caseGeo = styleById(project.tertiary.styleId).geometry(selected.caseParams);
-  return {caseGeo, cartonGeo: arr.cartonGeo, placements: arr.placements};
-};
-export const getProductNest = () => selected ? productNest(project, selected) : null;
