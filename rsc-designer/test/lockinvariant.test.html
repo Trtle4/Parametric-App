@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lock invariant tests</title>
+<pre id="out">running…</pre>
+<div id="dimFields"></div>
+<div id="matFields"></div>
+<div id="optFields"></div>
+<script type="module">
+/* Step 3's invariant, enforced rather than hoped for: for any style level,
+   in BOTH the solved (derived, read-only) state and the locked (user-set,
+   editable) state, the value the rails DISPLAY and the value living in
+   `project` are the same value. This is the exact defect class the
+   stale-params bug belonged to — a derived dim shown on screen that was
+   never written back into the object the chain (and every other view)
+   reads. It exercises the real inputs.js rendering code (mountLevel/
+   lengthField) against a minimal DOM, not a re-description of it. */
+import {newProject, linkFor, levelGeometry} from '../src/core/project.js';
+import {styleById} from '../src/core/styles/index.js';
+import * as inputs from '../src/ui/inputs.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+
+// {geoLevel, tier field on project} for each style level the rails mount
+const LEVELS = [
+  {name: 'wrap',   styleIdOf: p => p.primary.wrap.styleId, paramsOf: p => p.primary.wrap.params,
+   optionsOf: p => p.primary.wrap.options, lockedOf: p => p.primary.wrap.locked,
+   setLocked: (p, v) => { p.primary.wrap.locked = v; }, geoLevel: 'wrap'},
+  {name: 'carton', styleIdOf: p => p.secondary.styleId, paramsOf: p => p.secondary.params,
+   optionsOf: p => p.secondary.options, lockedOf: p => linkFor(p, 'secondary').locked,
+   setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; }, geoLevel: 'carton'},
+  {name: 'case',   styleIdOf: p => p.tertiary.styleId, paramsOf: p => p.tertiary.params,
+   optionsOf: p => p.tertiary.options, lockedOf: p => linkFor(p, 'tertiary').locked,
+   setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; }, geoLevel: 'case'}
+];
+
+/** Mount `lvl` of `p` exactly as app.js's mountActiveLevel does, and return
+ *  the {L,W,H,...} the rails actually show (parsed straight from the
+ *  rendered <input> elements — not a recomputation). */
+function mountAndRead(lvl, p){
+  const locked = lvl.lockedOf(p);
+  const g = levelGeometry(p, lvl.geoLevel);
+  const effectiveDims = (!locked && g) ? g.inner : null;
+  const style = styleById(lvl.styleIdOf(p));
+  inputs.mountLevel(style, lvl.paramsOf(p), lvl.optionsOf(p), {effectiveDims, locked, onInput: () => {}});
+  const shown = {};
+  for(const d of style.params) if(d.group === 'dims') shown[d.key] = +document.getElementById('p_' + d.key).value;
+  return shown;
+}
+
+for(const lvl of LEVELS){
+  t(`${lvl.name}: solved — displayed dims equal the project's own params (post-mirror)`, () => {
+    const p = newProject();
+    const shown = mountAndRead(lvl, p);
+    const params = lvl.paramsOf(p);
+    for(const k of Object.keys(shown)) approx(shown[k], params[k], `${lvl.name}.${k} displayed vs project:`);
+  });
+
+  t(`${lvl.name}: unlock carries the exact solved value into the locked, editable field`, () => {
+    const p = newProject();
+    const solvedShown = mountAndRead(lvl, p);       // solved render mirrors into params
+    lvl.setLocked(p, true);                          // the deliberate unlock action
+    const lockedShown = mountAndRead(lvl, p);         // re-mount, now editable
+    const params = lvl.paramsOf(p);
+    for(const k of Object.keys(solvedShown)){
+      approx(lockedShown[k], solvedShown[k], `${lvl.name}.${k} locked display vs its own solved value:`);
+      approx(params[k], solvedShown[k], `${lvl.name}.${k} project value vs its own solved value:`);
+    }
+  });
+
+  t(`${lvl.name}: locked — displayed dims equal the project's own params`, () => {
+    const p = newProject();
+    mountAndRead(lvl, p);
+    lvl.setLocked(p, true);
+    const shown = mountAndRead(lvl, p);
+    const params = lvl.paramsOf(p);
+    for(const k of Object.keys(shown)) approx(shown[k], params[k], `${lvl.name}.${k} locked displayed vs project:`);
+  });
+
+  t(`${lvl.name}: re-locking to solved re-derives — display and project agree again, not the stale locked value`, () => {
+    const p = newProject();
+    mountAndRead(lvl, p);
+    lvl.setLocked(p, true);
+    const lockedParams = lvl.paramsOf(p);
+    const dimKey = Object.keys(mountAndRead(lvl, p))[0];
+    lockedParams[dimKey] = lockedParams[dimKey] + 500;   // simulate a user edit while locked
+    lvl.setLocked(p, false);                              // solve from contents again
+    const shown = mountAndRead(lvl, p);
+    const params = lvl.paramsOf(p);
+    for(const k of Object.keys(shown)) approx(shown[k], params[k], `${lvl.name}.${k} re-solved displayed vs project:`);
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

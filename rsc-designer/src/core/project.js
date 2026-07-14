@@ -342,6 +342,10 @@ function cartonVariants(project, step){
     params, geo: styleById(sec.styleId).geometry(params),
     orientation: chosen, label: orientationLabel(prim.collation.stackAxis, chosen),
     piecesPerCarton, fits: fits && wrapFits, capacity,
+    // per-level fit, kept separate from the combined `fits` above so a rail
+    // showing ONE locked level (e.g. carton) can report a misfit that belongs
+    // to that level specifically, not conflated with the wrap's own check
+    secondaryFits: fits,
     wrapGeo, wrapFits, wrapsPerCarton,
     // SINGLE SOURCE OF TRUTH: the arrangements this solve produced, retained
     // so the hierarchy view reads them instead of re-solving.
@@ -396,16 +400,25 @@ export function checkLockedCase(project, rounding = '1mm'){
   const step = ROUNDING[rounding] || 1;
   const variant = cartonVariants(project, step)[0];
   const cavity = {L: ter.params.L, W: ter.params.W, H: ter.params.H};
-  const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, variant.orientation);
+  // variant.orientation is the PRIMARY's orientation inside the carton — a
+  // different rotational relationship than the carton's orientation inside
+  // the case. Passing it here would wrongly restrict the carton-in-case fit
+  // check to whichever orientation the primary happened to use, so a case
+  // locked at exactly its own solved cavity could spuriously "not fit". Pass
+  // no orientation: fitCartonsInCase falls back to the case's OWN allowed
+  // orientations (project.secondary.allowedOrientations), same as the
+  // unlocked candidateCases path.
+  const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, null);
   const caseGeo = styleById(ter.styleId).geometry(ter.params);
   const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
   const cand = {nx: '—', ny: '—', layers: cartonsFit.layers,
                 o: cartonsFit.placements[0] ? cartonsFit.placements[0].orientation : '—'};
   const row = chainMetrics(project, cand, cavity, ter.params, caseGeo, cartonVol, link.count);
   row.capacity = cartonsFit.total;
-  row.fits = cartonsFit.total >= link.count && variant.fits;
+  const tertiaryFits = cartonsFit.total >= link.count;
+  row.fits = tertiaryFits && variant.fits;
   row.arrangementLabel = `locked (${cartonsFit.label})`;
-  return decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit);
+  return decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit, tertiaryFits);
 }
 
 /**
@@ -462,13 +475,21 @@ function fitCartonsInCase(project, cartonGeo, cavity, cartonOrientation){
   return fitInto(child, cavity, project.secondary.clearance, 'column');
 }
 
-/** Attach every derived field + the retained arrangements to a metrics row. */
-function decorateRow(row, project, variant, caseGeo, casesFit, cartonsFit){
+/** Attach every derived field + the retained arrangements to a metrics row.
+ *  `tertiaryFits` defaults true: candidateCases only ever enumerates case
+ *  candidates that already fit, so there's nothing to misreport; a locked
+ *  case (checkLockedCase) passes its own real check instead. */
+function decorateRow(row, project, variant, caseGeo, casesFit, cartonsFit, tertiaryFits = true){
   row.cartonParams = variant.params;
   row.cartonOuter = variant.geo.outer;
   row.primaryOrientation = variant.orientation;
   row.primaryLabel = variant.label;
   row.primaryFits = variant.fits;
+  // per-level fit flags — the rail uses these to show a misfit against the
+  // SPECIFIC locked level, not just the chain's overall combined result
+  row.wrapFits = variant.wrapFits;
+  row.secondaryFits = variant.secondaryFits;
+  row.tertiaryFits = tertiaryFits;
   row.piecesPerCarton = variant.piecesPerCarton;
   row.piecesPerPallet = variant.piecesPerCarton !== null ? variant.piecesPerCarton*row.cartonsPerPallet : null;
   if(variant.wrapGeo){

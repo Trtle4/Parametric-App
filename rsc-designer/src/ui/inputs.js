@@ -22,7 +22,7 @@ let palUnit = 'in';
 
 // the currently-mounted level, retained so a unit switch can re-mount with
 // the same binding (values live in the project, re-read in the new unit)
-let mounted = null;   // {style, params, options, effectiveDims, dimsReadOnly, onInput}
+let mounted = null;   // {style, params, options, effectiveDims, locked, onInput}
 
 export const getUnit = () => unit;
 export const getPalUnit = () => palUnit;
@@ -30,16 +30,19 @@ export const getPalUnit = () => palUnit;
 /* ---------- field construction, bound to a project level ---------- */
 
 /** A numeric length (or fixedUnit) field, its value read from and written to
- *  the backing project object. Dimension fields may display a DERIVED value
- *  (the solved dims) and, when the level is solved, be read-only. */
+ *  the backing project object. A dimension field is read-only by DEFAULT —
+ *  solved from the level's contents — and only becomes editable once the
+ *  level is deliberately unlocked (the lock control in app.js). There is no
+ *  "type to lock" any more: a read-only field cannot be typed into, so the
+ *  underlying value and the displayed value can never disagree. */
 function lengthField(d, params, m){
   const wrap = document.createElement('div');
   wrap.className = 'field';
   const chip = d.fixedUnit || unit;
   const isDim = d.group === 'dims';
-  const readOnly = isDim && m.dimsReadOnly;
+  const readOnly = isDim && !m.locked;
   // solved dims show the derived value; everything else shows the stored param
-  const showingDerived = isDim && m.effectiveDims && m.effectiveDims[d.key] != null;
+  const showingDerived = isDim && !m.locked && m.effectiveDims && m.effectiveDims[d.key] != null;
   const mmVal = showingDerived ? m.effectiveDims[d.key]
     : (params[d.key] != null ? params[d.key] : d.default);
   // mirror the derived dim into params so that LOCKING the level (by typing
@@ -81,7 +84,7 @@ function selectField(d, obj, group){
  * @param {Object} style   the level's style descriptor (params/options)
  * @param {Object} params  the level's params object IN THE PROJECT (mutated in place)
  * @param {Object} options the level's style-view options object IN THE PROJECT
- * @param {Object} m       {effectiveDims, dimsReadOnly, onInput({key,group})}
+ * @param {Object} m       {effectiveDims, locked, onInput({key,group})}
  */
 export function mountLevel(style, params, options, m){
   mounted = {style, params, options, ...m};

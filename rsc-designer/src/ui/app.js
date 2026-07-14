@@ -21,7 +21,7 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 import * as save from './save.js';
-import {newProject, levelGeometry, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
@@ -41,19 +41,19 @@ const LEVELS = {
            paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
            optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
-           dimsReadOnly: true},   // wrap dims are solved from the collation; locking still lives in Build (Step 5)
+           derivedFrom: () => 'the collation', fitsOf: row => row.wrapFits},
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
-           dimsReadOnly: false},
+           derivedFrom: p => p.primary.wrap ? 'the wrap' : 'the collation', fitsOf: row => row.secondaryFits},
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
            styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
-           dimsReadOnly: false},
+           derivedFrom: () => 'the carton', fitsOf: row => row.tertiaryFits},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
 const activeStyleId = () => LEVELS[activeLevel].styleIdOf(build.project);
@@ -70,6 +70,13 @@ function activeGeometry(){
   return levelGeometry(build.project, LEVELS[activeLevel].geoLevel, build.getRounding(), selKey());
 }
 function activeStyle(){ return isStyleLevel() ? styleById(activeStyleId()) : null; }
+/** The resolved chain row, for the per-level fit flags (wrapFits/
+ *  secondaryFits/tertiaryFits) the lock control reads — a level's OWN misfit,
+ *  never the chain's combined result. */
+function activeRow(){
+  if(!isStyleLevel()) return null;
+  return resolveActiveRow(build.project, build.getRounding(), selKey());
+}
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
 function refresh2d(){
@@ -133,10 +140,41 @@ function refreshAll(){
 function toggleRailSections(kind){
   const styleOrProduct = kind === 'style' || kind === 'product';
   el('levelStyle').style.display = (kind === 'style') ? 'contents' : 'none';
+  el('levelLock').style.display = (kind === 'style') ? 'contents' : 'none';
   el('dimFields').style.display = styleOrProduct ? 'contents' : 'none';
   el('matFields').style.display = styleOrProduct ? 'contents' : 'none';
   el('optFields').style.display = (kind === 'style') ? 'contents' : 'none';
   el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
+}
+
+/** The lock/unlock control for the active level's dimensions. Solved (the
+ *  default) is read-only and marked as derived from the level's own content;
+ *  unlocking is the ONE deliberate action that makes dims editable and hands
+ *  control to the user — never an implicit side effect of typing. While
+ *  locked, the level's content is checked against the typed dims and a
+ *  misfit is surfaced here loudly, not hidden in a readout elsewhere. */
+function mountLockControl(){
+  const host = el('levelLock');
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  const locked = lvl.lockedOf(proj);
+  const child = lvl.derivedFrom(proj);
+  const row = activeRow();
+  const g = row ? row.geo[lvl.geoLevel] : null;
+  const misfit = locked && row && lvl.fitsOf(row) === false;
+  const noSolution = !locked && !g;
+  host.innerHTML =
+    `<div class="field lockField">
+      <label>Dimensions <span class="hint">${locked ? 'locked — user-set' : `derived — solved from ${child}`}</span></label>
+      <div class="inp"><button type="button" id="levelLockBtn" class="btn">${locked ? `Solve from ${child}` : 'Unlock to edit'}</button></div>
+    </div>` +
+    (misfit ? `<div class="misfit"><strong>Does not fit</strong> — ${child} does not fit within these locked dimensions.</div>` : '') +
+    (noSolution ? `<div class="misfit"><strong>No solution</strong> — ${child} doesn't resolve to a fit upstream.</div>` : '');
+  el('levelLockBtn').addEventListener('click', () => {
+    lvl.setLocked(proj, !locked);
+    onProjectEdited();
+    mountActiveLevel();   // re-render the rails: fields flip editable<->read-only, values re-sync
+  });
 }
 
 /** The per-level style dropdown, filtered by the registry's `tier`. A style
@@ -189,19 +227,18 @@ function mountActiveLevel(){
   const lvl = LEVELS[activeLevel], proj = build.project;
   toggleRailSections(lvl.kind);
   mountStyleSelector();
+  mountLockControl();
   if(lvl.kind === 'style'){
     const locked = lvl.lockedOf(proj);
     const g = activeGeometry();
     const effectiveDims = (!locked && g) ? g.inner : null;   // derived dims when solved
     inputs.mountLevel(activeStyle(), lvl.paramsOf(proj), lvl.optionsOf(proj), {
       effectiveDims,
-      dimsReadOnly: lvl.dimsReadOnly,
-      onInput: ({group}) => {
-        // typing a dimension of a solved (rigid) level implicitly locks it, so
-        // the chain honours the typed value and 2D/3D/DXF show what was typed
-        if(group === 'dims' && !lvl.dimsReadOnly) lvl.setLocked(proj, true);
-        onProjectEdited();
-      }
+      locked,
+      // dims are read-only unless unlocked (mountLockControl's deliberate
+      // toggle); this fires for material/option edits, and for dim edits
+      // only once unlocked — never an implicit lock-on-type
+      onInput: () => onProjectEdited()
     });
   }else if(lvl.kind === 'product'){
     inputs.mountProduct(proj.primary.collation, {onInput: () => onProjectEdited()});
@@ -252,6 +289,10 @@ function setActiveLevel(level){
  *  re-synced from the project when that tab is next shown. */
 function onProjectEdited(){
   refreshAll();
+  // a locked level's misfit banner must react to every keystroke, not just
+  // to the initial mount — contents are "checked against them" continuously,
+  // never only at unlock time
+  mountLockControl();
   if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
   save.scheduleAutosave(gatherSaveState);
 }
@@ -698,6 +739,12 @@ setActiveLevel('case');
     save.clearAutosave();
     save.cancelAutosave();
     setView('2d');
+    // loadProject's internal recompute() only remounts the rail when
+    // view !== 'build' — and view was still 'build' (set by the restore
+    // this discards) at the moment that recompute ran, so the refresh was
+    // skipped. Force it explicitly: the rail must reflect this project,
+    // never the discarded one, regardless of that timing gap.
+    setActiveLevel(activeLevel);
     el('loadNotice').style.display = 'none';
   }}]);
 })();
