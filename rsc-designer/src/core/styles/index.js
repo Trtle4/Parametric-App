@@ -21,6 +21,7 @@ export const styles = [
     tier: 'tertiary',
     material: 'corrugated',
     structure: 'rigid',
+    dimsLabel: 'Inside dimensions',
     params: [
       {key: 'L',       label: 'Length',        hint: 'L',     group: 'dims',     min: 1, step: 1,   default: 200},
       {key: 'W',       label: 'Width',         hint: 'W',     group: 'dims',     min: 1, step: 1,   default: 150},
@@ -45,6 +46,7 @@ export const styles = [
     tier: 'secondary',
     material: 'folding-carton',
     structure: 'rigid',
+    dimsLabel: 'Inside dimensions',
     params: [
       {key: 'L',         label: 'Length',        hint: 'L',      group: 'dims',     min: 1, step: 1,    default: 100},
       {key: 'W',         label: 'Width',         hint: 'W',      group: 'dims',     min: 1, step: 1,    default: 60},
@@ -75,6 +77,9 @@ export const styles = [
     tier: 'primary',
     material: 'film',
     structure: 'flexible',
+    // a flow wrap has no inside — these are the CONTENT ENVELOPE dims; the
+    // outer (envelope + seals) is what actually sizes the carton
+    dimsLabel: 'Content envelope',
     params: [
       {key: 'L', label: 'Pack length',   hint: 'repeat', group: 'dims', min: 1, step: 1, default: 90},
       {key: 'W', label: 'Pack width',    hint: 'front',  group: 'dims', min: 1, step: 1, default: 50},

@@ -257,6 +257,19 @@ export function resolveChainShape(project){
   return {secOn, terOn, outermost: terOn ? 'tertiary' : 'secondary', secondaryIsInner: secOn && terOn};
 }
 
+/** Human-facing description of the current chain shape — which tier rides
+ *  the pallet (`outerNoun`) and what feeds it (`childNoun`) — derived from
+ *  the SAME fold resolveChainShape uses, never a hardcoded pair. Shared by
+ *  the rails' placement labels and the Build table's status line, so the
+ *  two can never describe the chain differently. */
+export function describeChain(project){
+  if(!project.primary) return {outerKey: 'tertiary', outerNoun: 'case', childNoun: 'carton'};
+  const shape = resolveChainShape(project);
+  const contentNoun = project.primary.wrap ? 'wrap' : (project.primary.box ? 'box' : 'collation');
+  const childNoun = (shape.outermost === 'tertiary' && shape.secondaryIsInner) ? 'carton' : contentNoun;
+  return {outerKey: shape.outermost, outerNoun: TIER_NOUN[shape.outermost], childNoun};
+}
+
 /** The content at the bottom of the chain: a collated set of pieces, or —
  *  per the plain-box ruling — a single manual outer with no inner and no
  *  compensation (a product envelope, not a package). Mutually exclusive:

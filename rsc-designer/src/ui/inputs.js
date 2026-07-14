@@ -11,6 +11,7 @@
  * g/cm³) keep their own unit and never convert.
  */
 import {toMM, fromMM, fmtInputValue} from '../core/units.js';
+import {VERTICAL_CHOICES, verticalToOrientations} from '../core/project.js';
 
 export const el = id => document.getElementById(id);
 
@@ -196,6 +197,116 @@ export function mountProduct(prim, m){
   el('cNy').addEventListener('input', () => { collation.ny = cnt('cNy'); m.onInput(); });
   el('cSg').addEventListener('input', () => { collation.stackGap = mm('cSg'); m.onInput(); });
   el('cPg').addEventListener('input', () => { collation.pieceGap = mm('cPg'); m.onInput(); });
+}
+
+/* ---------- placement: orientation + clearance + count/arrangement ------
+ * Formerly Build-only fields (Step 5 removed Build's editing entirely).
+ * Each mounts into ITS OWN host element and writes straight into the
+ * project object passed in — the same one-writer contract as every other
+ * rail field. `idp` namespaces element ids so two instances (e.g. the
+ * case's own "into the case" and "onto the pallet" controls) can coexist. */
+
+/** Inverse of verticalToOrientations: recover {axis, mayRotate} from an
+ *  allowedOrientations list, so a control mounted from ANY project state
+ *  (loaded from a file, a slot, an autosave) shows what's actually there. */
+export function orientationsToVertical(list){
+  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
+  for(const axis of ['H', 'L', 'W']){
+    const [a, b] = pairs[axis];
+    if(list.length === 1 && list[0] === a) return {axis, mayRotate: false};
+    if(list.length >= 2 && list.includes(a) && list.includes(b)) return {axis, mayRotate: true};
+  }
+  for(const axis of ['H', 'L', 'W'])
+    if(list.includes(pairs[axis][0])) return {axis, mayRotate: list.length > 1};
+  return {axis: 'H', mayRotate: true};
+}
+
+/** Vertical axis (hard constraint) + in-plan rotation (the solver's only
+ *  freedom), bound to `level.allowedOrientations`.
+ * @param {HTMLElement} host
+ * @param {string} idp        id prefix, unique per mounted instance
+ * @param {Object} level       the project level owning allowedOrientations (mutated in place)
+ * @param {{disabledAxes?: string[], disabledReason?: string}} opts
+ * @param {Function} onInput
+ */
+export function mountVertControl(host, idp, level, opts, onInput){
+  const {disabledAxes = [], disabledReason = ''} = opts || {};
+  const vert = orientationsToVertical(level.allowedOrientations);
+  host.innerHTML =
+    `<div class="field"><label>Vertical axis</label>
+      <div class="inp"><select id="${idp}Axis">${VERTICAL_CHOICES.map(c => {
+        const dis = disabledAxes.includes(c.axis);
+        return `<option value="${c.axis}"${c.axis === vert.axis ? ' selected' : ''}${dis ? ` disabled title="${disabledReason}"` : ''}>${c.label} &middot; ${c.codes}</option>`;
+      }).join('')}</select></div></div>
+    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${vert.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label></div>`;
+  const apply = () => {
+    level.allowedOrientations = verticalToOrientations(el(idp + 'Axis').value, el(idp + 'Rot').checked);
+    onInput();
+  };
+  el(idp + 'Axis').addEventListener('change', apply);
+  el(idp + 'Rot').addEventListener('change', apply);
+}
+
+/** Wall/between/headspace, bound to `clearance` (mutated in place). Skips
+ *  headspace when the clearance shape doesn't carry it (tertiary's is
+ *  wall/between only — cases don't get a headspace allowance). */
+export function mountClearanceControl(host, idp, clearance, onInput){
+  const L = mm => fmtInputValue(fromMM(mm, unit), unit);
+  const hasHead = 'top' in clearance;
+  host.innerHTML =
+    `<div class="field"><label>Clearance wall <span class="hint">each side</span></label>
+      <div class="inp"><input id="${idp}Wall" type="number" step="0.1" value="${L(clearance.wall)}"><span class="unit">${unit}</span></div></div>
+    <div class="field"><label>Clearance between</label>
+      <div class="inp"><input id="${idp}Between" type="number" step="0.1" value="${L(clearance.between)}"><span class="unit">${unit}</span></div></div>` +
+    (hasHead ? `<div class="field"><label>Headspace <span class="hint">top, design input</span></label>
+      <div class="inp"><input id="${idp}Head" type="number" step="0.5" value="${L(clearance.top)}"><span class="unit">${unit}</span></div></div>` : '');
+  const mm = id => toMM(+el(id).value || 0, unit);
+  el(idp + 'Wall').addEventListener('input', () => { clearance.wall = mm(idp + 'Wall'); onInput(); });
+  el(idp + 'Between').addEventListener('input', () => { clearance.between = mm(idp + 'Between'); onInput(); });
+  if(hasHead) el(idp + 'Head').addEventListener('input', () => { clearance.top = mm(idp + 'Head'); onInput(); });
+}
+
+/** Child count + arrangement for `link` (mutated in place) — "how many of
+ *  my child fit inside me". `presets` are convenience shortcuts (typed
+ *  values always work via "custom"); an explicit arrangement shows its OWN
+ *  grid, never a placeholder default, so re-rendering from a loaded project
+ *  is faithful to what was loaded. */
+export function mountCountArrangement(host, idp, link, presets, defNx, defNy, defNz, childNoun, onInput){
+  function render(){
+    const explicit = link.arrangement !== 'auto';
+    const nx = explicit ? link.arrangement.nx : defNx;
+    const ny = explicit ? link.arrangement.ny : defNy;
+    const nz = explicit ? link.arrangement.nz : defNz;
+    host.innerHTML =
+      `<div class="field"><label>${childNoun}s <span class="hint">count</span></label>
+        <div class="inp"><select id="${idp}CSel">${presets.map(p => `<option${p === link.count ? ' selected' : ''}>${p}</option>`).join('')}<option value="custom"${presets.includes(link.count) ? '' : ' selected'}>custom</option></select>
+        <input id="${idp}C" type="number" min="1" value="${link.count}" style="${presets.includes(link.count) ? 'display:none' : ''}"></div></div>
+      <div class="field"><label>Arrangement</label>
+        <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
+      (explicit ? `<div class="field"><label>Grid</label>
+        <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%"> &times;
+        <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%"> &times;
+        <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%"></div></div>` : '');
+    el(idp + 'CSel').addEventListener('change', () => {
+      const custom = el(idp + 'CSel').value === 'custom';
+      el(idp + 'C').style.display = custom ? '' : 'none';
+      if(!custom) link.count = +el(idp + 'CSel').value;
+      onInput();
+    });
+    el(idp + 'C').addEventListener('input', () => { link.count = Math.max(1, Math.round(+el(idp + 'C').value || 1)); onInput(); });
+    el(idp + 'Arr').addEventListener('change', () => {
+      const exp = el(idp + 'Arr').value === 'explicit';
+      link.arrangement = exp ? {nx: defNx, ny: defNy, nz: defNz} : 'auto';
+      if(exp) link.count = defNx*defNy*defNz;
+      render(); onInput();
+    });
+    if(explicit) ['Nx', 'Ny', 'Nz'].forEach(k => el(idp + k).addEventListener('input', () => {
+      link.arrangement = {nx: +el(idp + 'Nx').value || 1, ny: +el(idp + 'Ny').value || 1, nz: +el(idp + 'Nz').value || 1};
+      link.count = link.arrangement.nx*link.arrangement.ny*link.arrangement.nz;
+      onInput();
+    }));
+  }
+  render();
 }
 
 /* ---------- pallet fields (write straight to project.pallet in app.js) --- */

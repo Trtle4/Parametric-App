@@ -21,7 +21,7 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 import * as save from './save.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
@@ -56,9 +56,8 @@ const LEVELS = {
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
-           // re-pointed per the enabled chain, never hardcoded to "the carton"
-           derivedFrom: p => p.secondary.enabled !== false ? 'the carton'
-             : (p.primary.wrap ? 'the wrap' : (p.primary.box ? 'the box' : 'the collation')),
+           // re-pointed per the enabled chain (describeChain), never hardcoded
+           derivedFrom: p => `the ${describeChain(p).childNoun}`,
            fitsOf: row => row.tertiaryFits,
            enabledOf: p => p.tertiary.enabled !== false},
   pallet: {label: 'Pallet', kind: 'pallet'}
@@ -117,7 +116,12 @@ function refresh2d(){
   el('blank').textContent = `${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`;
   el('area').textContent  = `${areaConv.toFixed(3)} ${areaU}`;
   const style = activeStyle();
-  el('styleStats').innerHTML = (style.readouts ? style.readouts(g) : []).map(r =>
+  // every level's outer (formed) dimensions, stated plainly — for the wrap
+  // this is the envelope PLUS seals, the number that actually sizes the
+  // carton; reading it should never require doing the compensation
+  // arithmetic by hand
+  const outerStat = `<div class="stat"><span class="lab">Outer dimensions</span><span class="val">${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u}</span></div>`;
+  el('styleStats').innerHTML = outerStat + (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
       r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
   ).join('');
@@ -305,6 +309,72 @@ function mountLockControl(){
   });
 }
 
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The dimension-group label belongs to the STYLE, not the rail: "Inside
+ *  dimensions" is right for a rigid box (an RSC, a carton — industry
+ *  convention), but wrong for film (a flow wrap has no inside; the L/W/H
+ *  are the content envelope). Each style names its own label in the
+ *  registry (`dimsLabel`); this only reads it, never hardcodes a default
+ *  for a specific style. */
+function updateDimsLabel(){
+  const lvl = LEVELS[activeLevel];
+  const fallback = lvl.kind === 'product' ? 'Content' : lvl.kind === 'pallet' ? 'Pallet' : 'Dimensions';
+  el('dimsLabel').textContent = lvl.kind === 'style' && lvl.enabledOf(build.project)
+    ? (activeStyle().dimsLabel || 'Dimensions') : fallback;
+}
+
+/** Orientation + clearance + count/arrangement — Step 5 moved these off
+ *  Build's now-removed editing fieldsets and onto whichever rail actually
+ *  owns them. "What's inside" always describes the level's actual child,
+ *  re-pointed exactly like resolveChainShape/describeChain: the case's
+ *  shows the carton's own settings when the carton is enabled, or the
+ *  wrap/box/collation's directly once the carton's been skipped. A wrap
+ *  has no child count of its own (it always wraps exactly one collation),
+ *  so the Wrap rail mounts nothing here. */
+function mountPlacement(){
+  const host = el('levelPlacement');
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  if(lvl.kind !== 'style' || !lvl.enabledOf(proj)){ host.innerHTML = ''; return; }
+
+  if(activeLevel === 'carton'){
+    const primaryNoun = cap(proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation'));
+    host.innerHTML =
+      `<h2 style="margin-top:6px">Inside the carton</h2>
+       <div id="plInVert" style="display:contents"></div>
+       <div id="plInClear" style="display:contents"></div>
+       <div id="plInCount" style="display:contents"></div>`;
+    inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, onProjectEdited);
+    inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, onProjectEdited);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8], 2, 1, 1, primaryNoun, onProjectEdited);
+    return;
+  }
+
+  if(activeLevel === 'case'){
+    const secondaryIn = proj.secondary.enabled !== false;
+    const childLevel = secondaryIn ? proj.secondary : proj.primary;
+    const childNoun = cap(secondaryIn ? 'carton' : (proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation')));
+    host.innerHTML =
+      `<h2 style="margin-top:6px">Inside the case <span class="hint">from the ${childNoun.toLowerCase()}</span></h2>
+       <div id="plInVert" style="display:contents"></div>
+       <div id="plInClear" style="display:contents"></div>
+       <div id="plInCount" style="display:contents"></div>
+       <h2 style="margin-top:10px">Case onto the pallet</h2>
+       <div id="plOutVert" style="display:contents"></div>
+       <div id="plOutClear" style="display:contents"></div>`;
+    inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, onProjectEdited);
+    inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, onProjectEdited);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), [12, 24, 36], 4, 3, 1, childNoun, onProjectEdited);
+    inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
+      {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},
+      onProjectEdited);
+    inputs.mountClearanceControl(el('plOutClear'), 'pOut', proj.tertiary.clearance, onProjectEdited);
+    return;
+  }
+
+  host.innerHTML = '';   // wrap: no child count concept
+}
+
 /** The per-level style dropdown, filtered by the registry's `tier`. A style
  *  whose tier matches the level sits under "For this level"; every other
  *  style is offered under "Override (unusual)" — a style used outside its
@@ -357,6 +427,8 @@ function mountActiveLevel(){
   mountEnableToggle();
   mountStyleSelector();
   mountLockControl();
+  mountPlacement();
+  updateDimsLabel();
   if(lvl.kind === 'style' && !lvl.enabledOf(proj)){
     // disabled: nothing to mount (wrap's own params object may not even
     // exist — it goes null) — the enable toggle + the "skipped" note above
@@ -887,11 +959,12 @@ setActiveLevel('case');
   }}]);
 })();
 
-// "View selected as case": selecting a row already commits that candidate to
-// the project (the views resolve it via selKey()); this just focuses the case
-// dieline. No more pushing dims into a detached style instance.
+// "View selected": selecting a row already commits that candidate to the
+// project (the views resolve it via selKey()); this just focuses the
+// OUTERMOST tier's dieline — the case, or the carton itself once the case
+// is disabled (Step 4) — never hardcoded to "case".
 el('bUse').addEventListener('click', () => {
   if(!build.getSelected()) return;
-  setActiveLevel('case');
+  setActiveLevel(describeChain(build.project).outerKey === 'tertiary' ? 'case' : 'carton');
   setView('2d');
 });
