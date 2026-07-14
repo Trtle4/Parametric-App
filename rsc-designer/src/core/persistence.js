@@ -54,6 +54,11 @@ export function serializeProject({project, rounding, selectedCandidate, unit, pa
  * - arrays: presence/absence only — no element-wise merge (that's handled
  *   specially for `links`, the one array of non-uniform objects; plain
  *   lists like allowedOrientations are meant to be replaced wholesale).
+ * - a `loaded` value whose own type isn't a plain object (e.g. the
+ *   discriminated-union arrangement field, 'auto' vs {nx,ny,nz}) is kept
+ *   as-is even when `defaults` is shaped as an object — spreading a string
+ *   here would fabricate numeric-index junk keys and misreport every
+ *   object field as "missing".
  * - anything present in `loaded` that ISN'T in `defaults` rides through in
  *   the `{...loaded}` spread untouched: unknown-field preservation.
  */
@@ -65,6 +70,7 @@ function mergeDefaults(loaded, defaults, path, report){
   if(loaded === null || defaults === null) return loaded;
   if(Array.isArray(defaults)) return loaded;
   if(typeof defaults !== 'object') return loaded;
+  if(typeof loaded !== 'object' || Array.isArray(loaded)) return loaded;
   const out = {...loaded};
   for(const k of Object.keys(defaults))
     out[k] = mergeDefaults(loaded[k], defaults[k], path ? `${path}.${k}` : k, report);

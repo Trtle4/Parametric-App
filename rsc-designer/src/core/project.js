@@ -145,7 +145,7 @@ export function newProject(){
     printText: 'FRAGILE',
     links: [
       {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
-      {parent: 'secondary', child: 'primary', count: 1, arrangement: 'auto', locked: false}
+      {parent: 'secondary', child: 'primary', count: 8, arrangement: {nx: 4, ny: 2, nz: 1}, locked: false}
     ]
   };
 }
