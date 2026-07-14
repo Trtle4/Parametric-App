@@ -227,8 +227,10 @@ function findSelected(rows, key){
 }
 
 /* full chain: product(round, 47x12 puck, 3x1 stacks of 2) -> wrap -> carton
-   -> case -> pallet. envelope 141x47x24, wrap outer 161x47x24.03, carton
-   outer 161.914x47.914x26.828, case outer 171x105x173, 536 cases/pallet. */
+   (8 wraps, explicit 4x2x1) -> case -> pallet. envelope 141x47x24, wrap
+   outer 161x47x24.03, carton outer 644.914x94.914x26.828 (4*161 x 2*47 x
+   24.03->26.828), case outer 654x199x173 (12 cartons auto 1x2x6), 56
+   cases/pallet. */
 await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
   const result = deserializeProject(raw);
@@ -239,9 +241,9 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   if(!r) throw new Error('selected candidate not found in recomputed rows');
   eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
   eq(r.wrapOuter, {L: 161, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
-  eq(r.cartonOuter, {L: 161.914, W: 47.914, H: 26.828}, 'carton outer (hand-checked):');
-  eq(r.outer, {L: 171, W: 105, H: 173}, 'case outer (hand-checked):');
-  eq(r.casesPerPallet, 536, 'cases per pallet (hand-checked):');
+  eq(r.cartonOuter, {L: 644.914, W: 94.914, H: 26.828}, 'carton outer (hand-checked):');
+  eq(r.outer, {L: 654, W: 199, H: 173}, 'case outer (hand-checked):');
+  eq(r.casesPerPallet, 56, 'cases per pallet (hand-checked):');
 });
 
 /* no-carton: same product/wrap, carton disabled — the wrap feeds the case
