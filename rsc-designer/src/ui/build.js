@@ -15,6 +15,7 @@ import {newProject, candidateCases, checkLockedCase, resolveChainShape, describe
         linkFor, ROUNDING} from '../core/project.js';
 import {fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
+import {refreshAll} from './notify.js';
 
 export const project = newProject();
 let unit = 'mm';
@@ -22,7 +23,6 @@ let rounding = '1mm';
 let rows = [];
 let selected = null;          // a row object, user-picked
 let sortKey = 'cartonsPerPallet', sortDir = -1;
-let onSelectCb = null;
 
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -54,8 +54,7 @@ function columns(){
   ];
 }
 
-export function initBuild(onSelect, startUnit){
-  onSelectCb = onSelect;
+export function initBuild(startUnit){
   unit = startUnit || 'mm';
   el('buildWrap').innerHTML =
     `<div class="bpanel">
@@ -77,7 +76,25 @@ export function onUnitsChanged(next){
   recompute();
 }
 
-export function recompute(){
+/**
+ * THE one chain resolution: re-enumerate the outermost tier's candidates
+ * (or check the locked dims) against the CURRENT project, render the table,
+ * and — its own last step — run every registered display refresher
+ * (notify.refreshAll). Every control that mutates the project calls this
+ * (directly, or via app.js's projectChanged wrapper); nothing calls the
+ * refreshers separately, so nothing can be missing from a hand-kept list.
+ *
+ * `preserveKey` is the candidate to try to re-select once the fresh rows
+ * are in: defaults to whatever is CURRENTLY selected, so a rail edit
+ * elsewhere never silently drops the operator's pick (this used to be a
+ * separate reselectByKey() call bolted on by callers that remembered to —
+ * loadProject and refreshPanel did, nothing else did). Pass an explicit key
+ * (including null) to select something else instead — loadProject uses
+ * this for the file's own saved selection, which "currently selected"
+ * would be meaningless for before a load has happened.
+ */
+export function recompute(preserveKey){
+  const key = preserveKey !== undefined ? preserveKey : getSelectedCandidateKey();
   const status = el('bStatus');
   selected = null; if(el('bUse')) el('bUse').disabled = true;
   const {outerNoun, childNoun} = describeChain(project);
@@ -105,7 +122,8 @@ export function recompute(){
     status.className = 'bnote bbad';
   }
   renderTable();
-  if(onSelectCb) onSelectCb(null);
+  reselectByKey(key);
+  refreshAll();
 }
 
 function renderTable(){
@@ -131,7 +149,11 @@ function renderTable(){
     selected = rows[+tr.dataset.i];
     el('bUse').disabled = false;
     renderTable();
-    if(onSelectCb) onSelectCb(selected);
+    // the rows themselves didn't change, just which one is picked — no
+    // need to re-enumerate, but every display bound to "the selected
+    // candidate" (the rails' dims boxes, the 2D/3D views, the DXF export)
+    // still needs to hear about it
+    refreshAll();
   }));
 }
 
@@ -150,18 +172,19 @@ export function getSelectedCandidateKey(){
 /** Load a project wholesale: replace the live model's fields (project is a
  *  module-level const, so this mutates it in place — anyone holding the
  *  exported reference sees the update) and recompute the table from
- *  scratch. Then re-select the candidate the save file named, if the
- *  freshly recomputed rows still contain a match. */
+ *  scratch, re-selecting the candidate the save file named (rather than
+ *  whatever happened to be selected before the load, which recompute()'s
+ *  own default would otherwise try to preserve). */
 export function loadProject({project: loadedProject, rounding: loadedRounding, selectedCandidate}){
   Object.assign(project, loadedProject);
   if(loadedRounding) rounding = loadedRounding;
-  recompute();
-  reselectByKey(selectedCandidate);
+  recompute(selectedCandidate);
 }
 
 /** Re-select the candidate row matching `key` (nx/ny/nz/orientation) if the
- *  freshly recomputed rows still contain a match — the single re-selection
- *  path shared by loadProject and refreshPanel. */
+ *  freshly recomputed rows still contain a match — called from recompute()
+ *  itself, never separately, so nothing can recompute without also trying
+ *  to preserve the selection. */
 function reselectByKey(key){
   if(!key || !rows.length) return;
   const match = rows.length === 1 ? rows[0] : rows.find(r =>
@@ -170,15 +193,13 @@ function reselectByKey(key){
     selected = match;
     el('bUse').disabled = false;
     renderTable();
-    if(onSelectCb) onSelectCb(selected);
   }
 }
 
 /** Recompute the table FROM the current project (without replacing it),
- *  preserving the picked candidate. Called when the Build tab is shown, so
- *  it reflects edits made in the rails rather than showing a stale table. */
+ *  preserving the picked candidate — recompute()'s own default behavior
+ *  now, so this is a thin, documented named entry point for "the Build tab
+ *  was just shown" rather than a second reselection path. */
 export function refreshPanel(){
-  const key = getSelectedCandidateKey();
   recompute();
-  reselectByKey(key);
 }

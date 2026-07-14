@@ -21,6 +21,7 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 import * as save from './save.js';
+import * as notify from './notify.js';
 import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
@@ -147,12 +148,6 @@ function refreshPal(){
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
 }
 
-function refreshAll(){
-  refresh2d();
-  if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d();
-  if(view === 'pal') refreshPal();
-}
-
 /* ---------- active-level selection + mounting ---------- */
 /** Show only the rail sections the active level uses. Style + product use the
  *  dim/material field slots; pallet uses its own field block; product/pallet
@@ -210,7 +205,7 @@ function setTierEnabled(level, on){
   else if(level === 'carton') proj.secondary.enabled = on;
   else if(level === 'case') proj.tertiary.enabled = on;
   setActiveLevel(activeLevel);   // re-derive brand/rails/views for the new chain shape
-  onProjectEdited();
+  projectChanged();              // the one notify: chain + every registered display, incl. Build/3D-hier
 }
 
 /** Disabling is never silent: it shows a loud warning naming the new
@@ -304,7 +299,7 @@ function mountLockControl(){
     (noSolution ? `<div class="misfit"><strong>No solution</strong> — ${child} doesn't resolve to a fit upstream.</div>` : '');
   el('levelLockBtn').addEventListener('click', () => {
     lvl.setLocked(proj, !locked);
-    onProjectEdited();
+    projectChanged();
     mountActiveLevel();   // re-render the rails: fields flip editable<->read-only, values re-sync
   });
 }
@@ -344,9 +339,9 @@ function mountPlacement(){
        <div id="plInVert" style="display:contents"></div>
        <div id="plInClear" style="display:contents"></div>
        <div id="plInCount" style="display:contents"></div>`;
-    inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, onProjectEdited);
-    inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, onProjectEdited);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8], 2, 1, 1, primaryNoun, onProjectEdited);
+    inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, projectChanged);
+    inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8], 2, 1, 1, primaryNoun, projectChanged);
     return;
   }
 
@@ -362,13 +357,13 @@ function mountPlacement(){
        <h2 style="margin-top:10px">Case onto the pallet</h2>
        <div id="plOutVert" style="display:contents"></div>
        <div id="plOutClear" style="display:contents"></div>`;
-    inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, onProjectEdited);
-    inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, onProjectEdited);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), [12, 24, 36], 4, 3, 1, childNoun, onProjectEdited);
+    inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, projectChanged);
+    inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), [12, 24, 36], 4, 3, 1, childNoun, projectChanged);
     inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
       {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},
-      onProjectEdited);
-    inputs.mountClearanceControl(el('plOutClear'), 'pOut', proj.tertiary.clearance, onProjectEdited);
+      projectChanged);
+    inputs.mountClearanceControl(el('plOutClear'), 'pOut', proj.tertiary.clearance, projectChanged);
     return;
   }
 
@@ -444,10 +439,10 @@ function mountActiveLevel(){
       // dims are read-only unless unlocked (mountLockControl's deliberate
       // toggle); this fires for material/option edits, and for dim edits
       // only once unlocked — never an implicit lock-on-type
-      onInput: () => onProjectEdited()
+      onInput: () => projectChanged()
     });
   }else if(lvl.kind === 'product'){
-    inputs.mountProduct(proj.primary, {onInput: () => onProjectEdited()});
+    inputs.mountProduct(proj.primary, {onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -458,6 +453,33 @@ const LEVEL_BRAND = {
   product: {code: 'PRODUCT', sub: 'Collation'},
   pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
 };
+
+/** DXF/artwork/spec button availability: flexible styles have no die (film
+ *  spec + artwork only); a disabled tier has no geometry to export at all.
+ *  Registered as a display consumer (see the bottom of this file) so it can
+ *  never silently drift from the active level/tier/style state the same
+ *  way every other readout can't — even though today the only things that
+ *  change it (enable/disable, style change) already force a full remount
+ *  through setActiveLevel, which calls this directly too. */
+function updateExportButtonsState(){
+  const lvl = LEVELS[activeLevel];
+  if(lvl.kind !== 'style'){
+    el('btnDXF').disabled = true;
+    el('btnDXF').title = 'No dieline at this level — select Wrap, Carton, or Case';
+    el('btnArt').style.display = 'none';
+    el('btnSpec').style.display = 'none';
+    return;
+  }
+  const style = activeStyle();
+  const flex = style.structure === 'flexible';
+  const disabledTier = !lvl.enabledOf(build.project);
+  el('btnDXF').disabled = flex || disabledTier;
+  el('btnDXF').title = disabledTier ? 'This tier is disabled — nothing to export'
+    : flex ? 'No die for a flexible style — export the artwork template instead' : '';
+  el('btnArt').style.display = flex ? '' : 'none';
+  el('btnSpec').style.display = flex ? '' : 'none';
+}
+
 function setActiveLevel(level){
   activeLevel = level;
   const lvl = LEVELS[level];
@@ -465,23 +487,11 @@ function setActiveLevel(level){
     const style = activeStyle();
     el('brandCode').textContent = style.brand.code;
     el('brandName').textContent = style.brand.sub;
-    // flexible styles have no die -> no DXF; their deliverables are the film
-    // spec + artwork template. A disabled tier has no geometry at all.
-    const flex = style.structure === 'flexible';
-    const disabledTier = !lvl.enabledOf(build.project);
-    el('btnDXF').disabled = flex || disabledTier;
-    el('btnDXF').title = disabledTier ? 'This tier is disabled — nothing to export'
-      : flex ? 'No die for a flexible style — export the artwork template instead' : '';
-    el('btnArt').style.display = flex ? '' : 'none';
-    el('btnSpec').style.display = flex ? '' : 'none';
   }else{
     el('brandCode').textContent = LEVEL_BRAND[level].code;
     el('brandName').textContent = LEVEL_BRAND[level].sub;
-    el('btnDXF').disabled = true;
-    el('btnDXF').title = 'No dieline at this level — select Wrap, Carton, or Case';
-    el('btnArt').style.display = 'none';
-    el('btnSpec').style.display = 'none';
   }
+  updateExportButtonsState();
   if(el('style').value !== level) el('style').value = level;
   // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
   LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && d === level));
@@ -492,37 +502,55 @@ function setActiveLevel(level){
   if(view === '3d') apply3dMode();
 }
 
-/** A rail edit already mutated the project in place; re-run the views (each
- *  re-solves the chain via levelGeometry) and schedule an autosave. Does NOT
- *  read the Build DOM — the rails are the writer here, Build's fields are
- *  re-synced from the project when that tab is next shown. */
-function onProjectEdited(){
-  refreshAll();
-  // a locked level's misfit banner must react to every keystroke, not just
-  // to the initial mount — contents are "checked against them" continuously,
-  // never only at unlock time
-  mountLockControl();
-  // the active level's OWN "Dimensions" boxes are derived from whatever it
-  // solves against — a SIBLING rail control (vertical axis, clearance,
-  // count/arrangement) can change that solve without ever touching this
-  // level's own params, so those boxes need the same resync every edit
-  // gets, not just the level's own field edits. In-place only (never a
-  // remount) so it can't steal focus from a field mid-edit elsewhere.
-  if(isStyleLevel() && !LEVELS[activeLevel].lockedOf(build.project)){
-    const g = activeGeometry();
-    inputs.refreshDims(g ? g.inner : null);
+/** THE single "project changed" entry point — every control that mutates
+ *  the project calls this, and nothing else (never a hand-picked subset of
+ *  refreshers; that hand-picked list is exactly what went stale twice:
+ *  once for the rails' own Dimensions boxes, once for the 3D hierarchy
+ *  view). build.recompute() resolves the chain once — re-enumerating the
+ *  outermost tier's candidates, preserving the current selection — and, as
+ *  its OWN last step, runs every consumer registered with notify.onRefresh
+ *  (see the registration block near the bottom of this file). A consumer
+ *  registers itself once, at its own definition site; adding a new one
+ *  never means finding and editing a list here. */
+function projectChanged(){ build.recompute(); }
+
+/** Resync the placement controls (vertical axis/rotate, clearance/
+ *  headspace, child count/arrangement) currently mounted for the active
+ *  rail, in place — mirrors mountPlacement()'s own level branching, but
+ *  through each control's dedicated refreshXxx (no rebuild, so it can't
+ *  steal focus from a field mid-edit). No-op for whichever instances
+ *  aren't mounted right now (refreshVertControl/refreshClearanceControl/
+ *  refreshCountArrangement all return early when their idp isn't present). */
+function refreshPlacementControls(){
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  if(lvl.kind !== 'style' || !lvl.enabledOf(proj)) return;
+  if(activeLevel === 'carton'){
+    inputs.refreshVertControl('pIn', proj.primary);
+    inputs.refreshClearanceControl('pIn', proj.primary.clearance);
+    inputs.refreshCountArrangement('pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8]);
+  }else if(activeLevel === 'case'){
+    const secondaryIn = proj.secondary.enabled !== false;
+    const childLevel = secondaryIn ? proj.secondary : proj.primary;
+    inputs.refreshVertControl('pIn', childLevel);
+    inputs.refreshClearanceControl('pIn', childLevel.clearance);
+    inputs.refreshCountArrangement('pIn', linkFor(proj, 'tertiary'), [12, 24, 36]);
+    inputs.refreshVertControl('pOut', proj.tertiary);
+    inputs.refreshClearanceControl('pOut', proj.tertiary.clearance);
   }
-  renderChainString();
-  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
-  save.scheduleAutosave(gatherSaveState);
 }
 
 /** Assemble the hierarchy bundle by READING the arrangements the chain
  *  already retained on the row (row.geo + row.arr). No re-solving here —
- *  single source of truth with the Build table. */
+ *  single source of truth with the Build table. build.recompute() is what
+ *  populates getRows()/getSelected(), and it always runs before this can be
+ *  called (every project mutation goes through it, and it also runs once
+ *  at startup via initBuild) — reaching for a fallback recompute() HERE
+ *  would be reentrant: this function is itself reached FROM recompute()'s
+ *  own notify.refreshAll(), so a genuinely-empty, steady-state rows array
+ *  (a chain with no valid candidates) would recompute forever instead of
+ *  just rendering "nothing fits". */
 function hierarchyBundle(){
   const proj = build.project;
-  if(build.getRows().length === 0) build.recompute();   // ensure rows exist (not every call: avoids reentrancy)
   const rows = build.getRows();
   // default to the freight-optimal row (max cartons/pallet) so the cascade
   // shows a representative case, not the first enumerated candidate
@@ -700,10 +728,10 @@ function writePalletFields(){
 }
 function onPalletEdited(){
   commitPallet();
-  if(view === 'pal') refreshPal();
-  else if(view === 'build') build.refreshPanel();
-  else if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
-  save.scheduleAutosave(gatherSaveState);
+  // pallet dims feed casesPerPallet/coverage (the Build table AND the
+  // hierarchy view), not just the palletize view — projectChanged() covers
+  // all of them instead of a hand-picked subset keyed off the current tab
+  projectChanged();
 }
 ['pal', 'palMaxH'].forEach(id => el(id).addEventListener('input', onPalletEdited));
 el('palPattern').addEventListener('change', onPalletEdited);
@@ -711,8 +739,7 @@ el('palPattern').addEventListener('change', onPalletEdited);
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
   mountActiveLevel();                       // rail fields re-displayed in the new unit (values live in the project)
-  build.onUnitsChanged(inputs.getUnit());   // Build length fields follow the toggle
-  refreshAll();
+  build.onUnitsChanged(inputs.getUnit());   // recomputes + notifies every registered consumer
 });
 el('palUnits').addEventListener('change', () => {
   if(inputs.switchPalUnits() && view === 'pal') refreshPal();
@@ -929,15 +956,40 @@ if(!save.hasStorage){
   });
 }
 
-// Build view: candidate table + selection -> hierarchy 3D / apply-to-case.
-// Only a real row selection (non-null) rebuilds the hierarchy; recompute's
-// null callback is ignored to avoid reentrancy. Every recompute (selection
-// or not) is a "project changed" signal, so autosave is scheduled here too.
-build.initBuild(row => {
-  if(row && view === '3d' && mode3d === 'hier') applyHierarchy(false);
-  if(view !== 'build') mountActiveLevel();   // a picked candidate changes the resolved dims the rails show
-  save.scheduleAutosave(gatherSaveState);
-}, inputs.getUnit());
+/* ---------- self-registered display consumers ---------------------------
+ * Every display that reads project/chain state registers its OWN refresher
+ * here, once — see notify.js. build.recompute() (called by projectChanged,
+ * by build.js's own row-selection/rounding/load paths, and once here at
+ * startup via initBuild) runs every one of these as its last step. Nothing
+ * in this file calls them separately, and this list is not itself a thing
+ * to keep in sync with anything — it exists once, at startup, and every
+ * entry reads live app/project state fresh on each call, so there is
+ * nothing here that could go stale the way onProjectEdited's hand-picked
+ * body used to.
+ *
+ * Each refresher guards its own relevance (e.g. "only if view is '3d'")
+ * rather than being conditionally registered — registration is permanent;
+ * relevance is the refresher's own business, exactly like refresh2d/
+ * refresh3d/refreshPal already did before this rework. */
+notify.onRefresh('railDims', () => {
+  if(!isStyleLevel() || LEVELS[activeLevel].lockedOf(build.project)) return;
+  const g = activeGeometry();
+  inputs.refreshDims(g ? g.inner : null);
+});
+notify.onRefresh('placement', refreshPlacementControls);
+notify.onRefresh('lockControl', mountLockControl);
+notify.onRefresh('chainString', renderChainString);
+notify.onRefresh('dieline2d', refresh2d);
+notify.onRefresh('fold3d', () => { if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d(); });
+notify.onRefresh('hier3d', () => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
+notify.onRefresh('palletize', () => { if(view === 'pal') refreshPal(); });
+notify.onRefresh('exportButtons', updateExportButtonsState);
+notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
+
+// Build view: candidate table only (build.js owns it). initBuild's own
+// recompute() populates rows/selected and runs the registration above once
+// at startup, exactly like every later edit does.
+build.initBuild(inputs.getUnit());
 
 // mount the default active level (case) and its rails — the single source
 // every non-Build view now renders. (Replaces applyStyle(styles[0]).)
@@ -959,11 +1011,14 @@ setActiveLevel('case');
     save.clearAutosave();
     save.cancelAutosave();
     setView('2d');
-    // loadProject's internal recompute() only remounts the rail when
-    // view !== 'build' — and view was still 'build' (set by the restore
-    // this discards) at the moment that recompute ran, so the refresh was
-    // skipped. Force it explicitly: the rail must reflect this project,
-    // never the discarded one, regardless of that timing gap.
+    // loadProject's own recompute() only RESYNCS the rail's existing
+    // fields in place (via the registered display consumers) — it never
+    // rebuilds them, since most edits don't need to. But this IS a
+    // wholesale project replacement (a fresh default project, possibly a
+    // different style/structure than whatever was showing), so the rail's
+    // STRUCTURE has to be rebuilt too, not just its values — force that
+    // explicitly rather than leaving fields from the discarded project's
+    // style mounted underneath fresh values that don't match their shape.
     setActiveLevel(activeLevel);
     el('loadNotice').style.display = 'none';
   }}]);

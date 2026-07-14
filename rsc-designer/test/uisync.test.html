@@ -1,0 +1,383 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>UI sync tests</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+<!--
+  Prompt 18's point, made structural: lockinvariant.test.html asserted
+  displayed === project at MOUNT time only. The bug (dims boxes frozen
+  after a SIBLING control's edit, the 3D hierarchy view reading a stale
+  build.js row cache) lived entirely in the gap BETWEEN mounts — a fresh
+  mount was always correct, so a mount-time-only test could pass 12/12
+  forever while the app was broken. This page boots the REAL app.js (the
+  same wiring index.html loads) against a bare copy of its DOM, drives the
+  REAL controls with real DOM events (never touches the project object
+  directly), and asserts every displayed value the app owns still equals
+  the project after each edit — not just right after a mount.
+-->
+<div id="loadNotice" style="display:none"></div>
+<div id="chainString"></div>
+<div class="brand">
+  <span id="brandCode"></span><span id="brandName"></span>
+</div>
+<select id="style"></select>
+<button id="tab2d" class="on">2D</button>
+<button id="tab3d">3D</button>
+<button id="tabPal">Pal</button>
+<button id="tabBuild">Build</button>
+<button id="btnDXF">DXF</button>
+<button id="btnArt" style="display:none">Art</button>
+<button id="btnSpec" style="display:none">Spec</button>
+<button id="btnSaveFile">Save</button>
+<button id="btnLoadFile">Load</button>
+<input type="file" id="fileLoadInput" style="display:none">
+<select id="slotSel"></select>
+<button id="btnSlotSave">Save slot</button>
+<button id="btnSlotLoad" disabled>Load slot</button>
+
+<div id="dimsLabel"></div>
+<div id="levelEnable" style="display:contents"></div>
+<div id="levelStyle" style="display:contents"></div>
+<div id="levelLock" style="display:contents"></div>
+<div id="dimFields" style="display:contents"></div>
+<input id="txt" type="text" value="FRAGILE">
+<div id="optFields" style="display:contents"></div>
+<div id="palletFields" style="display:contents">
+  <input id="pal" type="text" value="48 x 40">
+  <span id="uPal">in</span>
+  <input id="palMaxH" type="number" value="60">
+  <span id="uPalMaxH">in</span>
+  <select id="palUnits"><option value="in">in</option><option value="mm">mm</option></select>
+  <select id="palPattern"><option value="optimal">optimal</option><option value="column">column</option><option value="interlock">interlock</option></select>
+</div>
+
+<div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="cvWrap"></div>
+<div id="buildWrap"></div>
+<div id="mode3d" style="display:none">
+  <button id="m3fold">Fold</button>
+  <button id="d_product">Product</button><button id="d_wrap">Wrap</button
+  ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
+  ><button id="d_pallet">Pallet</button>
+</div>
+<div id="hud"></div>
+<div id="hierHud" style="display:none"></div>
+<div id="hierLegend" style="display:none"></div>
+<div id="orbithint"></div>
+
+<div id="matFields" style="display:contents"></div>
+<div id="levelPlacement" style="display:contents"></div>
+<select id="units"><option value="mm">mm</option><option value="in">in</option></select>
+
+<span id="blank">--</span>
+<div id="styleStats" style="display:contents"></div>
+<span id="area">--</span>
+<span id="palPat">--</span>
+<span id="palCnt">--</span>
+<span id="palTot">--</span>
+<span id="palCov">--</span>
+
+<pre id="out">running…</pre>
+
+<script type="module">
+import * as build from '../src/ui/build.js';
+import * as inputs from '../src/ui/inputs.js';
+import * as save from '../src/ui/save.js';
+import {newProject, linkFor} from '../src/core/project.js';
+import {toMM} from '../src/core/units.js';
+
+// app.js is a wiring module with side effects only (no useful exports) —
+// importing it boots the real app against the DOM above, exactly like
+// index.html's <script type="module" src="src/ui/app.js"> does.
+save.clearAutosave();   // this page shares localStorage with the real app's origin
+await import('../src/ui/app.js');
+save.clearAutosave();   // app.js's own startup recompute schedules one; don't leave it behind
+
+const el = id => document.getElementById(id);
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(a !== e) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+function fire(node, type){ node.dispatchEvent(new Event(type, {bubbles: true})); }
+async function settle(){ await new Promise(r => setTimeout(r, 0)); }
+
+function setLevel(level){ el('style').value = level; fire(el('style'), 'change'); }
+
+/** Read the currently-mounted dims boxes (mm), only for keys actually
+ *  present as <input id="p_KEY"> — mirrors what a user looking at the
+ *  rail would see. */
+function shownDims(){
+  const out = {};
+  for(const input of document.querySelectorAll('#dimFields input[id^="p_"]')){
+    const key = input.id.slice(2);
+    out[key] = inputs.getUnit() === 'mm' ? +input.value : null;   // mm-unit test fixture stays in mm throughout
+  }
+  return out;
+}
+
+/* ==================================================================
+   Part 1: the exact regression — vertical axis changes the resolved
+   cavity, and every rail display (dims box AND placement controls)
+   plus the Build table/3D-hierarchy data must follow, driven through
+   the real <select>, never the project object directly.
+   ================================================================== */
+
+await (async () => {
+  setLevel('carton'); await settle();
+  const before = shownDims();
+  const axisSel = el('pInAxis');
+  axisSel.value = 'L';
+  fire(axisSel, 'change'); await settle();
+  const after = shownDims();
+
+  t('vertical axis: carton dims box changes (not frozen) after a sibling control edit', () => {
+    if(JSON.stringify(after) === JSON.stringify(before)) throw new Error(`dims box did not change: ${JSON.stringify(after)}`);
+  });
+  t('vertical axis: carton dims box matches build.getRows()\' fresh best row, not a stale one', () => {
+    const rows = build.getRows();
+    const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+    // the dims box shows the carton's INNER (cavity) dims — cartonParams,
+    // not cartonOuter (which adds the style's caliper compensation)
+    approx(after.L, best.cartonParams.L, 'L:'); approx(after.W, best.cartonParams.W, 'W:'); approx(after.H, best.cartonParams.H, 'H:');
+  });
+  t('vertical axis: build.getRows() is non-empty immediately (no reentrant/empty cache)', () => {
+    if(build.getRows().length === 0) throw new Error('rows empty after a rail edit — the exact staleness this all fixes');
+  });
+  // reset for the next block
+  axisSel.value = 'H'; fire(axisSel, 'change'); await settle();
+})();
+
+/* ==================================================================
+   Part 2: for EVERY style level (wrap/carton/case) and EVERY control
+   that can trigger a recompute, drive the REAL control and assert
+   every displayed value on the active rail still equals the project.
+   ================================================================== */
+
+// 'wrap' has no placement section of its own (its allowedOrientations/
+// clearance are mounted under the CARTON rail, "Inside the carton" — see
+// mountPlacement's own comment) — covered separately below via its
+// MATERIAL fields instead, which is where a same-rail sibling can change
+// wrap's own dims box (finTreatment changes the solved H).
+const LEVEL_CASES = [
+  {level: 'carton', vertLevel: p => p.primary, clearLevel: p => p.primary.clearance, linkLevel: p => linkFor(p, 'secondary')},
+  {level: 'case', vertLevel: p => p.secondary, clearLevel: p => p.secondary.clearance, linkLevel: p => linkFor(p, 'tertiary')}
+];
+
+for(const lc of LEVEL_CASES){
+  setLevel(lc.level);
+  await settle();
+
+  if(el('pInAxis')){
+    t(`${lc.level}: vertical axis select reflects project.allowedOrientations after edit`, () => {
+      const before = el('pInAxis').value === 'H' ? 'L' : 'H';
+      el('pInAxis').value = before; fire(el('pInAxis'), 'change');
+      const lvl = lc.vertLevel(build.project);
+      const shown = el('pInAxis').value;
+      // orientationsToVertical is the inverse the control itself uses —
+      // re-derive independently here via a fresh read of allowedOrientations
+      const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
+      const axis = Object.keys(pairs).find(a => pairs[a].includes(lvl.allowedOrientations[0]));
+      eq(shown, axis, 'displayed axis vs project:');
+      el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+    });
+
+    t(`${lc.level}: may-rotate checkbox reflects project.allowedOrientations after edit`, () => {
+      el('pInRot').checked = false; fire(el('pInRot'), 'change');
+      const lvl = lc.vertLevel(build.project);
+      eq(lvl.allowedOrientations.length, 1, 'project has exactly one allowed orientation:');
+      eq(el('pInRot').checked, false, 'checkbox reflects it:');
+      el('pInRot').checked = true; fire(el('pInRot'), 'change');   // reset
+    });
+  }
+
+  if(lc.clearLevel && el('pInWall')){
+    t(`${lc.level}: clearance wall field reflects project.clearance.wall after edit`, () => {
+      el('pInWall').value = '3.5'; fire(el('pInWall'), 'input');
+      const clr = lc.clearLevel(build.project);
+      approx(clr.wall, 3.5, 'project value:');
+      approx(+el('pInWall').value, 3.5, 'displayed value:');
+      el('pInWall').value = '0'; fire(el('pInWall'), 'input');   // reset
+    });
+
+    t(`${lc.level}: a SIBLING edit (count/arrangement) does not corrupt the clearance field's display`, () => {
+      el('pInWall').value = '2'; fire(el('pInWall'), 'input');
+      if(el('pInNx')){ el('pInNx').value = String(+el('pInNx').value); fire(el('pInNx'), 'input'); }
+      const clr = lc.clearLevel(build.project);
+      approx(+el('pInWall').value, clr.wall, 'clearance field still matches project after a sibling edit:');
+      el('pInWall').value = '0'; fire(el('pInWall'), 'input');   // reset
+    });
+  }
+
+  if(lc.linkLevel && el('pInArr')){
+    t(`${lc.level}: arrangement grid fields reflect project.links[].arrangement after edit`, () => {
+      el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
+      const link = lc.linkLevel(build.project);
+      eq(+el('pInNx').value, link.arrangement.nx, 'nx:');
+      eq(+el('pInNy').value, link.arrangement.ny, 'ny:');
+      eq(+el('pInNz').value, link.arrangement.nz, 'nz:');
+      el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');   // reset
+    });
+  }
+}
+
+/* ==================================================================
+   Part 2b: 'wrap' has no placement section of its own, but a MATERIAL
+   field on the SAME rail (fin treatment) still changes what its OWN
+   dims box should show (standing fin adds finHeight, folded only the
+   film gauge) — the same "sibling control, same rail, derived dims"
+   shape as the vertical-axis regression, just via a different field.
+   ================================================================== */
+
+await (async () => {
+  setLevel('wrap'); await settle();
+  t('wrap: a material field (fin treatment) changes the dims box, matching the wrap\'s own solved H', () => {
+    const treatSel = el('p_finTreatment');
+    treatSel.value = treatSel.value === 'standing' ? 'folded' : 'standing';
+    fire(treatSel, 'change');
+    const shown = shownDims();
+    const params = build.project.primary.wrap.params;
+    approx(shown.H, params.H, 'H displayed vs project.primary.wrap.params.H:');
+  });
+})();
+
+/* ==================================================================
+   Part 3: style change, enable/disable, lock/unlock, units — every
+   control Prompt 18 explicitly names — all keep the active rail's
+   dims box in sync with the project.
+   ================================================================== */
+
+await (async () => {
+  setLevel('carton'); await settle();
+
+  t('style change: dims box matches the new style\'s own params, not the old style\'s stale values', () => {
+    const sel = el('levelStyleSel');
+    const original = sel.value;
+    const otherOpt = Array.from(sel.options).find(o => o.value !== sel.value);
+    try{
+      sel.value = otherOpt.value; fire(sel, 'change');
+      const shown = shownDims();
+      const params = build.project.secondary.params;
+      for(const k of Object.keys(shown)) approx(shown[k], params[k], `${k} after style change:`);
+    }finally{
+      // restore, regardless of pass/fail — later tests assume a6120/carton
+      el('levelStyleSel').value = original; fire(el('levelStyleSel'), 'change');
+    }
+  });
+
+  t('lock/unlock: dims box matches project both locked and re-solved', () => {
+    const lockBtn = el('levelLockBtn');
+    lockBtn.click();   // unlock
+    const lockedShown = shownDims();
+    const params = build.project.secondary.params;
+    for(const k of Object.keys(lockedShown)) approx(lockedShown[k], params[k], `${k} locked:`);
+    el('levelLockBtn').click();   // re-lock -> re-solve
+    const solvedShown = shownDims();
+    const solvedParams = build.project.secondary.params;
+    for(const k of Object.keys(solvedShown)) approx(solvedShown[k], solvedParams[k], `${k} re-solved:`);
+  });
+
+  t('disable/enable carton: rail structurally rebuilds, chain string reflects it', () => {
+    try{
+      el('tierToggleBtn').click();   // opens the confirm notice, does not itself disable
+      const confirmBtn = Array.from(document.querySelectorAll('#loadNotice button')).find(b => /^Disable/.test(b.textContent));
+      confirmBtn.click();
+      eq(build.project.secondary.enabled, false, 'project reflects disabled:');
+      if(!/carton disabled/.test(el('chainString').textContent)) throw new Error('chain string does not name the disabled tier');
+    }finally{
+      if(build.project.secondary.enabled === false) el('tierToggleBtn').click();   // re-enable, no confirm needed
+    }
+    eq(build.project.secondary.enabled, true, 'project reflects re-enabled:');
+  });
+
+  t('units switch: dims box re-displays the SAME mm value converted, matching project', () => {
+    try{
+      el('units').value = 'in'; fire(el('units'), 'change');
+      const params = build.project.secondary.params;
+      for(const input of document.querySelectorAll('#dimFields input[id^="p_"]')){
+        const key = input.id.slice(2);
+        const mmShown = toMM(+input.value, 'in');
+        // 3-decimal-inch display rounds to within half a thousandth of an
+        // inch (~0.0127mm); allow a bit of headroom for that round-trip
+        approx(mmShown, params[key], `${key} (displayed inches converted back to mm) vs project:`, 0.05);
+      }
+    }finally{
+      el('units').value = 'mm'; fire(el('units'), 'change');
+    }
+  });
+})();
+
+/* ==================================================================
+   Part 4: pallet edits recompute the chain too (casesPerPallet feeds
+   the Build table and the hierarchy view, not just the palletize tab).
+   ================================================================== */
+
+await (async () => {
+  setLevel('case'); await settle();
+  const bestCasesPerPallet = () => {
+    const rows = build.getRows();
+    const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+    return best.casesPerPallet;
+  };
+  t('pallet edit: build.getRows() casesPerPallet changes with the pallet size', () => {
+    try{
+      const before = bestCasesPerPallet();
+      el('palMaxH').value = '20'; fire(el('palMaxH'), 'input');   // drastically shrink the load height budget (inches)
+      const after = bestCasesPerPallet();
+      if(after === before) throw new Error(`casesPerPallet did not change: still ${before}`);
+    }finally{
+      el('palMaxH').value = '60'; fire(el('palMaxH'), 'input');   // reset
+    }
+  });
+})();
+
+/* ==================================================================
+   Part 5: view consumers — after an edit, the 2D dieline, the 3D
+   hierarchy, and the Build table all reflect the CURRENT project.
+   ================================================================== */
+
+await (async () => {
+  setLevel('carton'); await settle();
+  el('tabBuild').click(); await settle();
+
+  t('Build table: row count and content reflect the live project after an edit made on another view', () => {
+    el('tab2d').click();
+    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    el('tabBuild').click();
+    const rowTexts = Array.from(document.querySelectorAll('#bTable tbody tr')).map(r => r.textContent);
+    if(!rowTexts.some(t => /WHL|HWL/.test(t))) throw new Error('Build table rows do not reflect the L-up orientation');
+    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+  });
+
+  t('2D dieline: blank size changes when the vertical axis changes', () => {
+    el('tab2d').click();
+    const before = el('blank').textContent;
+    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    const after = el('blank').textContent;
+    if(after === before) throw new Error(`blank size did not change: still "${before}"`);
+    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+  });
+
+  t('3D hierarchy: getRows()-derived best row changes when the vertical axis changes', () => {
+    el('tab3d').click();
+    const bestOf = () => build.getRows().reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+    const before = bestOf().cartonOuter;
+    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    const after = bestOf().cartonOuter;
+    if(JSON.stringify(after) === JSON.stringify(before)) throw new Error('3D hierarchy data source (build.getRows()) did not change');
+    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+  });
+})();
+
+save.clearAutosave();
+save.cancelAutosave();
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
+</body>
+</html>

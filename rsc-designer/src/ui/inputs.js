@@ -17,6 +17,16 @@ export const el = id => document.getElementById(id);
 
 const PAL_RE = /(\d+(?:\.\d+)?)\s*[x×*,]\s*(\d+(?:\.\d+)?)/i;
 
+/** True while `input` has focus. Every in-place resync function below
+ *  checks this before overwriting a field's `.value` — a resync runs on
+ *  EVERY project change, including the one the user's own keystroke just
+ *  caused, and reformatting the field they're actively typing into (e.g.
+ *  rewriting "1." back to "1" mid-decimal) would eat the keystroke they
+ *  haven't finished typing yet. Skipping the focused field costs nothing:
+ *  its own input listener already wrote the live value into the project;
+ *  only the DISPLAYED text would differ, and only until it loses focus. */
+const isFocused = input => document.activeElement === input;
+
 // display-unit state (what the fields currently show)
 let unit = 'mm';
 let palUnit = 'in';
@@ -113,7 +123,7 @@ export function refreshDims(effectiveDims){
   for(const d of mounted.style.params){
     if(d.group !== 'dims' || d.type === 'select') continue;
     const input = el('p_' + d.key);
-    if(!input) continue;
+    if(!input || isFocused(input)) continue;
     const mmVal = effectiveDims && effectiveDims[d.key] != null ? effectiveDims[d.key]
       : (mounted.params[d.key] != null ? mounted.params[d.key] : d.default);
     if(effectiveDims && effectiveDims[d.key] != null) mounted.params[d.key] = mmVal;
@@ -269,6 +279,22 @@ export function mountVertControl(host, idp, level, opts, onInput){
   el(idp + 'Rot').addEventListener('change', apply);
 }
 
+/** Resync an already-mounted vertical-axis control's displayed value from
+ *  `level.allowedOrientations` in place — no-op if this idp isn't currently
+ *  mounted (the rail is showing a different level or a different section).
+ *  Nothing but this control's own `apply` writes allowedOrientations today,
+ *  so this exists for structural completeness — a display that reads
+ *  project state is a registered consumer regardless of whether a second
+ *  writer exists YET, so one appearing later can never go unnoticed here. */
+export function refreshVertControl(idp, level){
+  const axisSel = el(idp + 'Axis');
+  if(!axisSel) return;
+  const vert = orientationsToVertical(level.allowedOrientations);
+  if(!isFocused(axisSel) && axisSel.value !== vert.axis) axisSel.value = vert.axis;
+  const rotChk = el(idp + 'Rot');
+  if(!isFocused(rotChk)) rotChk.checked = vert.mayRotate;
+}
+
 /** Wall/between/headspace, bound to `clearance` (mutated in place). Skips
  *  headspace when the clearance shape doesn't carry it (tertiary's is
  *  wall/between only — cases don't get a headspace allowance). */
@@ -286,6 +312,19 @@ export function mountClearanceControl(host, idp, clearance, onInput){
   el(idp + 'Wall').addEventListener('input', () => { clearance.wall = mm(idp + 'Wall'); onInput(); });
   el(idp + 'Between').addEventListener('input', () => { clearance.between = mm(idp + 'Between'); onInput(); });
   if(hasHead) el(idp + 'Head').addEventListener('input', () => { clearance.top = mm(idp + 'Head'); onInput(); });
+}
+
+/** Resync an already-mounted clearance control's displayed values from
+ *  `clearance` in place — no-op if this idp isn't currently mounted. */
+export function refreshClearanceControl(idp, clearance){
+  const wallEl = el(idp + 'Wall');
+  if(!wallEl) return;
+  const L = mm => fmtInputValue(fromMM(mm, unit), unit);
+  if(!isFocused(wallEl)) wallEl.value = L(clearance.wall);
+  const betweenEl = el(idp + 'Between');
+  if(!isFocused(betweenEl)) betweenEl.value = L(clearance.between);
+  const headEl = el(idp + 'Head');
+  if(headEl && !isFocused(headEl)) headEl.value = L(clearance.top);
 }
 
 /** Child count + arrangement for `link` (mutated in place) — "how many of
@@ -329,6 +368,31 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
     }));
   }
   render();
+}
+
+/** Resync an already-mounted count/arrangement control's displayed values
+ *  from `link` in place — no-op if this idp isn't currently mounted. Never
+ *  flips between the auto/explicit DOM shapes itself (only this control's
+ *  own `render()` does that, and only in response to its OWN Arrangement
+ *  select — nothing else writes link.arrangement's auto-vs-object shape),
+ *  so it only ever needs to update values already present in the DOM. */
+export function refreshCountArrangement(idp, link, presets){
+  const cSel = el(idp + 'CSel');
+  if(!cSel) return;
+  const isPreset = presets.includes(link.count);
+  if(!isFocused(cSel)) cSel.value = isPreset ? String(link.count) : 'custom';
+  const cInput = el(idp + 'C');
+  if(!isFocused(cInput)) cInput.value = link.count;
+  cInput.style.display = isPreset ? 'none' : '';
+  if(link.arrangement !== 'auto'){
+    const nxEl = el(idp + 'Nx');
+    if(nxEl){
+      if(!isFocused(nxEl)) nxEl.value = link.arrangement.nx;
+      const nyEl = el(idp + 'Ny'), nzEl = el(idp + 'Nz');
+      if(!isFocused(nyEl)) nyEl.value = link.arrangement.ny;
+      if(!isFocused(nzEl)) nzEl.value = link.arrangement.nz;
+    }
+  }
 }
 
 /* ---------- pallet fields (write straight to project.pallet in app.js) --- */
