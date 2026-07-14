@@ -16,6 +16,13 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   (`RENDER_MIN_THICKNESS`).
 - Orientation limits are per containment level (`allowedOrientations`),
   never defaulted to all six.
+- One writer, one notification path. Every project value has exactly one
+  writer, and every display registers itself with the single recompute()
+  notifier. Never hand-maintain a list of refreshers, and never let a
+  display read a cache that isn't repopulated by that same recompute. A
+  value with two writers will diverge; a value with a hand-maintained
+  refresh path will go stale. Both have happened in this codebase; neither
+  should happen again.
 
 ## Tests
 
