@@ -502,6 +502,16 @@ function onProjectEdited(){
   // to the initial mount — contents are "checked against them" continuously,
   // never only at unlock time
   mountLockControl();
+  // the active level's OWN "Dimensions" boxes are derived from whatever it
+  // solves against — a SIBLING rail control (vertical axis, clearance,
+  // count/arrangement) can change that solve without ever touching this
+  // level's own params, so those boxes need the same resync every edit
+  // gets, not just the level's own field edits. In-place only (never a
+  // remount) so it can't steal focus from a field mid-edit elsewhere.
+  if(isStyleLevel() && !LEVELS[activeLevel].lockedOf(build.project)){
+    const g = activeGeometry();
+    inputs.refreshDims(g ? g.inner : null);
+  }
   renderChainString();
   if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
   save.scheduleAutosave(gatherSaveState);

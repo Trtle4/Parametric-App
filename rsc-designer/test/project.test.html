@@ -264,6 +264,45 @@ t('multiple wraps per carton: the 8 wraps sit centred inside the carton, none ov
   approx(ys[1] - ys[0], 50, 'row pitch = wrap outer W:');
 });
 
+/* ---- Regression: an explicit links[1] arrangement must still respect
+   primary.allowedOrientations. solveSecondaryInner's explicit-nx*ny*nz
+   branch calls parentCandidates(child, ...) with NO opts.orientations,
+   so it already enumerates every allowed orientation and filters by
+   nx/ny — the branch was never the bug (this pins that it stays that
+   way). The actual regression (Prompt 15 follow-up) was in the UI: an
+   onProjectEdited() edit from a SIBLING rail control never resynced the
+   active level's own "Dimensions" boxes, which only mountLevel() (called
+   from a level switch or lock toggle, never a plain edit) populates —
+   they'd show a stale cartonParams even though the model, the SVG dieline,
+   and every other readout had already moved on. Fixed by inputs.refreshDims,
+   called from onProjectEdited. This test guards the MODEL side: a non-cube
+   wrap (110x50x120.03, no axis equal) explicit 4x2x1 must size the carton
+   differently for H-up vs L-up. */
+t('explicit arrangement respects orientation: H-up vs L-up give different, hand-checked cavities', () => {
+  const pH = multiWrapProject();
+  pH.primary.allowedOrientations = ['LWH'];
+  const rH = candidateCases(pH, '1mm').find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  if(!rH) throw new Error('H-up 2x2x1 case row missing');
+  eq(rH.cartonParams.L, 440, 'H-up carton L = 4 × wrap outer L (110):');
+  eq(rH.cartonParams.W, 100, 'H-up carton W = 2 × wrap outer W (50):');
+  eq(rH.cartonParams.H, 121, 'H-up carton H = wrap outer H 120.03, 1 layer, rounded up:');
+
+  const pL = multiWrapProject();
+  pL.primary.allowedOrientations = verticalToOrientations('L', false);   // 'WHL': wrap's own L stands up
+  const rowsL = candidateCases(pL, '1mm');
+  const rL = rowsL.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1);
+  if(!rL) throw new Error('L-up 2x2x1 case row missing');
+  // 'WHL' permutes the wrap's outer {L:110,W:50,H:120.03} into the cavity's
+  // own L/W/H axes: cavity-L <- wrap W (50), cavity-W <- wrap H (120.03),
+  // cavity-H <- wrap L (110) — the vertical axis genuinely changes.
+  eq(rL.cartonParams.L, 200, 'L-up carton L = 4 × wrap W (50):');
+  eq(rL.cartonParams.W, 241, 'L-up carton W = 2 × wrap H (120.03), rounded up:');
+  eq(rL.cartonParams.H, 110, 'L-up carton H = wrap L (110), the new vertical axis:');
+
+  if(rH.cartonParams.L === rL.cartonParams.L && rH.cartonParams.W === rL.cartonParams.W && rH.cartonParams.H === rL.cartonParams.H)
+    throw new Error('explicit arrangement ignored orientation: H-up and L-up produced identical cartons');
+});
+
 /* ---- Prompt 11.1: wrapAxis — machine direction is L or W, NEVER H -------
    The rule: 'auto' resolves to whichever of L/W is longer (ties to L). H is
    never eligible regardless of how it compares, since a horizontal flow

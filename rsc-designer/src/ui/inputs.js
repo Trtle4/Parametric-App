@@ -99,6 +99,28 @@ export function mountLevel(style, params, options, m){
     opt.appendChild(selectField(d, options, 'option'));
 }
 
+/** Resync the mounted level's derived-dimension boxes in place, without
+ *  rebuilding them — a sibling rail control (vertical axis, clearance,
+ *  count/arrangement) can change what THIS level solves to, but its own
+ *  edit only re-renders the 2D/3D/pallet views (onProjectEdited), never
+ *  remounts the rail. Rebuilding the dims fields from scratch on every
+ *  edit would also blow away focus/cursor position if the user is mid-edit
+ *  of a LOCKED dims field elsewhere on the same rail. No-op once locked:
+ *  a locked level's boxes are the user's own fixed values, not derived. */
+export function refreshDims(effectiveDims){
+  if(!mounted || mounted.locked) return;
+  mounted.effectiveDims = effectiveDims;
+  for(const d of mounted.style.params){
+    if(d.group !== 'dims' || d.type === 'select') continue;
+    const input = el('p_' + d.key);
+    if(!input) continue;
+    const mmVal = effectiveDims && effectiveDims[d.key] != null ? effectiveDims[d.key]
+      : (mounted.params[d.key] != null ? mounted.params[d.key] : d.default);
+    if(effectiveDims && effectiveDims[d.key] != null) mounted.params[d.key] = mmVal;
+    input.value = d.fixedUnit ? mmVal : fmtInputValue(fromMM(mmVal, unit), unit);
+  }
+}
+
 /** A fresh default collation, used when switching FROM plain-box mode back
  *  to a collation — matches newProject()'s own shape. */
 function defaultCollation(){
