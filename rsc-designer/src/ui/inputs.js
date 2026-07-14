@@ -95,9 +95,66 @@ export function mountLevel(style, params, options, m){
     opt.appendChild(selectField(d, options, 'option'));
 }
 
-/** Re-mount the current level (after a unit switch): same binding, values
- *  re-read from the project and re-displayed in the now-current unit. */
-export function remount(){ if(mounted) mountLevel(mounted.style, mounted.params, mounted.options, mounted); }
+/**
+ * Mount the PRODUCT level: the collation editor. Piece dims go in the left
+ * rail, stacking in the right rail; every field writes straight into the
+ * project's `collation` object (mm for lengths). This is the product's
+ * parameters — a plain product envelope, edited here, nowhere else once
+ * Build becomes table-only.
+ * @param {Object} collation  project.primary.collation (mutated in place)
+ * @param {Object} m          {onInput()}
+ */
+export function mountProduct(collation, m){
+  const dims = el('dimFields'), mat = el('matFields');
+  el('optFields').innerHTML = '';
+  const isCyl = collation.piece.kind === 'cylinder';
+  const L = mm => fmtInputValue(fromMM(mm, unit), unit);
+  const numF = (id, label, hint, mm) =>
+    `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
+      <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(mm)}"><span class="unit">${unit}</span></div></div>`;
+  const cntF = (id, label, hint, v) =>
+    `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
+      <div class="inp"><input id="${id}" type="number" min="1" step="1" value="${v}"></div></div>`;
+
+  dims.innerHTML =
+    `<div class="field"><label>Piece <span class="hint">shape</span></label>
+      <div class="inp"><select id="cKind"><option value="box"${isCyl ? '' : ' selected'}>Box</option><option value="cylinder"${isCyl ? ' selected' : ''}>Cylinder</option></select></div></div>` +
+    (isCyl
+      ? numF('cD', 'Diameter', 'Ø', collation.piece.diameter) + numF('cT', 'Thickness', 'axial', collation.piece.thickness)
+      : numF('cL', 'Length', 'L', collation.piece.L) + numF('cW', 'Width', 'W', collation.piece.W) + numF('cH', 'Height', 'H', collation.piece.H));
+
+  mat.innerHTML =
+    cntF('cPer', 'Per stack', 'count', collation.perStack) +
+    `<div class="field"><label>Stack axis <span class="hint">dir</span></label>
+      <div class="inp"><select id="cAxis">${['X', 'Y', 'Z'].map(a => `<option${a === collation.stackAxis ? ' selected' : ''}>${a}</option>`).join('')}</select></div></div>` +
+    cntF('cNx', 'Stacks across', 'nx', collation.nx) +
+    cntF('cNy', 'Stacks deep', 'ny', collation.ny) +
+    numF('cSg', 'Stack gap', 'between stacks', collation.stackGap) +
+    numF('cPg', 'Piece gap', 'within stack', collation.pieceGap);
+
+  const mm = id => toMM(+el(id).value || 0, unit);
+  const cnt = id => Math.max(1, Math.round(+el(id).value || 1));
+  el('cKind').addEventListener('change', () => {
+    collation.piece = el('cKind').value === 'cylinder'
+      ? {kind: 'cylinder', diameter: 50, thickness: 6} : {kind: 'box', L: 90, W: 50, H: 20};
+    mountProduct(collation, m);   // box<->cylinder swap re-renders the dim fields
+    m.onInput();
+  });
+  if(isCyl){
+    el('cD').addEventListener('input', () => { collation.piece.diameter = mm('cD'); m.onInput(); });
+    el('cT').addEventListener('input', () => { collation.piece.thickness = mm('cT'); m.onInput(); });
+  }else{
+    el('cL').addEventListener('input', () => { collation.piece.L = mm('cL'); m.onInput(); });
+    el('cW').addEventListener('input', () => { collation.piece.W = mm('cW'); m.onInput(); });
+    el('cH').addEventListener('input', () => { collation.piece.H = mm('cH'); m.onInput(); });
+  }
+  el('cPer').addEventListener('input', () => { collation.perStack = cnt('cPer'); m.onInput(); });
+  el('cAxis').addEventListener('change', () => { collation.stackAxis = el('cAxis').value; m.onInput(); });
+  el('cNx').addEventListener('input', () => { collation.nx = cnt('cNx'); m.onInput(); });
+  el('cNy').addEventListener('input', () => { collation.ny = cnt('cNy'); m.onInput(); });
+  el('cSg').addEventListener('input', () => { collation.stackGap = mm('cSg'); m.onInput(); });
+  el('cPg').addEventListener('input', () => { collation.pieceGap = mm('cPg'); m.onInput(); });
+}
 
 /* ---------- pallet fields (write straight to project.pallet in app.js) --- */
 

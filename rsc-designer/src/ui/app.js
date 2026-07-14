@@ -6,7 +6,7 @@
  * No detached style instance, so 2D, 3D, and DXF cannot disagree. Fold
  * builders resolve via the registry-keyed map in render/folds/index.js.
  */
-import {styleById} from '../core/styles/index.js';
+import {styles, styleById} from '../core/styles/index.js';
 import {fromMM, fmtLen} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
@@ -21,44 +21,66 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 import * as save from './save.js';
-import {newProject, levelGeometry, linkFor} from '../core/project.js';
+import {newProject, levelGeometry, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
-let depth = 'case';            // hierarchy depth: product|wrap|carton|case|pallet
 let hierSel = {};              // opened index per tier {case,carton,wrap}
 
 /* ---------- the active level: the ONE thing the rails + 2D/3D/DXF show ----
  * There is no detached style instance any more (Path A is gone). The rails
  * mount a level of the project; 2D/3D/DXF read that same level's resolved
- * geometry via levelGeometry(). Everything below routes through `project`. */
+ * geometry via levelGeometry(). The active level IS the hierarchy depth —
+ * one control, not two — so the selector and the 3D cascade can never point
+ * at different levels. `kind` routes the rails: 'style' levels have a style
+ * with param descriptors; 'product' is the collation; 'pallet' is the load. */
 const LEVELS = {
-  wrap:   {label: 'Wrap',   styleId: 'flowwrap', geoLevel: 'wrap',
-           paramsOf: p => p.primary.wrap.params, optionsOf: p => p.primary.wrap.options,
+  product:{label: 'Product', kind: 'product'},
+  wrap:   {label: 'Wrap',   kind: 'style', tier: 'primary', geoLevel: 'wrap',
+           styleIdOf: p => p.primary.wrap.styleId, setStyleId: (p, id) => { p.primary.wrap.styleId = id; },
+           paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
+           optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
            dimsReadOnly: true},   // wrap dims are solved from the collation; locking still lives in Build (Step 5)
-  carton: {label: 'Carton', styleId: 'a6120', geoLevel: 'carton',
-           paramsOf: p => p.secondary.params, optionsOf: p => p.secondary.options,
+  carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
+           styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
+           paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
+           optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
            dimsReadOnly: false},
-  case:   {label: 'Case',   styleId: 'fefco201', geoLevel: 'case',
-           paramsOf: p => p.tertiary.params, optionsOf: p => p.tertiary.options,
+  case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
+           styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
+           paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
+           optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
-           dimsReadOnly: false}
+           dimsReadOnly: false},
+  pallet: {label: 'Pallet', kind: 'pallet'}
 };
+const activeStyleId = () => LEVELS[activeLevel].styleIdOf(build.project);
+const LEVEL_ORDER = ['product', 'wrap', 'carton', 'case', 'pallet'];
 let activeLevel = 'case';
+const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
 
 const selKey = () => build.getSelectedCandidateKey();
 /** The resolved Geometry for the active level — the single source shared by
- *  the 2D dieline, the 3D fold, and the DXF export. */
+ *  the 2D dieline, the 3D fold, and the DXF export. null for product/pallet
+ *  (no dieline geometry). */
 function activeGeometry(){
+  if(!isStyleLevel()) return null;
   return levelGeometry(build.project, LEVELS[activeLevel].geoLevel, build.getRounding(), selKey());
 }
-function activeStyle(){ return styleById(LEVELS[activeLevel].styleId); }
+function activeStyle(){ return isStyleLevel() ? styleById(activeStyleId()) : null; }
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
 function refresh2d(){
   const u = inputs.getUnit();
+  if(!isStyleLevel()){
+    // product/pallet have no dieline — say so plainly rather than showing a
+    // blank or a stale drawing from another level
+    el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#9aa6b2" font-family="var(--mono)" font-size="14">No dieline for the ${LEVELS[activeLevel].label} level — select Wrap, Carton, or Case</text>`;
+    el('blank').textContent = '—'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    return;
+  }
   const g = activeGeometry();
   if(!g){
     el('svg').innerHTML = '';
@@ -80,14 +102,16 @@ function refresh2d(){
 
 function refresh3d(){
   const g = activeGeometry();
-  if(!g) return;
+  if(!g) return;                                  // product/pallet fold nothing — the nest renders them
   const lvl = LEVELS[activeLevel];
-  fold.buildBox(foldBuilders[lvl.styleId], g, build.project.printText, lvl.optionsOf(build.project));
+  fold.buildBox(foldBuilders[activeStyleId()], g, build.project.printText, lvl.optionsOf(build.project));
 }
 
+/** The pallet-stats readout: always the CASE on the pallet (the shipper),
+ *  independent of the active level — the pallet result the chain produced. */
 function refreshPal(){
-  const g = activeGeometry();
   const p = build.project.pallet;
+  const g = levelGeometry(build.project, 'case', build.getRounding(), selKey());
   if(!g){ ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--'); return; }
   const stats = buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, view === 'pal');
   el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
@@ -98,45 +122,128 @@ function refreshPal(){
 
 function refreshAll(){
   refresh2d();
-  if(view === '3d') refresh3d();
+  if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d();
   if(view === 'pal') refreshPal();
 }
 
 /* ---------- active-level selection + mounting ---------- */
-/** Mount the active level into the rails: solved dims show as derived (read-
- *  only intent), the level's own params/options bind live to the project. */
-function mountActiveLevel(){
-  const lvl = LEVELS[activeLevel], proj = build.project;
-  const locked = lvl.lockedOf(proj);
-  const g = activeGeometry();
-  const effectiveDims = (!locked && g) ? g.inner : null;   // derived dims when solved
-  inputs.mountLevel(activeStyle(), lvl.paramsOf(proj), lvl.optionsOf(proj), {
-    effectiveDims,
-    dimsReadOnly: lvl.dimsReadOnly,
-    onInput: ({group}) => {
-      // typing a dimension of a solved (rigid) level implicitly locks it, so
-      // the chain honours the typed value and 2D/3D/DXF show what was typed
-      if(group === 'dims' && !lvl.dimsReadOnly) lvl.setLocked(proj, true);
-      onProjectEdited();
-    }
-  });
+/** Show only the rail sections the active level uses. Style + product use the
+ *  dim/material field slots; pallet uses its own field block; product/pallet
+ *  have no style-view options. */
+function toggleRailSections(kind){
+  const styleOrProduct = kind === 'style' || kind === 'product';
+  el('levelStyle').style.display = (kind === 'style') ? 'contents' : 'none';
+  el('dimFields').style.display = styleOrProduct ? 'contents' : 'none';
+  el('matFields').style.display = styleOrProduct ? 'contents' : 'none';
+  el('optFields').style.display = (kind === 'style') ? 'contents' : 'none';
+  el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
 }
 
+/** The per-level style dropdown, filtered by the registry's `tier`. A style
+ *  whose tier matches the level sits under "For this level"; every other
+ *  style is offered under "Override (unusual)" — a style used outside its
+ *  tier is unusual, not illegal, so it's selectable with a quiet note, never
+ *  forbidden. The choice writes to project.<level>.styleId (saved with the
+ *  project). Product picks a piece SHAPE instead (mountProduct's #cKind). */
+function mountStyleSelector(){
+  const host = el('levelStyle');
+  const lvl = LEVELS[activeLevel];
+  if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  const cur = activeStyleId();
+  const natural = styles.filter(s => s.tier === lvl.tier);
+  const override = styles.filter(s => s.tier !== lvl.tier);
+  const opt = s => `<option value="${s.id}"${s.id === cur ? ' selected' : ''}>${s.name}</option>`;
+  const offTier = styleById(cur).tier !== lvl.tier;
+  host.innerHTML =
+    `<div class="field"><label>Style <span class="hint">${lvl.tier} tier</span></label>
+      <div class="inp"><select id="levelStyleSel">
+        <optgroup label="For this level">${natural.map(opt).join('')}</optgroup>
+        ${override.length ? `<optgroup label="Override (unusual)">${override.map(opt).join('')}</optgroup>` : ''}
+      </select></div></div>` +
+    (offTier ? `<div class="field bnote" style="color:var(--muted);font-size:11px">Using a ${styleById(cur).tier}-tier style at the ${lvl.label.toLowerCase()} level — unusual, but allowed.</div>` : '');
+  el('levelStyleSel').addEventListener('change', () => changeLevelStyle(el('levelStyleSel').value));
+}
+
+/** Change the active level's style. The param SHAPE differs between styles
+ *  (an RSC has glue/slot; a tuck carton has tuck depths), so params reset to
+ *  the new style's defaults — but the geometric L/W/H the user set carry
+ *  over, since those are the design intent, not a style detail. styleId +
+ *  params + options all live in the project, so this is saved/loaded. */
+function changeLevelStyle(newId){
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  const old = lvl.paramsOf(proj);
+  const nd = styleDefaults(newId);
+  ['L', 'W', 'H'].forEach(k => { if(old[k] != null && nd[k] != null) nd[k] = old[k]; });
+  lvl.setStyleId(proj, newId);
+  lvl.setParams(proj, nd);
+  lvl.setOptions(proj, styleOptionDefaults(newId));
+  setActiveLevel(activeLevel);   // re-derive brand/exports/rails/views from the new style
+  save.scheduleAutosave(gatherSaveState);
+}
+
+/** Mount the active level into the rails. Style levels bind their style
+ *  params (solved dims shown as derived); the product level mounts the
+ *  collation editor; the pallet level uses the pallet fields already in the
+ *  DOM. */
+function mountActiveLevel(){
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  toggleRailSections(lvl.kind);
+  mountStyleSelector();
+  if(lvl.kind === 'style'){
+    const locked = lvl.lockedOf(proj);
+    const g = activeGeometry();
+    const effectiveDims = (!locked && g) ? g.inner : null;   // derived dims when solved
+    inputs.mountLevel(activeStyle(), lvl.paramsOf(proj), lvl.optionsOf(proj), {
+      effectiveDims,
+      dimsReadOnly: lvl.dimsReadOnly,
+      onInput: ({group}) => {
+        // typing a dimension of a solved (rigid) level implicitly locks it, so
+        // the chain honours the typed value and 2D/3D/DXF show what was typed
+        if(group === 'dims' && !lvl.dimsReadOnly) lvl.setLocked(proj, true);
+        onProjectEdited();
+      }
+    });
+  }else if(lvl.kind === 'product'){
+    inputs.mountProduct(proj.primary.collation, {onInput: () => onProjectEdited()});
+  }else{
+    // pallet: the fields are static DOM; ensure their unit chips are current
+    writePalletFields();
+  }
+}
+
+const LEVEL_BRAND = {
+  product: {code: 'PRODUCT', sub: 'Collation'},
+  pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
+};
 function setActiveLevel(level){
   activeLevel = level;
-  const style = activeStyle();
-  el('brandCode').textContent = style.brand.code;
-  el('brandName').textContent = style.brand.sub;
-  // flexible styles have no die -> no DXF; their deliverables are the film
-  // spec + artwork template
-  const flex = style.structure === 'flexible';
-  el('btnDXF').disabled = flex;
-  el('btnDXF').title = flex ? 'No die for a flexible style — export the artwork template instead' : '';
-  el('btnArt').style.display = flex ? '' : 'none';
-  el('btnSpec').style.display = flex ? '' : 'none';
+  const lvl = LEVELS[level];
+  if(lvl.kind === 'style'){
+    const style = activeStyle();
+    el('brandCode').textContent = style.brand.code;
+    el('brandName').textContent = style.brand.sub;
+    // flexible styles have no die -> no DXF; their deliverables are the film
+    // spec + artwork template
+    const flex = style.structure === 'flexible';
+    el('btnDXF').disabled = flex;
+    el('btnDXF').title = flex ? 'No die for a flexible style — export the artwork template instead' : '';
+    el('btnArt').style.display = flex ? '' : 'none';
+    el('btnSpec').style.display = flex ? '' : 'none';
+  }else{
+    el('brandCode').textContent = LEVEL_BRAND[level].code;
+    el('brandName').textContent = LEVEL_BRAND[level].sub;
+    el('btnDXF').disabled = true;
+    el('btnDXF').title = 'No dieline at this level — select Wrap, Carton, or Case';
+    el('btnArt').style.display = 'none';
+    el('btnSpec').style.display = 'none';
+  }
   if(el('style').value !== level) el('style').value = level;
+  // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
+  LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && d === level));
   mountActiveLevel();
-  refreshAll();
+  refresh2d();
+  if(view === 'pal') refreshPal();
+  if(view === '3d') apply3dMode();
 }
 
 /** A rail edit already mutated the project in place; re-run the views (each
@@ -188,7 +295,7 @@ function depthAvailable(bundle, d){
   return !!bundle;
 }
 
-function hudText(bundle, opened){
+function hudText(bundle, opened, depth){
   const c = bundle.counts;
   const parts = [];
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} cases`);
@@ -206,27 +313,27 @@ function hudText(bundle, opened){
 
 function applyHierarchy(resetCam){
   el('m3fold').classList.remove('on');
-  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
-    el('d_' + d).classList.toggle('on', mode3d === 'hier' && depth === d));
+  LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && activeLevel === d));
   if(view !== '3d') return;
   fold.stopFold(); fold.showBox(false); showPallet(false); showNest(false); showProduct(false);
   const bundle = hierarchyBundle();
-  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
-    el('d_' + d).disabled = !depthAvailable(bundle, d));
+  LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; return; }
-  if(!depthAvailable(bundle, depth)) depth = 'case';
+  // the active level IS the depth; if it isn't reachable for this config,
+  // render the case (without disturbing the selector's own state)
+  const depth = depthAvailable(bundle, activeLevel) ? activeLevel : 'case';
   if(resetCam) fold.setOrbit(0.5, 0.65, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
   const res = hier.buildHierarchy(bundle, depth, hierSel);
   hier.show(true);
   el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
-  el('hierHud').textContent = hudText(bundle, res.opened);
-  renderLegend(bundle);
+  el('hierHud').textContent = hudText(bundle, res.opened, depth);
+  renderLegend(bundle, depth);
 }
 
 /** Legend naming every coloured element, plus (at wrap depth) the seal
  *  compensation read straight off the model geometry. */
-function renderLegend(bundle){
+function renderLegend(bundle, depth){
   const swatches = LEGEND
     .filter(l => bundle.wrapGeo || (l.name !== 'Film' && !l.name.includes('seal')))
     .map(l => `<span class="lg"><span class="sw" style="background:${l.hex}"></span>${l.name}</span>`).join('');
@@ -264,7 +371,9 @@ function applyFoldMode(){
   else fold.startFold();
 }
 
-function apply3dMode(){ if(mode3d === 'fold') applyFoldMode(); else applyHierarchy(true); }
+// product/pallet have no fold — they only exist in the nest cascade, so a
+// fold request on those levels falls through to the hierarchy
+function apply3dMode(){ if(mode3d === 'fold' && isStyleLevel()) applyFoldMode(); else applyHierarchy(true); }
 
 /* ---------- view switching ---------- */
 function setView(v){
@@ -280,7 +389,8 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
-  el('palletFields').style.display = v === 'pal' ? 'contents' : 'none';
+  // (which rail fields show is driven by the ACTIVE LEVEL now, not the view —
+  // see toggleRailSections/mountActiveLevel)
   if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
   if(v === 'build'){
     // rebuild the Build fields FROM the project (they may be stale relative to
@@ -304,11 +414,11 @@ function setView(v){
 }
 
 /* ---------- wiring ---------- */
-// the #style dropdown is now the ACTIVE-LEVEL selector: which level of the
-// project the rails edit and 2D/3D/DXF show. (Step 2 promotes this to an
-// always-visible, labelled selector; for Step 1 it reuses this control.)
+// #style is the always-visible ACTIVE-LEVEL selector: which level of the
+// project the rails edit and every view shows. All five levels, in
+// content->pallet order. It IS the hierarchy depth too (one control).
 const levelSel = el('style');
-levelSel.innerHTML = Object.entries(LEVELS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+levelSel.innerHTML = LEVEL_ORDER.map(k => `<option value="${k}">${LEVELS[k].label}</option>`).join('');
 levelSel.value = activeLevel;
 levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
 
@@ -339,7 +449,7 @@ el('palPattern').addEventListener('change', onPalletEdited);
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
-  inputs.remount();                         // rail fields re-displayed in the new unit (values live in the project)
+  mountActiveLevel();                       // rail fields re-displayed in the new unit (values live in the project)
   build.onUnitsChanged(inputs.getUnit());   // Build length fields follow the toggle
   refreshAll();
 });
@@ -352,11 +462,13 @@ el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
-['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d =>
+// the 3D depth buttons ARE active-level buttons — one control, so the rails
+// and the cascade always point at the same level
+LEVEL_ORDER.forEach(d =>
   el('d_' + d).addEventListener('click', () => {
     if(el('d_' + d).disabled) return;
-    mode3d = 'hier'; depth = d; hierSel = {};   // fresh depth resets the open channel to defaults
-    apply3dMode();
+    mode3d = 'hier'; hierSel = {};   // fresh depth resets the open channel to defaults
+    setActiveLevel(d);
   }));
 
 // click a unit in the hierarchy to open it; the cascade re-opens below it
@@ -398,7 +510,7 @@ el('btnDXF').addEventListener('click', () => {
   if(activeStyle().structure === 'flexible') return;   // no die, no DXF
   const g = activeGeometry();
   if(!g) return;
-  downloadDXF(g, g.inner, inputs.getUnit(), LEVELS[activeLevel].styleId.toUpperCase());
+  downloadDXF(g, g.inner, inputs.getUnit(), activeStyleId().toUpperCase());
 });
 el('btnArt').addEventListener('click', () => {
   const g = activeGeometry();

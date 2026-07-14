@@ -34,6 +34,7 @@
   .brand .name{font-size:15px;font-weight:600;letter-spacing:-.01em}
   .brand .sub{font-size:12px;color:var(--muted)}
   .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+  .levelLabel{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
   .seg button{
     font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
@@ -174,7 +175,8 @@
     <span class="sub">Parametric dieline generator</span>
   </div>
   <div class="actions">
-    <select id="style" class="styleSel" title="Packaging style"></select>
+    <label class="levelLabel" for="style">Level</label>
+    <select id="style" class="styleSel" title="Active level — which level of the project the rails edit and every view shows"></select>
     <div class="seg" role="tablist">
       <button id="tab2d" class="on">2D Dieline</button>
       <button id="tab3d">3D Fold</button>
@@ -201,6 +203,7 @@
   <!-- LEFT: primary dimensions (fields built from the style registry) -->
   <aside class="rail left">
     <h2>Inside dimensions</h2>
+    <div id="levelStyle" style="display:contents"></div>
     <div id="dimFields" style="display:contents"></div>
     <!-- control removed (3D views are translucent now, print text doesn't read) —
          the #txt element and its value are still live: readState()/geometry/artwork
