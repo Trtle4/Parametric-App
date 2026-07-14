@@ -75,9 +75,13 @@ export function styleOptionDefaults(styleId){
 export function newProject(){
   return {
     primary: {
+      // round product: 3 stacks of 2 pieces each (6 total), each piece a
+      // 47mm-diameter x 12mm-thick puck, stood on its flat face (stackAxis
+      // Z) -> envelope 141 x 47 x 24 (3 stacks of 47 across, one deep,
+      // 2*12 tall) — clean whole-mm numbers straight through the chain.
       collation: {
-        piece: {kind: 'box', L: 90, W: 50, H: 20},
-        perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0
+        piece: {kind: 'cylinder', diameter: 47, thickness: 12},
+        perStack: 2, stackAxis: 'Z', nx: 3, ny: 1, stackGap: 0, pieceGap: 0
       },
       // a plain product envelope instead of a collation — a single manual
       // outer, no inner, no compensation. Mutually exclusive with
@@ -95,7 +99,7 @@ export function newProject(){
         params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
                  girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
-                 L: 90, W: 50, H: 120},
+                 L: 141, W: 47, H: 24},
         // which collation axis is the machine (repeat) direction through a
         // HORIZONTAL flow wrapper — never H (vertical is never the travel
         // axis on this machine class; a genuinely vertical feed is a
