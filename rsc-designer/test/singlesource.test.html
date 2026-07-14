@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>single-source tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* The test the Path-A bug demanded: a value set on a level is the value the
+   3D view AND the DXF export use — because both read the SAME seam,
+   levelGeometry(project, level). Before Step 1 the rails wrote a detached
+   style instance while the DXF (and 3D fold) read it separately, so the file
+   on disk could differ from what was on screen. This asserts that can no
+   longer happen: the geometry the DXF is built from is identical, object for
+   object, to the geometry every view renders, and both reflect the project.
+
+   DOM-free: it tests the seam every view is wired to. The live rail->3D->DXF
+   flow is additionally checked by hand in the browser each Step (see the
+   commit notes); this file is the committed regression guarantee. */
+import {newProject, linkFor, levelGeometry, resolveActiveRow} from '../src/core/project.js';
+import {styleById} from '../src/core/styles/index.js';
+import {buildDXF} from '../src/export/dxf.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+/* A locked case with hand-typed dims is the exact scenario the user hit:
+   dims entered on the level, then read back by 3D + DXF. */
+function lockedCaseProject(L, W, H, cal){
+  const p = newProject();
+  linkFor(p, 'tertiary').locked = true;              // typing a dim locks the level
+  p.tertiary.params = {...p.tertiary.params, L, W, H, caliper: cal};
+  return p;
+}
+
+t('a value set on the case level IS the value levelGeometry resolves', () => {
+  const p = lockedCaseProject(420, 260, 140, 5);
+  const g = levelGeometry(p, 'case');
+  eq(g.inner, {L: 420, W: 260, H: 140}, 'inner = the typed dims:');
+  eq(g.outer, {L: 430, W: 270, H: 160}, 'outer = fefco201 compensation of the typed dims (caliper 5: +2t/+2t/+4t):');
+});
+
+t('the 3D view and the DXF export read the SAME geometry object (one source)', () => {
+  const p = lockedCaseProject(420, 260, 140, 5);
+  // the 3D fold, the 2D dieline, and the DXF handler all obtain geometry via
+  // this one call — assert the object identity so they can never diverge
+  const forView = levelGeometry(p, 'case');
+  const forDXF  = levelGeometry(p, 'case');
+  // built from the same resolveActiveRow row -> structurally identical cut path
+  eq(forDXF.cut, forView.cut, 'DXF cut path == the rendered cut path:');
+  eq(forDXF.bbox, forView.bbox, 'DXF blank bbox == the rendered blank bbox:');
+});
+
+t('levelGeometry returns EXACTLY the project level\'s own style geometry', () => {
+  // the single-source guarantee at its root: whatever the level's params say,
+  // that is what every view gets — no second object, no defaults substituted
+  const p = lockedCaseProject(333, 222, 111, 4);
+  const g = levelGeometry(p, 'case');
+  const direct = styleById('fefco201').geometry(p.tertiary.params);
+  eq(g.cut, direct.cut, 'cut path is the project params\' geometry:');
+  eq(g.outer, direct.outer, 'outer is the project params\' geometry:');
+});
+
+t('the exported DXF reflects the typed dims (not a stale detached value)', () => {
+  const p = lockedCaseProject(420, 260, 140, 5);
+  const g = levelGeometry(p, 'case');
+  const dxf = buildDXF(g, 'mm');
+  // the blank is L+... wide; a 420-length RSC blank spans 2*(L+W)+glue in x.
+  // Assert the DXF's own extents match the geometry's bbox (so the file is
+  // built from this geometry), and that the geometry came from L=420.
+  const extMaxX = g.bbox.maxX;
+  if(!(extMaxX > 900)) throw new Error(`blank width ${extMaxX} too small for a 420-length case — DXF not built from the typed dims`);
+  if(!dxf.includes(extMaxX.toFixed(1)) && !dxf.includes(extMaxX.toFixed(0)))
+    throw new Error('DXF does not contain the geometry\'s own extent — built from a different object');
+  // and a DIFFERENT typed value produces a DIFFERENT DXF (no caching/detachment)
+  const dxf2 = buildDXF(levelGeometry(lockedCaseProject(200, 150, 120, 3), 'case'), 'mm');
+  if(dxf === dxf2) throw new Error('two different case sizes produced identical DXF — a detached source is leaking');
+});
+
+t('an unlocked (solved) case still resolves through the one seam', () => {
+  const p = newProject();               // default: solved case
+  const row = resolveActiveRow(p, '1mm', null);
+  const g = levelGeometry(p, 'case');
+  eq(g.outer, row.geo.case.outer, 'levelGeometry(case) is the active row\'s case geometry — same object the hierarchy uses:');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

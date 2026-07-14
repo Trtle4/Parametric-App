@@ -60,6 +60,16 @@ export function styleDefaults(styleId){
   return out;
 }
 
+/** Default style-VIEW options (e.g. fefco201's outerFlaps) for a style — the
+ *  fold-only cosmetic choices that consume no chain math. Stored on the level
+ *  so they are part of the project (and the save file), never an orphaned
+ *  Path-A value. */
+export function styleOptionDefaults(styleId){
+  const out = {};
+  for(const d of (styleById(styleId).options || [])) out[d.key] = d.default;
+  return out;
+}
+
 /** A fresh project: collated product driving a carton driving a case, on a
  *  GMA pallet. `primary: null` reverts to the carton-driven chain. */
 export function newProject(){
@@ -73,15 +83,21 @@ export function newProject(){
       // Seal values are editable defaults, not conventions.
       wrap: {
         styleId: 'flowwrap',
+        // L/W/H here are the REMEMBERED locked-content dims (used only when
+        // locked: true) — defaulted to match this default collation's own
+        // envelope so the field has a sane starting value the moment the
+        // lock checkbox is turned on, instead of reading back `undefined`.
         params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
-                 girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92},
+                 girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
+                 L: 90, W: 50, H: 120},
         // which collation axis is the machine (repeat) direction through a
         // HORIZONTAL flow wrapper — never H (vertical is never the travel
         // axis on this machine class; a genuinely vertical feed is a
         // different machine, VFFS, a different style). 'auto' resolves to
         // whichever of L/W is longer, ties to L — see resolveWrapAxis.
         wrapAxis: 'auto',
+        options: styleOptionDefaults('flowwrap'),   // fold-only cosmetics (none today)
         locked: false
       },
       // H up, rotation allowed: product is often orientation-free in plan,
@@ -94,6 +110,7 @@ export function newProject(){
     secondary: {
       styleId: 'a6120',
       params: styleDefaults('a6120'),                // L/W/H overwritten when solved from the collation
+      options: styleOptionDefaults('a6120'),         // fold-only cosmetics (none today)
       allowedOrientations: ['LWH', 'WLH'],           // upright; set deliberately in Build
       // wall/between are the review-me defaults; vertical is explicitly
       // non-uniform: cartons bear on the case floor (bottom 0), headspace
@@ -103,10 +120,15 @@ export function newProject(){
     tertiary: {
       styleId: 'fefco201',
       params: {...styleDefaults('fefco201')},        // L/W/H overwritten when solved
+      options: styleOptionDefaults('fefco201'),      // {outerFlaps:'L'} — the 3D-fold major-panel choice
       allowedOrientations: ['LWH', 'WLH'],           // cases upright on the pallet
       clearance: {wall: 0, between: 0}
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal'},
+    // free print text on the package's print panel — lives in the model (and
+    // the save file) even though its input control is hidden from the UI, so
+    // it is never an orphaned, unsaveable Path-A value again.
+    printText: 'FRAGILE',
     links: [
       {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
       {parent: 'secondary', child: 'primary', count: 1, arrangement: 'auto', locked: false}
@@ -384,6 +406,40 @@ export function checkLockedCase(project, rounding = '1mm'){
   row.fits = cartonsFit.total >= link.count && variant.fits;
   row.arrangementLabel = `locked (${cartonsFit.label})`;
   return decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit);
+}
+
+/**
+ * Resolve the ONE candidate row every view should render — locked case uses
+ * checkLockedCase (a single row), otherwise the enumerated candidate matching
+ * `selectedKey` (nx/ny/nz/orientation), falling back to the freight-optimal
+ * row (max cartons/pallet). This is the single row hierarchyBundle, the 2D
+ * dieline, the 3D fold, the DXF export, and every readout all read from — so
+ * they can never show different geometry for the same level (the Path-A bug).
+ * @returns {Object|null} a decorated candidate row, or null if nothing fits
+ */
+export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
+  const caseLink = linkFor(project, 'tertiary');
+  if(caseLink.locked) return checkLockedCase(project, rounding);
+  const rows = candidateCases(project, rounding);
+  if(rows.length === 0) return null;
+  if(selectedKey){
+    const m = rows.find(r => r.nx === selectedKey.nx && r.ny === selectedKey.ny &&
+      r.nz === selectedKey.nz && r.orientation === selectedKey.orientation);
+    if(m) return m;
+  }
+  return rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+}
+
+/**
+ * The resolved Geometry for a single level ('wrap'|'carton'|'case'), read off
+ * the active row's retained `geo` — the SAME object the 3D hierarchy renders.
+ * Returns null when the level has no geometry (e.g. 'wrap' with no wrap
+ * configured, or nothing fits). This is the seam that makes the 2D dieline,
+ * the 3D fold, and the DXF export provably identical: they all call this.
+ */
+export function levelGeometry(project, level, rounding = '1mm', selectedKey = null){
+  const row = resolveActiveRow(project, rounding, selectedKey);
+  return row && row.geo ? (row.geo[level] || null) : null;
 }
 
 /* ---------------- single-source-of-truth row decoration -----------------

@@ -33,7 +33,7 @@
   }
   .brand .name{font-size:15px;font-weight:600;letter-spacing:-.01em}
   .brand .sub{font-size:12px;color:var(--muted)}
-  .actions{display:flex;align-items:center;gap:10px}
+  .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
   .seg button{
     font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
@@ -147,6 +147,16 @@
   .hud.hierlegend .lg{display:flex;align-items:center;gap:7px}
   .hud.hierlegend .sw{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.15)}
   .hud.hierlegend .rd{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);color:var(--ink)}
+  .notice{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:9px 20px;font-size:13px;background:#FBE9D3;border-bottom:1px solid var(--line);color:var(--ink);
+  }
+  .notice.warn{background:#FDE4E1;color:#8A2A25}
+  .notice .noticeMsg{flex:1;min-width:0}
+  .notice button{
+    font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    padding:5px 12px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer;
+  }
   @media (max-width:860px){
     main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
     .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
@@ -174,8 +184,18 @@
     <button class="btn" id="btnDXF">Export DXF</button>
     <button class="btn" id="btnArt" style="display:none">Artwork SVG</button>
     <button class="btn" id="btnSpec" style="display:none">Copy film spec</button>
+    <div class="seg" role="group" title="Project file — the durable, portable save format">
+      <button id="btnSaveFile">Save</button>
+      <button id="btnLoadFile">Load</button>
+    </div>
+    <input type="file" id="fileLoadInput" accept="application/json,.json" style="display:none">
+    <select id="slotSel" class="styleSel" title="localStorage slots — convenience only, not the source of truth"></select>
+    <button class="btn" id="btnSlotSave">Save to slot</button>
+    <button class="btn" id="btnSlotLoad" disabled>Load slot</button>
   </div>
 </header>
+
+<div id="loadNotice" class="notice" style="display:none"></div>
 
 <main>
   <!-- LEFT: primary dimensions (fields built from the style registry) -->

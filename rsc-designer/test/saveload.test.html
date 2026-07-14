@@ -1,0 +1,184 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>save/load tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/schemaMigrations.js + core/persistence.js — the
+   save/load machinery itself, DOM-free (build.js's own DOM round-trip is
+   verified separately, live, in the browser).
+
+   NOTE: no committed fixtures yet. The project state model is about to be
+   restructured (single source of truth, active level, optional enabled
+   levels), so CURRENT_SCHEMA_VERSION stays unfrozen and test/fixtures/ stays
+   empty until that lands — see schemaMigrations.js's own comment block for
+   the rule this will enforce once real fixtures exist. This page tests the
+   MACHINERY (migration refusal/chain, defaulting + reporting, unknown-field
+   preservation, null-vs-undefined) against in-session documents, plus one
+   full hand-checked chain round-trip through project.js's own math, so the
+   "round-trips exactly" guarantee is asserted now rather than only added
+   later alongside the first real fixture. */
+import {newProject, candidateCases} from '../src/core/project.js';
+import {serializeProject, deserializeProject} from '../src/core/persistence.js';
+import {CURRENT_SCHEMA_VERSION} from '../src/core/schemaMigrations.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+/* ---- basic round trip: nothing derived, nothing lost -------------------- */
+t('serialize -> JSON -> deserialize reproduces the exact live project', () => {
+  const project = newProject();
+  const state = {project, rounding: '1mm', selectedCandidate: {nx: 4, ny: 3, nz: 1, orientation: 'LWH'}, unit: 'mm', palUnit: 'in'};
+  const doc = serializeProject(state);
+  eq(doc.schemaVersion, CURRENT_SCHEMA_VERSION, 'schemaVersion is written first/current:');
+  const roundTripped = JSON.parse(JSON.stringify(doc));   // simulates a real file write+read
+  const result = deserializeProject(roundTripped);
+  eq(result.project, project, 'project is byte-identical:');
+  eq(result.rounding, '1mm');
+  eq(result.selectedCandidate, {nx: 4, ny: 3, nz: 1, orientation: 'LWH'});
+  eq(result.unit, 'mm'); eq(result.palUnit, 'in');
+  eq(result.migrationsRun, [], 'current-version file: no migrations run:');
+  eq(result.defaulted, [], 'nothing missing: nothing defaulted:');
+});
+
+t('the save document has no derived fields (geometry/arrangements/candidate table)', () => {
+  const doc = serializeProject({project: newProject(), rounding: '1mm', selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+  const json = JSON.stringify(doc);
+  // spot-check: none of the derived-only field names candidateCases() rows
+  // carry (geo, arr, wrapGeo, cartonOuter, cavity, casesPerPallet, ...)
+  // appear anywhere in the saved document
+  for(const derivedKey of ['"geo"', '"arr"', '"wrapGeo"', '"cartonOuter"', '"cavity"', '"casesPerPallet"', '"placements"'])
+    if(json.includes(derivedKey)) throw new Error(`save document contains a derived field: ${derivedKey}`);
+});
+
+/* ---- schema version handling --------------------------------------------*/
+t('a file newer than this app supports is refused, naming both versions', () => {
+  let threw = null;
+  try{ deserializeProject({schemaVersion: CURRENT_SCHEMA_VERSION + 1, project: {}}); }
+  catch(e){ threw = e.message; }
+  if(!threw) throw new Error('expected a refusal, got none');
+  if(!threw.includes(String(CURRENT_SCHEMA_VERSION + 1)) || !threw.includes(String(CURRENT_SCHEMA_VERSION)))
+    throw new Error(`refusal message doesn't name both versions: "${threw}"`);
+});
+
+t('a file with no schemaVersion at all is refused, not guessed at', () => {
+  let threw = null;
+  try{ deserializeProject({project: {}}); }
+  catch(e){ threw = e.message; }
+  if(!threw) throw new Error('expected a refusal, got none');
+});
+
+t('a file at exactly the current version passes through with an empty migration log', () => {
+  const doc = serializeProject({project: newProject(), rounding: '1mm', selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+  const result = deserializeProject(doc);
+  eq(result.migrationsRun, []);
+});
+
+/* ---- missing fields: defaulted AND reported ----------------------------- */
+t('a missing field is filled from newProject()\'s default and reported', () => {
+  const doc = {schemaVersion: 1, project: {secondary: {styleId: 'a6120', params: {caliper: 0.457}, allowedOrientations: ['LWH', 'WLH']}}};
+  const result = deserializeProject(doc);
+  eq(result.project.secondary.clearance, newProject().secondary.clearance, 'clearance defaulted to the level default:');
+  if(!result.defaulted.includes('secondary.clearance')) throw new Error('missing clearance was not reported as defaulted');
+});
+
+t('a wholly-absent top-level level defaults to that level\'s full default object', () => {
+  const doc = {schemaVersion: 1, project: {}};
+  const result = deserializeProject(doc);
+  eq(result.project.primary, newProject().primary);
+  eq(result.project.tertiary, newProject().tertiary);
+  if(!result.defaulted.includes('primary')) throw new Error('absent "primary" not reported');
+});
+
+/* ---- explicit null (a deliberately disabled level) is NEVER defaulted --- */
+t('primary: null (bare-envelope / carton-driven mode) is preserved, not defaulted', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, primary: null}};
+  const result = deserializeProject(doc);
+  if(result.project.primary !== null) throw new Error('a deliberately disabled primary was silently re-enabled');
+  if(result.defaulted.some(d => d.startsWith('primary'))) throw new Error('null primary was wrongly reported as defaulted');
+});
+
+/* ---- unknown fields ride through the round trip untouched --------------- */
+t('a field this schema does not recognize is preserved through the round trip', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, secondary: {...base.secondary, futureField: 'keep-me'}}};
+  const result = deserializeProject(doc);
+  eq(result.project.secondary.futureField, 'keep-me');
+});
+
+/* ---- collation.piece is a discriminated union (box vs cylinder) --------- */
+t('a cylinder piece defaults its OWN missing fields, never box L/W/H', () => {
+  const doc = {schemaVersion: 1, project: {primary: {collation: {
+    piece: {kind: 'cylinder', diameter: 80}, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0
+  }}}};
+  const result = deserializeProject(doc);
+  eq(result.project.primary.collation.piece, {kind: 'cylinder', diameter: 80, thickness: 6});
+  if(result.defaulted.some(d => d.includes('piece.L') || d.includes('piece.W') || d.includes('piece.H')))
+    throw new Error(`box fields leaked into a cylinder piece's defaulted report: ${JSON.stringify(result.defaulted)}`);
+});
+
+/* ---- links: element-wise, not an opaque leaf ----------------------------- */
+t('a links entry missing a field (e.g. locked) still gets a usable default', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, links: [
+    {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto'},   // locked missing
+    base.links[1]
+  ]}};
+  const result = deserializeProject(doc);
+  eq(result.project.links[0].locked, false);
+  eq(result.project.links[0].count, 12, 'present fields are not clobbered:');
+});
+
+/* ---- full hand-checked chain round trip (project.js's own math) --------- */
+/* box 90x50x20, perStack 6 Z (env 90x50x120), fin folded, ends 10+3, rect
+   girth; 12 cartons @ 4x3x1, wall 1.5 — identical config to golden.json's
+   wrap_fin_folded pin, hand-derivation reproduced here so the save/load
+   layer is checked against known-correct numbers without depending on a
+   committed fixture file. */
+function chainProject(){
+  const p = newProject();
+  p.primary.allowedOrientations = ['LWH'];
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  return p;
+}
+t('save -> reload -> load reproduces the exact hand-checked chain', () => {
+  const project = chainProject();
+  const rowsBefore = candidateCases(project, '1mm');
+  const before = rowsBefore.find(r => r.nx === 4 && r.ny === 3 && r.nz === 1 && r.orientation === 'LWH');
+
+  const doc = serializeProject({project, rounding: '1mm', selectedCandidate: {nx: 4, ny: 3, nz: 1, orientation: 'LWH'}, unit: 'mm', palUnit: 'in'});
+  const fileText = JSON.stringify(doc);                 // simulates the actual .pkg.json contents
+  const reloaded = deserializeProject(JSON.parse(fileText));   // simulates reading it back after a reload
+
+  const rowsAfter = candidateCases(reloaded.project, reloaded.rounding);
+  const after = rowsAfter.find(r =>
+    r.nx === reloaded.selectedCandidate.nx && r.ny === reloaded.selectedCandidate.ny &&
+    r.nz === reloaded.selectedCandidate.nz && r.orientation === reloaded.selectedCandidate.orientation);
+  if(!after) throw new Error('selected candidate not found after reload');
+
+  eq(after.wrapOuter, {L: 110, W: 50, H: 120.03}, 'wrap outer (hand-checked):');
+  eq(after.cartonOuter, {L: 110.914, W: 50.914, H: 122.828}, 'carton outer (hand-checked):');
+  eq(after.cavity, {L: 447, W: 156, H: 123}, 'case cavity (hand-checked):');
+  eq(after.outer, {L: 453, W: 162, H: 135}, 'case outer (hand-checked):');
+  approx(after.boardAreaM2, 0.346239, 'board area (hand-checked):');
+  eq([after.casesPerLayer, after.caseLayers, after.casesPerPallet], [14, 10, 140], 'pallet fit (hand-checked):');
+  eq(after.cartonsPerPallet, 1680); eq(after.piecesPerPallet, 10080);
+
+  // and identical to the pre-save values — the actual round-trip guarantee
+  eq(after.wrapOuter, before.wrapOuter, 'identical to pre-save:');
+  eq(after.cartonOuter, before.cartonOuter, 'identical to pre-save:');
+  eq(after.cavity, before.cavity, 'identical to pre-save:');
+  eq(after.outer, before.outer, 'identical to pre-save:');
+  eq(after.casesPerPallet, before.casesPerPallet, 'identical to pre-save:');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

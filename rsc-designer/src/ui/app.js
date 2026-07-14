@@ -1,11 +1,12 @@
 /**
- * Application wiring: style selection, view switching, event listeners,
- * readouts. Reads params via inputs.readState() (mm) and passes them down
- * explicitly — no module below ui/ touches the DOM for parameters, and no
- * renderer contains style conditionals (fold builders resolve via the
- * registry-keyed map in render/folds/index.js).
+ * Application wiring: the ACTIVE-LEVEL selector, view switching, event
+ * listeners, readouts. There is one source of truth — the project. The rails
+ * edit a level of it (inputs.mountLevel); every view (2D/3D/DXF/artwork/
+ * readouts) renders that same level's resolved geometry via levelGeometry().
+ * No detached style instance, so 2D, 3D, and DXF cannot disagree. Fold
+ * builders resolve via the registry-keyed map in render/folds/index.js.
  */
-import {styles, styleById} from '../core/styles/index.js';
+import {styleById} from '../core/styles/index.js';
 import {fromMM, fmtLen} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
@@ -19,39 +20,77 @@ import {LEGEND} from '../render/hierarchy3d.js';
 import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
+import * as save from './save.js';
+import {newProject, levelGeometry, linkFor} from '../core/project.js';
 
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
 let depth = 'case';            // hierarchy depth: product|wrap|carton|case|pallet
 let hierSel = {};              // opened index per tier {case,carton,wrap}
 
-/* ---------- refreshers ---------- */
-function refresh2d(){
-  const s = inputs.readState();
-  const g = s.style.geometry(s.params);
-  const {w, h} = draw2d(el('svg'), g, s.unit, s.printText);
+/* ---------- the active level: the ONE thing the rails + 2D/3D/DXF show ----
+ * There is no detached style instance any more (Path A is gone). The rails
+ * mount a level of the project; 2D/3D/DXF read that same level's resolved
+ * geometry via levelGeometry(). Everything below routes through `project`. */
+const LEVELS = {
+  wrap:   {label: 'Wrap',   styleId: 'flowwrap', geoLevel: 'wrap',
+           paramsOf: p => p.primary.wrap.params, optionsOf: p => p.primary.wrap.options,
+           lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
+           dimsReadOnly: true},   // wrap dims are solved from the collation; locking still lives in Build (Step 5)
+  carton: {label: 'Carton', styleId: 'a6120', geoLevel: 'carton',
+           paramsOf: p => p.secondary.params, optionsOf: p => p.secondary.options,
+           lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
+           dimsReadOnly: false},
+  case:   {label: 'Case',   styleId: 'fefco201', geoLevel: 'case',
+           paramsOf: p => p.tertiary.params, optionsOf: p => p.tertiary.options,
+           lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
+           dimsReadOnly: false}
+};
+let activeLevel = 'case';
 
-  // readout (blank size / style stats / board area)
-  const areaU = s.unit === 'mm' ? 'm²' : 'ft²';
-  const wq = fromMM(w, s.unit), hq = fromMM(h, s.unit);
-  const areaConv = s.unit === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
-  el('blank').textContent = `${fmtLen(w, s.unit)} × ${fmtLen(h, s.unit)} ${s.unit}`;
+const selKey = () => build.getSelectedCandidateKey();
+/** The resolved Geometry for the active level — the single source shared by
+ *  the 2D dieline, the 3D fold, and the DXF export. */
+function activeGeometry(){
+  return levelGeometry(build.project, LEVELS[activeLevel].geoLevel, build.getRounding(), selKey());
+}
+function activeStyle(){ return styleById(LEVELS[activeLevel].styleId); }
+
+/* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
+function refresh2d(){
+  const u = inputs.getUnit();
+  const g = activeGeometry();
+  if(!g){
+    el('svg').innerHTML = '';
+    el('blank').textContent = 'does not fit'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    return;
+  }
+  const {w, h} = draw2d(el('svg'), g, u, build.project.printText);
+  const areaU = u === 'mm' ? 'm²' : 'ft²';
+  const wq = fromMM(w, u), hq = fromMM(h, u);
+  const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
+  el('blank').textContent = `${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`;
   el('area').textContent  = `${areaConv.toFixed(3)} ${areaU}`;
-  el('styleStats').innerHTML = (s.style.readouts ? s.style.readouts(g) : []).map(r =>
+  const style = activeStyle();
+  el('styleStats').innerHTML = (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
-      r.len !== undefined ? `${fmtLen(r.len, s.unit)} ${s.unit}` : r.text}</span></div>`
+      r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
   ).join('');
 }
 
 function refresh3d(){
-  const s = inputs.readState();
-  fold.buildBox(foldBuilders[s.style.id], s.style.geometry(s.params), s.printText, s.options);
+  const g = activeGeometry();
+  if(!g) return;
+  const lvl = LEVELS[activeLevel];
+  fold.buildBox(foldBuilders[lvl.styleId], g, build.project.printText, lvl.optionsOf(build.project));
 }
 
 function refreshPal(){
-  const s = inputs.readState();
-  const stats = buildPallet(s.style.geometry(s.params), s.pallet, s.pattern, view === 'pal');
-  el('palPat').textContent = stats.perLayer > 0 ? stats.label + (s.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
+  const g = activeGeometry();
+  const p = build.project.pallet;
+  if(!g){ ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--'); return; }
+  const stats = buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, view === 'pal');
+  el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
@@ -63,33 +102,51 @@ function refreshAll(){
   if(view === 'pal') refreshPal();
 }
 
-/* ---------- style switching ---------- */
-function applyStyle(s){
-  el('brandCode').textContent = s.brand.code;
-  el('brandName').textContent = s.brand.sub;
-  // flexible styles have no die, so there is no DXF — disabled with the
-  // reason, never a silently meaningless file. Their deliverables are the
-  // film spec and the artwork template.
-  const flex = s.structure === 'flexible';
+/* ---------- active-level selection + mounting ---------- */
+/** Mount the active level into the rails: solved dims show as derived (read-
+ *  only intent), the level's own params/options bind live to the project. */
+function mountActiveLevel(){
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  const locked = lvl.lockedOf(proj);
+  const g = activeGeometry();
+  const effectiveDims = (!locked && g) ? g.inner : null;   // derived dims when solved
+  inputs.mountLevel(activeStyle(), lvl.paramsOf(proj), lvl.optionsOf(proj), {
+    effectiveDims,
+    dimsReadOnly: lvl.dimsReadOnly,
+    onInput: ({group}) => {
+      // typing a dimension of a solved (rigid) level implicitly locks it, so
+      // the chain honours the typed value and 2D/3D/DXF show what was typed
+      if(group === 'dims' && !lvl.dimsReadOnly) lvl.setLocked(proj, true);
+      onProjectEdited();
+    }
+  });
+}
+
+function setActiveLevel(level){
+  activeLevel = level;
+  const style = activeStyle();
+  el('brandCode').textContent = style.brand.code;
+  el('brandName').textContent = style.brand.sub;
+  // flexible styles have no die -> no DXF; their deliverables are the film
+  // spec + artwork template
+  const flex = style.structure === 'flexible';
   el('btnDXF').disabled = flex;
   el('btnDXF').title = flex ? 'No die for a flexible style — export the artwork template instead' : '';
   el('btnArt').style.display = flex ? '' : 'none';
   el('btnSpec').style.display = flex ? '' : 'none';
-  inputs.setStyle(s, onParamInput, onParamChange);
+  if(el('style').value !== level) el('style').value = level;
+  mountActiveLevel();
   refreshAll();
 }
-function onParamInput(){ refreshAll(); }
-function onParamChange(){ // select params & style options (e.g. outer flaps replay the fold)
-  refresh2d();
-  if(view === '3d'){ refresh3d(); fold.startFold(); }
-  if(view === 'pal') refreshPal();
-}
 
-/* ---------- 3D mode: FOLD (blank->box) vs HIERARCHY (the full nest) ------ */
-function syncPalletToProject(){
-  const s = inputs.readState();
-  build.project.pallet = {L: s.pallet.L, W: s.pallet.W, maxH: s.pallet.maxH,
-                          baseH: PALLET_HEIGHT, pattern: s.pattern};
+/** A rail edit already mutated the project in place; re-run the views (each
+ *  re-solves the chain via levelGeometry) and schedule an autosave. Does NOT
+ *  read the Build DOM — the rails are the writer here, Build's fields are
+ *  re-synced from the project when that tab is next shown. */
+function onProjectEdited(){
+  refreshAll();
+  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+  save.scheduleAutosave(gatherSaveState);
 }
 
 /** Assemble the hierarchy bundle by READING the arrangements the chain
@@ -97,7 +154,6 @@ function syncPalletToProject(){
  *  single source of truth with the Build table. */
 function hierarchyBundle(){
   const proj = build.project;
-  syncPalletToProject();                                // pallet from the main rails
   if(build.getRows().length === 0) build.recompute();   // ensure rows exist (not every call: avoids reentrancy)
   const rows = build.getRows();
   // default to the freight-optimal row (max cartons/pallet) so the cascade
@@ -171,14 +227,13 @@ function applyHierarchy(resetCam){
 /** Legend naming every coloured element, plus (at wrap depth) the seal
  *  compensation read straight off the model geometry. */
 function renderLegend(bundle){
-  const s = inputs.readState();
   const swatches = LEGEND
     .filter(l => bundle.wrapGeo || (l.name !== 'Film' && !l.name.includes('seal')))
     .map(l => `<span class="lg"><span class="sw" style="background:${l.hex}"></span>${l.name}</span>`).join('');
   let readout = '';
   if(depth === 'wrap' && bundle.wrapGeo){
     const inr = bundle.wrapGeo.inner, out = bundle.wrapGeo.outer;   // model dims, mm
-    const u = s.unit, f = v => fmtLen(v, u);
+    const u = inputs.getUnit(), f = v => fmtLen(v, u);
     const add = (a, b, note) => `${b - a >= 0 ? '+' : ''}${f(b - a)}${note ? ' ' + note : ''}`;
     const sealsOn = bundle.wraps.seals;
     const hNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
@@ -205,7 +260,7 @@ function applyFoldMode(){
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('orbithint').textContent = 'drag to orbit · scroll to zoom';
   refresh3d(); fold.showBox(true);
-  if(inputs.currentStyle().structure === 'flexible') fold.jumpClosed();
+  if(activeStyle().structure === 'flexible') fold.jumpClosed();
   else fold.startFold();
 }
 
@@ -228,8 +283,10 @@ function setView(v){
   el('palletFields').style.display = v === 'pal' ? 'contents' : 'none';
   if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
   if(v === 'build'){
-    syncPalletToProject();
-    build.recompute();
+    // rebuild the Build fields FROM the project (they may be stale relative to
+    // rail edits), preserving the picked candidate — never let Build's own
+    // recompute read stale DOM back over a value the rails just wrote
+    build.refreshPanel();
   }
   if(canvas){
     if(!fold.isInit()) fold.init3d(el('cvWrap'));
@@ -247,18 +304,42 @@ function setView(v){
 }
 
 /* ---------- wiring ---------- */
-const styleSel = el('style');
-styleSel.innerHTML = styles.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-styleSel.addEventListener('change', () => applyStyle(styleById(styleSel.value)));
+// the #style dropdown is now the ACTIVE-LEVEL selector: which level of the
+// project the rails edit and 2D/3D/DXF show. (Step 2 promotes this to an
+// always-visible, labelled selector; for Step 1 it reuses this control.)
+const levelSel = el('style');
+levelSel.innerHTML = Object.entries(LEVELS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+levelSel.value = activeLevel;
+levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
 
-el('txt').addEventListener('input', refreshAll);
-['pal', 'palMaxH'].forEach(id => {
-  el(id).addEventListener('input', () => { if(view === 'pal') refreshPal(); });
-});
-el('palPattern').addEventListener('change', () => { if(view === 'pal') refreshPal(); });
+// pallet fields write straight into project.pallet — the single home for
+// pallet dims (no more copy into a detached object)
+function commitPallet(){
+  const {L, W, maxH} = inputs.readPallet();
+  build.project.pallet.L = L; build.project.pallet.W = W; build.project.pallet.maxH = maxH;
+  build.project.pallet.pattern = el('palPattern').value;
+}
+/** Write project.pallet back into the pallet rail fields (after a load). */
+function writePalletFields(){
+  const p = build.project.pallet, pu = inputs.getPalUnit();
+  const fmtP = v => pu === 'mm' ? Math.round(v).toString() : (+v.toFixed(3)).toString();
+  el('pal').value = `${fmtP(fromMM(p.L, pu))} x ${fmtP(fromMM(p.W, pu))}`;
+  el('palMaxH').value = fmtP(fromMM(p.maxH, pu));
+  el('palPattern').value = p.pattern;
+}
+function onPalletEdited(){
+  commitPallet();
+  if(view === 'pal') refreshPal();
+  else if(view === 'build') build.refreshPanel();
+  else if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+  save.scheduleAutosave(gatherSaveState);
+}
+['pal', 'palMaxH'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+el('palPattern').addEventListener('change', onPalletEdited);
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
+  inputs.remount();                         // rail fields re-displayed in the new unit (values live in the project)
   build.onUnitsChanged(inputs.getUnit());   // Build length fields follow the toggle
   refreshAll();
 });
@@ -309,18 +390,24 @@ el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); }
     applyHierarchy(false);   // keep the camera where the user left it
   });
 })();
+// DXF/artwork/spec export the ACTIVE LEVEL's resolved geometry — the SAME
+// object the 2D dieline and 3D fold render (activeGeometry). This is the fix
+// for the worst face of the Path-A bug: the DXF file could differ from what
+// was on screen. Now it cannot: one source.
 el('btnDXF').addEventListener('click', () => {
-  const s = inputs.readState();
-  if(s.style.structure === 'flexible') return;   // no die, no DXF
-  downloadDXF(s.style.geometry(s.params), s.params, s.unit, s.style.id.toUpperCase());
+  if(activeStyle().structure === 'flexible') return;   // no die, no DXF
+  const g = activeGeometry();
+  if(!g) return;
+  downloadDXF(g, g.inner, inputs.getUnit(), LEVELS[activeLevel].styleId.toUpperCase());
 });
 el('btnArt').addEventListener('click', () => {
-  const s = inputs.readState();
-  downloadArtwork(s.style.geometry(s.params), s.unit);
+  const g = activeGeometry();
+  if(g) downloadArtwork(g, inputs.getUnit());
 });
 el('btnSpec').addEventListener('click', () => {
-  const s = inputs.readState();
-  navigator.clipboard.writeText(filmSpecText(s.style.geometry(s.params), s.unit));
+  const g = activeGeometry();
+  if(!g) return;
+  navigator.clipboard.writeText(filmSpecText(g, inputs.getUnit()));
   el('btnSpec').textContent = 'Copied ✓';
   setTimeout(() => el('btnSpec').textContent = 'Copy film spec', 1200);
 });
@@ -353,25 +440,161 @@ wrap2.addEventListener('dblclick', () => { if(view !== '2d') return; view2d.z = 
 
 window.addEventListener('resize', () => { if(view === '3d') fold.resize3d(); });
 
-applyStyle(styles[0]);
+/* ---------- save/load: one project document, two storage layers -------- */
+
+/** Everything a save document needs, read live at call time (never a
+ *  stale snapshot) — see persistence.js for what "nothing derived" means here. */
+function gatherSaveState(){
+  return {
+    project: build.project, rounding: build.getRounding(),
+    selectedCandidate: build.getSelectedCandidateKey(),
+    unit: inputs.getUnit(), palUnit: inputs.getPalUnit()
+  };
+}
+
+/** A dismissible header notice. `actions` (if given) replace the default
+ *  single Dismiss button — used for the restore banner's Discard action. */
+function showNotice(msg, isWarn, actions){
+  const n = el('loadNotice');
+  n.className = 'notice' + (isWarn ? ' warn' : '');
+  n.innerHTML = '<span class="noticeMsg"></span>';
+  n.querySelector('.noticeMsg').textContent = msg;
+  const acts = actions || [{label: 'Dismiss', onClick: () => { n.style.display = 'none'; }}];
+  for(const a of acts){
+    const b = document.createElement('button');
+    b.textContent = a.label;
+    b.addEventListener('click', a.onClick);
+    n.appendChild(b);
+  }
+  n.style.display = 'flex';
+}
+
+/** Apply a deserialized {project, rounding, selectedCandidate, unit,
+ *  palUnit, migrationsRun, defaulted} to the live app: the unit switch
+ *  goes through the SAME pathway as the header toggle (so inputs.js's own
+ *  fields convert instead of being silently mislabeled), then the Build
+ *  chain is replaced wholesale and the panel rebuilt from it. Migration
+ *  and defaulted-field reports surface in the UI, not just the console —
+ *  a silently defaulted clearance is a wrong case dimension. */
+function applyLoadedState(result){
+  if(result.unit && result.unit !== inputs.getUnit()){
+    el('units').value = result.unit;
+    if(inputs.switchUnits()) build.onUnitsChanged(inputs.getUnit());
+  }
+  if(result.palUnit && result.palUnit !== inputs.getPalUnit()){
+    el('palUnits').value = result.palUnit;
+    inputs.switchPalUnits();
+  }
+  build.loadProject({project: result.project, rounding: result.rounding, selectedCandidate: result.selectedCandidate});
+  // pallet rail fields reflect the loaded project.pallet; re-mount the active
+  // level so the rails show the loaded project, not the pre-load state
+  writePalletFields();
+  setActiveLevel(activeLevel);
+  setView('build');
+  const notes = [];
+  if(result.migrationsRun && result.migrationsRun.length) notes.push(`Migrated — ${result.migrationsRun.join('; ')}`);
+  if(result.defaulted && result.defaulted.length) notes.push(`Missing from file, defaulted: ${result.defaulted.join(', ')}`);
+  showNotice(notes.length ? notes.join(' · ') : 'Project loaded.', notes.length > 0);
+}
+
+async function loadProjectFromFile(file){
+  try{
+    const text = await save.readFileAsText(file);
+    const result = save.parseProjectFile(text);
+    applyLoadedState(result);
+  }catch(e){
+    showNotice('Could not load that file: ' + (e.message || e), true);
+  }
+}
+
+el('btnSaveFile').addEventListener('click', () => {
+  const name = prompt('Save as (file name):', 'project');
+  if(name === null) return;
+  save.downloadProjectFile(gatherSaveState(), name);
+});
+el('btnLoadFile').addEventListener('click', () => el('fileLoadInput').click());
+el('fileLoadInput').addEventListener('change', () => {
+  const file = el('fileLoadInput').files[0];
+  el('fileLoadInput').value = '';   // allow re-selecting the same file later
+  if(file) loadProjectFromFile(file);
+});
+// drag-and-drop a save file anywhere onto the app
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(file) loadProjectFromFile(file);
+});
+
+/* localStorage slots — convenience only; hidden/disabled outright if
+   storage isn't available, so the rest of the app is completely unaffected. */
+function refreshSlotSelect(){
+  const sel = el('slotSel');
+  const slots = save.listSlots();
+  sel.innerHTML = slots.map(s => `<option value="${s.index}">${s.index}. ${s.name ? s.name : '(empty)'}</option>`).join('');
+  el('btnSlotLoad').disabled = !slots[+sel.value - 1] || !slots[+sel.value - 1].name;
+}
+if(!save.hasStorage){
+  el('slotSel').innerHTML = '<option>localStorage unavailable</option>';
+  el('slotSel').disabled = true; el('btnSlotSave').disabled = true; el('btnSlotLoad').disabled = true;
+}else{
+  refreshSlotSelect();
+  el('slotSel').addEventListener('change', refreshSlotSelect);
+  el('btnSlotSave').addEventListener('click', () => {
+    const i = +el('slotSel').value;
+    const existing = save.listSlots()[i - 1];
+    const name = prompt('Name this slot:', (existing && existing.name) || `Slot ${i}`);
+    if(name === null) return;
+    save.saveToSlot(i, name, gatherSaveState());
+    refreshSlotSelect();
+  });
+  el('btnSlotLoad').addEventListener('click', () => {
+    const i = +el('slotSel').value;
+    const result = save.loadFromSlot(i);
+    if(!result){ showNotice(`Slot ${i} is empty or unreadable.`, true); return; }
+    applyLoadedState(result);
+  });
+}
 
 // Build view: candidate table + selection -> hierarchy 3D / apply-to-case.
 // Only a real row selection (non-null) rebuilds the hierarchy; recompute's
-// null callback is ignored to avoid reentrancy.
-build.initBuild(row => { if(row && view === '3d' && mode3d === 'hier') applyHierarchy(false); }, inputs.getUnit());
+// null callback is ignored to avoid reentrancy. Every recompute (selection
+// or not) is a "project changed" signal, so autosave is scheduled here too.
+build.initBuild(row => {
+  if(row && view === '3d' && mode3d === 'hier') applyHierarchy(false);
+  if(view !== 'build') mountActiveLevel();   // a picked candidate changes the resolved dims the rails show
+  save.scheduleAutosave(gatherSaveState);
+}, inputs.getUnit());
+
+// mount the default active level (case) and its rails — the single source
+// every non-Build view now renders. (Replaces applyStyle(styles[0]).)
+writePalletFields();
+setActiveLevel('case');
+
+// Autosave restore: convenience only. A corrupt/unreadable autosave is
+// silently ignored (readAutosave returns null) rather than blocking startup.
+(function tryRestoreAutosave(){
+  const result = save.readAutosave();
+  if(!result) return;
+  applyLoadedState(result);
+  showNotice('Restored your last session.', false, [{label: 'Discard', onClick: () => {
+    // loadProject's own recompute re-arms an autosave (the same "project
+    // changed" hook every edit uses) — clear the write AND cancel that
+    // freshly-armed timer, or the default project silently reappears as
+    // "your last session" a few hundred ms later.
+    build.loadProject({project: newProject(), rounding: '1mm', selectedCandidate: null});
+    save.clearAutosave();
+    save.cancelAutosave();
+    setView('2d');
+    el('loadNotice').style.display = 'none';
+  }}]);
+})();
+
+// "View selected as case": selecting a row already commits that candidate to
+// the project (the views resolve it via selKey()); this just focuses the case
+// dieline. No more pushing dims into a detached style instance.
 el('bUse').addEventListener('click', () => {
-  const row = build.getSelected();
-  if(!row) return;
-  el('style').value = 'fefco201';
-  applyStyle(styleById('fefco201'));
-  inputs.setParamValues(row.caseParams);
-  refreshAll();
+  if(!build.getSelected()) return;
+  setActiveLevel('case');
   setView('2d');
-});
-// pallet inputs feed the Build chain too
-['pal', 'palMaxH'].forEach(id => el(id).addEventListener('input', () => {
-  if(view === 'build'){ syncPalletToProject(); build.recompute(); }
-}));
-el('palPattern').addEventListener('change', () => {
-  if(view === 'build'){ syncPalletToProject(); build.recompute(); }
 });
