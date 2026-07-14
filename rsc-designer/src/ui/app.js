@@ -218,6 +218,7 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  el('palletFields').style.display = v === 'pal' ? 'contents' : 'none';
   if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
   if(v === 'build'){
     syncPalletToProject();

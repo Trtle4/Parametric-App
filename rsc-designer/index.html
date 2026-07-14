@@ -182,35 +182,40 @@
   <aside class="rail left">
     <h2>Inside dimensions</h2>
     <div id="dimFields" style="display:contents"></div>
-    <div class="field">
+    <!-- control removed (3D views are translucent now, print text doesn't read) —
+         the #txt element and its value are still live: readState()/geometry/artwork
+         export all still see it, only the field is hidden -->
+    <div class="field" style="display:none">
       <label>Print text <span class="hint">front panel</span></label>
       <div class="inp"><input id="txt" type="text" value="FRAGILE" maxlength="40" autocomplete="off"></div>
     </div>
     <div id="optFields" style="display:contents"></div>
 
-    <h2 style="margin-top:6px">Pallet</h2>
-    <div class="field">
-      <label>Pallet size <span class="hint">L x W</span></label>
-      <div class="inp"><input id="pal" type="text" value="48 x 40" autocomplete="off" style="padding-right:42px"><span class="unit" id="uPal">in</span></div>
-    </div>
-    <div class="field">
-      <label>Max load height <span class="hint">incl. pallet</span></label>
-      <div class="inp"><input id="palMaxH" type="number" min="0" step="1" value="60"><span class="unit" id="uPalMaxH">in</span></div>
-    </div>
-    <div class="field">
-      <label>Pallet units</label>
-      <div class="inp"><select id="palUnits">
-        <option value="in">Inches</option>
-        <option value="mm">Millimeters</option>
-      </select></div>
-    </div>
-    <div class="field">
-      <label>Stack pattern</label>
-      <div class="inp"><select id="palPattern">
-        <option value="optimal">Optimal (mixed)</option>
-        <option value="column">Column</option>
-        <option value="interlock">Interlock</option>
-      </select></div>
+    <div id="palletFields" style="display:contents">
+      <h2 style="margin-top:6px">Pallet</h2>
+      <div class="field">
+        <label>Pallet size <span class="hint">L x W</span></label>
+        <div class="inp"><input id="pal" type="text" value="48 x 40" autocomplete="off" style="padding-right:42px"><span class="unit" id="uPal">in</span></div>
+      </div>
+      <div class="field">
+        <label>Max load height <span class="hint">incl. pallet</span></label>
+        <div class="inp"><input id="palMaxH" type="number" min="0" step="1" value="60"><span class="unit" id="uPalMaxH">in</span></div>
+      </div>
+      <div class="field">
+        <label>Pallet units</label>
+        <div class="inp"><select id="palUnits">
+          <option value="in">Inches</option>
+          <option value="mm">Millimeters</option>
+        </select></div>
+      </div>
+      <div class="field">
+        <label>Stack pattern</label>
+        <div class="inp"><select id="palPattern">
+          <option value="optimal">Optimal (mixed)</option>
+          <option value="column">Column</option>
+          <option value="interlock">Interlock</option>
+        </select></div>
+      </div>
     </div>
   </aside>
 

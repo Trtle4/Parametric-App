@@ -102,21 +102,80 @@ function cutawayBox(outer, inner, mat){
 const WRAP_N = 20;           // profile sample count per loft ring
 const WRAP_SERR = 9;         // serration cycles around the crimped fin tip
 const WRAP_SERR_AMT = 0.16;  // serration amplitude, fraction of the tip's own half-size
+const PIECE_SHRINK = 0.03;   // conservative render-only clearance every piece gets (pieceGeo's smaller margin)
 
-// one closed ring of WRAP_N points around a superellipse profile
-// (|h/hH|^expo + |w/hW|^expo = 1): expo~2 reads as an ellipse (round
-// product), expo>2 reads as a soft rounded rectangle (pillow over a stack).
-function superRing(xPos, hH, hW, expo, serrate){
+/**
+ * A safe corner-fillet radius for the film's rounded-rectangle cross-section
+ * — small enough that no product corner can poke through it, computed from
+ * the ACTUAL per-piece clearance rather than a fraction of the envelope.
+ *
+ * A Z-stack of N layers divides envelope.H by N to get back to one piece's
+ * own thickness; that piece still only gets pieceGeo's ~3% render shrink,
+ * so the true margin at the OUTERMOST layer is (envelope.H/N)*PIECE_SHRINK/2
+ * — independent of how tall the whole stack is. Using envelope.H directly
+ * (as an early version of this did) makes the fillet grow with the stack
+ * while the real margin doesn't, so for enough layers the fillet eventually
+ * cuts back into the product. Same reasoning for nx/ny in the plan axes.
+ * Halved again for headroom; never above the envelope's own 25%.
+ */
+function safeFillet(envelope, stackAxis, nx, ny, layers){
+  const divH = stackAxis === 'Z' ? Math.max(1, layers) : 1;
+  const divW = ny*(stackAxis === 'Y' ? Math.max(1, layers) : 1);
+  const marginH = (envelope.H/divH)/2*PIECE_SHRINK;
+  const marginW = (envelope.W/divW)/2*PIECE_SHRINK;
+  return 0.5*Math.min(marginH, marginW);
+}
+
+/**
+ * One closed ring of profile points, in the wrap's local Y-Z cross-section.
+ *
+ * roundish: a true ellipse (hH,hW half-axes) — safe ONLY when the actual
+ * cross-section is genuinely round (a single cylindrical slug wrapped with
+ * its own axis as the pack length), since an ellipse with the same
+ * half-axes exactly circumscribes the circle it's built from.
+ *
+ * Otherwise: a ROUNDED RECTANGLE (flat sides + a small corner fillet), not
+ * a superellipse. This distinction is load-bearing, not cosmetic: a box, or
+ * a cylinder lying with its axis vertical (whose Y-Z slice is itself a
+ * rectangle, not a circle), has REAL material out to its own full extent
+ * along an entire flat face — at the piece's own top edge, a puck's disc is
+ * still full-diameter, it doesn't taper. A superellipse tapers its w extent
+ * to ZERO at h=hH for every finite exponent, so any product spanning the
+ * full height/width at a real (non-zero) width there pokes straight through
+ * it — verified against the actual rendered vertex data (see commit notes).
+ * A rounded rectangle's flat sides touch hH/hW exactly, with only a small
+ * fillet cut at the four corners, sized by the CALLER (fillet(hH,hW) —
+ * see safeFillet) from the actual per-piece clearance, not a fixed fraction
+ * of the envelope: a Z-stack of many thin layers has a piece-to-piece
+ * margin that shrinks with layer count while the envelope grows, so a
+ * fillet sized off hH/hW alone (as this used to be) can outgrow that
+ * shrinking margin and cut back into the product — confirmed empirically.
+ */
+function ringPoints(xPos, hH, hW, roundish, serrate, fillet){
   const pts = [];
-  for(let k = 0; k < WRAP_N; k++){
-    const a = k/WRAP_N*Math.PI*2;
-    let h = Math.sign(Math.cos(a))*Math.pow(Math.abs(Math.cos(a)), 2/expo)*hH;
-    let w = Math.sign(Math.sin(a))*Math.pow(Math.abs(Math.sin(a)), 2/expo)*hW;
-    if(serrate){
-      const m = 1 + WRAP_SERR_AMT*Math.sin(a*WRAP_SERR);
-      h *= m; w *= m;
+  const wobble = (h, w, a) => {
+    if(!serrate) return [h, w];
+    const m = 1 + WRAP_SERR_AMT*Math.sin(a*WRAP_SERR);
+    return [h*m, w*m];
+  };
+  if(roundish){
+    for(let k = 0; k < WRAP_N; k++){
+      const a = k/WRAP_N*Math.PI*2;
+      const [h, w] = wobble(Math.cos(a)*hH, Math.sin(a)*hW, a);
+      pts.push(new THREE.Vector3(xPos, h, w));
     }
-    pts.push(new THREE.Vector3(xPos, h, w));
+    return pts;
+  }
+  const r = Math.max(0.0005, Math.min(fillet, 0.25*Math.min(hH, hW)));
+  const segs = Math.max(1, Math.round(WRAP_N/4));
+  const centers = [[hH - r, hW - r], [-(hH - r), hW - r], [-(hH - r), -(hW - r)], [hH - r, -(hW - r)]];
+  for(let ci = 0; ci < 4; ci++){
+    const [cx, cy] = centers[ci];
+    for(let i = 0; i < segs; i++){
+      const a = ci*(Math.PI/2) + i/segs*(Math.PI/2);
+      const [h, w] = wobble(cx + r*Math.cos(a), cy + r*Math.sin(a), a);
+      pts.push(new THREE.Vector3(xPos, h, w));
+    }
   }
   return pts;
 }
@@ -160,64 +219,88 @@ function loftGeometry(rings){
  *  so body+tapers together span envelope.L + 2*endSealWidth = the wrap's
  *  true outer.L). envelope = the collation/product envelope, the SAME input
  *  the previous box-based renderer used; only the shape changes. */
-function wrapPartsGeometry(envelope, seals, roundish){
+function wrapPartsGeometry(envelope, seals, roundish, stackInfo){
   const {L, W, H} = envelope;
   const esw = Math.max(seals.endSealWidth || 0, 0.01);
   const gaugeMM = Math.max((seals.gauge || 0)/1000, 0.01);
   const finThk = Math.max(gaugeMM*2, 0.15);        // ~2x film gauge, floored only for visibility
   const finW = W*0.42;                             // pinched tip width — cosmetic, stays inside W
-  const expo = roundish ? 2.05 : 3.4;              // ~2 = ellipse (round product); >2 = soft pillow
+  const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers);
 
   const hH = H/2, hW = W/2;   // body half-dims — every taper ring stays AT OR INSIDE these, never bulges past them
   const bodyGeo = loftGeometry([
-    superRing(-L/2, hH, hW, expo, false),
-    superRing( L/2, hH, hW, expo, false)
+    ringPoints(-L/2, hH, hW, roundish, false, fillet),
+    ringPoints( L/2, hH, hW, roundish, false, fillet)
   ]);
 
   function taper(sign){
+    // shoulder -> neck: the actual taper, over a SHORT run (35% of esw) so
+    // it reads as a pinch, not a cone stretched over the full seal width.
+    // neck -> tip: constant cross-section (finThk/finW at BOTH rings) — a
+    // genuinely flat tab, not a further narrowing wedge. Serration only at
+    // the cut tip, so the flat run shows a crimped edge, not a smooth cone.
     const shoulder = sign*(L/2), tip = sign*(L/2 + esw);
-    const mid = shoulder + (tip - shoulder)*0.45;
-    // mid ring: a fraction of the BODY's own half-dims (strictly < hH,hW,
-    // so the taper only ever narrows toward the fin, never bulges outward)
+    const neck = shoulder + (tip - shoulder)*0.35;
     const rings = [
-      superRing(shoulder, hH, hW, expo, false),
-      superRing(mid, hH*0.7, hW*0.7, expo, false),
-      superRing(tip, finThk/2, finW/2, expo, true)
+      ringPoints(shoulder, hH, hW, roundish, false, fillet),
+      ringPoints(neck, finThk/2, finW/2, roundish, false, fillet),
+      ringPoints(tip, finThk/2, finW/2, roundish, true, fillet)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
   return {bodyGeo, taperPos: taper(1), taperNeg: taper(-1)};
 }
 
-/** The fin seal — UNCHANGED geometry/placement logic from the box-render
- *  era, just factored into a standalone (nx4-baked) geometry so it can be
- *  shared by instanced (closed) and single (opened) wraps alike. Height is
- *  ~2x gauge (folded) or the true finHeight (standing) — the same values
- *  the H-compensation readout reports. Fin sits on the back face by
- *  default (seals.finFace: 'back'|'top'|'front'). */
+/** The fin seal: a solid tab lying FLUSH against the chosen face (back by
+ *  default), running the full pack length (X), standing `finHeight` proud
+ *  of that face when the treatment is standing, or lying flat (a thin
+ *  visible sliver, floored for visibility) when folded. `finSealBand` is
+ *  the tab's width across the face's OTHER in-plane axis, centred on it —
+ *  never collapsed to a zero-thickness plane, so it can't read as a line
+ *  from any angle, and it moves with the wrap under every orientation
+ *  because it's baked into the geometry, not positioned post-hoc. */
 function wrapFinGeometry(envelope, seals){
   const {H, W, L} = envelope;
   const fh = seals.finHeight || 0;
   if(seals.sealType === 'lap' || fh <= 0) return null;
   const standing = seals.finTreatment === 'standing';
-  const thick = T_FLOOR;
-  const proud = standing ? fh : thick;
+  const proud = standing ? fh : T_FLOOR;                     // how far it stands off the face
   const face = seals.finFace || 'back';
-  const zEdge = face === 'front' ? W/2 : face === 'top' ? 0 : -W/2;   // back by default
-  const geo = new THREE.BoxGeometry(L, proud, thick);
-  geo.translate(0, H/2 + proud/2, zEdge);          // bake the offset into the geometry (needed for instancing)
+  const band = Math.max(1, Math.min(seals.finSealBand || H*0.3, face === 'top' ? W : H));
+  let geo;
+  if(face === 'top'){
+    geo = new THREE.BoxGeometry(L, proud, band);             // proud stands up in Y off the top face
+    geo.translate(0, H/2 + proud/2, 0);
+  }else{
+    const sign = face === 'front' ? 1 : -1;                  // back (default) or front
+    geo = new THREE.BoxGeometry(L, band, proud);             // proud stands out in Z off that face
+    geo.translate(0, 0, sign*(W/2 + proud/2));
+  }
   return geo;
 }
 
-// true when the collation is a single cylindrical slug — the one case
-// where the wrap's cross-section is genuinely circular, not just softened
-function isRoundishWrap(w){ return w.piece.kind === 'cylinder' && w.nx === 1 && w.ny === 1; }
+// true when the collation is a single cylindrical slug wrapped along its OWN
+// axis (stackAxis 'X' = the machine/length direction) — the one case where
+// slicing the wrap's Y-Z cross-section actually cuts a circle. A cylinder
+// lying with its axis vertical ('Z', a puck) or across ('Y') has a
+// rectangular Y-Z slice (thickness x diameter) just like a box — verified
+// against rendered vertex data: without the stackAxis check, a Z-axis puck's
+// full-diameter edge poked straight through an ellipse profile that tapers
+// to zero at the top/bottom of its own height.
+function isRoundishWrap(w){ return w.piece.kind === 'cylinder' && w.nx === 1 && w.ny === 1 && w.stackAxis === 'X'; }
+
+// {stackAxis, nx, ny, layers} for safeFillet — layers is the per-plan-cell
+// piece count (perStack in collation.js terms), read back from the
+// placement count rather than threaded separately through the model.
+function stackInfoOf(w){
+  return {stackAxis: w.stackAxis, nx: w.nx, ny: w.ny, layers: w.pieces.length/(w.nx*w.ny)};
+}
 
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
-function buildWrapMeshes(envelope, seals, roundish, opened){
-  const parts = wrapPartsGeometry(envelope, seals, roundish);
+function buildWrapMeshes(envelope, seals, roundish, stackInfo, opened){
+  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo);
   const finGeo = wrapFinGeometry(envelope, seals);
   const g = new THREE.Group();
   g.add(new THREE.Mesh(parts.bodyGeo, opened ? filmMat : filmClosedMat));
@@ -229,7 +312,11 @@ function buildWrapMeshes(envelope, seals, roundish, opened){
 
 function pieceGeo(piece, stackAxis, o){
   if(piece.kind === 'cylinder'){
-    const geo = new THREE.CylinderGeometry(piece.diameter/2, piece.diameter/2, piece.thickness * 0.94, 24);
+    // both dims get the same ~3% render-only clearance shrink as a box piece
+    // (never a dimensional change — pieceGeo only feeds the product mesh,
+    // not the wrap/carton/case sizing math) so safeFillet's PIECE_SHRINK
+    // constant matches the actual margin on every axis
+    const geo = new THREE.CylinderGeometry(piece.diameter/2*0.97, piece.diameter/2*0.97, piece.thickness*0.94, 24);
     const slot = o.indexOf(ENV_AXIS[stackAxis]);          // where the cylinder axis lands
     let rot = null;
     if(slot === 0) rot = new THREE.Matrix4().makeRotationZ(Math.PI/2);
@@ -249,7 +336,7 @@ function buildWrapOpened(bundle){
   const g = new THREE.Group();
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
-  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), true));
+  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), true));
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -289,7 +376,7 @@ function buildContainer(tier, bundle, sel, path){
 
   if(childKind === 'wrap'){
     const w = bundle.wraps;
-    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w));
+    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w));
     const finGeo = wrapFinGeometry(w.envelope, w.seals);
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     if(closed.length){
