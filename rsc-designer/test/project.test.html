@@ -16,7 +16,7 @@
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
-        verticalToOrientations} from '../src/core/project.js';
+        verticalToOrientations, resolveWrapAxis, swapLW} from '../src/core/project.js';
 import {fitInto} from '../src/core/containment.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 
@@ -245,6 +245,62 @@ t('multiple wraps per carton: the 8 wraps sit centred inside the carton, none ov
   eq(xs.length, 4, 'four distinct X columns:'); eq(ys.length, 2, 'two distinct Y rows:');
   approx(xs[1] - xs[0], 110, 'column pitch = wrap outer L:');
   approx(ys[1] - ys[0], 50, 'row pitch = wrap outer W:');
+});
+
+/* ---- Prompt 11.1: wrapAxis — machine direction is L or W, NEVER H -------
+   The rule: 'auto' resolves to whichever of L/W is longer (ties to L). H is
+   never eligible regardless of how it compares, since a horizontal flow
+   wrapper's travel axis can never be the vertical one. ---- */
+t('resolveWrapAxis: longer of L/W wins, ties to L, H never considered', () => {
+  eq(resolveWrapAxis({L: 90, W: 50, H: 120}, 'auto'), 'L', 'L > W, and H(120) is irrelevant:');
+  eq(resolveWrapAxis({L: 50, W: 150, H: 20}, 'auto'), 'W', 'W > L:');
+  eq(resolveWrapAxis({L: 50, W: 50, H: 999}, 'auto'), 'L', 'tie -> L, H ignored however large:');
+  eq(resolveWrapAxis({L: 50, W: 150, H: 20}, 'L'), 'L', 'explicit override beats auto:');
+  eq(resolveWrapAxis({L: 90, W: 50, H: 120}, 'W'), 'W', 'explicit override even against the auto pick:');
+});
+
+t('swapLW is its own inverse and never touches H', () => {
+  const dims = {L: 90, W: 150, H: 20};
+  eq(swapLW(dims, 'L'), dims, 'axis L: identity:');
+  eq(swapLW(dims, 'W'), {L: 150, W: 90, H: 20}, 'axis W: L/W swap:');
+  eq(swapLW(swapLW(dims, 'W'), 'W'), dims, 'applying twice restores the original:');
+});
+
+/* ---- Prompt 11.1: W-dominant collation — the configuration the old
+   L-only hardcoding got wrong. Box 90x50x20, 1x3 stacks (nx=1,ny=3) ->
+   envelope 90x150x20, W(150) > L(90) -> wrapAxis resolves to W. Wrap outer:
+   L unchanged at 90 (L is NOT the machine direction here), W gains
+   2xendSeal (150+20=170), H +gauge (20.03). Carton cavity 90x170x21 (1mm
+   up). Matches golden.json's wrap_axis_W_dominant pin exactly. ---- */
+function wDominantProject(){
+  const p = newProject();
+  p.primary.collation = {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 1, stackAxis: 'Z',
+                         nx: 1, ny: 3, stackGap: 0, pieceGap: 0};
+  p.primary.allowedOrientations = ['LWH'];
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
+  p.links[0].count = 1; p.links[0].arrangement = {nx: 1, ny: 1, nz: 1};
+  return p;
+}
+
+t('wrapAxis auto: a W-dominant collation wraps along W, not L', () => {
+  const rows = candidateCases(wDominantProject(), '1mm');
+  const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('1×1×1 case row missing');
+  eq(r.arr.pieces.wrapAxis, 'W', 'resolved axis:');
+  eq(r.wrapOuter, {L: 90, W: 170, H: 20.03}, 'seal gain lands on W, L untouched:');
+  eq(r.cartonParams.L, 90, 'carton L = wrap outer L, unchanged:');
+  eq(r.cartonParams.W, 170, 'carton W = wrap outer W, gained the seal:');
+  eq(r.cartonParams.H, 21, 'carton H = 20.03 rounded up 1mm:');
+  eq(r.piecesPerCarton, 3, '3 pieces (1x3 stacks) x 1 wrap:');
+});
+
+t('wrapAxis explicit override: same W-dominant collation forced to L', () => {
+  const p = wDominantProject();
+  p.primary.wrap.wrapAxis = 'L';
+  const rows = candidateCases(p, '1mm');
+  const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
+  eq(r.arr.pieces.wrapAxis, 'L', 'override honored even though auto would pick W:');
+  eq(r.wrapOuter, {L: 110, W: 150, H: 20.03}, 'seal gain now lands on L instead:');
 });
 
 /* ---- Bug 3: every orientation basis is a PROPER rotation (det +1) ---- */

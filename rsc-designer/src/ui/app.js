@@ -115,7 +115,8 @@ function hierarchyBundle(){
     wraps: pieces ? {
       placements: wraps.placements, envelope: pieces.envelope, pieces: pieces.placements,
       piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
-      nx: pieces.nx, ny: pieces.ny            // collation grid — used to detect a single round slug
+      nx: pieces.nx, ny: pieces.ny,            // collation grid — used to detect a single round slug
+      wrapAxis: pieces.wrapAxis                // resolved 'L'|'W' — the renderer's taper/fin axis
     } : null,
     counts: {
       cases: cases.count, cartonsPerCase: proj.links[0].count,
@@ -182,9 +183,15 @@ function renderLegend(bundle){
     const sealsOn = bundle.wraps.seals;
     const hNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
       : sealsOn.finTreatment === 'standing' ? '(standing fin)' : '(folded fin, film gauge)';
+    // the end-seal gain lands on whichever axis is the RESOLVED machine
+    // direction (L or W, never H) — labeling it unconditionally on L was
+    // wrong whenever wrapAxis resolved to W
+    const machineAxis = bundle.wraps.wrapAxis;
+    const endSealNote = '(2×end seal, machine direction)';
     readout = `<div class="rd">` +
       `Envelope ${f(inr.L)} × ${f(inr.W)} × ${f(inr.H)} ${u}<br>` +
-      `Seal add: L ${add(inr.L, out.L, '(2×end seal)')} · W ${add(inr.W, out.W)} · H ${add(inr.H, out.H, hNote)}<br>` +
+      `Seal add: L ${add(inr.L, out.L, machineAxis === 'L' ? endSealNote : '')} · ` +
+      `W ${add(inr.W, out.W, machineAxis === 'W' ? endSealNote : '')} · H ${add(inr.H, out.H, hNote)}<br>` +
       `Wrap outer ${f(out.L)} × ${f(out.W)} × ${f(out.H)} ${u} — grows the carton</div>`;
   }
   el('hierLegend').innerHTML = swatches + readout;

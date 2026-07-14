@@ -76,6 +76,12 @@ export function newProject(){
         params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
                  girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92},
+        // which collation axis is the machine (repeat) direction through a
+        // HORIZONTAL flow wrapper — never H (vertical is never the travel
+        // axis on this machine class; a genuinely vertical feed is a
+        // different machine, VFFS, a different style). 'auto' resolves to
+        // whichever of L/W is longer, ties to L — see resolveWrapAxis.
+        wrapAxis: 'auto',
         locked: false
       },
       // H up, rotation allowed: product is often orientation-free in plan,
@@ -140,16 +146,48 @@ export const VERTICAL_CHOICES = [
 export const TIER_NOUN = {primary: 'wrap', secondary: 'carton', tertiary: 'case'};
 
 /**
- * Round girth (π·d) is only physically meaningful for a single cylindrical
- * slug: one stack, 1×1, running along the pack length (X) — the only
- * geometry whose wrap path is actually a circle. Any other collation makes
- * "round" report a fabricated film-area number. The Build UI uses this same
- * predicate to grey out the option and to detect a stale selection, so the
- * two can never silently disagree.
+ * Which collation axis ('L'|'W') is the machine direction through a
+ * horizontal flow wrapper. H is never eligible: the collation's Z axis is
+ * vertical by construction (stackAxis: 'Z' stacks upward), and a horizontal
+ * wrapper's travel axis can never be the vertical one — a product that
+ * genuinely feeds vertically belongs to a different machine (VFFS), not
+ * this style. 'auto' resolves to whichever of L/W is longer (ties to L),
+ * which is exactly the axis a stacked collation (long axis in H) still
+ * wraps along, and exactly the axis an in-line-on-edge collation (long
+ * axis already in L) wraps along — "longest overall axis" would get the
+ * first of those wrong, since it would pick H.
+ * @param {{L:number,W:number,H:number}} envelope
+ * @param {'auto'|'L'|'W'} wrapAxis
+ * @returns {'L'|'W'}
  */
-export function roundGirthEligible(collation){
+export function resolveWrapAxis(envelope, wrapAxis){
+  if(wrapAxis === 'L' || wrapAxis === 'W') return wrapAxis;
+  return envelope.W > envelope.L ? 'W' : 'L';
+}
+
+/** Swap L and W (never touches H) — the permutation between the collation's
+ *  true envelope frame and the wrap style's own L/W/H, where L always means
+ *  "pack length". Its own inverse: applying it twice is the identity, so
+ *  the same function un-permutes wrapGeo's inner/outer back to true axes. */
+export function swapLW(dims, axis){
+  return axis === 'W' ? {L: dims.W, W: dims.L, H: dims.H} : dims;
+}
+
+/**
+ * Round girth (π·d) is only physically meaningful for a single cylindrical
+ * slug wrapped along its OWN axis: one stack, 1×1, with the collation's
+ * stack axis aligned to the resolved wrapAxis — the only geometry whose
+ * wrap path is actually a circle. Any other collation (or a slug wrapped
+ * across its axis instead of along it) makes "round" report a fabricated
+ * film-area number. The Build UI uses this same predicate to grey out the
+ * option and to detect a stale selection, so the two can never silently
+ * disagree.
+ * @param {'L'|'W'} wrapAxis  the RESOLVED axis (see resolveWrapAxis), not the raw setting
+ */
+export function roundGirthEligible(collation, wrapAxis){
+  const requiredStackAxis = wrapAxis === 'W' ? 'Y' : 'X';
   return collation.piece.kind === 'cylinder' && collation.nx === 1 && collation.ny === 1
-    && collation.stackAxis === 'X';
+    && collation.stackAxis === requiredStackAxis;
 }
 
 /* ---------------- candidate enumeration + full-chain metrics ------------ */
@@ -191,23 +229,35 @@ function cartonVariants(project, step){
 
   // the wrap (if any) sits between the collation and the carton: it takes
   // the envelope as content and hands up its seal-compensated outer
-  let wrapGeo = null, wrapFits = true, wp = null;
+  let wrapGeo = null, wrapFits = true, wp = null, wrapAxis = null;
   if(prim.wrap){
     wp = {...prim.wrap.params};
-    // round girth basis is only meaningful for a single cylindrical slug —
-    // roundGirthEligible is the SAME predicate the Build UI checks, so the
-    // two can never silently disagree about what's valid.
+    // resolve which collation axis is the machine direction BEFORE calling
+    // the style, so flowwrap.js never has to know about the permutation —
+    // it stays a pure function of whatever L/W/H it's handed, always
+    // treating L as pack length. The permutation (and its inverse on the
+    // way back out) live here, not in the style.
+    wrapAxis = resolveWrapAxis(col.envelope, prim.wrap.wrapAxis || 'auto');
+    const permEnv = swapLW(col.envelope, wrapAxis);
+    // round girth basis is only meaningful for a single cylindrical slug
+    // wrapped along its own axis — roundGirthEligible is the SAME predicate
+    // the Build UI checks, so the two can never silently disagree.
     if(wp.girthBasis === 'round'){
-      if(roundGirthEligible(prim.collation)) wp.roundDiameter = prim.collation.piece.diameter;
+      if(roundGirthEligible(prim.collation, wrapAxis)) wp.roundDiameter = prim.collation.piece.diameter;
       else wp.girthBasis = 'rectangular';
     }
     if(prim.wrap.locked){
-      // locked wrap: content dims are user-fixed; check the envelope fits
-      wrapFits = col.envelope.L <= wp.L && col.envelope.W <= wp.W && col.envelope.H <= wp.H;
+      // locked wrap: content dims are user-fixed (in machine-direction
+      // terms); check the permuted envelope fits
+      wrapFits = permEnv.L <= wp.L && permEnv.W <= wp.W && permEnv.H <= wp.H;
     }else{
-      wp.L = col.envelope.L; wp.W = col.envelope.W; wp.H = col.envelope.H;
+      wp.L = permEnv.L; wp.W = permEnv.W; wp.H = permEnv.H;
     }
-    wrapGeo = styleById(prim.wrap.styleId).geometry(wp);
+    const raw = styleById(prim.wrap.styleId).geometry(wp);
+    // un-permute back to true envelope axes: everything downstream (carton
+    // sizing, display, the renderer's non-shape math) works in true L/W/H
+    // and knows nothing about the machine-direction permutation.
+    wrapGeo = {...raw, inner: swapLW(raw.inner, wrapAxis), outer: swapLW(raw.outer, wrapAxis)};
   }
   const content = wrapGeo ? wrapGeo.outer : col.envelope;
 
@@ -276,7 +326,7 @@ function cartonVariants(project, step){
     wrapsArr: prim.wrap ? {placements: wrapsArrangement.placements, count: wrapsArrangement.total} : null,
     pieces: prim.wrap ? {placements: col.placements, envelope: col.envelope,
                          piece: prim.collation.piece, stackAxis: prim.collation.stackAxis,
-                         nx: prim.collation.nx, ny: prim.collation.ny,
+                         nx: prim.collation.nx, ny: prim.collation.ny, wrapAxis,
                          seals: {sealType: wp.sealType, finTreatment: wp.finTreatment,
                                  finHeight: wp.finHeight, finSealBand: wp.finSealBand,
                                  endSealWidth: wp.endSealWidth, finFace: wp.finFace || 'back',

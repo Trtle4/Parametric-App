@@ -11,7 +11,8 @@
  * Never auto-selects a winner: rows are ranked visibly, the engineer picks.
  */
 import {newProject, candidateCases, checkLockedCase, ROUNDING, linkFor,
-        verticalToOrientations, VERTICAL_CHOICES, TIER_NOUN, roundGirthEligible} from '../core/project.js';
+        verticalToOrientations, VERTICAL_CHOICES, TIER_NOUN, roundGirthEligible,
+        resolveWrapAxis} from '../core/project.js';
 import {collate, PRESETS} from '../core/collation.js';
 import {toMM, fromMM, fmtInputValue, fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
@@ -133,6 +134,12 @@ export function initBuild(onSelect, startUnit){
         <div class="brow"><label>Girth basis</label>
           <select id="bwBasis"><option value="rectangular" selected>Rectangular 2(W+H)</option>
             <option value="round" id="bwBasisRound">Round π·d (cylindrical slug only)</option></select></div>
+        <div class="brow"><label>Machine direction</label>
+          <select id="bwAxis"><option value="auto" selected>Auto (longer of L/W)</option>
+            <option value="L">L</option><option value="W">W</option></select></div>
+        <div class="brow bnote">The axis the pack travels along through the wrapper — never H (a
+          horizontal flow wrapper cannot feed vertically; that is a different machine). End seals sit
+          at the two ends of this axis; the fin runs along it on the chosen face.</div>
         <div class="brow"><label>Film gauge</label><input id="bwGauge" type="number" step="1" value="30"><span>µm</span>
           <label>Density</label><input id="bwDens" type="number" step="0.01" value="0.92"><span>g/cm³</span></div>
         <div class="brow bnote">Seal values are editable defaults — review. Gauge/density are film substance, not caliper.</div>
@@ -189,7 +196,7 @@ export function initBuild(onSelect, startUnit){
   // shows a stale total while the fields are being edited
   ['bp', 'bs'].forEach(idp => ['Nx', 'Ny', 'Nz'].forEach(k =>
     el(idp + k).addEventListener('input', () => { syncCountWithArrangement(idp); recompute(); })));
-  ['bpVert', 'bpRot', 'bsVert', 'bsRot', 'btVert', 'btRot', 'bwSeal', 'bwTreat', 'bwFace', 'bwBasis']
+  ['bpVert', 'bpRot', 'bsVert', 'bsRot', 'btVert', 'btRot', 'bwSeal', 'bwTreat', 'bwFace', 'bwBasis', 'bwAxis']
     .forEach(id => el(id).addEventListener('change', recompute));
   el('bwLock').addEventListener('change', () => {
     el('bwLockDims').style.display = el('bwLock').checked ? '' : 'none';
@@ -282,6 +289,7 @@ function readIntoProject(){
       gauge: +el('bwGauge').value || 0, density: +el('bwDens').value || 0,
       L: n('bwL'), W: n('bwW'), H: n('bwH')          // used only when locked
     },
+    wrapAxis: el('bwAxis').value,
     locked: el('bwLock').checked
   };
 
@@ -310,11 +318,14 @@ export function recompute(){
   const status = el('bStatus');
   selected = null; el('bUse').disabled = true;
 
-  // Bug 2: round girth is only valid for a single cylindrical slug. Grey the
-  // option out whenever the current collation can't support it, and if a
-  // stale 'round' selection is now invalid (nx/ny/axis edited after the
-  // fact), fall back to rectangular and say so — never compute silently.
-  const eligible = roundGirthEligible(project.primary.collation);
+  // Bug 2: round girth is only valid for a single cylindrical slug wrapped
+  // along its own axis. Grey the option out whenever the current collation
+  // can't support it, and if a stale 'round' selection is now invalid
+  // (nx/ny/axis edited after the fact), fall back to rectangular and say
+  // so — never compute silently. The eligibility check needs the RESOLVED
+  // wrapAxis, the same one cartonVariants uses, so the two can never disagree.
+  const wrapAxisResolved = resolveWrapAxis(collate(project.primary.collation).envelope, project.primary.wrap.wrapAxis);
+  const eligible = roundGirthEligible(project.primary.collation, wrapAxisResolved);
   el('bwBasisRound').disabled = !eligible;
   let girthWarning = '';
   if(!eligible && el('bwBasis').value === 'round'){

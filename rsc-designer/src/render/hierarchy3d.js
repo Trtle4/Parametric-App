@@ -118,12 +118,18 @@ const PIECE_SHRINK = 0.03;   // conservative render-only clearance every piece g
  * cuts back into the product. Same reasoning for nx/ny in the plan axes.
  * Halved again for headroom; never above the envelope's own 25%.
  */
-function safeFillet(envelope, stackAxis, nx, ny, layers){
+function safeFillet(envelope, stackAxis, nx, ny, layers, axisIsW){
   const divH = stackAxis === 'Z' ? Math.max(1, layers) : 1;
-  const divW = ny*(stackAxis === 'Y' ? Math.max(1, layers) : 1);
+  // the CROSS dimension (paired with H in the ring) is whichever of true
+  // L/W is NOT the machine direction — divided by whichever of nx/ny
+  // subdivides IT (plus the stack layers, if the stack axis runs across it)
+  const crossDim = axisIsW ? envelope.L : envelope.W;
+  const divCross = axisIsW
+    ? nx*(stackAxis === 'X' ? Math.max(1, layers) : 1)
+    : ny*(stackAxis === 'Y' ? Math.max(1, layers) : 1);
   const marginH = (envelope.H/divH)/2*PIECE_SHRINK;
-  const marginW = (envelope.W/divW)/2*PIECE_SHRINK;
-  return 0.5*Math.min(marginH, marginW);
+  const marginCross = (crossDim/divCross)/2*PIECE_SHRINK;
+  return 0.5*Math.min(marginH, marginCross);
 }
 
 /**
@@ -150,31 +156,42 @@ function safeFillet(envelope, stackAxis, nx, ny, layers){
  * margin that shrinks with layer count while the envelope grows, so a
  * fillet sized off hH/hW alone (as this used to be) can outgrow that
  * shrinking margin and cut back into the product — confirmed empirically.
+ *
+ * `axisIsW` places the ring for the case where the WRAP's machine direction
+ * is true W, not true L: the loft still varies its own local "pos" as it
+ * runs along the pack length, but that position now lands on local Z, not
+ * X, with the ring's "w" coordinate (paired with h=true H) landing on X
+ * instead. The piece-placement convention elsewhere (render-local X=true L,
+ * Y=true H, Z=true W) never changes — only which local axis THIS shape
+ * treats as its own "length" varies, so the end seals and fin land on
+ * whichever true axis is actually the machine direction, in every
+ * containment orientation.
  */
-function ringPoints(xPos, hH, hW, roundish, serrate, fillet){
+function ringPoints(pos, hH, hCross, roundish, serrate, fillet, axisIsW){
   const pts = [];
   const wobble = (h, w, a) => {
     if(!serrate) return [h, w];
     const m = 1 + WRAP_SERR_AMT*Math.sin(a*WRAP_SERR);
     return [h*m, w*m];
   };
+  const place = (h, w) => axisIsW ? new THREE.Vector3(w, h, pos) : new THREE.Vector3(pos, h, w);
   if(roundish){
     for(let k = 0; k < WRAP_N; k++){
       const a = k/WRAP_N*Math.PI*2;
-      const [h, w] = wobble(Math.cos(a)*hH, Math.sin(a)*hW, a);
-      pts.push(new THREE.Vector3(xPos, h, w));
+      const [h, w] = wobble(Math.cos(a)*hH, Math.sin(a)*hCross, a);
+      pts.push(place(h, w));
     }
     return pts;
   }
-  const r = Math.max(0.0005, Math.min(fillet, 0.25*Math.min(hH, hW)));
+  const r = Math.max(0.0005, Math.min(fillet, 0.25*Math.min(hH, hCross)));
   const segs = Math.max(1, Math.round(WRAP_N/4));
-  const centers = [[hH - r, hW - r], [-(hH - r), hW - r], [-(hH - r), -(hW - r)], [hH - r, -(hW - r)]];
+  const centers = [[hH - r, hCross - r], [-(hH - r), hCross - r], [-(hH - r), -(hCross - r)], [hH - r, -(hCross - r)]];
   for(let ci = 0; ci < 4; ci++){
     const [cx, cy] = centers[ci];
     for(let i = 0; i < segs; i++){
       const a = ci*(Math.PI/2) + i/segs*(Math.PI/2);
       const [h, w] = wobble(cx + r*Math.cos(a), cy + r*Math.sin(a), a);
-      pts.push(new THREE.Vector3(xPos, h, w));
+      pts.push(place(h, w));
     }
   }
   return pts;
@@ -213,24 +230,32 @@ function loftGeometry(rings){
   return geo;
 }
 
-/** Body (constant cross-section over the product span, envelope.L) + two
- *  end tapers (shoulder at ±envelope.L/2 -> crimped fin tip at
- *  ±(envelope.L/2 + endSealWidth) — each taper spans EXACTLY endSealWidth,
- *  so body+tapers together span envelope.L + 2*endSealWidth = the wrap's
- *  true outer.L). envelope = the collation/product envelope, the SAME input
- *  the previous box-based renderer used; only the shape changes. */
-function wrapPartsGeometry(envelope, seals, roundish, stackInfo){
-  const {L, W, H} = envelope;
+/** Body (constant cross-section over the product span, along whichever true
+ *  axis is the resolved machine direction) + two end tapers (shoulder at
+ *  the pack's own end -> crimped fin tip endSealWidth further out — each
+ *  taper spans EXACTLY endSealWidth, so body+tapers together span
+ *  machineDim + 2*endSealWidth = the wrap's true outer dimension on that
+ *  axis). envelope = the TRUE collation/product envelope (never permuted —
+ *  the permutation lives in project.js, on the way into flowwrap.js only);
+ *  wrapAxis ('L'|'W') says which of envelope.L/W is that machine direction,
+ *  never H. The pillow rounding, the taper, and the fin's serration are
+ *  cosmetic geometry INSIDE that envelope — nothing here invents or alters
+ *  a dimension. */
+function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
+  const axisIsW = wrapAxis === 'W';
+  const H = envelope.H;
+  const lenDim = axisIsW ? envelope.W : envelope.L;      // machine direction — where the seals/fin go
+  const crossDim = axisIsW ? envelope.L : envelope.W;    // the OTHER horizontal axis
   const esw = Math.max(seals.endSealWidth || 0, 0.01);
   const gaugeMM = Math.max((seals.gauge || 0)/1000, 0.01);
   const finThk = Math.max(gaugeMM*2, 0.15);        // ~2x film gauge, floored only for visibility
-  const finW = W*0.42;                             // pinched tip width — cosmetic, stays inside W
-  const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers);
+  const finW = crossDim*0.42;                      // pinched tip width — cosmetic, stays inside crossDim
+  const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
-  const hH = H/2, hW = W/2;   // body half-dims — every taper ring stays AT OR INSIDE these, never bulges past them
+  const hH = H/2, hCross = crossDim/2;   // body half-dims — every taper ring stays AT OR INSIDE these, never bulges past them
   const bodyGeo = loftGeometry([
-    ringPoints(-L/2, hH, hW, roundish, false, fillet),
-    ringPoints( L/2, hH, hW, roundish, false, fillet)
+    ringPoints(-lenDim/2, hH, hCross, roundish, false, fillet, axisIsW),
+    ringPoints( lenDim/2, hH, hCross, roundish, false, fillet, axisIsW)
   ]);
 
   function taper(sign){
@@ -239,12 +264,12 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo){
     // neck -> tip: constant cross-section (finThk/finW at BOTH rings) — a
     // genuinely flat tab, not a further narrowing wedge. Serration only at
     // the cut tip, so the flat run shows a crimped edge, not a smooth cone.
-    const shoulder = sign*(L/2), tip = sign*(L/2 + esw);
+    const shoulder = sign*(lenDim/2), tip = sign*(lenDim/2 + esw);
     const neck = shoulder + (tip - shoulder)*0.35;
     const rings = [
-      ringPoints(shoulder, hH, hW, roundish, false, fillet),
-      ringPoints(neck, finThk/2, finW/2, roundish, false, fillet),
-      ringPoints(tip, finThk/2, finW/2, roundish, true, fillet)
+      ringPoints(shoulder, hH, hCross, roundish, false, fillet, axisIsW),
+      ringPoints(neck, finThk/2, finW/2, roundish, false, fillet, axisIsW),
+      ringPoints(tip, finThk/2, finW/2, roundish, true, fillet, axisIsW)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
@@ -252,42 +277,58 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo){
 }
 
 /** The fin seal: a solid tab lying FLUSH against the chosen face (back by
- *  default), running the full pack length (X), standing `finHeight` proud
- *  of that face when the treatment is standing, or lying flat (a thin
- *  visible sliver, floored for visibility) when folded. `finSealBand` is
- *  the tab's width across the face's OTHER in-plane axis, centred on it —
- *  never collapsed to a zero-thickness plane, so it can't read as a line
- *  from any angle, and it moves with the wrap under every orientation
- *  because it's baked into the geometry, not positioned post-hoc. */
-function wrapFinGeometry(envelope, seals){
-  const {H, W, L} = envelope;
+ *  default), running the full pack length along the MACHINE direction
+ *  (wrapAxis — true L or true W, never H), standing `finHeight` proud of
+ *  that face when the treatment is standing, or lying flat (a thin visible
+ *  sliver, floored for visibility) when folded. `finSealBand` is the tab's
+ *  width across the OTHER horizontal axis, centred on it — never collapsed
+ *  to a zero-thickness plane, so it can't read as a line from any angle,
+ *  and it moves with the wrap under every orientation because it's baked
+ *  into the geometry, not positioned post-hoc. */
+function wrapFinGeometry(envelope, seals, wrapAxis){
+  const axisIsW = wrapAxis === 'W';
+  const H = envelope.H;
+  const lenDim = axisIsW ? envelope.W : envelope.L;
+  const crossDim = axisIsW ? envelope.L : envelope.W;
   const fh = seals.finHeight || 0;
   if(seals.sealType === 'lap' || fh <= 0) return null;
   const standing = seals.finTreatment === 'standing';
   const proud = standing ? fh : T_FLOOR;                     // how far it stands off the face
   const face = seals.finFace || 'back';
-  const band = Math.max(1, Math.min(seals.finSealBand || H*0.3, face === 'top' ? W : H));
+  const band = Math.max(1, Math.min(seals.finSealBand || H*0.3, face === 'top' ? crossDim : H));
   let geo;
   if(face === 'top'){
-    geo = new THREE.BoxGeometry(L, proud, band);             // proud stands up in Y off the top face
+    // proud stands up in Y off the top face; length runs along whichever
+    // local axis (X or Z) the machine direction maps to
+    geo = axisIsW ? new THREE.BoxGeometry(band, proud, lenDim) : new THREE.BoxGeometry(lenDim, proud, band);
     geo.translate(0, H/2 + proud/2, 0);
   }else{
     const sign = face === 'front' ? 1 : -1;                  // back (default) or front
-    geo = new THREE.BoxGeometry(L, band, proud);             // proud stands out in Z off that face
-    geo.translate(0, 0, sign*(W/2 + proud/2));
+    if(axisIsW){
+      geo = new THREE.BoxGeometry(proud, band, lenDim);      // proud stands out in X, length runs in Z
+      geo.translate(sign*(crossDim/2 + proud/2), 0, 0);
+    }else{
+      geo = new THREE.BoxGeometry(lenDim, band, proud);      // proud stands out in Z, length runs in X
+      geo.translate(0, 0, sign*(crossDim/2 + proud/2));
+    }
   }
   return geo;
 }
 
 // true when the collation is a single cylindrical slug wrapped along its OWN
-// axis (stackAxis 'X' = the machine/length direction) — the one case where
-// slicing the wrap's Y-Z cross-section actually cuts a circle. A cylinder
-// lying with its axis vertical ('Z', a puck) or across ('Y') has a
-// rectangular Y-Z slice (thickness x diameter) just like a box — verified
-// against rendered vertex data: without the stackAxis check, a Z-axis puck's
-// full-diameter edge poked straight through an ellipse profile that tapers
-// to zero at the top/bottom of its own height.
-function isRoundishWrap(w){ return w.piece.kind === 'cylinder' && w.nx === 1 && w.ny === 1 && w.stackAxis === 'X'; }
+// axis — the one case where slicing the wrap's cross-section actually cuts
+// a circle. That means the collation's stack axis must align with the
+// RESOLVED machine direction (wrapAxis 'L' -> collation axis 'X', 'W' ->
+// collation axis 'Y'), not just be 'X' unconditionally: a cylinder lying
+// with its axis vertical ('Z', a puck) or across the OTHER horizontal axis
+// has a rectangular cross-section slice (thickness x diameter) just like a
+// box — verified against rendered vertex data: without this check, a
+// Z-axis puck's full-diameter edge poked straight through an ellipse
+// profile that tapers to zero at the top/bottom of its own height.
+function isRoundishWrap(w){
+  const requiredStackAxis = w.wrapAxis === 'W' ? 'Y' : 'X';
+  return w.piece.kind === 'cylinder' && w.nx === 1 && w.ny === 1 && w.stackAxis === requiredStackAxis;
+}
 
 // {stackAxis, nx, ny, layers} for safeFillet — layers is the per-plan-cell
 // piece count (perStack in collation.js terms), read back from the
@@ -299,9 +340,9 @@ function stackInfoOf(w){
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
-function buildWrapMeshes(envelope, seals, roundish, stackInfo, opened){
-  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo);
-  const finGeo = wrapFinGeometry(envelope, seals);
+function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened){
+  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis);
+  const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
   const g = new THREE.Group();
   g.add(new THREE.Mesh(parts.bodyGeo, opened ? filmMat : filmClosedMat));
   g.add(new THREE.Mesh(parts.taperPos, sealMat));
@@ -336,7 +377,7 @@ function buildWrapOpened(bundle){
   const g = new THREE.Group();
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
-  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), true));
+  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -376,8 +417,8 @@ function buildContainer(tier, bundle, sel, path){
 
   if(childKind === 'wrap'){
     const w = bundle.wraps;
-    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w));
-    const finGeo = wrapFinGeometry(w.envelope, w.seals);
+    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
+    const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     if(closed.length){
       const partDefs = [
