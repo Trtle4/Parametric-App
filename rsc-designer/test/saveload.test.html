@@ -7,16 +7,14 @@
    save/load machinery itself, DOM-free (build.js's own DOM round-trip is
    verified separately, live, in the browser).
 
-   NOTE: no committed fixtures yet. The project state model is about to be
-   restructured (single source of truth, active level, optional enabled
-   levels), so CURRENT_SCHEMA_VERSION stays unfrozen and test/fixtures/ stays
-   empty until that lands — see schemaMigrations.js's own comment block for
-   the rule this will enforce once real fixtures exist. This page tests the
-   MACHINERY (migration refusal/chain, defaulting + reporting, unknown-field
-   preservation, null-vs-undefined) against in-session documents, plus one
-   full hand-checked chain round-trip through project.js's own math, so the
-   "round-trips exactly" guarantee is asserted now rather than only added
-   later alongside the first real fixture. */
+   test/fixtures/v1/ holds the permanent v1 obligations (committed real save
+   files): once shipped, a schema version's shape is frozen — see
+   schemaMigrations.js's own comment block for the rule this enforces. This
+   page tests the MACHINERY (migration refusal/chain, defaulting + reporting,
+   unknown-field preservation, null-vs-undefined) against in-session
+   documents, plus one full hand-checked chain round-trip through project.js's
+   own math, PLUS every committed v1 fixture: each must load, migrate to
+   current, and reproduce its hand-checked chain values forever. */
 import {newProject, candidateCases} from '../src/core/project.js';
 import {serializeProject, deserializeProject} from '../src/core/persistence.js';
 import {CURRENT_SCHEMA_VERSION} from '../src/core/schemaMigrations.js';
@@ -206,6 +204,90 @@ t('save -> reload -> load reproduces the exact hand-checked chain', () => {
   eq(after.outer, before.outer, 'identical to pre-save:');
   eq(after.casesPerPallet, before.casesPerPallet, 'identical to pre-save:');
 });
+
+/* ---- v1 fixtures: permanent obligations ---------------------------------
+ * Each committed file in test/fixtures/v1/ must load, migrate to current
+ * (trivially — they're already at CURRENT_SCHEMA_VERSION, so the log is
+ * empty), and reproduce its hand-checked chain values forever. If a future
+ * change cannot preserve one of these, that's a deliberate breaking change
+ * to be raised, not silently absorbed by editing the fixture. */
+async function tAsync(name, fn){
+  try{ await fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+async function loadFixture(path){
+  const res = await fetch(path);
+  if(!res.ok) throw new Error(`fixture fetch failed: ${path} (${res.status})`);
+  return res.json();
+}
+function findSelected(rows, key){
+  return rows.find(r => r.nx === key.nx && r.ny === key.ny && r.nz === key.nz && r.orientation === key.orientation);
+}
+
+/* full chain: product(round, 47x12 puck, 3x1 stacks of 2) -> wrap -> carton
+   -> case -> pallet. envelope 141x47x24, wrap outer 161x47x24.03, carton
+   outer 161.914x47.914x26.828, case outer 171x105x173, 536 cases/pallet. */
+await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces its hand-checked chain', async () => {
+  const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
+  const result = deserializeProject(raw);
+  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  eq(result.defaulted, [], 'a fixture has nothing missing:');
+  const rows = candidateCases(result.project, result.rounding);
+  const r = findSelected(rows, result.selectedCandidate);
+  if(!r) throw new Error('selected candidate not found in recomputed rows');
+  eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
+  eq(r.wrapOuter, {L: 161, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
+  eq(r.cartonOuter, {L: 161.914, W: 47.914, H: 26.828}, 'carton outer (hand-checked):');
+  eq(r.outer, {L: 171, W: 105, H: 173}, 'case outer (hand-checked):');
+  eq(r.casesPerPallet, 536, 'cases per pallet (hand-checked):');
+});
+
+/* no-carton: same product/wrap, carton disabled — the wrap feeds the case
+   directly. envelope/wrap outer unchanged; case cavity/outer widen to hold
+   the wrap grid directly (328x100x37 outer), 1332 cases/pallet. */
+await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
+  const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
+  const result = deserializeProject(raw);
+  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
+  const rows = candidateCases(result.project, result.rounding);
+  const r = findSelected(rows, result.selectedCandidate);
+  if(!r) throw new Error('selected candidate not found in recomputed rows');
+  eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
+  eq(r.wrapOuter, {L: 161, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
+  eq(r.geo.carton, null, 'carton: no carton in a no-carton chain:');
+  eq(r.outer, {L: 328, W: 100, H: 37}, 'case outer (hand-checked):');
+  eq(r.casesPerPallet, 1332, 'cases per pallet (hand-checked):');
+});
+
+/* carton-only: same product/wrap, case disabled — the carton itself rides
+   the pallet. carton outer 322.914x47.914x26.828 (2 wraps side by side),
+   3276 cartons/pallet (no case multiplier, 1:1). */
+await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
+  const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
+  const result = deserializeProject(raw);
+  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');
+  const rows = candidateCases(result.project, result.rounding);
+  const r = findSelected(rows, result.selectedCandidate);
+  if(!r) throw new Error('selected candidate not found in recomputed rows');
+  eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
+  eq(r.wrapOuter, {L: 161, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
+  eq(r.geo.case, null, 'case: no case in a carton-only chain:');
+  eq(r.outer, {L: 322.914, W: 47.914, H: 26.828}, 'carton outer, riding the pallet directly (hand-checked):');
+  eq(r.cartonsPerPallet, 3276, 'cartons per pallet, no case multiplier (hand-checked):');
+});
+
+/* ---- presets: smoke-test only (user-facing starting points, not pinned
+   obligations) — each must at least load and resolve to a real candidate. */
+for(const name of ['round-multipack', 'box-carton-no-wrap', 'plain-box-shipper']){
+  await tAsync(`preset "${name}" loads and resolves to a real candidate`, async () => {
+    const raw = await loadFixture(`../presets/${name}.pkg.json`);
+    const result = deserializeProject(raw);
+    const rows = candidateCases(result.project, result.rounding);
+    if(!findSelected(rows, result.selectedCandidate)) throw new Error('selected candidate not found in recomputed rows');
+  });
+}
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;
 document.getElementById('out').textContent =

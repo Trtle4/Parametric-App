@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "appVersion": "rsc-designer-dev",
+  "savedAt": "2026-07-14T15:40:53.745Z",
+  "project": {
+    "primary": {
+      "collation": {
+        "piece": {
+          "kind": "box",
+          "L": 90,
+          "W": 50,
+          "H": 20
+        },
+        "perStack": 6,
+        "stackAxis": "Z",
+        "nx": 1,
+        "ny": 1,
+        "stackGap": 0,
+        "pieceGap": 0
+      },
+      "box": null,
+      "wrap": null,
+      "allowedOrientations": [
+        "LWH"
+      ],
+      "clearance": {
+        "wall": 0,
+        "between": 0,
+        "bottom": 0,
+        "top": 0,
+        "betweenZ": 0
+      }
+    },
+    "secondary": {
+      "styleId": "a6120",
+      "params": {
+        "L": 100,
+        "W": 60,
+        "H": 150,
+        "caliper": 0.457,
+        "glueTab": 15,
+        "dustDepth": 37.5,
+        "tuckDepth": 59.543,
+        "tuckTab": 16,
+        "cornerStyle": "chamfered"
+      },
+      "options": {},
+      "allowedOrientations": [
+        "LWH",
+        "WLH"
+      ],
+      "clearance": {
+        "wall": 1.5,
+        "between": 0,
+        "bottom": 0,
+        "top": 0,
+        "betweenZ": 0
+      },
+      "enabled": true
+    },
+    "tertiary": {
+      "styleId": "fefco201",
+      "params": {
+        "L": 200,
+        "W": 150,
+        "H": 120,
+        "caliper": 3,
+        "glue": 35,
+        "slot": 6
+      },
+      "options": {
+        "outerFlaps": "L"
+      },
+      "allowedOrientations": [
+        "LWH",
+        "WLH"
+      ],
+      "clearance": {
+        "wall": 0,
+        "between": 0
+      },
+      "enabled": true
+    },
+    "pallet": {
+      "L": 1219.1999999999998,
+      "W": 1016,
+      "maxH": 1524,
+      "baseH": 127,
+      "pattern": "optimal"
+    },
+    "printText": "FRAGILE",
+    "links": [
+      {
+        "parent": "tertiary",
+        "child": "secondary",
+        "count": 12,
+        "arrangement": {
+          "nx": 4,
+          "ny": 3,
+          "nz": 1
+        },
+        "locked": false
+      },
+      {
+        "parent": "secondary",
+        "child": "primary",
+        "count": 1,
+        "arrangement": "auto",
+        "locked": false
+      }
+    ]
+  },
+  "rounding": "1mm",
+  "selectedCandidate": {
+    "nx": 4,
+    "ny": 3,
+    "nz": 1,
+    "orientation": "LWH"
+  },
+  "display": {
+    "unit": "mm",
+    "palUnit": "in"
+  }
+}
