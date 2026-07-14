@@ -171,6 +171,8 @@ function chainProject(){
   const p = newProject();
   p.primary.collation = {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
   p.primary.allowedOrientations = ['LWH'];
+  // pinned: 1 envelope/carton, not inherited — links[1] default is about to change
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   return p;
 }

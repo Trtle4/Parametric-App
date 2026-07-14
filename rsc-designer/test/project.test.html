@@ -136,6 +136,9 @@ function cylProject(){
   p.primary.allowedOrientations = ['LWH'];
   p.primary.clearance = {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0};
   p.pallet.pattern = 'column';
+  // pinned: 1 envelope/carton, not inherited — the default links[1] (wraps
+  // per carton) is about to change to 8, explicit 4x2x1
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   return p;
 }
@@ -188,6 +191,8 @@ t('wrap seal compensation propagates into carton sizing', () => {
   const p = newProject();
   p.primary.collation = defaultBoxCollation();
   p.primary.allowedOrientations = ['LWH'];   // H up, no rotation: deterministic axes
+  // pinned: 1 envelope/carton, not inherited — links[1] default is about to change
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   let r = candidateCases(p, '1mm')[0];
   eq(r.cartonParams.L, 110, 'L gains 2×endSeal:');
