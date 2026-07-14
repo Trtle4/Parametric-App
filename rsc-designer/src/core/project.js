@@ -79,6 +79,11 @@ export function newProject(){
         piece: {kind: 'box', L: 90, W: 50, H: 20},
         perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0
       },
+      // a plain product envelope instead of a collation — a single manual
+      // outer, no inner, no compensation. Mutually exclusive with
+      // `collation` (and with `wrap`, which wraps collated pieces, not a
+      // box that's already its own envelope); null = use `collation` above.
+      box: null,
       // the flow wrap around the collation. null = bare envelope (legacy).
       // Seal values are editable defaults, not conventions.
       wrap: {
@@ -115,14 +120,19 @@ export function newProject(){
       // wall/between are the review-me defaults; vertical is explicitly
       // non-uniform: cartons bear on the case floor (bottom 0), headspace
       // (top) is a first-class Build input, layers stack directly (betweenZ 0)
-      clearance: {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0}
+      clearance: {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0},
+      // false = this tier is skipped: its own parent's child re-points to
+      // whatever is next enabled below it. At least one of secondary/
+      // tertiary must stay enabled — see resolveChainShape.
+      enabled: true
     },
     tertiary: {
       styleId: 'fefco201',
       params: {...styleDefaults('fefco201')},        // L/W/H overwritten when solved
       options: styleOptionDefaults('fefco201'),      // {outerFlaps:'L'} — the 3D-fold major-panel choice
       allowedOrientations: ['LWH', 'WLH'],           // cases upright on the pallet
-      clearance: {wall: 0, between: 0}
+      clearance: {wall: 0, between: 0},
+      enabled: true
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal'},
     // free print text on the package's print panel — lives in the model (and
@@ -224,87 +234,109 @@ function irreducible(c, count){
   return true;
 }
 
-/**
- * Run every candidate case arrangement through the full chain and return
- * the comparison rows. Never collapses to one winner — ranking and choice
- * belong to the engineer.
- * @param {Project} project
- * @param {string} rounding  key of ROUNDING
- * @returns {Object[]} rows (see fields below), enumeration order
+/* ---------------- optional levels: the enabled-level fold ----------------
+ * secondary (carton) and tertiary (case) each carry their own `enabled`
+ * flag. A level's actual parent is the next enabled level above it — a fold
+ * over ['secondary', 'tertiary'], never a hardcoded pair. The wrap tier is
+ * NOT part of this fold: project.primary's own allowedOrientations/
+ * clearance always describe the content's placement into whatever level is
+ * actually next, whether or not a wrap style renders any geometry — wrap
+ * only changes what geometry that content collapses into, never whether a
+ * stage is "in the chain". At least one of secondary/tertiary must stay
+ * enabled: content has to feed something before it reaches the pallet.
  */
-/**
- * Resolve the carton variants that feed the case stage. Without a primary
- * level there is exactly one (the carton as configured). With one, the
- * collation envelope drives — or is checked against — the carton, once per
- * allowed primary orientation. Solved cavities use solveParent's volume
- * objective (the case stage is where enumeration + ranking happen).
- */
-function cartonVariants(project, step){
-  const sec = project.secondary;
-  if(!project.primary){
-    const geo = styleById(sec.styleId).geometry(sec.params);
-    return [{params: sec.params, geo, orientation: null, label: null, piecesPerCarton: null, fits: true}];
-  }
-  const prim = project.primary;
-  const link = linkFor(project, 'secondary');   // parent='secondary'(carton), child='primary'(wrap) — the SAME uniform Link shape every other level uses
+
+/** Which of secondary/tertiary are enabled, and which is outermost (the one
+ *  enumerated against the pallet — the other, if also enabled, is solved to
+ *  a single deterministic variant feeding it). Throws if neither is enabled;
+ *  the UI must never let that state happen (see app.js's toggle guard). */
+export function resolveChainShape(project){
+  const secOn = project.secondary.enabled !== false;
+  const terOn = project.tertiary.enabled !== false;
+  if(!secOn && !terOn) throw new Error('at least one packaging level (carton or case) must stay enabled');
+  return {secOn, terOn, outermost: terOn ? 'tertiary' : 'secondary', secondaryIsInner: secOn && terOn};
+}
+
+/** The content at the bottom of the chain: a collated set of pieces, or —
+ *  per the plain-box ruling — a single manual outer with no inner and no
+ *  compensation (a product envelope, not a package). Mutually exclusive:
+ *  `box` set means `collation` is not consulted. `collation` is collate()'s
+ *  own result (envelope/placements/count/fillEfficiency only — it carries
+ *  none of the raw config); `config` is the raw collation config itself
+ *  (piece/stackAxis/nx/ny), needed separately for labels and readouts. */
+function contentEnvelope(prim){
+  if(prim.box) return {outer: prim.box, count: 1, collation: null, config: null};
   const col = collate(prim.collation);
+  return {outer: col.envelope, count: col.count, collation: col, config: prim.collation};
+}
 
-  // the wrap (if any) sits between the collation and the carton: it takes
-  // the envelope as content and hands up its seal-compensated outer
-  let wrapGeo = null, wrapFits = true, wp = null, wrapAxis = null;
-  if(prim.wrap){
-    wp = {...prim.wrap.params};
-    // resolve which collation axis is the machine direction BEFORE calling
-    // the style, so flowwrap.js never has to know about the permutation —
-    // it stays a pure function of whatever L/W/H it's handed, always
-    // treating L as pack length. The permutation (and its inverse on the
-    // way back out) live here, not in the style.
-    wrapAxis = resolveWrapAxis(col.envelope, prim.wrap.wrapAxis || 'auto');
-    const permEnv = swapLW(col.envelope, wrapAxis);
-    // round girth basis is only meaningful for a single cylindrical slug
-    // wrapped along its own axis — roundGirthEligible is the SAME predicate
-    // the Build UI checks, so the two can never silently disagree.
-    if(wp.girthBasis === 'round'){
-      if(roundGirthEligible(prim.collation, wrapAxis)) wp.roundDiameter = prim.collation.piece.diameter;
-      else wp.girthBasis = 'rectangular';
-    }
-    if(prim.wrap.locked){
-      // locked wrap: content dims are user-fixed (in machine-direction
-      // terms); check the permuted envelope fits
-      wrapFits = permEnv.L <= wp.L && permEnv.W <= wp.W && permEnv.H <= wp.H;
-    }else{
-      wp.L = permEnv.L; wp.W = permEnv.W; wp.H = permEnv.H;
-    }
-    const raw = styleById(prim.wrap.styleId).geometry(wp);
-    // un-permute back to true envelope axes: everything downstream (carton
-    // sizing, display, the renderer's non-shape math) works in true L/W/H
-    // and knows nothing about the machine-direction permutation.
-    wrapGeo = {...raw, inner: swapLW(raw.inner, wrapAxis), outer: swapLW(raw.outer, wrapAxis)};
+/** Solve the wrap tier, if configured, against `content` — otherwise pass
+ *  `content` through untouched. Either way the result's allowedOrientations/
+ *  clearance are project.primary's OWN: the content's placement settings,
+ *  used whether or not a wrap style actually renders any geometry. */
+function solvePrimaryStage(project, content){
+  const prim = project.primary;
+  const base = {allowedOrientations: prim.allowedOrientations, clearance: prim.clearance};
+  if(!prim.wrap) return {...base, outer: content.outer, geo: null, fits: true, wrapAxis: null, wp: null};
+
+  const wp = {...prim.wrap.params};
+  // resolve which collation axis is the machine direction BEFORE calling
+  // the style, so flowwrap.js never has to know about the permutation — it
+  // stays a pure function of whatever L/W/H it's handed, always treating L
+  // as pack length. The permutation (and its inverse on the way back out)
+  // live here, not in the style.
+  const wrapAxis = resolveWrapAxis(content.outer, prim.wrap.wrapAxis || 'auto');
+  const permEnv = swapLW(content.outer, wrapAxis);
+  // round girth basis is only meaningful for a single cylindrical slug
+  // wrapped along its own axis — roundGirthEligible is the SAME predicate
+  // the Build UI checks, so the two can never silently disagree. A plain
+  // box has no collation to check eligibility against — never round.
+  if(wp.girthBasis === 'round'){
+    if(content.collation && roundGirthEligible(prim.collation, wrapAxis)) wp.roundDiameter = prim.collation.piece.diameter;
+    else wp.girthBasis = 'rectangular';
   }
-  const content = wrapGeo ? wrapGeo.outer : col.envelope;
+  let wrapFits = true;
+  if(prim.wrap.locked){
+    // locked wrap: content dims are user-fixed (in machine-direction
+    // terms); check the permuted envelope fits
+    wrapFits = permEnv.L <= wp.L && permEnv.W <= wp.W && permEnv.H <= wp.H;
+  }else{
+    wp.L = permEnv.L; wp.W = permEnv.W; wp.H = permEnv.H;
+  }
+  const raw = styleById(prim.wrap.styleId).geometry(wp);
+  // un-permute back to true envelope axes: everything downstream (carton
+  // sizing, display, the renderer's non-shape math) works in true L/W/H and
+  // knows nothing about the machine-direction permutation.
+  const wrapGeo = {...raw, inner: swapLW(raw.inner, wrapAxis), outer: swapLW(raw.outer, wrapAxis)};
+  return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis, wp};
+}
 
-  // ONE variant: the vertical axis is user-locked and the orientation set
-  // already encodes whether in-plan rotation is allowed — the solver picks
-  // within that set only, never across vertical axes
-  const child = {outer: content, allowedOrientations: prim.allowedOrientations};
-  let params, fits = true, capacity = null, chosen, wrapsArrangement, requestedUnits;
+/**
+ * Solve the secondary (carton) tier as a single deterministic variant
+ * against `child` (whatever the wrap tier produced) — used only when
+ * secondary sits BETWEEN content and the outermost enabled tier (tertiary
+ * is also enabled). When secondary is itself the outermost tier it's
+ * enumerated instead, exactly like tertiary is today (see candidateCases).
+ */
+function solveSecondaryInner(project, child, step){
+  const sec = project.secondary, prim = project.primary;
+  const link = linkFor(project, 'secondary');
+  let params, fits = true, capacity = null, chosen, arrangement, requestedUnits;
   if(link.locked){
     params = sec.params;                                        // user-fixed carton
     const chk = fitInto(child, {L: params.L, W: params.W, H: params.H}, prim.clearance, 'column');
     capacity = chk.total; fits = chk.total >= link.count;
-    chosen = chk.placements[0] ? chk.placements[0].orientation : prim.allowedOrientations[0];
-    wrapsArrangement = chk;
-    requestedUnits = link.count;
+    chosen = chk.placements[0] ? chk.placements[0].orientation : child.allowedOrientations[0];
+    arrangement = chk; requestedUnits = link.count;
   }else if(link.arrangement === 'auto'){
     const solved = solveParent(child, link.count, prim.clearance);
     const cavity = roundCavityUp(solved.cavity, step);
     params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
     chosen = solved.arrangement.placements[0]
-      ? solved.arrangement.placements[0].orientation : prim.allowedOrientations[0];
-    wrapsArrangement = solved.arrangement;
-    requestedUnits = link.count;
+      ? solved.arrangement.placements[0].orientation : child.allowedOrientations[0];
+    arrangement = solved.arrangement; requestedUnits = link.count;
   }else{
-    // explicit nx×ny×nz: identical pattern to the case level's explicit
+    // explicit nx×ny×nz: identical pattern to the outermost tier's explicit
     // arrangement (candidateCases below) — take the exact-grid candidate
     // cavity, round it, then build the REAL Arrangement inside it via
     // fitInto. No enumeration/ranking here (still one variant), just an
@@ -316,123 +348,158 @@ function cartonVariants(project, step){
     if(cands.length === 0){
       // the typed grid isn't reachable for this child/orientation set —
       // surface it as a mismatch rather than silently guessing a carton size
-      params = sec.params;
-      fits = false; capacity = 0;
-      chosen = prim.allowedOrientations[0];
-      wrapsArrangement = {placements: [], total: 0};
+      params = sec.params; fits = false; capacity = 0;
+      chosen = child.allowedOrientations[0]; arrangement = {placements: [], total: 0};
     }else{
       const cavity = roundCavityUp(cands[0].cavity, step);
       params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
       const fit = fitInto(child, cavity, prim.clearance, 'column');
-      chosen = fit.placements[0] ? fit.placements[0].orientation : prim.allowedOrientations[0];
-      wrapsArrangement = fit;
-      fits = fit.total >= requestedUnits; capacity = fit.total;
+      chosen = fit.placements[0] ? fit.placements[0].orientation : child.allowedOrientations[0];
+      arrangement = fit; fits = fit.total >= requestedUnits; capacity = fit.total;
     }
   }
-
-  // pieces/carton depends only on how many collation UNITS sit in the
-  // carton — true whether or not those units are wrapped in film.
-  // wrapsPerCarton (the "wrap" noun) is meaningful only when a wrap style
-  // is actually configured; it feeds film-mass math, which is itself
-  // skipped downstream whenever wrapGeo is null.
-  const piecesPerCarton = col.count*requestedUnits;
-  const wrapsPerCarton = prim.wrap ? requestedUnits : null;
-
-  return [{
-    params, geo: styleById(sec.styleId).geometry(params),
-    orientation: chosen, label: orientationLabel(prim.collation.stackAxis, chosen),
-    piecesPerCarton, fits: fits && wrapFits, capacity,
-    // per-level fit, kept separate from the combined `fits` above so a rail
-    // showing ONE locked level (e.g. carton) can report a misfit that belongs
-    // to that level specifically, not conflated with the wrap's own check
-    secondaryFits: fits,
-    wrapGeo, wrapFits, wrapsPerCarton,
-    // SINGLE SOURCE OF TRUTH: the arrangements this solve produced, retained
-    // so the hierarchy view reads them instead of re-solving.
-    wrapsArr: prim.wrap ? {placements: wrapsArrangement.placements, count: wrapsArrangement.total} : null,
-    pieces: prim.wrap ? {placements: col.placements, envelope: col.envelope,
-                         piece: prim.collation.piece, stackAxis: prim.collation.stackAxis,
-                         nx: prim.collation.nx, ny: prim.collation.ny, wrapAxis,
-                         seals: {sealType: wp.sealType, finTreatment: wp.finTreatment,
-                                 finHeight: wp.finHeight, finSealBand: wp.finSealBand,
-                                 endSealWidth: wp.endSealWidth, finFace: wp.finFace || 'back',
-                                 gauge: wp.gauge}} : null
-  }];
+  return {params, geo: styleById(sec.styleId).geometry(params), orientation: chosen, fits, capacity, arrangement, requestedUnits};
 }
 
+/**
+ * Resolve everything below the outermost enabled tier: the content, the
+ * wrap tier (if configured), and — only when secondary sits between content
+ * and the outermost tier — the carton solved to a single variant. Returns
+ * `child`: whatever feeds the outermost tier's own enumeration/lock check,
+ * carrying its OWN allowedOrientations/clearance (never the outermost's) —
+ * this is the re-pointing: disabling a level makes the level below it hand
+ * its OWN placement settings to whatever is now its actual parent.
+ */
+function solveBelowOutermost(project, shape, step){
+  const content = contentEnvelope(project.primary);
+  const primaryResult = solvePrimaryStage(project, content);
+  const primaryChild = {outer: primaryResult.outer, allowedOrientations: primaryResult.allowedOrientations, clearance: primaryResult.clearance};
+
+  let secondaryVariant = null, child = primaryChild;
+  if(shape.secondaryIsInner){
+    secondaryVariant = solveSecondaryInner(project, primaryChild, step);
+    child = {outer: secondaryVariant.geo.outer, allowedOrientations: project.secondary.allowedOrientations, clearance: project.secondary.clearance};
+  }
+  return {content, primaryResult, secondaryVariant, child};
+}
+
+/** Whatever feeds the outermost tier, fitted into its cavity in the
+ *  candidate's chosen orientation. Generalizes what was `fitCartonsInCase`:
+ *  the CHILD's own allowedOrientations/clearance apply — whichever level
+ *  actually produced it, never the outermost's own settings. */
+function fitChildInOuter(child, cavity, chosenOrientation){
+  const c = {
+    outer: child.outer,
+    allowedOrientations: typeof chosenOrientation === 'string' && chosenOrientation.length === 3
+      ? [chosenOrientation] : child.allowedOrientations
+  };
+  return fitInto(c, cavity, child.clearance, 'column');
+}
+
+/** The legacy bare-carton chain (`project.primary === null`): no content
+ *  stage at all, the carton is whatever's configured, unsolved. Predates
+ *  the wrap/optional-levels features and is still exercised by hand-checked
+ *  tests — preserved exactly, always case-enumerated (secondary/tertiary
+ *  enabled flags are not consulted in this legacy mode). */
+function legacyBelowOutermost(project){
+  const sec = project.secondary;
+  const geo = styleById(sec.styleId).geometry(sec.params);
+  return {
+    content: null, primaryResult: null,
+    secondaryVariant: {params: sec.params, geo, fits: true, orientation: null, requestedUnits: null},
+    child: {outer: geo.outer, allowedOrientations: sec.allowedOrientations, clearance: sec.clearance}
+  };
+}
+
+function resolveBelowAndOuterKey(project, step){
+  if(!project.primary) return {below: legacyBelowOutermost(project), outerKey: 'tertiary'};
+  const shape = resolveChainShape(project);
+  return {below: solveBelowOutermost(project, shape, step), outerKey: shape.outermost};
+}
+
+/**
+ * Enumerate every arrangement of the OUTERMOST enabled tier and run it
+ * through to the pallet. Never collapses to one winner — ranking and choice
+ * belong to the engineer. Works identically whether the outermost tier is
+ * the case (the default) or, with tertiary disabled, the carton itself.
+ * @param {Project} project
+ * @param {string} rounding  key of ROUNDING
+ * @returns {Object[]} rows (see fields below), enumeration order
+ */
 export function candidateCases(project, rounding = '1mm'){
-  const link = linkFor(project, 'tertiary');
-  const sec = project.secondary, ter = project.tertiary;
   const step = ROUNDING[rounding] || 1;
+  const {below, outerKey} = resolveBelowAndOuterKey(project, step);
+  const outerLevel = project[outerKey];
+  const outerLink = linkFor(project, outerKey);
+  const child = below.child;
+  const childVol = child.outer.L*child.outer.W*child.outer.H;
+
+  let cands;
+  if(outerLink.arrangement === 'auto'){
+    cands = parentCandidates(child, outerLink.count, child.clearance).filter(c => irreducible(c, outerLink.count));
+  }else{
+    const {nx, ny, nz} = outerLink.arrangement;
+    cands = parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz})
+      .filter(c => c.nx === nx && c.ny === ny);
+  }
+
   const rows = [];
-
-  for(const variant of cartonVariants(project, step)){
-    const child = {outer: variant.geo.outer, allowedOrientations: sec.allowedOrientations};
-    const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
-
-    let cands;
-    if(link.arrangement === 'auto'){
-      cands = parentCandidates(child, link.count, sec.clearance).filter(c => irreducible(c, link.count));
-    }else{
-      const {nx, ny, nz} = link.arrangement;
-      cands = parentCandidates(child, nx*ny*nz, sec.clearance, {layers: nz})
-        .filter(c => c.nx === nx && c.ny === ny);
-    }
-
-    for(const c of cands){
-      const cavity = roundCavityUp(c.cavity, step);
-      const caseParams = {...ter.params, L: cavity.L, W: cavity.W, H: cavity.H};
-      const caseGeo = styleById(ter.styleId).geometry(caseParams);
-      const row = chainMetrics(project, c, cavity, caseParams, caseGeo, cartonVol, link.count);
-      const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, c.o);
-      rows.push(decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit));
-    }
+  for(const c of cands){
+    const cavity = roundCavityUp(c.cavity, step);
+    const outerParams = {...outerLevel.params, L: cavity.L, W: cavity.W, H: cavity.H};
+    const outerGeo = styleById(outerLevel.styleId).geometry(outerParams);
+    const row = chainMetrics(project, outerKey, c, cavity, outerParams, outerGeo, childVol, outerLink.count);
+    const childFit = fitChildInOuter(child, cavity, c.o);
+    rows.push(decorateRow(row, project, below, outerKey, outerGeo, row.casesFit, childFit));
   }
   return rows;
 }
 
-/** Locked direction: the case dims are fixed; check the carton against them.
- *  With a primary level, the carton itself is first derived from (or checked
- *  against) the collation using the FIRST allowed primary orientation. */
+/** Locked direction: the outermost tier's dims are fixed; check its child
+ *  against them. With a primary level, the child is first derived from (or
+ *  checked against) the content using the FIRST allowed orientation. */
 export function checkLockedCase(project, rounding = '1mm'){
-  const link = linkFor(project, 'tertiary');
-  const sec = project.secondary, ter = project.tertiary;
   const step = ROUNDING[rounding] || 1;
-  const variant = cartonVariants(project, step)[0];
-  const cavity = {L: ter.params.L, W: ter.params.W, H: ter.params.H};
-  // variant.orientation is the PRIMARY's orientation inside the carton — a
-  // different rotational relationship than the carton's orientation inside
-  // the case. Passing it here would wrongly restrict the carton-in-case fit
-  // check to whichever orientation the primary happened to use, so a case
-  // locked at exactly its own solved cavity could spuriously "not fit". Pass
-  // no orientation: fitCartonsInCase falls back to the case's OWN allowed
-  // orientations (project.secondary.allowedOrientations), same as the
-  // unlocked candidateCases path.
-  const cartonsFit = fitCartonsInCase(project, variant.geo, cavity, null);
-  const caseGeo = styleById(ter.styleId).geometry(ter.params);
-  const cartonVol = variant.geo.outer.L*variant.geo.outer.W*variant.geo.outer.H;
-  const cand = {nx: '—', ny: '—', layers: cartonsFit.layers,
-                o: cartonsFit.placements[0] ? cartonsFit.placements[0].orientation : '—'};
-  const row = chainMetrics(project, cand, cavity, ter.params, caseGeo, cartonVol, link.count);
-  row.capacity = cartonsFit.total;
-  const tertiaryFits = cartonsFit.total >= link.count;
-  row.fits = tertiaryFits && variant.fits;
-  row.arrangementLabel = `locked (${cartonsFit.label})`;
-  return decorateRow(row, project, variant, caseGeo, row.casesFit, cartonsFit, tertiaryFits);
+  const {below, outerKey} = resolveBelowAndOuterKey(project, step);
+  const outerLevel = project[outerKey];
+  const outerLink = linkFor(project, outerKey);
+  const child = below.child;
+  const cavity = {L: outerLevel.params.L, W: outerLevel.params.W, H: outerLevel.params.H};
+  // the child's orientation into ITS parent is a different rotational
+  // relationship than the outermost's own contents — passing it here would
+  // wrongly restrict the fit check to whichever orientation the child
+  // happened to use, so a level locked at exactly its own solved cavity
+  // could spuriously "not fit". Pass none: fitChildInOuter falls back to
+  // the child's own allowedOrientations, same as the unlocked path.
+  const childFit = fitChildInOuter(child, cavity, null);
+  const outerGeo = styleById(outerLevel.styleId).geometry(outerLevel.params);
+  const childVol = child.outer.L*child.outer.W*child.outer.H;
+  const cand = {nx: '—', ny: '—', layers: childFit.layers,
+                o: childFit.placements[0] ? childFit.placements[0].orientation : '—'};
+  const row = chainMetrics(project, outerKey, cand, cavity, outerLevel.params, outerGeo, childVol, outerLink.count);
+  row.capacity = childFit.total;
+  const outerFits = childFit.total >= outerLink.count;
+  const upstreamFits = (below.secondaryVariant ? below.secondaryVariant.fits : true)
+    && (below.primaryResult ? below.primaryResult.fits : true);
+  row.fits = outerFits && upstreamFits;
+  row.arrangementLabel = `locked (${childFit.label})`;
+  return decorateRow(row, project, below, outerKey, outerGeo, row.casesFit, childFit, outerFits);
 }
 
 /**
- * Resolve the ONE candidate row every view should render — locked case uses
- * checkLockedCase (a single row), otherwise the enumerated candidate matching
- * `selectedKey` (nx/ny/nz/orientation), falling back to the freight-optimal
- * row (max cartons/pallet). This is the single row hierarchyBundle, the 2D
- * dieline, the 3D fold, the DXF export, and every readout all read from — so
- * they can never show different geometry for the same level (the Path-A bug).
+ * Resolve the ONE candidate row every view should render — a locked
+ * outermost tier uses checkLockedCase (a single row), otherwise the
+ * enumerated candidate matching `selectedKey` (nx/ny/nz/orientation),
+ * falling back to the freight-optimal row (max cartons/pallet). This is the
+ * single row hierarchyBundle, the 2D dieline, the 3D fold, the DXF export,
+ * and every readout all read from — so they can never show different
+ * geometry for the same level (the Path-A bug).
  * @returns {Object|null} a decorated candidate row, or null if nothing fits
  */
 export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
-  const caseLink = linkFor(project, 'tertiary');
-  if(caseLink.locked) return checkLockedCase(project, rounding);
+  const outerKey = project.primary ? resolveChainShape(project).outermost : 'tertiary';
+  const outerLink = linkFor(project, outerKey);
+  if(outerLink.locked) return checkLockedCase(project, rounding);
   const rows = candidateCases(project, rounding);
   if(rows.length === 0) return null;
   if(selectedKey){
@@ -447,7 +514,8 @@ export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
  * The resolved Geometry for a single level ('wrap'|'carton'|'case'), read off
  * the active row's retained `geo` — the SAME object the 3D hierarchy renders.
  * Returns null when the level has no geometry (e.g. 'wrap' with no wrap
- * configured, or nothing fits). This is the seam that makes the 2D dieline,
+ * configured, 'carton' with secondary disabled, 'case' with tertiary
+ * disabled, or nothing fits). This is the seam that makes the 2D dieline,
  * the 3D fold, and the DXF export provably identical: they all call this.
  */
 export function levelGeometry(project, level, rounding = '1mm', selectedKey = null){
@@ -464,84 +532,113 @@ export function levelGeometry(project, level, rounding = '1mm', selectedKey = nu
  * carton — see git history / the report.)
  */
 
-/** Cartons fitted into a case cavity, in the candidate's carton orientation
- *  (cand.o, the orientation that sized the cavity). */
-function fitCartonsInCase(project, cartonGeo, cavity, cartonOrientation){
-  const child = {
-    outer: cartonGeo.outer,
-    allowedOrientations: typeof cartonOrientation === 'string' && cartonOrientation.length === 3
-      ? [cartonOrientation] : project.secondary.allowedOrientations
-  };
-  return fitInto(child, cavity, project.secondary.clearance, 'column');
-}
-
 /** Attach every derived field + the retained arrangements to a metrics row.
- *  `tertiaryFits` defaults true: candidateCases only ever enumerates case
- *  candidates that already fit, so there's nothing to misreport; a locked
- *  case (checkLockedCase) passes its own real check instead. */
-function decorateRow(row, project, variant, caseGeo, casesFit, cartonsFit, tertiaryFits = true){
-  row.cartonParams = variant.params;
-  row.cartonOuter = variant.geo.outer;
-  row.primaryOrientation = variant.orientation;
-  row.primaryLabel = variant.label;
-  row.primaryFits = variant.fits;
+ *  `outerFits` defaults true: candidateCases only ever enumerates candidates
+ *  that already fit, so there's nothing to misreport; a locked outermost
+ *  tier (checkLockedCase) passes its own real check instead. */
+function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit, outerFits = true){
+  const {primaryResult, secondaryVariant, content} = below;
+  const cartonGeo = outerKey === 'secondary' ? outerGeo : (secondaryVariant ? secondaryVariant.geo : null);
+  const caseGeo = outerKey === 'tertiary' ? outerGeo : null;
+
+  row.cartonParams = outerKey === 'secondary' ? row.caseParams : (secondaryVariant ? secondaryVariant.params : null);
+  row.cartonOuter = cartonGeo ? cartonGeo.outer : null;
+  // secondaryVariant.orientation is the wrap/content's orientation inside
+  // the carton, computed by the INNER solve; when there's no inner solve
+  // (secondary disabled, or secondary IS outermost), the outermost
+  // enumeration's own chosen orientation (row.orientation) answers the same
+  // question instead — whatever's immediately below the outermost tier.
+  row.primaryOrientation = secondaryVariant ? secondaryVariant.orientation : row.orientation;
+  row.primaryLabel = (content && content.config) ? orientationLabel(content.config.stackAxis, row.primaryOrientation) : null;
+  row.primaryFits = (secondaryVariant ? secondaryVariant.fits : true) && (primaryResult ? primaryResult.fits : true);
   // per-level fit flags — the rail uses these to show a misfit against the
   // SPECIFIC locked level, not just the chain's overall combined result
-  row.wrapFits = variant.wrapFits;
-  row.secondaryFits = variant.secondaryFits;
-  row.tertiaryFits = tertiaryFits;
-  row.piecesPerCarton = variant.piecesPerCarton;
-  row.piecesPerPallet = variant.piecesPerCarton !== null ? variant.piecesPerCarton*row.cartonsPerPallet : null;
-  if(variant.wrapGeo){
+  row.wrapFits = primaryResult ? primaryResult.fits : true;
+  row.secondaryFits = outerKey === 'secondary' ? outerFits : (secondaryVariant ? secondaryVariant.fits : true);
+  row.tertiaryFits = outerKey === 'tertiary' ? outerFits : true;
+
+  // pieces/carton depends only on how many content UNITS sit in the carton —
+  // true whether or not those units are wrapped in film. Meaningless (null)
+  // when there's no carton at all (secondary disabled).
+  const requestedForPieces = secondaryVariant ? secondaryVariant.requestedUnits
+    : (outerKey === 'secondary' ? linkFor(project, 'secondary').count : null);
+  row.piecesPerCarton = (content && requestedForPieces != null) ? content.count*requestedForPieces : null;
+  row.piecesPerPallet = row.piecesPerCarton !== null ? row.piecesPerCarton*row.cartonsPerPallet : null;
+
+  if(primaryResult && primaryResult.geo){
     // film cost columns — board vs film trade against each other. film
     // numbers and fillEfficiency NEVER touch cube utilization.
-    const film = variant.wrapGeo.meta.film;
+    const film = primaryResult.geo.meta.film;
     row.filmAreaM2 = film.filmAreaM2;
-    row.filmKgPerPallet = (film.massPer1000g/1000)*variant.wrapsPerCarton*row.cartonsPerPallet/1000;
-    row.wrapOuter = variant.wrapGeo.outer;
+    row.filmKgPerPallet = requestedForPieces != null
+      ? (film.massPer1000g/1000)*requestedForPieces*row.cartonsPerPallet/1000 : null;
+    row.wrapOuter = primaryResult.geo.outer;
   }else{
     row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
   }
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
-  row.geo = {case: caseGeo, carton: variant.geo, wrap: variant.wrapGeo};
+  row.geo = {case: caseGeo, carton: cartonGeo, wrap: primaryResult ? primaryResult.geo : null};
   row.arr = {
     cases:   {placements: casesFit.placements, count: casesFit.total, deck: {L: p.L, W: p.W, baseH: p.baseH}},
-    cartons: {placements: cartonsFit.placements, count: cartonsFit.total},
-    wraps:   variant.wrapsArr,     // {placements, count} | null
-    pieces:  variant.pieces        // {placements, envelope, piece, stackAxis, seals} | null
+    cartons: {placements: childFit.placements, count: childFit.total},
+    wraps:   (secondaryVariant && secondaryVariant.arrangement && primaryResult && primaryResult.geo)
+      ? {placements: secondaryVariant.arrangement.placements, count: secondaryVariant.arrangement.total} : null,
+    pieces:  (content && content.collation && primaryResult && primaryResult.geo)
+      ? {placements: content.collation.placements, envelope: content.collation.envelope,
+         piece: content.config.piece, stackAxis: content.config.stackAxis,
+         nx: content.config.nx, ny: content.config.ny, wrapAxis: primaryResult.wrapAxis,
+         seals: {sealType: primaryResult.wp.sealType, finTreatment: primaryResult.wp.finTreatment,
+                 finHeight: primaryResult.wp.finHeight, finSealBand: primaryResult.wp.finSealBand,
+                 endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'back',
+                 gauge: primaryResult.wp.gauge}} : null
   };
   return row;
 }
 
-function chainMetrics(project, cand, cavity, caseParams, caseGeo, cartonVol, count){
+/** Full-chain metrics for the outermost tier (`outerKey`, 'secondary' or
+ *  'tertiary') against the pallet — generalizes what was hardcoded to
+ *  tertiary. `count` is outerKey's own link.count: cartons/case when the
+ *  case is outermost (the default), or content-units/case when secondary is
+ *  disabled — either way, the right multiplier to reach a per-pallet total.
+ *  When secondary itself is outermost (no case), that multiplier is 1: the
+ *  outermost unit IS what's on the pallet, nothing further to multiply. */
+function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, childVol, count){
+  const outerLevel = project[outerKey];
   const p = project.pallet;
   const fit = fitInto(
-    {outer: caseGeo.outer, allowedOrientations: project.tertiary.allowedOrientations},
+    {outer: outerGeo.outer, allowedOrientations: outerLevel.allowedOrientations},
     {L: p.L, W: p.W, H: p.maxH - p.baseH},
-    project.tertiary.clearance,
+    outerLevel.clearance,
     p.pattern
   );
-  const loadH = fit.layers*caseGeo.outer.H;
-  const cartonsPerPallet = fit.total*count;
+  const loadH = fit.layers*outerGeo.outer.H;
+  const perPalletMultiplier = outerKey === 'tertiary' ? count : 1;
+  const cartonsPerPallet = fit.total*perPalletMultiplier;
+  // the "productive volume" cube-util measures is whatever `cartonsPerPallet`
+  // actually counts: the outermost's own CHILD when a multiplier bridges the
+  // gap (case counting cartons within it), or the outermost itself when
+  // there's no gap to bridge (carton riding the pallet directly)
+  const outerVol = outerGeo.outer.L*outerGeo.outer.W*outerGeo.outer.H;
+  const unitVol = outerKey === 'tertiary' ? childVol : outerVol;
   return {
     // identity
     nx: cand.nx, ny: cand.ny, nz: cand.layers, orientation: cand.o,
     arrangementLabel: `${cand.nx} × ${cand.ny} × ${cand.layers} ${cand.o}`,
-    // the case
-    cavity, caseParams,
-    outer: caseGeo.outer,
-    boardAreaM2: caseGeo.bbox.maxX*caseGeo.bbox.maxY/1e6,
+    // the outermost tier
+    cavity, caseParams: outerParams,
+    outer: outerGeo.outer,
+    boardAreaM2: outerGeo.bbox.maxX*outerGeo.bbox.maxY/1e6,
     // the pallet
     casesPerLayer: fit.perLayer,
     caseLayers: fit.layers,
     casesPerPallet: fit.total,
     cartonsPerPallet,
-    coveragePct: Math.round(fit.perLayer*caseGeo.outer.L*caseGeo.outer.W/(p.L*p.W)*100),
+    coveragePct: Math.round(fit.perLayer*outerGeo.outer.L*outerGeo.outer.W/(p.L*p.W)*100),
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
-    cubeUtilPct: loadH > 0 ? Math.round(cartonVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
+    cubeUtilPct: loadH > 0 ? Math.round(unitVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
     casesFit: fit                            // retained for decorateRow (single source)
   };
 }

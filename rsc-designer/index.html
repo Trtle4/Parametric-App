@@ -36,6 +36,11 @@
   .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
   .levelLabel{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
   .lockField .btn{width:100%}
+  .chainString{
+    font-family:var(--mono);font-size:12px;letter-spacing:.02em;color:var(--ink);
+    background:var(--card);border-bottom:1px solid var(--line);padding:8px 20px;
+  }
+  .chainString .disabledNote{color:var(--muted)}
   .misfit{
     color:var(--cut);font-weight:600;font-size:12px;background:rgba(229,72,77,.08);
     border:1px solid var(--cut);border-radius:6px;padding:8px 10px;margin:2px 0 8px;
@@ -203,11 +208,13 @@
 </header>
 
 <div id="loadNotice" class="notice" style="display:none"></div>
+<div id="chainString" class="chainString"></div>
 
 <main>
   <!-- LEFT: primary dimensions (fields built from the style registry) -->
   <aside class="rail left">
     <h2>Inside dimensions</h2>
+    <div id="levelEnable" style="display:contents"></div>
     <div id="levelStyle" style="display:contents"></div>
     <div id="levelLock" style="display:contents"></div>
     <div id="dimFields" style="display:contents"></div>

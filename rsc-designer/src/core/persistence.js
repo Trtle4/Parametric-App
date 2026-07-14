@@ -120,7 +120,13 @@ function fillProjectDefaults(loadedProject){
       // "H" for what is actually a cylinder) sitting in `report`.
       const kind = loadedLevel.collation && loadedLevel.collation.piece && loadedLevel.collation.piece.kind;
       const pieceDefault = PIECE_DEFAULTS[kind] || PIECE_DEFAULTS.box;
-      baseForLevel = {...base.primary, collation: {...base.primary.collation, piece: pieceDefault}};
+      // `box` (a plain product envelope) is null-by-default like `wrap` —
+      // mergeDefaults short-circuits null-vs-null and preserves any real
+      // value untouched, so a full shape here only matters when the loaded
+      // doc actually has a box, filling ITS missing L/W/H rather than
+      // leaving them undefined.
+      const boxDefault = loadedLevel.box ? {L: 90, W: 50, H: 20} : null;
+      baseForLevel = {...base.primary, collation: {...base.primary.collation, piece: pieceDefault}, box: boxDefault};
     }
     const merged = mergeDefaults(loadedLevel, baseForLevel, level, report);
     out[level] = merged;

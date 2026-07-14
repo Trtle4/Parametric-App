@@ -98,28 +98,64 @@ export function mountLevel(style, params, options, m){
     opt.appendChild(selectField(d, options, 'option'));
 }
 
+/** A fresh default collation, used when switching FROM plain-box mode back
+ *  to a collation — matches newProject()'s own shape. */
+function defaultCollation(){
+  return {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+}
+
+/** The content-mode switch: a collation (many pieces) or — per the
+ *  plain-box ruling — a single manual outer with no inner and no
+ *  compensation. Shown above whichever editor is active. */
+function contentModeField(isBox){
+  return `<div class="field"><label>Content <span class="hint">mode</span></label>
+    <div class="inp"><select id="cMode"><option value="collation"${isBox ? '' : ' selected'}>Collation</option><option value="box"${isBox ? ' selected' : ''}>Plain box</option></select></div></div>`;
+}
+
 /**
- * Mount the PRODUCT level: the collation editor. Piece dims go in the left
- * rail, stacking in the right rail; every field writes straight into the
- * project's `collation` object (mm for lengths). This is the product's
- * parameters — a plain product envelope, edited here, nowhere else once
- * Build becomes table-only.
- * @param {Object} collation  project.primary.collation (mutated in place)
- * @param {Object} m          {onInput()}
+ * Mount the PRODUCT (content) level: the collation editor, or — in
+ * plain-box mode — three manual L/W/H fields feeding straight into
+ * `project.primary.box`. Piece dims go in the left rail, stacking in the
+ * right rail; every field writes straight into the project object (mm for
+ * lengths). This is the content's parameters — a plain product envelope,
+ * edited here, nowhere else once Build becomes table-only.
+ * @param {Object} prim  project.primary (mutated in place)
+ * @param {Object} m     {onInput()}
  */
-export function mountProduct(collation, m){
+export function mountProduct(prim, m){
   const dims = el('dimFields'), mat = el('matFields');
   el('optFields').innerHTML = '';
+  const mm = id => toMM(+el(id).value || 0, unit);
+
+  if(prim.box){
+    const L = v => fmtInputValue(fromMM(v, unit), unit);
+    const numF = (id, label, mmVal) =>
+      `<div class="field"><label>${label}</label>
+        <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(mmVal)}"><span class="unit">${unit}</span></div></div>`;
+    dims.innerHTML = contentModeField(true) +
+      numF('bxL', 'Length', prim.box.L) + numF('bxW', 'Width', prim.box.W) + numF('bxH', 'Height', prim.box.H);
+    mat.innerHTML = `<div class="field bnote" style="color:var(--muted);font-size:11px">A plain box is a product envelope — outer dims only, no inner, no compensation.</div>`;
+    el('cMode').addEventListener('change', () => {
+      if(el('cMode').value === 'collation'){ prim.box = null; prim.collation = prim.collation || defaultCollation(); }
+      mountProduct(prim, m); m.onInput();
+    });
+    el('bxL').addEventListener('input', () => { prim.box.L = mm('bxL'); m.onInput(); });
+    el('bxW').addEventListener('input', () => { prim.box.W = mm('bxW'); m.onInput(); });
+    el('bxH').addEventListener('input', () => { prim.box.H = mm('bxH'); m.onInput(); });
+    return;
+  }
+
+  const collation = prim.collation;
   const isCyl = collation.piece.kind === 'cylinder';
-  const L = mm => fmtInputValue(fromMM(mm, unit), unit);
-  const numF = (id, label, hint, mm) =>
+  const L = v => fmtInputValue(fromMM(v, unit), unit);
+  const numF = (id, label, hint, v) =>
     `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
-      <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(mm)}"><span class="unit">${unit}</span></div></div>`;
+      <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(v)}"><span class="unit">${unit}</span></div></div>`;
   const cntF = (id, label, hint, v) =>
     `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
       <div class="inp"><input id="${id}" type="number" min="1" step="1" value="${v}"></div></div>`;
 
-  dims.innerHTML =
+  dims.innerHTML = contentModeField(false) +
     `<div class="field"><label>Piece <span class="hint">shape</span></label>
       <div class="inp"><select id="cKind"><option value="box"${isCyl ? '' : ' selected'}>Box</option><option value="cylinder"${isCyl ? ' selected' : ''}>Cylinder</option></select></div></div>` +
     (isCyl
@@ -135,12 +171,15 @@ export function mountProduct(collation, m){
     numF('cSg', 'Stack gap', 'between stacks', collation.stackGap) +
     numF('cPg', 'Piece gap', 'within stack', collation.pieceGap);
 
-  const mm = id => toMM(+el(id).value || 0, unit);
   const cnt = id => Math.max(1, Math.round(+el(id).value || 1));
+  el('cMode').addEventListener('change', () => {
+    if(el('cMode').value === 'box') prim.box = {L: 90, W: 50, H: 20};
+    mountProduct(prim, m); m.onInput();
+  });
   el('cKind').addEventListener('change', () => {
     collation.piece = el('cKind').value === 'cylinder'
       ? {kind: 'cylinder', diameter: 50, thickness: 6} : {kind: 'box', L: 90, W: 50, H: 20};
-    mountProduct(collation, m);   // box<->cylinder swap re-renders the dim fields
+    mountProduct(prim, m);   // box<->cylinder swap re-renders the dim fields
     m.onInput();
   });
   if(isCyl){

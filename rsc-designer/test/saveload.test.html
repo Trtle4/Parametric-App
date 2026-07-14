@@ -122,6 +122,33 @@ t('a cylinder piece defaults its OWN missing fields, never box L/W/H', () => {
     throw new Error(`box fields leaked into a cylinder piece's defaulted report: ${JSON.stringify(result.defaulted)}`);
 });
 
+/* ---- Step 4: optional levels — enabled flags + plain-box content -------- */
+t('a level missing "enabled" defaults to true (old save files load unchanged)', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, secondary: {...base.secondary, enabled: undefined}}};
+  // JSON round-trip drops the `enabled: undefined` key entirely, exactly
+  // like a genuinely older save file that predates the field
+  const result = deserializeProject(JSON.parse(JSON.stringify(doc)));
+  eq(result.project.secondary.enabled, true);
+  if(!result.defaulted.includes('secondary.enabled')) throw new Error('missing enabled was not reported as defaulted');
+});
+
+t('a level explicitly disabled (enabled: false) is preserved, not defaulted back to true', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, tertiary: {...base.tertiary, enabled: false}}};
+  const result = deserializeProject(doc);
+  eq(result.project.tertiary.enabled, false);
+  if(result.defaulted.includes('tertiary.enabled')) throw new Error('an explicit false was wrongly reported as defaulted');
+});
+
+t('a plain-box content fills its OWN missing L/W/H, never the collation\'s defaults', () => {
+  const base = newProject();
+  const doc = {schemaVersion: 1, project: {...base, primary: {...base.primary, box: {L: 300}}}};
+  const result = deserializeProject(doc);
+  eq(result.project.primary.box, {L: 300, W: 50, H: 20});
+  if(result.defaulted.some(d => d.includes('collation'))) throw new Error('box defaulting leaked into the (unused) collation report');
+});
+
 /* ---- links: element-wise, not an opaque leaf ----------------------------- */
 t('a links entry missing a field (e.g. locked) still gets a usable default', () => {
   const base = newProject();

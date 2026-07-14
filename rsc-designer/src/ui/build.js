@@ -124,8 +124,16 @@ export function initBuild(onSelect, startUnit){
   onSelectCb = onSelect;
   unit = startUnit || 'mm';
   const prim = project.primary, sec = project.secondary, ter = project.tertiary;
-  const col = prim.collation;
-  const wp = prim.wrap.params;
+  // Step 4 (optional levels/plain-box content) predates this panel — Step 5
+  // replaces it with the candidate table. Render with safe fallbacks rather
+  // than crash when the rail has disabled wrap or switched content to a
+  // plain box; Build simply won't reflect those states until then.
+  const col = prim.collation || {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+  const wrapForDisplay = prim.wrap || {wrapAxis: 'auto', locked: false, params: {
+    sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
+    lapOverlap: 12, endSealWidth: 10, endSealBleed: 3, girthBasis: 'rectangular',
+    roundDiameter: 0, gauge: 30, density: 0.92, L: 90, W: 50, H: 120}};
+  const wp = wrapForDisplay.params;
   const tp = ter.params;
   const cartonLink = linkFor(project, 'secondary'), caseLink = linkFor(project, 'tertiary');
   // every "value"/"selected"/visibility below is derived from the ACTUAL
@@ -176,16 +184,16 @@ export function initBuild(onSelect, startUnit){
           <select id="bwBasis"><option value="rectangular"${wp.girthBasis === 'rectangular' ? ' selected' : ''}>Rectangular 2(W+H)</option>
             <option value="round" id="bwBasisRound"${wp.girthBasis === 'round' ? ' selected' : ''}>Round π·d (cylindrical slug only)</option></select></div>
         <div class="brow"><label>Machine direction</label>
-          <select id="bwAxis"><option value="auto"${prim.wrap.wrapAxis === 'auto' ? ' selected' : ''}>Auto (longer of L/W)</option>
-            <option value="L"${prim.wrap.wrapAxis === 'L' ? ' selected' : ''}>L</option><option value="W"${prim.wrap.wrapAxis === 'W' ? ' selected' : ''}>W</option></select></div>
+          <select id="bwAxis"><option value="auto"${wrapForDisplay.wrapAxis === 'auto' ? ' selected' : ''}>Auto (longer of L/W)</option>
+            <option value="L"${wrapForDisplay.wrapAxis === 'L' ? ' selected' : ''}>L</option><option value="W"${wrapForDisplay.wrapAxis === 'W' ? ' selected' : ''}>W</option></select></div>
         <div class="brow bnote">The axis the pack travels along through the wrapper — never H (a
           horizontal flow wrapper cannot feed vertically; that is a different machine). End seals sit
           at the two ends of this axis; the fin runs along it on the chosen face.</div>
         <div class="brow"><label>Film gauge</label><input id="bwGauge" type="number" step="1" value="${wp.gauge}"><span>µm</span>
           <label>Density</label><input id="bwDens" type="number" step="0.01" value="${wp.density}"><span>g/cm³</span></div>
         <div class="brow bnote">Seal values are editable defaults — review. Gauge/density are film substance, not caliper.</div>
-        <div class="brow bchk"><label><input type="checkbox" id="bwLock"${prim.wrap.locked ? ' checked' : ''}> Lock wrap content dims (check fit only)</label></div>
-        <div class="brow" id="bwLockDims" style="display:${prim.wrap.locked ? '' : 'none'}"><label>L</label><input id="bwL" type="number" value="${lenVal(wp.L)}">${U()}
+        <div class="brow bchk"><label><input type="checkbox" id="bwLock"${wrapForDisplay.locked ? ' checked' : ''}> Lock wrap content dims (check fit only)</label></div>
+        <div class="brow" id="bwLockDims" style="display:${wrapForDisplay.locked ? '' : 'none'}"><label>L</label><input id="bwL" type="number" value="${lenVal(wp.L)}">${U()}
           <label>W</label><input id="bwW" type="number" value="${lenVal(wp.W)}">${U()}
           <label>H</label><input id="bwH" type="number" value="${lenVal(wp.H)}">${U()}</div>
       </fieldset>
@@ -308,7 +316,13 @@ function readIntoProject(){
   const prim = project.primary, sec = project.secondary, ter = project.tertiary;
   const caseLink = linkFor(project, 'tertiary'), cartonLink = linkFor(project, 'secondary');
 
-  prim.collation = {
+  // Step 4's rail can disable wrap (goes null) or switch content to a plain
+  // box (prim.collation goes null) — states this panel predates and
+  // doesn't expose controls for. Only rebuild whichever the rail currently
+  // has ENABLED, so a stale recompute() (e.g. just opening this tab) can
+  // never resurrect a rail-disabled wrap or clobber box-mode content; the
+  // other (disabled) state rides through untouched.
+  if(prim.collation) prim.collation = {
     piece: el('bKind').value === 'cylinder'
       ? {kind: 'cylinder', diameter: n('bpD'), thickness: n('bpT')}
       : {kind: 'box', L: n('bpL'), W: n('bpW'), H: n('bpH')},
@@ -320,7 +334,7 @@ function readIntoProject(){
   // the only solver freedom, granted explicitly per level
   prim.allowedOrientations = verticalToOrientations(el('bpVert').value, el('bpRot').checked);
   prim.clearance = {wall: n('bpWall'), between: n('bpBetween'), bottom: 0, top: n('bpHead'), betweenZ: 0};
-  prim.wrap = {
+  if(prim.wrap) prim.wrap = {
     styleId: 'flowwrap',
     params: {
       sealType: el('bwSeal').value, finTreatment: el('bwTreat').value, finFace: el('bwFace').value,
@@ -365,23 +379,29 @@ export function recompute(){
   // (nx/ny/axis edited after the fact), fall back to rectangular and say
   // so — never compute silently. The eligibility check needs the RESOLVED
   // wrapAxis, the same one cartonVariants uses, so the two can never disagree.
-  const wrapAxisResolved = resolveWrapAxis(collate(project.primary.collation).envelope, project.primary.wrap.wrapAxis);
-  const eligible = roundGirthEligible(project.primary.collation, wrapAxisResolved);
-  el('bwBasisRound').disabled = !eligible;
+  // Needs BOTH a collation and a wrap — box content or a disabled wrap (Step
+  // 4) means there's nothing to check here.
   let girthWarning = '';
-  if(!eligible && el('bwBasis').value === 'round'){
-    el('bwBasis').value = 'rectangular';
-    project.primary.wrap.params.girthBasis = 'rectangular';
-    girthWarning = 'Round girth needs a single cylindrical slug (1 stack, 1×1, along the pack length) — reverted to rectangular.';
+  if(project.primary.collation && project.primary.wrap){
+    const wrapAxisResolved = resolveWrapAxis(collate(project.primary.collation).envelope, project.primary.wrap.wrapAxis);
+    const eligible = roundGirthEligible(project.primary.collation, wrapAxisResolved);
+    el('bwBasisRound').disabled = !eligible;
+    if(!eligible && el('bwBasis').value === 'round'){
+      el('bwBasis').value = 'rectangular';
+      project.primary.wrap.params.girthBasis = 'rectangular';
+      girthWarning = 'Round girth needs a single cylindrical slug (1 stack, 1×1, along the pack length) — reverted to rectangular.';
+    }
   }
 
   let envInfo = '';
   try{
     if(project.primary.allowedOrientations.length === 0)
       throw new Error('select at least one envelope orientation');
-    const col = collate(project.primary.collation);
-    envInfo = `Envelope ${fmtLen(col.envelope.L, unit)} × ${fmtLen(col.envelope.W, unit)} × ${fmtLen(col.envelope.H, unit)} ${unit}` +
-      ` · ${col.count} pieces · fill ${Math.round(col.fillEfficiency*100)}% (informational — never feeds pallet numbers)`;
+    envInfo = project.primary.collation ? (() => {
+      const col = collate(project.primary.collation);
+      return `Envelope ${fmtLen(col.envelope.L, unit)} × ${fmtLen(col.envelope.W, unit)} × ${fmtLen(col.envelope.H, unit)} ${unit}` +
+        ` · ${col.count} pieces · fill ${Math.round(col.fillEfficiency*100)}% (informational — never feeds pallet numbers)`;
+    })() : `Box ${fmtLen(project.primary.box.L, unit)} × ${fmtLen(project.primary.box.W, unit)} × ${fmtLen(project.primary.box.H, unit)} ${unit} (plain-box content — no collation)`;
     if(caseLink.locked){
       const row = checkLockedCase(project, rounding);
       rows = [row];

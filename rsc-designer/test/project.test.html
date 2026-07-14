@@ -16,7 +16,7 @@
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
-        verticalToOrientations, resolveWrapAxis, swapLW} from '../src/core/project.js';
+        verticalToOrientations, resolveWrapAxis, swapLW, resolveChainShape} from '../src/core/project.js';
 import {fitInto} from '../src/core/containment.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 
@@ -318,6 +318,148 @@ t('orientation basis is a proper rotation for all six orientations', () => {
     if(Math.abs(dot(c[0], c[1])) > 1e-9 || Math.abs(dot(c[0], c[2])) > 1e-9 || Math.abs(dot(c[1], c[2])) > 1e-9)
       throw new Error(`${o}: columns not orthogonal`);
   }
+});
+
+/* ---- Step 4: optional levels — secondary/tertiary each independently
+   `enabled`; a level's actual parent is the next enabled level above it (a
+   fold over ['secondary','tertiary']), never a hardcoded pair. The wrap
+   tier's own allowedOrientations/clearance (project.primary's) always
+   describe the content's placement into whatever is actually next. ---- */
+
+/* Pin: "no carton" — secondary disabled. Default box collation (90x50x20,
+   6/stack Z -> envelope 90x50x120), no wrap, feeds the CASE directly.
+   Explicit 2x2x1 grid, zero primary clearance:
+     cavity L = 2*90 = 180, W = 2*50 = 100, H = 120 (1 layer, no z gap)
+     case (fefco201, caliper 3) outer: +2t/+2t/+4t = 186 x 106 x 132      */
+function noCartonProject(){
+  const p = newProject();
+  p.primary.wrap = null;
+  p.primary.allowedOrientations = ['LWH'];
+  p.secondary.enabled = false;
+  p.links[0].count = 4;
+  p.links[0].arrangement = {nx: 2, ny: 2, nz: 1};
+  return p;
+}
+
+t('Step 4 pin — no carton: content feeds the case directly', () => {
+  const rows = candidateCases(noCartonProject(), '1mm');
+  const r = rows.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('2×2×1 case row missing');
+  eq(r.cavity, {L: 180, W: 100, H: 120}, 'cavity = content grid, no carton in between:');
+  eq(r.outer, {L: 186, W: 106, H: 132}, 'case outer, caliper 3 (+2t/+2t/+4t):');
+  eq(r.geo.carton, null, 'no carton geometry — the level is disabled:');
+  eq(r.cartonParams, null, 'no carton params:');
+  eq(r.piecesPerCarton, null, 'no carton, no "pieces/carton" concept:');
+  if(r.geo.case === null) throw new Error('case geometry missing');
+});
+
+/* Pin: "no wrap" — wrap disabled (bare collation drives the carton). Reuses
+   cylProject (defined above, already hand-derived) — asserts the Step 4
+   invariant specifically: no wrap style configured means no wrap geometry
+   at all, and wrapFits defaults true (nothing to misreport), not a
+   leftover from some prior wrapped state. */
+t('Step 4 pin — no wrap: bare collation drives the carton, no wrap geometry', () => {
+  const rows = candidateCases(cylProject(), '1mm');
+  const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  eq(r.geo.wrap, null, 'no wrap style configured -> no wrap geometry:');
+  eq(r.wrapFits, true, 'nothing to misreport when there is no wrap:');
+  eq(r.arr.wraps, null, 'no wrap arrangement stored:');
+  if(r.geo.carton === null || r.geo.case === null) throw new Error('carton/case must still resolve without a wrap');
+});
+
+/* Pin: "carton-only, no case" — tertiary disabled. Default box collation,
+   no wrap, feeds the carton (a6120, caliper 0.457) as usual, but with the
+   case disabled the CARTON becomes outermost and is itself enumerated onto
+   the pallet. Explicit 2x2x1 grid of content INSIDE the carton, zero
+   primary clearance:
+     carton cavity L = 2*90 = 180, W = 2*50 = 100, H = 120
+     carton outer (+2t/+2t/+4t at t=0.457) = 180.914 x 100.914 x 121.828  */
+function cartonOnlyProject(){
+  const p = newProject();
+  p.primary.wrap = null;
+  p.primary.allowedOrientations = ['LWH'];
+  p.secondary.allowedOrientations = ['LWH'];
+  p.tertiary.enabled = false;
+  p.links[1].count = 4;
+  p.links[1].arrangement = {nx: 2, ny: 2, nz: 1};
+  return p;
+}
+
+t('Step 4 pin — carton-only: no case, the carton itself rides the pallet', () => {
+  const rows = candidateCases(cartonOnlyProject(), '1mm');
+  const r = rows.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('2×2×1 carton row missing');
+  eq(r.cavity, {L: 180, W: 100, H: 120}, 'carton cavity = 2x2 content grid, zero primary clearance:');
+  eq(r.outer, {L: 180.914, W: 100.914, H: 121.828}, 'carton outer, caliper 0.457 (+2t/+2t/+4t):');
+  eq(r.geo.case, null, 'no case geometry — the level is disabled:');
+  eq(r.geo.carton.outer, r.outer, 'the carton IS the outermost geometry riding the pallet:');
+  eq(r.cartonsPerPallet, r.casesPerPallet, 'no case multiplier — the carton rides the pallet 1:1:');
+});
+
+/* Pin: "plain-box content straight to a case" — a manual outer with no
+   inner and no compensation, no collation, no wrap, no carton. Box
+   200x100x50 feeds the case directly. Explicit 2x1x1 grid, zero clearance:
+     cavity L = 2*200 = 400, W = 100, H = 50
+     case (fefco201, caliper 3) outer: +2t/+2t/+4t = 406 x 106 x 62       */
+function boxProject(){
+  const p = newProject();
+  p.primary.wrap = null;
+  p.primary.collation = null;
+  p.primary.box = {L: 200, W: 100, H: 50};
+  p.primary.allowedOrientations = ['LWH'];
+  p.secondary.enabled = false;
+  p.links[0].count = 2;
+  p.links[0].arrangement = {nx: 2, ny: 1, nz: 1};
+  return p;
+}
+
+t('Step 4 pin — plain-box content: outer feeds the case, no inner, no compensation', () => {
+  const rows = candidateCases(boxProject(), '1mm');
+  const r = rows.find(x => x.nx === 2 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r) throw new Error('2×1×1 case row missing');
+  eq(r.cavity, {L: 400, W: 100, H: 50}, 'cavity = 2 boxes side by side, zero clearance:');
+  eq(r.outer, {L: 406, W: 106, H: 62}, 'case outer, caliper 3 (+2t/+2t/+4t):');
+  eq(r.geo.carton, null, 'no carton — box content skips straight to the case:');
+  eq(r.piecesPerCarton, null, 'no carton, no "pieces/carton" concept:');
+  eq(r.primaryLabel, null, 'no collation -> no stack-axis label for a plain box:');
+});
+
+/* At least one packaging level must stay enabled. */
+t('Step 4: disabling both carton and case throws, never silently drops the chain', () => {
+  const p = newProject();
+  p.secondary.enabled = false;
+  p.tertiary.enabled = false;
+  let threw = false;
+  try{ resolveChainShape(p); }catch(e){ threw = true; }
+  if(!threw) throw new Error('expected resolveChainShape to throw with nothing enabled');
+});
+
+/* The re-pointing test: toggling a level off re-points the level below it
+   to whatever is now its actual parent, AND the clearance actually applied
+   is the CHILD's own — never the disabled level's, never left over from
+   the previous parent. Distinctive clearances on primary (wall 5) vs
+   secondary (wall 1.5) make which one governed the fit decisive. */
+t('Step 4: disabling a level re-points its parent, using the child\'s OWN clearance', () => {
+  const p = newProject();
+  p.primary.wrap = null;
+  p.primary.allowedOrientations = ['LWH'];
+  p.primary.clearance = {wall: 5, between: 0, bottom: 0, top: 0, betweenZ: 0};
+  p.secondary.clearance = {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0};
+  p.links[0].arrangement = {nx: 1, ny: 1, nz: 1};   // one child in the case — a single wall gap shows up cleanly
+
+  // secondary enabled (default): the case wraps the CARTON using the
+  // CARTON's own clearance (secondary.clearance, wall 1.5 -> +3 on L)
+  const withCarton = candidateCases(p, '1mm').find(r => r.nx === 1 && r.ny === 1 && r.nz === 1);
+  approx(withCarton.cavity.L, Math.ceil(withCarton.cartonOuter.L + 3), 'case wraps the carton with the CARTON\'s own wall clearance (rounded up 1mm):');
+
+  // disable the carton: the case re-points to whatever's below it (the
+  // bare collation, since there's no wrap) and must use THAT level's OWN
+  // clearance (primary.clearance, wall 5 -> +10) — never the disabled
+  // carton's, and never left over from the previous parent
+  p.secondary.enabled = false;
+  const noCarton = candidateCases(p, '1mm').find(r => r.nx === 1 && r.ny === 1 && r.nz === 1);
+  eq(noCarton.geo.carton, null, 're-pointed: no carton in the chain any more:');
+  approx(noCarton.cavity.L, 90 + 10, 'case now wraps the CONTENT directly with the CONTENT\'s own wall clearance (5x2):');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

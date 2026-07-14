@@ -21,7 +21,7 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
 import * as save from './save.js';
-import {newProject, levelGeometry, resolveActiveRow, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
@@ -41,22 +41,38 @@ const LEVELS = {
            paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
            optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
-           derivedFrom: () => 'the collation', fitsOf: row => row.wrapFits},
+           derivedFrom: p => p.primary.box ? 'the box' : 'the collation', fitsOf: row => row.wrapFits,
+           enabledOf: p => !!p.primary.wrap},
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
-           derivedFrom: p => p.primary.wrap ? 'the wrap' : 'the collation', fitsOf: row => row.secondaryFits},
+           derivedFrom: p => p.primary.wrap ? 'the wrap' : (p.primary.box ? 'the box' : 'the collation'),
+           fitsOf: row => row.secondaryFits,
+           enabledOf: p => p.secondary.enabled !== false},
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
            styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
-           derivedFrom: () => 'the carton', fitsOf: row => row.tertiaryFits},
+           // re-pointed per the enabled chain, never hardcoded to "the carton"
+           derivedFrom: p => p.secondary.enabled !== false ? 'the carton'
+             : (p.primary.wrap ? 'the wrap' : (p.primary.box ? 'the box' : 'the collation')),
+           fitsOf: row => row.tertiaryFits,
+           enabledOf: p => p.tertiary.enabled !== false},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
-const activeStyleId = () => LEVELS[activeLevel].styleIdOf(build.project);
+// wrap disables by going null (the pre-existing pattern) rather than an
+// `enabled` flag, so there's no styleId to read once disabled — fall back
+// to the natural style for THAT tier, for display purposes only; it never
+// touches the actual (still-null) state
+const DISABLED_STYLE_FALLBACK = {wrap: 'flowwrap', carton: 'a6120', case: 'fefco201'};
+const activeStyleId = () => {
+  const lvl = LEVELS[activeLevel];
+  if(!lvl.enabledOf(build.project)) return DISABLED_STYLE_FALLBACK[activeLevel];
+  return lvl.styleIdOf(build.project);
+};
 const LEVEL_ORDER = ['product', 'wrap', 'carton', 'case', 'pallet'];
 let activeLevel = 'case';
 const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
@@ -139,12 +155,120 @@ function refreshAll(){
  *  have no style-view options. */
 function toggleRailSections(kind){
   const styleOrProduct = kind === 'style' || kind === 'product';
+  el('levelEnable').style.display = (kind === 'style') ? 'contents' : 'none';
   el('levelStyle').style.display = (kind === 'style') ? 'contents' : 'none';
   el('levelLock').style.display = (kind === 'style') ? 'contents' : 'none';
   el('dimFields').style.display = styleOrProduct ? 'contents' : 'none';
   el('matFields').style.display = styleOrProduct ? 'contents' : 'none';
   el('optFields').style.display = (kind === 'style') ? 'contents' : 'none';
   el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
+}
+
+/* ---------- optional levels: enable/disable + the always-visible chain
+ * string. secondary(carton)/tertiary(case) carry their own `enabled` flag;
+ * wrap's is `primary.wrap !== null` (the existing pattern). A level's actual
+ * parent is the next enabled level above it — resolveChainShape in
+ * project.js is the single source for that fold; this file only surfaces
+ * it (the toggle, the warning, the chain string), never re-derives it. --- */
+
+const TIER_LABEL = {wrap: 'wrap', carton: 'carton', case: 'case'};
+
+function isTierEnabled(level){ return LEVELS[level].enabledOf(build.project); }
+
+/** A fresh default wrap object (mirrors newProject()'s shape) — re-enabling
+ *  the wrap tier after it was disabled starts from sane defaults rather
+ *  than reading back stale/undefined fields. */
+function newDefaultWrap(){
+  return {
+    styleId: 'flowwrap',
+    params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
+             lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
+             girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
+             L: 90, W: 50, H: 120},
+    wrapAxis: 'auto', options: styleOptionDefaults('flowwrap'), locked: false
+  };
+}
+
+/** What the new pairing will be once `level` is disabled — shown in the
+ *  warning so a toggle-off is never silent about what re-points to what. */
+function pairingAfterDisabling(level){
+  const proj = build.project;
+  const contentNoun = proj.primary.box ? 'box' : 'collation';
+  if(level === 'wrap') return `the ${contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(level === 'carton') return `the ${proj.primary.wrap ? 'wrap' : contentNoun} will feed the case directly`;
+  if(level === 'case') return 'the carton will ride the pallet directly, with no case';
+  return '';
+}
+
+function setTierEnabled(level, on){
+  const proj = build.project;
+  if(level === 'wrap') proj.primary.wrap = on ? newDefaultWrap() : null;
+  else if(level === 'carton') proj.secondary.enabled = on;
+  else if(level === 'case') proj.tertiary.enabled = on;
+  setActiveLevel(activeLevel);   // re-derive brand/rails/views for the new chain shape
+  onProjectEdited();
+}
+
+/** Disabling is never silent: it shows a loud warning naming the new
+ *  pairing and requires a deliberate confirm. Enabling just flips the flag
+ *  back (or rebuilds a default wrap) — there's nothing destructive about
+ *  restoring a tier. Refuses to leave both carton and case disabled. */
+function toggleTier(level){
+  if(isTierEnabled(level)){
+    if(level === 'carton' && !isTierEnabled('case')){
+      showNotice('Can\'t disable the carton — the case is already disabled, and at least one packaging level must stay enabled.', true);
+      return;
+    }
+    if(level === 'case' && !isTierEnabled('carton')){
+      showNotice('Can\'t disable the case — the carton is already disabled, and at least one packaging level must stay enabled.', true);
+      return;
+    }
+    showNotice(`Disable the ${TIER_LABEL[level]}? ${pairingAfterDisabling(level)}.`, true, [
+      {label: `Disable ${TIER_LABEL[level]}`, onClick: () => { setTierEnabled(level, false); el('loadNotice').style.display = 'none'; }},
+      {label: 'Cancel', onClick: () => { el('loadNotice').style.display = 'none'; }}
+    ]);
+  }else{
+    setTierEnabled(level, true);
+  }
+}
+
+/** The enable/disable control for the active tier (wrap/carton/case).
+ *  Content and Pallet are always on — no control needed. */
+function mountEnableToggle(){
+  const host = el('levelEnable');
+  const lvl = LEVELS[activeLevel];
+  if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  const on = isTierEnabled(activeLevel);
+  host.innerHTML =
+    `<div class="field"><label>Tier <span class="hint">${on ? 'in the chain' : 'skipped'}</span></label>
+      <div class="inp"><button type="button" id="tierToggleBtn" class="btn">${on ? `Disable ${lvl.label.toLowerCase()}` : `Enable ${lvl.label.toLowerCase()}`}</button></div>
+    </div>`;
+  el('tierToggleBtn').addEventListener('click', () => toggleTier(activeLevel));
+}
+
+/** A short label for the content at the bottom of the chain — a collation
+ *  summary or the plain-box dims — never hardcoded to "collation". */
+function contentLabel(proj){
+  const prim = proj.primary;
+  if(prim.box) return `Box ${fmtLen(prim.box.L, 'mm')}×${fmtLen(prim.box.W, 'mm')}×${fmtLen(prim.box.H, 'mm')} mm`;
+  const col = prim.collation;
+  const kind = col.piece.kind === 'cylinder' ? 'Cylinders' : 'Pieces';
+  return `${kind} (${col.nx}×${col.ny}, ${col.perStack}/stack)`;
+}
+
+/** The always-visible chain string: derived from the enabled chain, never
+ *  hardcoded — e.g. "Pucks (2x3, stacked) -> Flow wrap -> Case -> Pallet
+ *  [carton disabled]". Every disabled tier gets its own bracketed note. */
+function renderChainString(){
+  const proj = build.project;
+  const parts = [contentLabel(proj)];
+  if(proj.primary.wrap) parts.push(styleById(proj.primary.wrap.styleId).name);
+  if(isTierEnabled('carton')) parts.push(styleById(proj.secondary.styleId).name);
+  if(isTierEnabled('case')) parts.push(styleById(proj.tertiary.styleId).name);
+  parts.push('Pallet');
+  const disabled = ['wrap', 'carton', 'case'].filter(l => !isTierEnabled(l));
+  const note = disabled.length ? `<span class="disabledNote">     [${disabled.map(l => `${l} disabled`).join(', ')}]</span>` : '';
+  el('chainString').innerHTML = parts.join(' &rarr; ') + note;
 }
 
 /** The lock/unlock control for the active level's dimensions. Solved (the
@@ -157,6 +281,10 @@ function mountLockControl(){
   const host = el('levelLock');
   const lvl = LEVELS[activeLevel], proj = build.project;
   if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  if(!lvl.enabledOf(proj)){
+    host.innerHTML = `<div class="misfit">This tier is disabled — skipped in the chain. Enable it above to size it.</div>`;
+    return;
+  }
   const locked = lvl.lockedOf(proj);
   const child = lvl.derivedFrom(proj);
   const row = activeRow();
@@ -186,7 +314,7 @@ function mountLockControl(){
 function mountStyleSelector(){
   const host = el('levelStyle');
   const lvl = LEVELS[activeLevel];
-  if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  if(lvl.kind !== 'style' || !lvl.enabledOf(build.project)){ host.innerHTML = ''; return; }
   const cur = activeStyleId();
   const natural = styles.filter(s => s.tier === lvl.tier);
   const override = styles.filter(s => s.tier !== lvl.tier);
@@ -226,9 +354,15 @@ function changeLevelStyle(newId){
 function mountActiveLevel(){
   const lvl = LEVELS[activeLevel], proj = build.project;
   toggleRailSections(lvl.kind);
+  mountEnableToggle();
   mountStyleSelector();
   mountLockControl();
-  if(lvl.kind === 'style'){
+  if(lvl.kind === 'style' && !lvl.enabledOf(proj)){
+    // disabled: nothing to mount (wrap's own params object may not even
+    // exist — it goes null) — the enable toggle + the "skipped" note above
+    // are the whole story here
+    el('dimFields').innerHTML = ''; el('matFields').innerHTML = ''; el('optFields').innerHTML = '';
+  }else if(lvl.kind === 'style'){
     const locked = lvl.lockedOf(proj);
     const g = activeGeometry();
     const effectiveDims = (!locked && g) ? g.inner : null;   // derived dims when solved
@@ -241,7 +375,7 @@ function mountActiveLevel(){
       onInput: () => onProjectEdited()
     });
   }else if(lvl.kind === 'product'){
-    inputs.mountProduct(proj.primary.collation, {onInput: () => onProjectEdited()});
+    inputs.mountProduct(proj.primary, {onInput: () => onProjectEdited()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -260,10 +394,12 @@ function setActiveLevel(level){
     el('brandCode').textContent = style.brand.code;
     el('brandName').textContent = style.brand.sub;
     // flexible styles have no die -> no DXF; their deliverables are the film
-    // spec + artwork template
+    // spec + artwork template. A disabled tier has no geometry at all.
     const flex = style.structure === 'flexible';
-    el('btnDXF').disabled = flex;
-    el('btnDXF').title = flex ? 'No die for a flexible style — export the artwork template instead' : '';
+    const disabledTier = !lvl.enabledOf(build.project);
+    el('btnDXF').disabled = flex || disabledTier;
+    el('btnDXF').title = disabledTier ? 'This tier is disabled — nothing to export'
+      : flex ? 'No die for a flexible style — export the artwork template instead' : '';
     el('btnArt').style.display = flex ? '' : 'none';
     el('btnSpec').style.display = flex ? '' : 'none';
   }else{
@@ -278,6 +414,7 @@ function setActiveLevel(level){
   // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
   LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && d === level));
   mountActiveLevel();
+  renderChainString();
   refresh2d();
   if(view === 'pal') refreshPal();
   if(view === '3d') apply3dMode();
@@ -293,6 +430,7 @@ function onProjectEdited(){
   // to the initial mount — contents are "checked against them" continuously,
   // never only at unlock time
   mountLockControl();
+  renderChainString();
   if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
   save.scheduleAutosave(gatherSaveState);
 }
