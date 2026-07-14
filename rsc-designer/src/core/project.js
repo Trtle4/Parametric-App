@@ -335,6 +335,32 @@ function solvePrimaryStage(project, content){
  * is also enabled). When secondary is itself the outermost tier it's
  * enumerated instead, exactly like tertiary is today (see candidateCases).
  */
+/**
+ * The 'auto' scoring objective for a solved (single-variant) inner tier:
+ * minimize the PARENT's own material blank area, not cavity volume. Board
+ * is what a case or carton costs; film is what a wrap costs; volume prices
+ * neither. A minimal-volume cavity is frequently not a minimal-material one
+ * (a flatter, wider cavity can need less board than a taller, narrower one
+ * of the same volume, once the style's own compensation and panel layout
+ * are accounted for) — so the score has to come from actually instantiating
+ * the parent's style geometry for the candidate cavity, not from L*W*H.
+ *
+ * Supplied to solveParent's existing custom-scorer escape hatch (a plain
+ * `(cavity) => number` function) — containment.js never learns what a
+ * style or a blank area is; it just calls whatever scorer it's handed.
+ * `level` (project.secondary today) supplies the styleId/params this
+ * candidate cavity's L/W/H get merged into, exactly as solveSecondaryInner
+ * itself does for the FINAL chosen cavity two lines below — this is the
+ * same geometry call, just run once per candidate instead of once total.
+ */
+function materialAreaObjective(level){
+  return cavity => {
+    const params = {...level.params, L: cavity.L, W: cavity.W, H: cavity.H};
+    const geo = styleById(level.styleId).geometry(params);
+    return geo.bbox.maxX*geo.bbox.maxY;
+  };
+}
+
 function solveSecondaryInner(project, child, step){
   const sec = project.secondary, prim = project.primary;
   const link = linkFor(project, 'secondary');
@@ -346,7 +372,7 @@ function solveSecondaryInner(project, child, step){
     chosen = chk.placements[0] ? chk.placements[0].orientation : child.allowedOrientations[0];
     arrangement = chk; requestedUnits = link.count;
   }else if(link.arrangement === 'auto'){
-    const solved = solveParent(child, link.count, prim.clearance);
+    const solved = solveParent(child, link.count, prim.clearance, {objective: materialAreaObjective(sec)});
     const cavity = roundCavityUp(solved.cavity, step);
     params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
     chosen = solved.arrangement.placements[0]

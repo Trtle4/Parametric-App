@@ -17,7 +17,8 @@
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
         verticalToOrientations, resolveWrapAxis, swapLW, resolveChainShape} from '../src/core/project.js';
-import {fitInto} from '../src/core/containment.js';
+import {fitInto, solveParent} from '../src/core/containment.js';
+import {styleById} from '../src/core/styles/index.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 
 const results = [];
@@ -301,6 +302,69 @@ t('explicit arrangement respects orientation: H-up vs L-up give different, hand-
 
   if(rH.cartonParams.L === rL.cartonParams.L && rH.cartonParams.W === rL.cartonParams.W && rH.cartonParams.H === rL.cartonParams.H)
     throw new Error('explicit arrangement ignored orientation: H-up and L-up produced identical cartons');
+});
+
+/* ---- Prompt 19: 'auto' must minimize the parent's MATERIAL area, not
+   cavity volume. Volume is a proxy for nothing that costs money.
+
+   Constructed divergence: a 100x50x30 plain-box content, allowed to sit
+   either 'WLH' or 'LWH' (a transposed pair — same cavity volume and the
+   same aspect-ratio deviation either way, so the OLD volume objective can
+   only break the tie by orientation-list order: whichever is listed first
+   wins, regardless of material cost). The carton style is fefco201 here
+   (an override — "unusual but allowed"), specifically BECAUSE its flap
+   depth F = W/2 makes board area genuinely asymmetric under an L/W swap
+   (unlike a6120, whose dust/tuck depths are independent style params, not
+   derived from W — swapping L/W there changes NOTHING in board area,
+   which is exactly why no existing a6120-carton golden pin moved).
+
+   Listing 'WLH' first: the volume objective's tie-break (aspectDev, then
+   layers, then orientation-list order) picks 'WLH' -> cavity 50x100x30,
+   board area 0.04355 m². The material objective scores both orientations'
+   ACTUAL board area and picks 'LWH' -> cavity 100x50x30, board area
+   0.0268 m² — lower, and independent of which orientation was listed
+   first. Hand-verified directly against solveParent with both objectives
+   before writing this pin (see the session's own before/after check). */
+t("auto minimizes material area, not volume: a genuine volume/board-area divergence", () => {
+  function project(orientOrder){
+    const p = newProject();
+    p.primary.box = {L: 100, W: 50, H: 30};
+    p.primary.collation = null;
+    p.primary.wrap = null;
+    p.primary.allowedOrientations = orientOrder;
+    p.primary.clearance = {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0};
+    p.secondary.styleId = 'fefco201';                 // override: L/W-asymmetric board area
+    p.secondary.params = {L: 100, W: 100, H: 100, glue: 35, slot: 6, caliper: 3};
+    p.secondary.clearance = {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0};
+    p.links[1].count = 1; p.links[1].arrangement = 'auto';
+    p.links[0].arrangement = {nx: 1, ny: 1, nz: 1};
+    return p;
+  }
+  const boardAreaM2 = params => {
+    const g = styleById('fefco201').geometry(params);
+    return g.bbox.maxX*g.bbox.maxY/1e6;
+  };
+
+  // sanity check: confirm what the OLD 'volume' objective would still pick
+  // today, directly against solveParent (containment.js itself, untouched) —
+  // this is the "before", not a pin, just proof the divergence is real.
+  const volumePick = solveParent(
+    {outer: {L: 100, W: 50, H: 30}, allowedOrientations: ['WLH', 'LWH']},
+    1, {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0}, {objective: 'volume'}
+  );
+  eq(volumePick.cavity, {L: 50, W: 100, H: 30}, 'volume objective (unchanged in containment.js) still ties and falls to list order:');
+  approx(boardAreaM2({...volumePick.cavity, glue: 35, slot: 6, caliper: 3}), 0.04355, 'volume pick\'s own board area (higher):');
+
+  // the actual integration point: links[1] 'auto' now scores material area
+  for(const orientOrder of [['WLH', 'LWH'], ['LWH', 'WLH']]){
+    const rows = candidateCases(project(orientOrder), '1mm');
+    const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1);
+    if(!r) throw new Error(`no row for orientation order ${orientOrder}`);
+    eq(r.cartonParams.L, 100, `order ${orientOrder} — carton L (material-optimal, regardless of listing order):`);
+    eq(r.cartonParams.W, 50, `order ${orientOrder} — carton W:`);
+    eq(r.cartonParams.H, 30, `order ${orientOrder} — carton H:`);
+    approx(boardAreaM2(r.cartonParams), 0.0268, `order ${orientOrder} — carton board area (lower than the volume pick's 0.04355):`);
+  }
 });
 
 /* ---- Prompt 11.1: wrapAxis — machine direction is L or W, NEVER H -------
