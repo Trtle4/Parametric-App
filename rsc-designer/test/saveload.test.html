@@ -166,9 +166,12 @@ t('a links entry missing a field (e.g. locked) still gets a usable default', () 
    girth; 12 cartons @ 4x3x1, wall 1.5 — identical config to golden.json's
    wrap_fin_folded pin, hand-derivation reproduced here so the save/load
    layer is checked against known-correct numbers without depending on a
-   committed fixture file. */
+   committed fixture file. Collation declared explicitly, not inherited from
+   newProject()'s default — a pin that inherits a mutable default is not a
+   pin (the default changes to a round product; this stays box 90x50x20). */
 function chainProject(){
   const p = newProject();
+  p.primary.collation = {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
   p.primary.allowedOrientations = ['LWH'];
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   return p;

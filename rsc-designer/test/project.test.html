@@ -174,9 +174,19 @@ t('locked carton: collation checked against fixed dims, both verdicts', () => {
   if(rows.some(r => r.primaryFits)) throw new Error('90-wide carton cannot hold a 100-wide envelope');
 });
 
+// A pin that inherits newProject()'s default is not a pin — the default is
+// about to change (Prompt: round product, stacked-Z). Every test below that
+// depends on "the default collation" declares that exact shape explicitly
+// (box 90x50x20, 6/stack Z, 1x1 — today's default, frozen here regardless of
+// what newProject() defaults to from here on).
+function defaultBoxCollation(){
+  return {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+}
+
 t('wrap seal compensation propagates into carton sizing', () => {
-  // default box collation env 90×50×120; end seals 10 -> wrap L 110
+  // pinned collation env 90×50×120; end seals 10 -> wrap L 110
   const p = newProject();
+  p.primary.collation = defaultBoxCollation();
   p.primary.allowedOrientations = ['LWH'];   // H up, no rotation: deterministic axes
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   let r = candidateCases(p, '1mm')[0];
@@ -195,7 +205,8 @@ t('wrap seal compensation propagates into carton sizing', () => {
         non-zero, correct cartons-in-case arrangement (nestArrangement used
         the unsolved secondary.params and returned 0 here) ---- */
 t('solved carton + wrap: stored cartons arrangement is non-zero and correct', () => {
-  const p = newProject();                       // default: box collation + fin wrap, carton SOLVED
+  const p = newProject();                       // pinned: box collation + fin wrap, carton SOLVED
+  p.primary.collation = defaultBoxCollation();
   p.primary.allowedOrientations = ['LWH'];
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   const r = candidateCases(p, '1mm')[0];
@@ -217,6 +228,7 @@ t('solved carton + wrap: stored cartons arrangement is non-zero and correct', ()
      piecesPerCarton = 6/wrap * 8 wraps = 48                                */
 function multiWrapProject(){
   const p = newProject();
+  p.primary.collation = defaultBoxCollation();
   p.primary.allowedOrientations = ['LWH'];
   p.links[1].count = 8;
   p.links[1].arrangement = {nx: 4, ny: 2, nz: 1};
@@ -333,6 +345,7 @@ t('orientation basis is a proper rotation for all six orientations', () => {
      case (fefco201, caliper 3) outer: +2t/+2t/+4t = 186 x 106 x 132      */
 function noCartonProject(){
   const p = newProject();
+  p.primary.collation = defaultBoxCollation();
   p.primary.wrap = null;
   p.primary.allowedOrientations = ['LWH'];
   p.secondary.enabled = false;
@@ -376,6 +389,7 @@ t('Step 4 pin — no wrap: bare collation drives the carton, no wrap geometry', 
      carton outer (+2t/+2t/+4t at t=0.457) = 180.914 x 100.914 x 121.828  */
 function cartonOnlyProject(){
   const p = newProject();
+  p.primary.collation = defaultBoxCollation();
   p.primary.wrap = null;
   p.primary.allowedOrientations = ['LWH'];
   p.secondary.allowedOrientations = ['LWH'];
@@ -441,6 +455,7 @@ t('Step 4: disabling both carton and case throws, never silently drops the chain
    secondary (wall 1.5) make which one governed the fit decisive. */
 t('Step 4: disabling a level re-points its parent, using the child\'s OWN clearance', () => {
   const p = newProject();
+  p.primary.collation = defaultBoxCollation();   // pinned: envelope L=90, asserted below
   p.primary.wrap = null;
   p.primary.allowedOrientations = ['LWH'];
   p.primary.clearance = {wall: 5, between: 0, bottom: 0, top: 0, betweenZ: 0};
