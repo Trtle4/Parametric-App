@@ -17,7 +17,7 @@
  * match.
  */
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * One entry per version step. `migrate` receives and returns a plain
@@ -34,8 +34,26 @@ export const CURRENT_SCHEMA_VERSION = 1;
  * @property {string} describe  plain-language summary, surfaced in the load log
  */
 export const MIGRATIONS = [
-  // v1 is the first schema — nothing to migrate from yet. When v2 ships,
-  // add: {from: 1, to: 2, migrate: doc => ({...}), describe: '...'}
+  {
+    from: 1, to: 2,
+    describe: "flowwrap finFace: 'back' -> 'bottom' (and any other non-'top' " +
+      "value, including absent, normalized the same way) — 'back' was " +
+      "ambiguous: the renderer read it as a SIDE face while the model's own " +
+      "compensation always grew H, as if the face were vertical. 'bottom' " +
+      "and 'top' are the only physically real closures for a horizontal " +
+      "flow wrapper; this rename doesn't move any dimension — the " +
+      "compensation was already H before and after, for every save file " +
+      "this migration touches.",
+    migrate: doc => {
+      const proj = doc.project;
+      const params = proj && proj.primary && proj.primary.wrap && proj.primary.wrap.params;
+      if(!params || params.finFace === 'top') return doc;
+      return {
+        ...doc,
+        project: {...proj, primary: {...proj.primary, wrap: {...proj.primary.wrap, params: {...params, finFace: 'bottom'}}}}
+      };
+    }
+  }
 ];
 
 /**

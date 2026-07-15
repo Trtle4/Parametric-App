@@ -170,6 +170,23 @@ for(const lc of LEVEL_CASES){
   setLevel(lc.level);
   await settle();
 
+  // the exact fresh-load gap the other checks below can't see: they all
+  // drive an edit FIRST, then assert — which re-renders/resyncs the field
+  // and would hide a bug that only shows up on the very first mount. This
+  // asserts the GRID inputs before touching anything else, right after
+  // the level's own initial mount. Guarded on the link ALREADY being
+  // explicit at mount (true for carton/links[1]'s own default; case/
+  // links[0] defaults to 'auto' and mounts no grid at all — nothing to
+  // check there today).
+  if(el('pInNx') && lc.linkLevel(build.project).arrangement !== 'auto'){
+    t(`${lc.level}: on fresh mount (no prior edit), GRID inputs already show the project's nx/ny/nz`, () => {
+      const link = lc.linkLevel(build.project);
+      eq(+el('pInNx').value, link.arrangement.nx, 'nx:');
+      eq(+el('pInNy').value, link.arrangement.ny, 'ny:');
+      eq(+el('pInNz').value, link.arrangement.nz, 'nz:');
+    });
+  }
+
   if(el('pInAxis')){
     t(`${lc.level}: vertical axis select reflects project.allowedOrientations after edit`, () => {
       const before = el('pInAxis').value === 'H' ? 'L' : 'H';

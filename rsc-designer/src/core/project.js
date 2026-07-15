@@ -96,7 +96,7 @@ export function newProject(){
         // locked: true) — defaulted to match this default collation's own
         // envelope so the field has a sane starting value the moment the
         // lock checkbox is turned on, instead of reading back `undefined`.
-        params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
+        params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'bottom',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
                  girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
                  L: 141, W: 47, H: 24},
@@ -145,7 +145,7 @@ export function newProject(){
     printText: 'FRAGILE',
     links: [
       {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
-      {parent: 'secondary', child: 'primary', count: 8, arrangement: {nx: 4, ny: 2, nz: 1}, locked: false}
+      {parent: 'secondary', child: 'primary', count: 8, arrangement: {nx: 1, ny: 4, nz: 2}, locked: false}
     ]
   };
 }
@@ -633,7 +633,7 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
          nx: content.config.nx, ny: content.config.ny, wrapAxis: primaryResult.wrapAxis,
          seals: {sealType: primaryResult.wp.sealType, finTreatment: primaryResult.wp.finTreatment,
                  finHeight: primaryResult.wp.finHeight, finSealBand: primaryResult.wp.finSealBand,
-                 endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'back',
+                 endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'bottom',
                  gauge: primaryResult.wp.gauge}} : null
   };
   return row;

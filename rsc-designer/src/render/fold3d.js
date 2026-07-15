@@ -15,6 +15,11 @@ let dragging = false, lastX = 0, lastY = 0, rotX = -0.5, rotY = 0.7, dist = 1;
 let camSpan = 250;
 let cvWrap = null;
 
+/** The one "default three-quarter isometric" orbit — app.js's own
+ *  resetCam (applyHierarchy) and the ViewCube's Home button both read this
+ *  SAME constant, so "home" can never mean two different views. */
+export const HOME_ORBIT = {rotX: 0.5, rotY: 0.65};
+
 export const kraft  = new THREE.MeshStandardMaterial({color:0xC69C6D,roughness:0.9, metalness:0,side:THREE.DoubleSide});
 export const kraft2 = new THREE.MeshStandardMaterial({color:0xB98A55,roughness:0.92,metalness:0,side:THREE.DoubleSide});
 
@@ -189,6 +194,34 @@ export function startFold(){
 export function stopFold(){ folding = false; }
 /** Set the orbit camera (elevated 3/4 view for the hierarchy cutaway). */
 export function setOrbit(rx, ry, d){ rotX = rx; rotY = ry; dist = d; }
+/** Current orbit angles — the single source the ViewCube slaves its own
+ *  camera to every frame. Read-only: nothing outside this module writes
+ *  rotX/rotY directly, so there is exactly one orbit state, never a second
+ *  copy that could drift from what the main view is actually showing. */
+export const getOrbit = () => ({rotX, rotY});
+
+let tween = null;   // {fromX, fromY, toX, toY, t0, dur}
+/** Animate the orbit to (rx, ry) over `dur` ms instead of jumping — used by
+ *  the ViewCube so clicking a face/edge/corner doesn't discard the user's
+ *  spatial context. rotY tweens the SHORT way around (wraps through ±π),
+ *  never the long way just because the raw angle difference happens to be
+ *  large. Unlike drag input, a deliberate snap is allowed the FULL rotX
+ *  range (±90°, a true top/bottom view) — the drag clamp exists to avoid a
+ *  disorienting gimbal flip mid-gesture, not to forbid an intentional one. */
+export function tweenOrbit(rx, ry, dur = 450){
+  let dy = ry - rotY;
+  while(dy > Math.PI) dy -= 2*Math.PI;
+  while(dy < -Math.PI) dy += 2*Math.PI;
+  tween = {fromX: rotX, fromY: rotY, toX: rx, toY: rotY + dy, t0: performance.now(), dur};
+}
+function updateTween(){
+  if(!tween) return;
+  const t = Math.min(1, (performance.now() - tween.t0)/tween.dur);
+  const e = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2)/2;    // ease-in-out
+  rotX = tween.fromX + (tween.toX - tween.fromX)*e;
+  rotY = tween.fromY + (tween.toY - tween.fromY)*e;
+  if(t >= 1) tween = null;
+}
 /** Jump straight to the closed state (flexible styles have no fold sequence). */
 export function jumpClosed(){ folding = false; foldT = 1; applyFold(1); }
 export function showBox(v){ if(boxGroup) boxGroup.visible = v; }
@@ -206,8 +239,9 @@ export function startLoop(){
   const loop = () => {
     raf = requestAnimationFrame(loop);
     if(folding){ foldT = Math.min(1, foldT + 0.02); applyFold(foldT); if(foldT >= 1) folding = false; }
+    updateTween();
     frameCamera();
-    for(const cb of frameCbs) cb(camera);   // cutaway faces etc. track the camera
+    for(const cb of frameCbs) cb(camera);   // cutaway faces etc. track the camera; the ViewCube syncs here too
     renderer.render(scene, camera);
   };
   loop();

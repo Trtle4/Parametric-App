@@ -16,6 +16,27 @@
  */
 
 /**
+ * The fin/lap seal's compensation grows whichever axis the seal actually
+ * stands proud of. For a HORIZONTAL flow wrapper the seal can only ever
+ * land on the top or bottom face (both perpendicular to H) — the film
+ * closes on the face opposite the front, and with the pack lying front-up
+ * that face is the underside; there is no physical way for a horizontal
+ * wrapper to close along a SIDE face, which is why finFace only offers
+ * 'bottom'/'top', never a side. Both map to the SAME axis today, but the
+ * mapping is a lookup keyed by the face, not a bare "always H" assumption —
+ * the compensation and the renderer (hierarchy3d.js) must never again each
+ * independently guess which axis/face the seal is on (Prompt 20, Part A).
+ * @param {'bottom'|'top'} finFace
+ * @returns {'H'} the axis this face's seal grows — currently always H,
+ *   looked up rather than hardcoded so a genuinely different face could
+ *   never silently reuse the wrong axis again
+ */
+export function finGainAxis(finFace){
+  return FIN_GAIN_AXIS[finFace] || 'H';
+}
+const FIN_GAIN_AXIS = {bottom: 'H', top: 'H'};
+
+/**
  * @param {Object} p
  *   L, W, H            content envelope: L = pack length (repeat direction),
  *                      W = front/back panel width, H = pack thickness (sides)
@@ -23,6 +44,9 @@
  *   finHeight          how far the fin stands proud of the pack
  *   finSealBand        sealed band width within the fin
  *   finTreatment       'standing' | 'folded'
+ *   finFace            'bottom' (default) | 'top' — which face the seal
+ *                      closes on; the compensation axis (finGainAxis) and
+ *                      the renderer both key off this SAME field
  *   lapOverlap         used only when sealType === 'lap'
  *   endSealWidth       crimp jaw width, per end
  *   endSealBleed       print bleed beyond the seal zone, per end
@@ -50,13 +74,16 @@ export function flowwrap(p){
   //    product at each end by the jaw width. Bleed is print-only and adds
   //    NOTHING physical.                              << check vs sample >>
   //  * W gains nothing: no seal stands on the width axis.
-  //  * H (the back-face axis, where the longitudinal seal sits):
-  //      - standing fin: + finHeight — the fin stands proud of the back
+  //  * The seal's OWN axis (finGainAxis(p.finFace) — bottom/top, both H)
+  //    gains:
+  //      - standing fin: + finHeight — the fin stands proud of that face
   //      - folded fin:   + gauge (µm -> mm) — film laid against the pack,
   //        negligible but honest
   //      - lap seal:     + 0 — the overlap lies within the wrap
   const gaugeMM = (p.gauge || 0)/1000;
-  const hGain = !fin ? 0 : (p.finTreatment === 'standing' ? p.finHeight : gaugeMM);
+  const finFace = p.finFace || 'bottom';
+  const gainAxis = finGainAxis(finFace);
+  const gain = !fin ? 0 : (p.finTreatment === 'standing' ? p.finHeight : gaugeMM);
 
   // blank outline only — no notches or tear features yet
   const cut = [[0, 0], [cutLength, 0], [cutLength, webWidth], [0, webWidth]];
@@ -76,13 +103,16 @@ export function flowwrap(p){
   const refLines = [];
   for(let i = 1; i < yB.length - 1; i++) refLines.push([border, yB[i], cutLength - border, yB[i]]);
 
+  const outer = {L: L + 2*p.endSealWidth, W, H};
+  outer[gainAxis] += gain;
+
   return {
     structure: 'flexible',
     cut,
     crease: [],                                           // film is never scored
     bbox: {minX: 0, minY: 0, maxX: cutLength, maxY: webWidth},
     inner: {L, W, H},
-    outer: {L: L + 2*p.endSealWidth, W: W, H: H + hGain},
+    outer,
     meta: {
       style: 'flowwrap',
       refLines,                                           // fold references, NOT creases

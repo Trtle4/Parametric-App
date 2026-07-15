@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ViewCube tests</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+<pre id="out">running…</pre>
+<script type="module">
+/* Prompt 21: the arrow nudge direction is a PINNED convention, not derived
+   here — these two cases are the spec. stepOrbit() is pure (no DOM, no
+   THREE scene) so the convention can be asserted directly against the
+   same camera-direction formula fold3d.js/viewcube.js use elsewhere:
+     dir = (sin(rotY)*cos(rotX), sin(rotX), cos(rotY)*cos(rotX))
+   which is what the main camera looks FROM, i.e. the face facing you. */
+import {stepOrbit, NUDGE} from '../src/render/viewcube.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+
+// the face the camera is looking FROM, given orbit angles (matches
+// viewcube.js's own click->angle formula, run in reverse)
+function facingDir(rotX, rotY){
+  return {
+    x: Math.sin(rotY)*Math.cos(rotX),
+    y: Math.sin(rotX),
+    z: Math.cos(rotY)*Math.cos(rotX)
+  };
+}
+
+t('NUDGE is exactly 15 degrees', () => {
+  approx(NUDGE, Math.PI/12);
+});
+
+t('viewing FRONT, click right x6 -> viewing LEFT', () => {
+  let rx = 0, ry = 0;                    // FRONT: dir (0,0,1)
+  for(let i = 0; i < 6; i++){ ({rx, ry} = stepOrbit('right', rx, ry)); }
+  const d = facingDir(rx, ry);
+  approx(d.x, -1, 'x'); approx(d.y, 0, 'y'); approx(d.z, 0, 'z');
+});
+
+t('viewing FRONT, click bottom x6 -> viewing TOP', () => {
+  let rx = 0, ry = 0;
+  for(let i = 0; i < 6; i++){ ({rx, ry} = stepOrbit('bottom', rx, ry)); }
+  const d = facingDir(rx, ry);
+  approx(d.x, 0, 'x'); approx(d.y, 1, 'y'); approx(d.z, 0, 'z');
+});
+
+t('left/top are the exact inverse of right/bottom', () => {
+  let rx = 0.4, ry = 0.9;
+  const afterRight = stepOrbit('right', rx, ry);
+  const backToStart = stepOrbit('left', afterRight.rx, afterRight.ry);
+  approx(backToStart.rx, rx); approx(backToStart.ry, ry);
+
+  const afterBottom = stepOrbit('bottom', rx, ry);
+  const backToStart2 = stepOrbit('top', afterBottom.rx, afterBottom.ry);
+  approx(backToStart2.rx, rx); approx(backToStart2.ry, ry);
+});
+
+t('bottom/top clamp rx to a true top/bottom view, never past it', () => {
+  let rx = 0, ry = 0;
+  for(let i = 0; i < 20; i++){ ({rx, ry} = stepOrbit('bottom', rx, ry)); }
+  approx(rx, Math.PI/2, 'clamped at true top');
+  let rx2 = 0, ry2 = 0;
+  for(let i = 0; i < 20; i++){ ({rx: rx2, ry: ry2} = stepOrbit('top', rx2, ry2)); }
+  approx(rx2, -Math.PI/2, 'clamped at true bottom');
+});
+
+t('unknown arrow name throws rather than silently doing nothing', () => {
+  let threw = false;
+  try{ stepOrbit('up-left', 0, 0); } catch(e){ threw = true; }
+  if(!threw) throw new Error('expected a throw');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
+</body>
+</html>

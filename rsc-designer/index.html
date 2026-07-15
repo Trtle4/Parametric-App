@@ -122,6 +122,28 @@
   .stat .lab{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
   .stat .val{font-family:var(--mono);font-size:16px;color:var(--ink)}
   .orbithint{position:absolute;right:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);display:none}
+  /* The .viewcube box is bigger than the cube canvas itself: the 4 orbit
+     arrows sit in the margin around it, in FIXED screen positions (N/S/E/W)
+     that never move — they are DOM buttons, not scene geometry, precisely
+     so orbiting the camera can never carry them along with it. */
+  .viewcube{position:absolute;top:14px;right:16px;width:150px;height:150px}
+  .viewcube .vc-stage{position:absolute;left:19px;top:19px;width:112px;height:112px}
+  .viewcube .vc-stage canvas{width:100%;height:100%;display:block}
+  .viewcube .vc-arrow{
+    position:absolute;width:24px;height:24px;line-height:22px;padding:0;border-radius:6px;
+    font-size:14px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;
+  }
+  .viewcube .vc-arrow:hover{background:var(--line2);color:var(--ink)}
+  .viewcube .vc-arrow.top{left:63px;top:-4px}
+  .viewcube .vc-arrow.bottom{left:63px;bottom:-4px}
+  .viewcube .vc-arrow.left{left:-4px;top:63px}
+  .viewcube .vc-arrow.right{right:-4px;top:63px}
+  .viewcube #viewCubeHome{
+    position:absolute;right:-2px;bottom:-30px;
+    width:22px;height:22px;line-height:20px;padding:0;border-radius:50%;
+    font-size:15px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;
+  }
+  .viewcube #viewCubeHome:hover{background:var(--line2);color:var(--ink)}
   /* Build view */
   #buildWrap{position:absolute;inset:0;display:none;overflow:auto;background:var(--paper);padding:18px}
   .bpanel{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
@@ -277,6 +299,14 @@
     <div class="hud hier" id="hierHud" style="display:none"></div>
     <div class="hud hierlegend" id="hierLegend" style="display:none"></div>
     <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
+    <div class="viewcube" id="viewCubeWrap" style="display:none">
+      <div class="vc-stage" id="viewCubeStage"></div>
+      <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
+      <button class="vc-arrow bottom" id="viewCubeBottom" title="Rotate down 15°">&#9660;</button>
+      <button class="vc-arrow left" id="viewCubeLeft" title="Rotate left 15°">&#9664;</button>
+      <button class="vc-arrow right" id="viewCubeRight" title="Rotate right 15°">&#9654;</button>
+      <button id="viewCubeHome" title="Home view (three-quarter isometric)">&#8962;</button>
+    </div>
   </section>
 
   <!-- RIGHT: secondary params (from the style registry) + readout -->

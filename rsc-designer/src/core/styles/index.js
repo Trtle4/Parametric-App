@@ -90,6 +90,13 @@ export const styles = [
       {key: 'finSealBand', label: 'Fin seal band', hint: 'sealed', group: 'material', min: 0, step: 0.5, default: 5},
       {key: 'finTreatment', label: 'Fin treatment', hint: '', group: 'material', type: 'select', default: 'folded',
        choices: [{value: 'folded', label: 'Folded down'}, {value: 'standing', label: 'Standing'}]},
+      // the only two physically real closures for a HORIZONTAL wrapper —
+      // a side face was never real (the seal can't land on the machine's
+      // own direction of travel) and the compensation only ever grew H,
+      // which was silently correct for these two and wrong for a side face
+      // that was never actually offered a correct axis in the first place
+      {key: 'finFace', label: 'Fin face', hint: 'closure', group: 'material', type: 'select', default: 'bottom',
+       choices: [{value: 'bottom', label: 'Bottom (standard)'}, {value: 'top', label: 'Top'}]},
       {key: 'lapOverlap',   label: 'Lap overlap',   hint: 'lap only', group: 'material', min: 0, step: 0.5, default: 12},
       {key: 'endSealWidth', label: 'End seal width', hint: 'per end', group: 'material', min: 0, step: 0.5, default: 10},
       {key: 'endSealBleed', label: 'End seal bleed', hint: 'print',   group: 'material', min: 0, step: 0.5, default: 3},

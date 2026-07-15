@@ -227,23 +227,33 @@ function findSelected(rows, key){
 }
 
 /* full chain: product(round, 47x12 puck, 3x1 stacks of 2) -> wrap -> carton
-   (8 wraps, explicit 4x2x1) -> case -> pallet. envelope 141x47x24, wrap
-   outer 161x47x24.03, carton outer 644.914x94.914x26.828 (4*161 x 2*47 x
-   24.03->26.828), case outer 654x199x173 (12 cartons auto 1x2x6), 56
-   cases/pallet. */
+   (8 wraps, explicit 1x4x2 — the current default) -> case -> pallet.
+   envelope 141x47x24, wrap outer 161x47x24.03, carton outer
+   161.914x188.914x50.828 (1*161 x 4*47 x 2*24.03->50.828), case outer
+   171x387x317 (12 cartons auto 1x2x6), 68 cases/pallet. Regenerated when
+   the default wrap arrangement changed from 4x2x1 to 1x4x2 — this fixture's
+   links[1] matched newProject()'s OLD default exactly, which is exactly the
+   inheritance smell to avoid; it's pinned here as its own explicit value,
+   independent of whatever newProject() defaults to from here on. */
 await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  // this fixture predates schema v2 (finFace rename) — it MUST run that one
+  // migration now, not stay "already current": a frozen v1 file whose
+  // migration count silently changed to 0 would mean the migration stopped
+  // applying to it, not that the file caught up
+  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
+  eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.defaulted, [], 'a fixture has nothing missing:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
   eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
   eq(r.wrapOuter, {L: 161, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
-  eq(r.cartonOuter, {L: 644.914, W: 94.914, H: 26.828}, 'carton outer (hand-checked):');
-  eq(r.outer, {L: 654, W: 199, H: 173}, 'case outer (hand-checked):');
-  eq(r.casesPerPallet, 56, 'cases per pallet (hand-checked):');
+  eq(r.cartonOuter, {L: 161.914, W: 188.914, H: 50.828}, 'carton outer (hand-checked):');
+  eq(r.outer, {L: 171, W: 387, H: 317}, 'case outer (hand-checked):');
+  eq(r.casesPerPallet, 68, 'cases per pallet (hand-checked):');
 });
 
 /* no-carton: same product/wrap, carton disabled — the wrap feeds the case
@@ -252,7 +262,8 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
 await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
@@ -270,7 +281,8 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
 await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun, [], 'already current: no migrations run:');
+  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);

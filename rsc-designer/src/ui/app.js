@@ -7,16 +7,19 @@
  * builders resolve via the registry-keyed map in render/folds/index.js.
  */
 import {styles, styleById} from '../core/styles/index.js';
+import {finGainAxis} from '../core/styles/flowwrap.js';
 import {fromMM, fmtLen} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
+import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
 import {LEGEND} from '../render/hierarchy3d.js';
+import * as viewcube from '../render/viewcube.js';
 import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
 import * as build from './build.js';
@@ -97,9 +100,24 @@ function activeRow(){
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
 function refresh2d(){
   const u = inputs.getUnit();
+  if(activeLevel === 'product'){
+    // the piece alone: a multiview drawing, not a dieline (product2d.js's
+    // own doc comment explains why it can't be — no blank/cut/crease/
+    // compensation, no Geometry contract). Never the collation/wrap/
+    // anything above the piece — those already have a 3D view + fill
+    // readout.
+    const piece = resolveProductPiece(build.project.primary);
+    if(!piece){
+      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#9aa6b2" font-family="var(--mono)" font-size="14">No piece configured yet</text>`;
+    }else{
+      drawProduct2d(el('svg'), piece, u);
+    }
+    el('blank').textContent = '—'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    return;
+  }
   if(!isStyleLevel()){
-    // product/pallet have no dieline — say so plainly rather than showing a
-    // blank or a stale drawing from another level
+    // pallet has no dieline — say so plainly rather than showing a blank
+    // or a stale drawing from another level
     el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#9aa6b2" font-family="var(--mono)" font-size="14">No dieline for the ${LEVELS[activeLevel].label} level — select Wrap, Carton, or Case</text>`;
     el('blank').textContent = '—'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
     return;
@@ -180,7 +198,7 @@ function isTierEnabled(level){ return LEVELS[level].enabledOf(build.project); }
 function newDefaultWrap(){
   return {
     styleId: 'flowwrap',
-    params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'back',
+    params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'bottom',
              lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
              girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
              L: 90, W: 50, H: 120},
@@ -319,6 +337,20 @@ function updateDimsLabel(){
     ? (activeStyle().dimsLabel || 'Dimensions') : fallback;
 }
 
+/** The 2D tab's own label — "2D Dieline" is right for a rigid box, wrong
+ *  for a flow wrap's flat blank (there's no die to speak of) and wrong for
+ *  the product level (a multiview drawing, not a cut file at all). Same
+ *  precedent as updateDimsLabel: read what the level/style actually is,
+ *  never hardcode one word for every kind. Pallet keeps the original text
+ *  — it has no 2D view of its own and that isn't changing here. */
+function update2dTabLabel(){
+  const lvl = LEVELS[activeLevel];
+  const word = lvl.kind === 'product' ? 'Drawing'
+    : lvl.kind === 'style' ? (activeStyle().structure === 'flexible' ? 'Blank' : 'Dieline')
+    : 'Dieline';
+  el('tab2d').textContent = `2D ${word}`;
+}
+
 /** Orientation + clearance + count/arrangement — Step 5 moved these off
  *  Build's now-removed editing fieldsets and onto whichever rail actually
  *  owns them. "What's inside" always describes the level's actual child,
@@ -424,6 +456,7 @@ function mountActiveLevel(){
   mountLockControl();
   mountPlacement();
   updateDimsLabel();
+  update2dTabLabel();
   if(lvl.kind === 'style' && !lvl.enabledOf(proj)){
     // disabled: nothing to mount (wrap's own params object may not even
     // exist — it goes null) — the enable toggle + the "skipped" note above
@@ -465,7 +498,9 @@ function updateExportButtonsState(){
   const lvl = LEVELS[activeLevel];
   if(lvl.kind !== 'style'){
     el('btnDXF').disabled = true;
-    el('btnDXF').title = 'No dieline at this level — select Wrap, Carton, or Case';
+    el('btnDXF').title = lvl.kind === 'product'
+      ? 'A product drawing is not a cut file — select Wrap, Carton, or Case for a dieline'
+      : 'No dieline at this level — select Wrap, Carton, or Case';
     el('btnArt').style.display = 'none';
     el('btnSpec').style.display = 'none';
     return;
@@ -611,7 +646,7 @@ function applyHierarchy(resetCam){
   // the active level IS the depth; if it isn't reachable for this config,
   // render the case (without disturbing the selector's own state)
   const depth = depthAvailable(bundle, activeLevel) ? activeLevel : 'case';
-  if(resetCam) fold.setOrbit(0.5, 0.65, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
+  if(resetCam) fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
   const res = hier.buildHierarchy(bundle, depth, hierSel);
   hier.show(true);
   el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
@@ -632,17 +667,24 @@ function renderLegend(bundle, depth){
     const u = inputs.getUnit(), f = v => fmtLen(v, u);
     const add = (a, b, note) => `${b - a >= 0 ? '+' : ''}${f(b - a)}${note ? ' ' + note : ''}`;
     const sealsOn = bundle.wraps.seals;
-    const hNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
-      : sealsOn.finTreatment === 'standing' ? '(standing fin)' : '(folded fin, film gauge)';
+    // the fin/lap gain lands on whichever axis finGainAxis(finFace) names —
+    // looked up, not hardcoded onto H, so this can never silently disagree
+    // with flowwrap.js's own compensation the way the OLD renderer's fixed
+    // side-face placement did (Prompt 20, Part A)
+    const gainAxis = finGainAxis(sealsOn.finFace);
+    const gainNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
+      : sealsOn.finTreatment === 'standing' ? `(standing fin, ${sealsOn.finFace || 'bottom'})`
+      : `(folded fin, film gauge, ${sealsOn.finFace || 'bottom'})`;
     // the end-seal gain lands on whichever axis is the RESOLVED machine
     // direction (L or W, never H) — labeling it unconditionally on L was
     // wrong whenever wrapAxis resolved to W
     const machineAxis = bundle.wraps.wrapAxis;
     const endSealNote = '(2×end seal, machine direction)';
+    const noteFor = axis => (machineAxis === axis ? endSealNote : '') + (gainAxis === axis ? ' ' + gainNote : '');
     readout = `<div class="rd">` +
       `Envelope ${f(inr.L)} × ${f(inr.W)} × ${f(inr.H)} ${u}<br>` +
-      `Seal add: L ${add(inr.L, out.L, machineAxis === 'L' ? endSealNote : '')} · ` +
-      `W ${add(inr.W, out.W, machineAxis === 'W' ? endSealNote : '')} · H ${add(inr.H, out.H, hNote)}<br>` +
+      `Seal add: L ${add(inr.L, out.L, noteFor('L'))} · ` +
+      `W ${add(inr.W, out.W, noteFor('W'))} · H ${add(inr.H, out.H, noteFor('H'))}<br>` +
       `Wrap outer ${f(out.L)} × ${f(out.W)} × ${f(out.H)} ${u} — grows the carton</div>`;
   }
   el('hierLegend').innerHTML = swatches + readout;
@@ -678,6 +720,14 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  // the ViewCube mirrors the SAME shared camera the hierarchy/fold views use
+  // (fold3d.js's single orbit) — it works at every depth and in FOLD mode
+  // for free, since none of that is camera-specific. It does NOT extend to
+  // the separate Palletize tab: that view's "pallet" is a different thing
+  // from the hierarchy depth of the same name (a flat case-count render,
+  // not the cutaway cascade), and the prompt's own depth list (product/
+  // wrap/carton/case/pallet) names the hierarchy depths, not that tab.
+  el('viewCubeWrap').style.display = v === '3d' ? 'block' : 'none';
   // (which rail fields show is driven by the ACTIVE LEVEL now, not the view —
   // see toggleRailSections/mountActiveLevel)
   if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
@@ -689,6 +739,20 @@ function setView(v){
   }
   if(canvas){
     if(!fold.isInit()) fold.init3d(el('cvWrap'));
+    if(!viewcube.isMounted()){
+      viewcube.mount(el('viewCubeStage'), (rx, ry) => fold.tweenOrbit(rx, ry));
+      fold.onFrame(() => viewcube.sync());   // the ONE per-frame hook every camera-follower uses
+      el('viewCubeHome').addEventListener('click', () => fold.tweenOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY));
+      // the 4 orbit arrows are fixed DOM buttons around the cube (never
+      // rotate with it, Prompt 21 #1) — each nudges 15° via viewcube's
+      // own pure stepOrbit() math, then asks fold3d to tween there
+      [['viewCubeTop', 'top'], ['viewCubeBottom', 'bottom'], ['viewCubeLeft', 'left'], ['viewCubeRight', 'right']]
+        .forEach(([id, dir]) => el(id).addEventListener('click', () => {
+          const o = fold.getOrbit();
+          const {rx, ry} = viewcube.stepOrbit(dir, o.rotX, o.rotY);
+          fold.tweenOrbit(rx, ry);
+        }));
+    }
     if(v === '3d'){
       showPallet(false);
       apply3dMode();

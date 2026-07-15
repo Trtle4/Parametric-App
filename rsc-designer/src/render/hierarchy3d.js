@@ -276,15 +276,23 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
   return {bodyGeo, taperPos: taper(1), taperNeg: taper(-1)};
 }
 
-/** The fin seal: a solid tab lying FLUSH against the chosen face (back by
- *  default), running the full pack length along the MACHINE direction
- *  (wrapAxis — true L or true W, never H), standing `finHeight` proud of
- *  that face when the treatment is standing, or lying flat (a thin visible
- *  sliver, floored for visibility) when folded. `finSealBand` is the tab's
- *  width across the OTHER horizontal axis, centred on it — never collapsed
- *  to a zero-thickness plane, so it can't read as a line from any angle,
- *  and it moves with the wrap under every orientation because it's baked
- *  into the geometry, not positioned post-hoc. */
+/** The fin seal: a solid tab lying FLUSH against the chosen face — bottom
+ *  by default, or top — running the full pack length along the MACHINE
+ *  direction (wrapAxis — true L or true W, never H), standing `finHeight`
+ *  proud of that face when the treatment is standing, or lying flat (a
+ *  thin visible sliver, floored for visibility) when folded. `finSealBand`
+ *  is the tab's width across the OTHER horizontal axis, centred on it —
+ *  never collapsed to a zero-thickness plane, so it can't read as a line
+ *  from any angle, and it moves with the wrap under every orientation
+ *  because it's baked into the geometry (render-local Y = true H, the SAME
+ *  frame every orientation is applied to via orientQuat), not positioned
+ *  post-hoc per orientation.
+ *
+ *  Only 'bottom'/'top' are real faces for a horizontal wrapper — a side
+ *  face was never physically real (the seal can't land on the machine's
+ *  own travel axis) and is no longer offered (Prompt 20, Part A). Both
+ *  stand the fin off the Y axis; which SIDE of Y (proud stands out from
+ *  the underside or the topside) is the only thing that changes. */
 function wrapFinGeometry(envelope, seals, wrapAxis){
   const axisIsW = wrapAxis === 'W';
   const H = envelope.H;
@@ -294,24 +302,13 @@ function wrapFinGeometry(envelope, seals, wrapAxis){
   if(seals.sealType === 'lap' || fh <= 0) return null;
   const standing = seals.finTreatment === 'standing';
   const proud = standing ? fh : T_FLOOR;                     // how far it stands off the face
-  const face = seals.finFace || 'back';
-  const band = Math.max(1, Math.min(seals.finSealBand || H*0.3, face === 'top' ? crossDim : H));
-  let geo;
-  if(face === 'top'){
-    // proud stands up in Y off the top face; length runs along whichever
-    // local axis (X or Z) the machine direction maps to
-    geo = axisIsW ? new THREE.BoxGeometry(band, proud, lenDim) : new THREE.BoxGeometry(lenDim, proud, band);
-    geo.translate(0, H/2 + proud/2, 0);
-  }else{
-    const sign = face === 'front' ? 1 : -1;                  // back (default) or front
-    if(axisIsW){
-      geo = new THREE.BoxGeometry(proud, band, lenDim);      // proud stands out in X, length runs in Z
-      geo.translate(sign*(crossDim/2 + proud/2), 0, 0);
-    }else{
-      geo = new THREE.BoxGeometry(lenDim, band, proud);      // proud stands out in Z, length runs in X
-      geo.translate(0, 0, sign*(crossDim/2 + proud/2));
-    }
-  }
+  const face = seals.finFace || 'bottom';
+  const sign = face === 'top' ? 1 : -1;                       // top, or bottom (default)
+  const band = Math.max(1, Math.min(seals.finSealBand || H*0.3, crossDim));
+  // proud stands up/down in Y off the bottom/top face; length runs along
+  // whichever local axis (X or Z) the machine direction maps to
+  const geo = axisIsW ? new THREE.BoxGeometry(band, proud, lenDim) : new THREE.BoxGeometry(lenDim, proud, band);
+  geo.translate(0, sign*(H/2 + proud/2), 0);
   return geo;
 }
 

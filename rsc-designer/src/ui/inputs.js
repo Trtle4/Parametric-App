@@ -345,9 +345,9 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
       <div class="field"><label>Arrangement</label>
         <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
       (explicit ? `<div class="field"><label>Grid</label>
-        <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%"> &times;
-        <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%"> &times;
-        <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%"></div></div>` : '');
+        <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%;padding-right:10px"> &times;
+        <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%;padding-right:10px"> &times;
+        <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '');
     el(idp + 'CSel').addEventListener('change', () => {
       const custom = el(idp + 'CSel').value === 'custom';
       el(idp + 'C').style.display = custom ? '' : 'none';

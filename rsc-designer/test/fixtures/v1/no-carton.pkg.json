@@ -127,9 +127,9 @@
         "child": "primary",
         "count": 8,
         "arrangement": {
-          "nx": 4,
-          "ny": 2,
-          "nz": 1
+          "nx": 1,
+          "ny": 4,
+          "nz": 2
         },
         "locked": false
       }

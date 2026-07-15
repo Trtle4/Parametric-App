@@ -23,6 +23,13 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   value with two writers will diverge; a value with a hand-maintained
   refresh path will go stale. Both have happened in this codebase; neither
   should happen again.
+- Verify 3D/UI changes at the size and from the angle the user actually
+  sees. Orientation and legibility bugs survive a zoomed-in screenshot and
+  the default isometric view precisely because those are the conditions
+  under which they're invisible — check named orthographic views (not
+  just the default angle) and check at real rendered size (not just
+  zoomed in for your own inspection). Four separate ViewCube fixes shipped
+  broken for exactly this reason before this rule was written.
 
 ## Tests
 
@@ -31,6 +38,12 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   noise is ~1e-14; real deviations >= 0.15).
 - `test/containment.test.html`: DOM-free unit tests for the containment
   model. Both run in the browser off the dev server.
+- Value-correct is not the same as visible. The test suite asserts models
+  and displayed values, but no test renders the real stylesheet against a
+  real layout, so CSS clipping, overflow, and zero-width bugs are invisible
+  to it. For any UI change, verify the rendered result at real size, not
+  just that `.value` is correct. The blank GRID fields held the right
+  value in a zero-width box.
 
 ## Known simplifications to revisit
 

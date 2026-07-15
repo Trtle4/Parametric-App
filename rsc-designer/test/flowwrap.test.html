@@ -6,7 +6,7 @@
 /* Unit tests for core/styles/flowwrap.js — hand-checked derivations.
    Content L=90 W=50 H=120, end seal 10, bleed 3 -> border 13, cutLength 116.
    Rect girth = 2(50+120) = 340. */
-import {flowwrap} from '../src/core/styles/flowwrap.js';
+import {flowwrap, finGainAxis} from '../src/core/styles/flowwrap.js';
 
 const results = [];
 function t(name, fn){
@@ -14,6 +14,7 @@ function t(name, fn){
   catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
 }
 function approx(a, e, msg = ''){ if(Math.abs(a - e) > 1e-9) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
 const base = {L: 90, W: 50, H: 120, sealType: 'fin', finHeight: 8, finSealBand: 5,
               finTreatment: 'standing', lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
               girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92};
@@ -58,6 +59,25 @@ t('bleed and seal are modeled separately', () => {
   const g = flowwrap(base), z = g.meta.sealZones;
   approx(z.bleeds[0].x1, 3, 'bleed outermost');
   approx(z.ends[0].x0, 3); approx(z.ends[0].x1, 13, 'seal inside the bleed');
+});
+
+/* ---- Prompt 20, Part A: the compensation axis follows finFace, not a
+   hardcoded H. Both real faces (bottom/top — a side face was never
+   physical for a horizontal wrapper and isn't offered) map to H today, but
+   the mapping is a per-face LOOKUP (finGainAxis), not an assumption — this
+   is the white-box proof the mechanism actually looks the face up. ---- */
+t('finGainAxis is looked up per face, not hardcoded', () => {
+  if(finGainAxis('bottom') !== 'H') throw new Error(`bottom: expected H, got ${finGainAxis('bottom')}`);
+  if(finGainAxis('top') !== 'H') throw new Error(`top: expected H, got ${finGainAxis('top')}`);
+});
+t('compensation: bottom (default) and top both grow H, identically — face changes which SIDE, not the axis', () => {
+  const bottom = flowwrap({...base, finFace: 'bottom'});
+  const top = flowwrap({...base, finFace: 'top'});
+  const omitted = flowwrap(base);   // no finFace at all — every pre-existing pin's shape
+  approx(bottom.outer.H, 128); approx(top.outer.H, 128); approx(omitted.outer.H, 128);
+  approx(bottom.outer.L, 110); approx(top.outer.L, 110);   // L/W never touched by the face
+  approx(bottom.outer.W, 50);  approx(top.outer.W, 50);
+  eq(bottom.outer, omitted.outer, 'omitted finFace defaults to bottom, bit-identical:');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;
