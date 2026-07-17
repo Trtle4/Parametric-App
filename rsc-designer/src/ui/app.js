@@ -230,7 +230,7 @@ function newDefaultWrap(){
              lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
              girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
              L: 90, W: 50, H: 120},
-    wrapAxis: 'auto', options: styleOptionDefaults('flowwrap'), locked: false
+    options: styleOptionDefaults('flowwrap'), locked: false   // machine direction fixed at L; no wrapAxis
   };
 }
 
@@ -742,14 +742,15 @@ function renderLegend(bundle, depth){
     const gainNote = sealsOn.sealType === 'lap' ? '(lap: 0)'
       : sealsOn.finTreatment === 'standing' ? `(standing fin, ${sealsOn.finFace || 'bottom'})`
       : `(folded fin, film gauge, ${sealsOn.finFace || 'bottom'})`;
-    // the end-seal gain lands on whichever axis is the RESOLVED machine
-    // direction (L or W, never H) — labeling it unconditionally on L was
-    // wrong whenever wrapAxis resolved to W
-    const machineAxis = bundle.wraps.wrapAxis;
+    // the machine direction is FIXED at envelope L — the two end seals land
+    // at the L-ends, full height, always. The collation orientation upstream
+    // chose what envelope L is (the tube's run), which is what varies the
+    // pack shape — the seals never move.
     const endSealNote = '(2×end seal, machine direction)';
-    const noteFor = axis => (machineAxis === axis ? endSealNote : '') + (gainAxis === axis ? ' ' + gainNote : '');
+    const noteFor = axis => (axis === 'L' ? endSealNote : '') + (gainAxis === axis ? ' ' + gainNote : '');
     readout = `<div class="rd">` +
       `Envelope ${f(inr.L)} × ${f(inr.W)} × ${f(inr.H)} ${u}<br>` +
+      `Machine direction = envelope L — tube length ${f(inr.L)} ${u}, seals at the L-ends (fixed)<br>` +
       `Seal add: L ${add(inr.L, out.L, noteFor('L'))} · ` +
       `W ${add(inr.W, out.W, noteFor('W'))} · H ${add(inr.H, out.H, noteFor('H'))}<br>` +
       `Wrap outer ${f(out.L)} × ${f(out.W)} × ${f(out.H)} ${u} — grows the carton</div>`;

@@ -198,13 +198,21 @@ export function mountProduct(prim, m){
 
   // cylinder-only: flat (axis vertical, pucks lie down) vs on-edge (axis
   // horizontal, the sleeve/tube form). Segmented toggle; boxes never see it.
+  // The machine direction is fixed at envelope L, so orientation is how the
+  // user chooses the pack shape / tube run — stated under the toggle.
   const orient = resolvePieceOrientation(collation);
+  const machineNote = isCyl
+    ? (orient === 'on-edge'
+        ? 'On edge: the sleeve runs along envelope L — the machine direction (tube length). Seals at the L-ends.'
+        : 'Flat: pucks lie down. Machine direction is fixed at envelope L (seals at the L-ends).')
+    : '';
   const orientSeg = isCyl ? `
     <div class="field"><label>Cookie orientation <span class="hint">cylinder</span></label>
       <div class="seg" id="cOrient" role="group">
         <button type="button" data-o="flat"${orient === 'flat' ? ' class="on"' : ''}>Flat</button>
         <button type="button" data-o="on-edge"${orient === 'on-edge' ? ' class="on"' : ''}>On edge</button>
-      </div></div>` : '';
+      </div>
+      <div class="hint" style="margin-top:5px;line-height:1.35">${machineNote}</div></div>` : '';
 
   mat.innerHTML =
     orientSeg +

@@ -82,8 +82,8 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     p.primary.allowedOrientations = ch.config.primaryOrientations;
     p.primary.clearance = {...ch.config.primaryClearance};
     p.primary.wrap = ch.config.wrap
-      ? {styleId: 'flowwrap', params: {...ch.config.wrap}, wrapAxis: ch.config.wrapAxis || 'auto', locked: false}
-      : null;                                    // pins that predate the wrap; wrapAxis omitted -> 'auto'
+      ? {styleId: 'flowwrap', params: {...ch.config.wrap}, locked: false}   // machine direction fixed at L; no wrapAxis
+      : null;                                    // pins that predate the wrap
     p.secondary.params = {...p.secondary.params, ...ch.config.cartonMaterial};
     if(ch.config.wrapCount !== undefined){        // wraps-per-carton link (links[1]); pins that
       p.links[1].count = ch.config.wrapCount;      // omit this keep the implicit single-wrap default

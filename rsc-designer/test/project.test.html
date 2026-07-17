@@ -16,7 +16,7 @@
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
-        verticalToOrientations, resolveWrapAxis, swapLW, resolveChainShape,
+        verticalToOrientations, resolveChainShape,
         roundGirthEligible} from '../src/core/project.js';
 import {fitInto, solveParent} from '../src/core/containment.js';
 import {styleById} from '../src/core/styles/index.js';
@@ -368,31 +368,14 @@ t("auto minimizes material area, not volume: a genuine volume/board-area diverge
   }
 });
 
-/* ---- Prompt 11.1: wrapAxis — machine direction is L or W, NEVER H -------
-   The rule: 'auto' resolves to whichever of L/W is longer (ties to L). H is
-   never eligible regardless of how it compares, since a horizontal flow
-   wrapper's travel axis can never be the vertical one. ---- */
-t('resolveWrapAxis: longer of L/W wins, ties to L, H never considered', () => {
-  eq(resolveWrapAxis({L: 90, W: 50, H: 120}, 'auto'), 'L', 'L > W, and H(120) is irrelevant:');
-  eq(resolveWrapAxis({L: 50, W: 150, H: 20}, 'auto'), 'W', 'W > L:');
-  eq(resolveWrapAxis({L: 50, W: 50, H: 999}, 'auto'), 'L', 'tie -> L, H ignored however large:');
-  eq(resolveWrapAxis({L: 50, W: 150, H: 20}, 'L'), 'L', 'explicit override beats auto:');
-  eq(resolveWrapAxis({L: 90, W: 50, H: 120}, 'W'), 'W', 'explicit override even against the auto pick:');
-});
-
-t('swapLW is its own inverse and never touches H', () => {
-  const dims = {L: 90, W: 150, H: 20};
-  eq(swapLW(dims, 'L'), dims, 'axis L: identity:');
-  eq(swapLW(dims, 'W'), {L: 150, W: 90, H: 20}, 'axis W: L/W swap:');
-  eq(swapLW(swapLW(dims, 'W'), 'W'), dims, 'applying twice restores the original:');
-});
-
-/* ---- Prompt 11.1: W-dominant collation — the configuration the old
-   L-only hardcoding got wrong. Box 90x50x20, 1x3 stacks (nx=1,ny=3) ->
-   envelope 90x150x20, W(150) > L(90) -> wrapAxis resolves to W. Wrap outer:
-   L unchanged at 90 (L is NOT the machine direction here), W gains
-   2xendSeal (150+20=170), H +gauge (20.03). Carton cavity 90x170x21 (1mm
-   up). Matches golden.json's wrap_axis_W_dominant pin exactly. ---- */
+/* ---- machine direction is FIXED at envelope L (no wrapAxis choice) --------
+   The refinement: the flow wrapper never changes — the two end seals land at
+   the L-ends (full height), the fin closes on the bottom, machine direction =
+   envelope L. The collation orientation is what varies the pack shape upstream
+   (it decides what envelope L is), NOT the seal placement. So a W-dominant
+   collation (envelope W > L) still wraps along L: the seal gain lands on L,
+   W is untouched. Envelope 90x150x20 -> wrap outer L 90+2*10=110, W 150, H
+   +gauge 20.03. Matches golden.json's wrap_axis_L_fixed pin exactly. */
 function wDominantProject(){
   const p = newProject();
   p.primary.collation = {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 1, stackAxis: 'Z',
@@ -403,25 +386,16 @@ function wDominantProject(){
   return p;
 }
 
-t('wrapAxis auto: a W-dominant collation wraps along W, not L', () => {
+t('machine direction fixed at L: even a W-dominant collation wraps along L, seals at the L-ends', () => {
   const rows = candidateCases(wDominantProject(), '1mm');
   const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
   if(!r) throw new Error('1×1×1 case row missing');
-  eq(r.arr.pieces.wrapAxis, 'W', 'resolved axis:');
-  eq(r.wrapOuter, {L: 90, W: 170, H: 20.03}, 'seal gain lands on W, L untouched:');
-  eq(r.cartonParams.L, 90, 'carton L = wrap outer L, unchanged:');
-  eq(r.cartonParams.W, 170, 'carton W = wrap outer W, gained the seal:');
+  eq(r.arr.pieces.wrapAxis, 'L', 'wrap axis is always L, never resolved per-envelope:');
+  eq(r.wrapOuter, {L: 110, W: 150, H: 20.03}, 'seal gain lands on L (90->110), the longer W(150) is untouched:');
+  eq(r.cartonParams.L, 110, 'carton L = wrap outer L (gained the seal):');
+  eq(r.cartonParams.W, 150, 'carton W = wrap outer W, unchanged:');
   eq(r.cartonParams.H, 21, 'carton H = 20.03 rounded up 1mm:');
   eq(r.piecesPerCarton, 3, '3 pieces (1x3 stacks) x 1 wrap:');
-});
-
-t('wrapAxis explicit override: same W-dominant collation forced to L', () => {
-  const p = wDominantProject();
-  p.primary.wrap.wrapAxis = 'L';
-  const rows = candidateCases(p, '1mm');
-  const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
-  eq(r.arr.pieces.wrapAxis, 'L', 'override honored even though auto would pick W:');
-  eq(r.wrapOuter, {L: 110, W: 150, H: 20.03}, 'seal gain now lands on L instead:');
 });
 
 /* ---- Bug 3: every orientation basis is a PROPER rotation (det +1) ---- */
@@ -629,15 +603,15 @@ t('the SAME tray with openTop:false constrains height normally (the capped/close
 /* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ---- */
 t('on-edge sleeve makes round girth eligible; flat / multi-stack do not', () => {
   const cyl = {kind: 'cylinder', diameter: 50, thickness: 6};
+  // machine direction is always L, so the tube axis must run along L = stackAxis X
   const sleeve = {piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
-  // envelope 60×50×50 -> wrapAxis L (60>50) -> the tube axis must run along X
-  const wa = resolveWrapAxis({L: 60, W: 50, H: 50}, 'auto');
-  eq(wa, 'L', 'wrap axis resolves to L for this envelope:');
-  if(roundGirthEligible(sleeve, wa) !== true) throw new Error('an on-edge sleeve should be round-eligible');
+  if(roundGirthEligible(sleeve) !== true) throw new Error('an on-edge sleeve (stackAxis X) should be round-eligible');
   // a flat stack presents a rectangular d×t profile to the wrap, not a circle
-  if(roundGirthEligible({...sleeve, pieceOrientation: 'flat'}, wa) !== false) throw new Error('flat must not be round-eligible');
+  if(roundGirthEligible({...sleeve, pieceOrientation: 'flat'}) !== false) throw new Error('flat must not be round-eligible');
   // more than one stack is not a single tube
-  if(roundGirthEligible({...sleeve, nx: 2}, wa) !== false) throw new Error('multi-stack must not be round-eligible');
+  if(roundGirthEligible({...sleeve, nx: 2}) !== false) throw new Error('multi-stack must not be round-eligible');
+  // an on-edge sleeve running along W (stackAxis Y) is NOT along the fixed L machine direction
+  if(roundGirthEligible({...sleeve, stackAxis: 'Y'}) !== false) throw new Error('a sleeve not along L must not be round-eligible');
 });
 t('the chain resolves round girth with diameter d for an on-edge sleeve (not a rectangular fallback)', () => {
   const p = newProject();

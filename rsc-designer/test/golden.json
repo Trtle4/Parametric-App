@@ -209,14 +209,13 @@
         "filmAreaM2": 0.041876, "filmKgPerPallet": 1.849
       }
     },
-    "wrap_axis_W_dominant": {
-      "note": "Prompt 11.1 (wrapAxis ruling): a W-DOMINANT collation, the configuration the old L-only hardcoding got wrong and nothing previously covered. Box 90x50x20, perStack 1 stackAxis Z, 1x3 stacks (nx=1,ny=3) -> envelope 90x150x20, W(150) > L(90) so resolveWrapAxis picks W. Fin folded 8/5, ends 10+3, rect girth, gauge 30 density 0.92 (same wrap defaults as wrap_fin_folded). Wrap outer L stays 90 (unchanged - L is NOT the machine direction here), W gains 2xendSeal to 170, H +gauge to 20.03 -> carton cavity 90x170x21 (1mm up), carton a6120 @0.457 -> outer 90.914x170.914x22.828. Single carton in a single case (count 1, 1x1x1, wall 1.5) to keep the chain hand-checkable; case cavity 94x174x23, outer 100x180x35 (fefco201 default caliper 3/glue 35/slot 6). GMA pallet, optimal pattern.",
+    "wrap_axis_L_fixed": {
+      "note": "Machine direction is FIXED at envelope L (no wrapAxis choice). A W-DOMINANT collation (box 90x50x20, perStack 1 stackAxis Z, 1x3 stacks -> envelope 90x150x20, W(150) > L(90)) still wraps along L: the seal gain lands on L, the longer W is untouched. Fin folded 8/5, ends 10+3, rect girth, gauge 30 density 0.92. Wrap outer L 90+2*10=110, W 150, H +gauge 20.03 -> carton cavity 110x150x21 (H 1mm up), carton a6120 @0.457 -> outer 110.914x150.914x22.828. Single carton in a single case (count 1, 1x1x1, wall 1.5); case cavity 114x154x23, outer 120x160x35 (fefco201 caliper 3/glue 35/slot 6). Blank 2*(114+154)+35=571 x (23+154)=177 -> 0.101067 m2. Film: L machine dir 90, girth 2*(150+20)=340, web 340+21, cut 90+26=116 -> 0.041876 m2. GMA pallet, optimal pattern.",
       "config": {
         "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 1, "stackAxis": "Z", "nx": 1, "ny": 3, "stackGap": 0, "pieceGap": 0},
         "primaryOrientations": ["LWH"],
         "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
         "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "folded", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
-        "wrapAxis": "auto",
         "cartonMaterial": {"caliper": 0.457},
         "wrapCount": 1, "wrapArrangement": "auto",
         "count": 1, "arrangement": {"nx": 1, "ny": 1, "nz": 1},
@@ -225,14 +224,14 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 90, "W": 170, "H": 20.03},
-        "cartonOuter": {"L": 90.914, "W": 170.914, "H": 22.828},
+        "wrapOuter": {"L": 110, "W": 150, "H": 20.03},
+        "cartonOuter": {"L": 110.914, "W": 150.914, "H": 22.828},
         "piecesPerCarton": 3,
-        "cavity": {"L": 94, "W": 174, "H": 23}, "outer": {"L": 100, "W": 180, "H": 35},
-        "boardAreaM2": 0.112487, "casesPerLayer": 66, "caseLayers": 39,
-        "casesPerPallet": 2574, "cartonsPerPallet": 2574, "piecesPerPallet": 7722,
-        "coveragePct": 96, "cubeUtilPct": 54,
-        "filmAreaM2": 0.042416, "filmKgPerPallet": 3.013
+        "cavity": {"L": 114, "W": 154, "H": 23}, "outer": {"L": 120, "W": 160, "H": 35},
+        "boardAreaM2": 0.101067, "casesPerLayer": 61, "caseLayers": 39,
+        "casesPerPallet": 2379, "cartonsPerPallet": 2379, "piecesPerPallet": 7137,
+        "coveragePct": 95, "cubeUtilPct": 54,
+        "filmAreaM2": 0.041876, "filmKgPerPallet": 2.75
       }
     },
     "carton12_4x3x1_upright": {

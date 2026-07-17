@@ -114,12 +114,9 @@ export function newProject(){
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
                  girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
                  L: 141, W: 47, H: 24},
-        // which collation axis is the machine (repeat) direction through a
-        // HORIZONTAL flow wrapper — never H (vertical is never the travel
-        // axis on this machine class; a genuinely vertical feed is a
-        // different machine, VFFS, a different style). 'auto' resolves to
-        // whichever of L/W is longer, ties to L — see resolveWrapAxis.
-        wrapAxis: 'auto',
+        // machine direction is fixed at envelope L (seals at the L-ends, fin
+        // on the bottom) — no wrapAxis choice; the collation orientation is
+        // what varies the pack shape upstream. See roundGirthEligible.
         options: styleOptionDefaults('flowwrap'),   // fold-only cosmetics (none today)
         locked: false
       },
@@ -204,52 +201,26 @@ export const VERTICAL_CHOICES = [
 export const TIER_NOUN = {primary: 'wrap', secondary: 'carton', tertiary: 'case'};
 
 /**
- * Which collation axis ('L'|'W') is the machine direction through a
- * horizontal flow wrapper. H is never eligible: the collation's Z axis is
- * vertical by construction (stackAxis: 'Z' stacks upward), and a horizontal
- * wrapper's travel axis can never be the vertical one — a product that
- * genuinely feeds vertically belongs to a different machine (VFFS), not
- * this style. 'auto' resolves to whichever of L/W is longer (ties to L),
- * which is exactly the axis a stacked collation (long axis in H) still
- * wraps along, and exactly the axis an in-line-on-edge collation (long
- * axis already in L) wraps along — "longest overall axis" would get the
- * first of those wrong, since it would pick H.
- * @param {{L:number,W:number,H:number}} envelope
- * @param {'auto'|'L'|'W'} wrapAxis
- * @returns {'L'|'W'}
+ * The flow wrapper is FIXED: the machine direction is always envelope L. The
+ * collation presents its run along L, the two end seals land at the L-ends
+ * (full height), and the fin closes on the bottom. There is no axis choice
+ * and no L/W permutation — the pack shape is varied UPSTREAM by the collation
+ * orientation (flat / on-edge + stack axis), which decides what envelope L
+ * actually is (e.g. an on-edge sleeve's N·t run), not by moving the seals.
+ *
+ * Round girth (π·d) is therefore meaningful only when the collation forms a
+ * single circular tube running along L: one stack (nx=ny=1) of cylinders
+ * lying ON EDGE with the cylinder axis along L, i.e. stackAxis X. A lone slug
+ * and an on-edge sleeve of N are the same tube, longer. A flat stack presents
+ * a rectangular d×t profile, and any multi-stack arrangement (nx or ny > 1)
+ * is not one tube — both stay rectangular. The Build UI uses this same
+ * predicate, so the two can never silently disagree.
  */
-export function resolveWrapAxis(envelope, wrapAxis){
-  if(wrapAxis === 'L' || wrapAxis === 'W') return wrapAxis;
-  return envelope.W > envelope.L ? 'W' : 'L';
-}
-
-/** Swap L and W (never touches H) — the permutation between the collation's
- *  true envelope frame and the wrap style's own L/W/H, where L always means
- *  "pack length". Its own inverse: applying it twice is the identity, so
- *  the same function un-permutes wrapGeo's inner/outer back to true axes. */
-export function swapLW(dims, axis){
-  return axis === 'W' ? {L: dims.W, W: dims.L, H: dims.H} : dims;
-}
-
-/**
- * Round girth (π·d) is only physically meaningful when the collation forms a
- * single circular tube wrapped along its OWN axis: one stack (nx=ny=1) of
- * cylinders lying ON EDGE (axis horizontal, along the stack), with that axis
- * aligned to the resolved wrapAxis. This covers both a lone slug and an
- * on-edge sleeve of N — same tube, longer. A FLAT stack presents a
- * rectangular d×t profile to the wrap, not a circle, and any multi-stack
- * arrangement (nx or ny > 1) is not one tube — both make "round" report a
- * fabricated film-area number, so they stay rectangular. The Build UI uses
- * this same predicate to grey out the option and to detect a stale
- * selection, so the two can never silently disagree.
- * @param {'L'|'W'} wrapAxis  the RESOLVED axis (see resolveWrapAxis), not the raw setting
- */
-export function roundGirthEligible(collation, wrapAxis){
+export function roundGirthEligible(collation){
   if(collation.piece.kind !== 'cylinder') return false;
   if(collation.nx !== 1 || collation.ny !== 1) return false;
   if(resolvePieceOrientation(collation) !== 'on-edge') return false;
-  const requiredStackAxis = wrapAxis === 'W' ? 'Y' : 'X';
-  return collation.stackAxis === requiredStackAxis;
+  return collation.stackAxis === 'X';   // the on-edge tube axis must run along L (the machine direction)
 }
 
 /* ---------------- candidate enumeration + full-chain metrics ------------ */
@@ -323,35 +294,27 @@ function solvePrimaryStage(project, content){
   if(!prim.wrap) return {...base, outer: content.outer, geo: null, fits: true, wrapAxis: null, wp: null};
 
   const wp = {...prim.wrap.params};
-  // resolve which collation axis is the machine direction BEFORE calling
-  // the style, so flowwrap.js never has to know about the permutation — it
-  // stays a pure function of whatever L/W/H it's handed, always treating L
-  // as pack length. The permutation (and its inverse on the way back out)
-  // live here, not in the style.
-  const wrapAxis = resolveWrapAxis(content.outer, prim.wrap.wrapAxis || 'auto');
-  const permEnv = swapLW(content.outer, wrapAxis);
-  // round girth basis is only meaningful for a single cylindrical slug
-  // wrapped along its own axis — roundGirthEligible is the SAME predicate
-  // the Build UI checks, so the two can never silently disagree. A plain
-  // box has no collation to check eligibility against — never round.
+  // Machine direction is ALWAYS envelope L (fixed machine) — flowwrap treats
+  // L as pack length directly, no axis resolution and no L/W permutation. The
+  // pack shape varies upstream via the collation orientation (which decides
+  // what L is), never by moving the seals.
+  const env = content.outer;
+  // round girth is only meaningful for a single on-edge tube running along L
+  // (roundGirthEligible). A plain box has no collation to check — never round.
   if(wp.girthBasis === 'round'){
-    if(content.collation && roundGirthEligible(prim.collation, wrapAxis)) wp.roundDiameter = prim.collation.piece.diameter;
+    if(content.collation && roundGirthEligible(prim.collation)) wp.roundDiameter = prim.collation.piece.diameter;
     else wp.girthBasis = 'rectangular';
   }
   let wrapFits = true;
   if(prim.wrap.locked){
-    // locked wrap: content dims are user-fixed (in machine-direction
-    // terms); check the permuted envelope fits
-    wrapFits = permEnv.L <= wp.L && permEnv.W <= wp.W && permEnv.H <= wp.H;
+    wrapFits = env.L <= wp.L && env.W <= wp.W && env.H <= wp.H;   // user-fixed dims are already true L/W/H
   }else{
-    wp.L = permEnv.L; wp.W = permEnv.W; wp.H = permEnv.H;
+    wp.L = env.L; wp.W = env.W; wp.H = env.H;
   }
-  const raw = styleById(prim.wrap.styleId).geometry(wp);
-  // un-permute back to true envelope axes: everything downstream (carton
-  // sizing, display, the renderer's non-shape math) works in true L/W/H and
-  // knows nothing about the machine-direction permutation.
-  const wrapGeo = {...raw, inner: swapLW(raw.inner, wrapAxis), outer: swapLW(raw.outer, wrapAxis)};
-  return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis, wp};
+  const wrapGeo = {...styleById(prim.wrap.styleId).geometry(wp)};   // true envelope axes throughout — no permutation
+  // wrapAxis stays 'L' on the row: a fixed constant the renderer/readout read
+  // so seals/fin always land on the L-ends, never a resolved-per-envelope pick.
+  return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis: 'L', wp};
 }
 
 /**
