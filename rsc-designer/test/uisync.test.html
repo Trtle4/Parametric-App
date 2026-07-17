@@ -88,6 +88,19 @@
 <span id="palTot">--</span>
 <span id="palCov">--</span>
 
+<!-- header state chip -->
+<span id="stateChip"></span>
+<!-- canvas title-block overlay: app.js writes the active-level summary here
+     on every refresh, so these must exist or refresh2d/refreshPal throw
+     (the same harness-must-match-the-real-DOM lesson as the ViewCube nodes) -->
+<div id="titleBlock">
+  <span id="tbPart"></span><span id="tbLevel"></span>
+  <span id="tbBlank">—</span><span id="tbOuter">—</span><span id="tbArea">—</span><span id="tbPallet">—</span>
+</div>
+<!-- mobile spec panel mirror -->
+<span id="msTitle"></span><span id="msState"></span>
+<span id="msBlank">—</span><span id="msOuter">—</span><span id="msArea">—</span><span id="msPallet">—</span>
+
 <pre id="out">running…</pre>
 
 <script type="module">

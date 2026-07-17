@@ -26,7 +26,7 @@
 import {fmtLen} from '../core/units.js';
 import {view2d, apply2dView} from './dieline2d.js';
 
-const DIM_C = '#8593a1';
+const DIM_C = 'var(--ink-2)';
 
 /** Resolve the piece's own shape from whichever of the three primary-level
  *  input modes is active today — plain box, a box-piece collation, or a

@@ -110,7 +110,7 @@ export function draw2d(svg, g, unit, printText){
   }
 
   // key dimensions: per-panel widths below the blank, flap/height on the right
-  const dimFS = strokeW*9, dimC = '#8593a1', dw = strokeW*0.7, tick = dimFS*0.5;
+  const dimFS = strokeW*9, dimC = 'var(--ink-2)', dw = strokeW*0.7, tick = dimFS*0.5;
   const dimH = (a, b, y, val) => {
     const x1 = fx(a), x2 = fx(b);
     if(x2 - x1 < dimFS*0.9) return '';

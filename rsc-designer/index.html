@@ -5,197 +5,368 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FEFCO 201 RSC Dieline Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
   :root{
-    --paper:#EAEEF2; --card:#FFFFFF; --ink:#141A1F; --muted:#6B7682;
-    --line:#D3DAE1; --line2:#E4E9EE; --cut:#E5484D; --crease:#3E63DD;
-    --kraft:#C69C6D; --focus:#141A1F;
-    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    /* ---- shared design system tokens (verbatim) ---- */
+    --paper:#E9EDF0; --panel:#FFFFFF; --panel-2:#F3F6F8; --recess:#E7ECEF;
+    --ink:#192227; --ink-2:#59656C; --ink-3:#8A959B;
+    --line:#D2D9DE; --line-2:#E3E8EB; --grid:#DBE1E6;
+    --accent:#0F6E77; --accent-2:#0B565D; --accent-soft:#E0F0F1;
+    --valid:#2F7D5B; --warn:#B0740F; --warn-soft:#FBF0D8; --danger:#B23A2E;
+    --r:9px; --r-sm:6px;
+    --sans:"Hanken Grotesk",system-ui,sans-serif;
+    --mono:"DM Mono",ui-monospace,monospace;
+    /* ---- domain / material colours (load-bearing, NOT chrome) ----
+       CUT and CREASE map to different Kongsberg tools and must stay
+       distinct; kraft is the board material. Left untouched by the
+       design-system chrome palette. */
+    --cut:#E5484D; --crease:#3E63DD; --kraft:#C69C6D;
+    /* ---- compatibility aliases: the SVG/canvas render code emits
+       var(--muted)/var(--card)/var(--line2)/var(--focus); keep them
+       resolving to the new token set so one source stays authoritative. */
+    --card:var(--panel); --muted:var(--ink-2); --line2:var(--line-2); --focus:var(--accent);
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{
     background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased;
     display:flex;flex-direction:column;min-height:100vh;
   }
-  /* top bar */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* ---------- header ---------- */
   header{
-    display:flex;align-items:center;justify-content:space-between;gap:16px;
-    padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);
-    flex-wrap:wrap;
+    display:flex;align-items:center;gap:14px;
+    padding:0 20px;min-height:56px;background:var(--panel);
+    border-bottom:1px solid var(--line);flex-wrap:wrap;
   }
-  .brand{display:flex;flex-direction:column;gap:2px;min-width:0}
-  .brand .code{
-    font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
-    color:var(--cut);font-weight:600;
+  .brand{display:flex;align-items:baseline;gap:10px;min-width:0;padding:8px 0;flex-wrap:wrap}
+  .brand .name{font-size:16px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+  .brand .part{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);letter-spacing:.04em;
+    padding:2px 8px;border:1px solid var(--line);border-radius:20px;white-space:nowrap;
   }
-  .brand .name{font-size:15px;font-weight:600;letter-spacing:-.01em}
-  .brand .sub{font-size:12px;color:var(--muted)}
-  .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-  .levelLabel{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
-  .lockField .btn{width:100%}
+  .brand .sub{font-size:12px;color:var(--ink-3);white-space:nowrap}
+  .header-spacer{flex:1 1 12px;min-width:0}
+  .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:8px 0}
+  .statechip{
+    display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;
+    color:var(--valid);margin-right:2px;white-space:nowrap;
+  }
+  .statechip .dot{width:7px;height:7px;border-radius:50%;background:var(--valid);
+    box-shadow:0 0 0 3px rgba(47,125,91,.15)}
+  .statechip.muted{color:var(--ink-3)}
+  .statechip.muted .dot{background:var(--ink-3);box-shadow:0 0 0 3px rgba(138,149,155,.15)}
+  .statechip.warn{color:var(--warn)}
+  .statechip.warn .dot{background:var(--warn);box-shadow:0 0 0 3px rgba(176,116,15,.15)}
+  .eyebrow-inline{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--ink-3);font-weight:500;
+  }
+  .hsep{width:1px;align-self:stretch;background:var(--line-2);margin:2px 2px}
+
+  /* ---------- buttons ---------- */
+  .btn{
+    font-family:var(--sans);font-size:13px;font-weight:500;cursor:pointer;
+    padding:8px 15px;border-radius:var(--r-sm);border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);transition:.15s;white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--ink-3)}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:var(--accent-2);border-color:var(--accent-2)}
+  .btn:disabled{background:var(--panel-2);color:var(--ink-3);border-color:var(--line);cursor:not-allowed;opacity:.7}
+  .btn:disabled:hover{border-color:var(--line)}
+  .btn:disabled:active{transform:none}
+
+  /* ---------- selects (level / slot / units) ---------- */
+  .lvlsel{
+    font-family:var(--mono);font-size:12.5px;letter-spacing:.02em;
+    padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);
+    background:var(--panel);color:var(--ink);cursor:pointer;max-width:230px;transition:.15s;
+  }
+  .lvlsel:hover{border-color:var(--ink-3)}
+  .lvlsel:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+  /* ---------- chain string + banners ---------- */
   .chainString{
     font-family:var(--mono);font-size:12px;letter-spacing:.02em;color:var(--ink);
-    background:var(--card);border-bottom:1px solid var(--line);padding:8px 20px;
+    background:var(--panel);border-bottom:1px solid var(--line);padding:8px 20px;
+    font-variant-numeric:tabular-nums;
   }
-  .chainString .disabledNote{color:var(--muted)}
+  .chainString .disabledNote{color:var(--ink-3)}
+  .notice{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:9px 20px;font-size:13px;background:var(--warn-soft);
+    border-bottom:1px solid #EAD9A8;color:#7a5209;
+  }
+  .notice.warn{background:#F7E2DF;border-bottom-color:#E4BDB7;color:#7C2A22}
+  .notice .noticeMsg{flex:1;min-width:0}
+  .notice button{
+    font-family:var(--sans);font-size:12px;font-weight:500;
+    padding:6px 12px;border:1px solid currentColor;border-radius:var(--r-sm);
+    background:transparent;color:inherit;cursor:pointer;
+  }
   .misfit{
-    color:var(--cut);font-weight:600;font-size:12px;background:rgba(229,72,77,.08);
-    border:1px solid var(--cut);border-radius:6px;padding:8px 10px;margin:2px 0 8px;
+    color:var(--danger);font-weight:500;font-size:12px;background:rgba(178,58,46,.07);
+    border:1px solid rgba(178,58,46,.4);border-radius:var(--r-sm);padding:8px 10px;margin:2px 0 4px;
   }
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
-  .seg button{
-    font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
-    padding:8px 14px;border:0;background:transparent;color:var(--muted);cursor:pointer;
-  }
-  .seg button.on{background:var(--ink);color:#fff}
-  .seg button:not(.on):hover{background:var(--line2);color:var(--ink)}
-  .btn{
-    font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
-    padding:9px 16px;border:1px solid var(--ink);border-radius:8px;background:var(--ink);color:#fff;
-    cursor:pointer;
-  }
-  .btn:hover{background:#000}
-  .btn:active{transform:translateY(1px)}
-  .btn:disabled{background:var(--line2);color:var(--muted);border-color:var(--line);cursor:not-allowed;opacity:.6}
-  .btn:disabled:hover{background:var(--line2)}
-  .btn:disabled:active{transform:none}
-  .styleSel{
-    font-family:var(--mono);font-size:12px;letter-spacing:.04em;
-    padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);
-    color:var(--ink);cursor:pointer;max-width:260px;
-  }
-  /* main layout */
-  main{flex:1;display:grid;grid-template-columns:220px minmax(0,1fr) 220px;gap:0;min-height:0}
+
+  /* ---------- main layout ---------- */
+  main{flex:1;display:grid;grid-template-columns:250px minmax(0,1fr) 250px;gap:0;min-height:0}
   .rail{
-    padding:20px 18px;display:flex;flex-direction:column;gap:18px;background:var(--card);
+    padding:18px 18px 40px;display:flex;flex-direction:column;gap:14px;background:var(--panel);
     overflow:auto;
   }
   .rail.left{border-right:1px solid var(--line)}
   .rail.right{border-left:1px solid var(--line)}
   .rail h2{
-    font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
-    color:var(--muted);margin:0 0 2px;font-weight:600;
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--ink-3);margin:0;font-weight:500;
+    border-top:1px solid var(--line-2);padding-top:16px;
   }
+  .rail > h2:first-of-type{border-top:none;padding-top:0}
+
+  /* ---------- fields ---------- */
   .field{display:flex;flex-direction:column;gap:5px}
-  .field label{
-    font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;
-    display:flex;justify-content:space-between;align-items:baseline;
+  .field > label{
+    font-size:12.5px;font-weight:500;color:var(--ink-2);
+    display:flex;justify-content:space-between;align-items:baseline;gap:8px;
   }
-  .field label .hint{font-family:var(--mono);font-weight:400;text-transform:none;letter-spacing:0;color:#9aa6b2}
-  .field .inp{position:relative;display:flex;align-items:center}
-  .field input, .field select{
-    width:100%;font-family:var(--mono);font-size:22px;font-weight:500;color:var(--ink);
-    padding:8px 42px 8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;
+  .field > label .hint{
+    font-family:var(--mono);font-weight:400;font-size:11px;text-transform:none;
+    letter-spacing:0;color:var(--ink-3);
+  }
+  .field .inp{
+    display:flex;align-items:center;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;transition:.15s;
+  }
+  .field .inp:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .field .inp input, .field .inp select{
+    flex:1;min-width:0;border:none;outline:none;background:transparent;
+    font-family:var(--mono);font-size:13.5px;font-weight:500;color:var(--ink);
+    padding:8px 10px;width:100%;font-variant-numeric:tabular-nums;
     -moz-appearance:textfield;
   }
-  .field select{font-size:14px;padding-right:10px;cursor:pointer}
-  .field input[type="text"]{font-size:14px;padding-right:10px;font-family:var(--sans)}
-  .field input::-webkit-outer-spin-button,.field input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-  .field input:focus,.field select:focus{outline:2px solid var(--focus);outline-offset:1px;border-color:var(--focus)}
-  .field .unit{
-    position:absolute;right:12px;font-family:var(--mono);font-size:12px;color:var(--muted);pointer-events:none;
+  .field .inp select{cursor:pointer;font-size:13px}
+  .field .inp input::-webkit-outer-spin-button,
+  .field .inp input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .field .inp .unit{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+    padding:0 10px;border-left:1px solid var(--line-2);align-self:stretch;
+    display:flex;align-items:center;
   }
+  /* a field whose .inp holds a button (lock / enable toggle) is not a data
+     field — let the button own its own look instead of the field frame */
+  .field .inp:has(button){border:none;background:transparent;box-shadow:none;overflow:visible}
+  .field .inp button.btn{width:100%}
+  .field.bchk > label{
+    text-transform:none;font-weight:400;font-size:12.5px;color:var(--ink);
+    display:flex;align-items:center;gap:8px;justify-content:flex-start;
+  }
+  .field.bchk input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px}
+  .bnote{font-size:12px;color:var(--ink-3)}
+
+  /* ---------- viewport (the hero) ---------- */
   .stage{
     position:relative;display:flex;align-items:center;justify-content:center;
-    background:
-      linear-gradient(var(--line2) 1px,transparent 1px) 0 0/24px 24px,
-      linear-gradient(90deg,var(--line2) 1px,transparent 1px) 0 0/24px 24px,
-      var(--paper);
-    overflow:hidden;min-height:340px;
+    overflow:hidden;min-height:360px;
+    background:radial-gradient(120% 90% at 50% 0%, #F4F7F8 0%, #E4E9ED 70%, #DCE2E7 100%);
   }
-  #svgWrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:24px}
+  .stagegrid{
+    position:absolute;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      linear-gradient(var(--grid) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:24px 24px;opacity:.55;
+    -webkit-mask-image:radial-gradient(130% 100% at 50% 40%, #000 55%, transparent 100%);
+    mask-image:radial-gradient(130% 100% at 50% 40%, #000 55%, transparent 100%);
+  }
+  #svgWrap{position:relative;z-index:1;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:26px}
   #svg{width:100%;height:100%}
-  #cvWrap{position:absolute;inset:0;display:none}
+  #cvWrap{position:absolute;inset:0;display:none;z-index:1}
   #cvWrap canvas{display:block;width:100%;height:100%}
+
+  /* floating view toolbar (top-centre pill) */
+  .toolbar{
+    position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:5;
+    display:flex;gap:6px;align-items:center;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;padding:5px;
+    box-shadow:0 4px 16px rgba(20,30,40,.08);max-width:calc(100% - 24px);
+  }
+  /* segmented toggle (shared) */
+  .seg{display:inline-flex;background:var(--recess);border-radius:var(--r-sm);padding:3px;gap:3px}
+  .seg button{
+    border:none;background:transparent;cursor:pointer;padding:7px 12px;min-height:34px;
+    font-family:var(--sans);font-size:12.5px;font-weight:500;color:var(--ink-2);
+    border-radius:4px;transition:.15s;white-space:nowrap;
+  }
+  .seg button.on{background:var(--panel);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .seg button:not(.on):hover{color:var(--ink)}
+
+  /* 3D mode + depth controls, second floating row */
+  .mode3d{
+    position:absolute;top:62px;left:50%;transform:translateX(-50%);z-index:5;
+    display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:calc(100% - 24px);
+  }
+  .mode3d .seg{
+    background:var(--panel);border:1px solid var(--line);box-shadow:0 4px 16px rgba(20,30,40,.08);
+  }
+  .mode3d .seg button.on{background:var(--accent-soft);color:var(--accent-2);box-shadow:none}
+  .depthsel button{letter-spacing:.02em}
+
+  /* HUD chips over the canvas */
   .hud{
-    position:absolute;left:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);
-    background:rgba(255,255,255,.82);border:1px solid var(--line);border-radius:7px;padding:7px 10px;
-    display:flex;gap:14px;align-items:center;backdrop-filter:blur(2px);
+    position:absolute;left:16px;bottom:14px;z-index:3;
+    font-family:var(--mono);font-size:11px;color:var(--ink-2);
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:7px 10px;display:flex;gap:14px;align-items:center;
+    box-shadow:0 2px 10px rgba(20,30,40,.06);
   }
   .hud .k{display:flex;align-items:center;gap:6px}
   .swatch{width:16px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}
-  .readout{border-top:1px solid var(--line);padding-top:16px;display:flex;flex-direction:column;gap:12px}
-  .stat{display:flex;flex-direction:column;gap:2px}
-  .stat .lab{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-  .stat .val{font-family:var(--mono);font-size:16px;color:var(--ink)}
-  .orbithint{position:absolute;right:16px;bottom:14px;font-family:var(--mono);font-size:11px;color:var(--muted);display:none}
-  /* The .viewcube box is bigger than the cube canvas itself: the 4 orbit
-     arrows sit in the margin around it, in FIXED screen positions (N/S/E/W)
-     that never move — they are DOM buttons, not scene geometry, precisely
-     so orbiting the camera can never carry them along with it. */
-  .viewcube{position:absolute;top:14px;right:16px;width:150px;height:150px}
-  .viewcube .vc-stage{position:absolute;left:19px;top:19px;width:112px;height:112px}
-  .viewcube .vc-stage canvas{width:100%;height:100%;display:block}
-  .viewcube .vc-arrow{
-    position:absolute;width:24px;height:24px;line-height:22px;padding:0;border-radius:6px;
-    font-size:14px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;
-  }
-  .viewcube .vc-arrow:hover{background:var(--line2);color:var(--ink)}
-  .viewcube .vc-arrow.top{left:63px;top:-4px}
-  .viewcube .vc-arrow.bottom{left:63px;bottom:-4px}
-  .viewcube .vc-arrow.left{left:-4px;top:63px}
-  .viewcube .vc-arrow.right{right:-4px;top:63px}
-  .viewcube #viewCubeHome{
-    position:absolute;right:-2px;bottom:-30px;
-    width:22px;height:22px;line-height:20px;padding:0;border-radius:50%;
-    font-size:15px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;
-  }
-  .viewcube #viewCubeHome:hover{background:var(--line2);color:var(--ink)}
-  /* Build view */
-  #buildWrap{position:absolute;inset:0;display:none;overflow:auto;background:var(--paper);padding:18px}
-  .bpanel{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-  .bcols{display:flex;gap:14px;flex-wrap:wrap}
-  .bpanel fieldset{flex:1;min-width:260px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px 14px}
-  .bpanel legend{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:0 6px}
-  .brow{display:flex;align-items:center;gap:6px;margin:7px 0;flex-wrap:wrap;font-size:13px}
-  .brow label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600}
-  .brow input[type="number"]{width:76px;font-family:var(--mono);font-size:14px;padding:5px 7px;border:1px solid var(--line);border-radius:6px}
-  .brow input.bshort{width:52px}
-  .brow select{font-family:var(--mono);font-size:13px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#fff}
-  .brow span{font-family:var(--mono);font-size:11px;color:var(--muted)}
-  .bchk label{text-transform:none;font-weight:400;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:7px}
-  .bnote{font-size:12px;color:var(--muted)}
-  .bbad{color:var(--cut);font-weight:600}
-  .bapply{width:100%}
-  .bapply:disabled{opacity:.4;cursor:default}
-  .btablewrap{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:52vh}
-  #bTable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
-  #bTable th{position:sticky;top:0;background:var(--card);text-align:left;padding:9px 12px;font-size:10.5px;
-    letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
-  #bTable td{padding:7px 12px;border-bottom:1px solid var(--line2);white-space:nowrap}
-  #bTable tbody tr{cursor:pointer}
-  #bTable tbody tr:hover{background:var(--line2)}
-  #bTable tr.bsel{background:#fbe9d3}
-  #bTable tr.bsel td{font-weight:600}
-  #bTable tr.bmisfit td{color:var(--cut)}
-  #bTable td.bwin{background:#e3f5e6;font-weight:700;color:#1a7a3c}
-  .bcode{font-family:var(--mono);font-size:11px;color:#9aa6b2;margin-left:4px}
-  .bunit{font-family:var(--mono);font-size:11px;color:var(--muted)}
-  .mode3d{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
-  .depthsel button{letter-spacing:.04em}
-  .hud.hier{left:16px;bottom:auto;top:14px;max-width:340px;line-height:1.5;display:block}
+  .hud.hier{left:16px;bottom:auto;top:14px;max-width:320px;line-height:1.5;display:block}
   .hud.hierlegend{left:16px;bottom:14px;top:auto;flex-direction:column;align-items:flex-start;gap:5px;line-height:1.4}
   .hud.hierlegend .lg{display:flex;align-items:center;gap:7px}
   .hud.hierlegend .sw{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.15)}
   .hud.hierlegend .rd{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);color:var(--ink)}
-  .notice{
-    display:flex;align-items:center;justify-content:space-between;gap:14px;
-    padding:9px 20px;font-size:13px;background:#FBE9D3;border-bottom:1px solid var(--line);color:var(--ink);
+  .orbithint{
+    position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:3;
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);display:none;
+    background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:5px 12px;
   }
-  .notice.warn{background:#FDE4E1;color:#8A2A25}
-  .notice .noticeMsg{flex:1;min-width:0}
-  .notice button{
-    font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
-    padding:5px 12px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer;
+
+  /* readout (right rail) */
+  .readout{border-top:1px solid var(--line-2);padding-top:16px;display:flex;flex-direction:column;gap:12px}
+  .stat{display:flex;flex-direction:column;gap:2px}
+  .stat .lab{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+  .stat .val{font-family:var(--mono);font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums}
+
+  /* ---------- engineering title block (signature) ---------- */
+  .titleblock{
+    position:absolute;right:22px;bottom:22px;z-index:4;width:264px;
+    background:var(--panel);border:1px solid var(--ink);border-radius:4px;
+    box-shadow:0 6px 22px rgba(20,30,40,.12);overflow:hidden;font-family:var(--mono);
   }
+  .titleblock .tbhead{
+    display:flex;justify-content:space-between;align-items:center;gap:8px;
+    background:var(--ink);color:#fff;padding:6px 10px;font-size:10.5px;
+    letter-spacing:.1em;text-transform:uppercase;
+  }
+  .tbrow{display:flex;border-top:1px solid var(--line);font-size:12px}
+  .tbrow:first-of-type{border-top:none}
+  .tbrow .k{
+    width:92px;flex:none;padding:6px 10px;color:var(--ink-3);
+    font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+    border-right:1px solid var(--line-2);display:flex;align-items:center;
+  }
+  .tbrow .v{padding:6px 10px;color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+
+  /* ---------- ViewCube (kept — chrome-restyled container only) ----------
+     The 4 orbit arrows sit in the margin around the cube in FIXED screen
+     positions (N/S/E/W); they are DOM buttons, not scene geometry, so
+     orbiting can never carry them along. The cube's face/edge/corner tints
+     and axis colours are domain colour and live in viewcube.js, untouched. */
+  .viewcube{position:absolute;top:14px;right:16px;width:150px;height:150px;z-index:4}
+  .viewcube .vc-stage{position:absolute;left:19px;top:19px;width:112px;height:112px}
+  .viewcube .vc-stage canvas{width:100%;height:100%;display:block}
+  .viewcube .vc-arrow{
+    position:absolute;width:26px;height:26px;line-height:24px;padding:0;border-radius:var(--r-sm);
+    font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink-2);
+    cursor:pointer;box-shadow:0 2px 8px rgba(20,30,40,.06);transition:.15s;
+  }
+  .viewcube .vc-arrow:hover{background:var(--accent-soft);color:var(--accent-2);border-color:var(--accent-soft)}
+  .viewcube .vc-arrow.top{left:62px;top:-4px}
+  .viewcube .vc-arrow.bottom{left:62px;bottom:-4px}
+  .viewcube .vc-arrow.left{left:-4px;top:62px}
+  .viewcube .vc-arrow.right{right:-4px;top:62px}
+  .viewcube #viewCubeHome{
+    position:absolute;right:-2px;bottom:-30px;
+    width:24px;height:24px;line-height:22px;padding:0;border-radius:50%;
+    font-size:14px;border:1px solid var(--line);background:var(--panel);color:var(--ink-2);
+    cursor:pointer;box-shadow:0 2px 8px rgba(20,30,40,.06);transition:.15s;
+  }
+  .viewcube #viewCubeHome:hover{background:var(--accent-soft);color:var(--accent-2);border-color:var(--accent-soft)}
+
+  /* ---------- Build view ---------- */
+  #buildWrap{position:absolute;inset:0;display:none;overflow:auto;background:var(--paper);padding:18px;z-index:2}
+  .bpanel{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  .bcols{display:flex;gap:14px;flex-wrap:wrap}
+  .bpanel fieldset{flex:1;min-width:260px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:12px 14px}
+  .bpanel legend{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);padding:0 6px}
+  .brow{display:flex;align-items:center;gap:6px;margin:7px 0;flex-wrap:wrap;font-size:13px}
+  .brow label{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2);font-weight:500}
+  .brow input[type="number"]{width:76px;font-family:var(--mono);font-size:14px;padding:5px 7px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--ink)}
+  .brow input.bshort{width:52px}
+  .brow input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .brow select{font-family:var(--mono);font-size:13px;padding:5px 7px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--ink)}
+  .brow span{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .bchk label{text-transform:none;font-weight:400;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:7px}
+  .bnote{font-size:12px;color:var(--ink-3)}
+  .bbad{color:var(--danger);font-weight:500}
+  .bapply{width:100%}
+  .bapply:disabled{opacity:.5;cursor:default}
+  .btablewrap{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:auto;max-height:52vh}
+  #bTable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+  #bTable th{position:sticky;top:0;background:var(--panel);text-align:left;padding:9px 12px;font-size:10px;
+    letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+  #bTable td{padding:7px 12px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+  #bTable tbody tr{cursor:pointer}
+  #bTable tbody tr:hover{background:var(--panel-2)}
+  #bTable tr.bsel{background:var(--accent-soft)}
+  #bTable tr.bsel td{font-weight:600}
+  #bTable tr.bmisfit td{color:var(--danger)}
+  #bTable td.bwin{background:rgba(47,125,91,.12);font-weight:700;color:var(--valid)}
+  .bcode{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-left:4px}
+  .bunit{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+
+  /* touch: 44px min tap targets on the primary/toolbar controls */
+  @media (pointer:coarse){
+    .btn, .lvlsel{min-height:44px}
+    .toolbar .seg button, .mode3d .seg button{min-height:44px}
+    .viewcube .vc-arrow{width:34px;height:34px;line-height:32px}
+  }
+  /* reduced motion: honour the OS preference */
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none !important;animation:none !important}
+  }
+
+  /* ---------- mobile spec panel (title block drops below the canvas) ---------- */
+  .mobile-spec{display:none}
+
   @media (max-width:860px){
-    main{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,60vh) auto}
-    .rail.left{border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap}
-    .rail.right{border-left:0;border-top:1px solid var(--line)}
-    .rail.left .field{flex:1;min-width:120px}
+    main{
+      display:flex;flex-direction:column;
+    }
+    .brand .sub{display:none}          /* redundant on a narrow header */
+    .brand .name{white-space:normal}
+    .rail.left{order:1;border-right:0;border-bottom:1px solid var(--line)}
+    .rail.right{order:2;border-left:0;border-bottom:1px solid var(--line)}
+    .stage{order:3;min-height:52vh}
+    .rail{max-height:none}
+    .titleblock{display:none}          /* no floating overlay on narrow screens */
+    .mobile-spec{
+      order:4;display:block;background:var(--panel);border-top:1px solid var(--line);
+      padding:12px 16px 16px;
+    }
+    .ms-head{
+      display:flex;justify-content:space-between;align-items:center;gap:8px;
+      font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+      color:var(--ink-2);margin-bottom:10px;
+    }
+    .ms-ready{color:var(--valid)}
+    .ms-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .ms-grid > div{
+      background:var(--panel-2);border:1px solid var(--line-2);border-radius:var(--r-sm);
+      padding:8px 10px;display:flex;flex-direction:column;gap:2px;
+    }
+    .ms-grid span{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+    .ms-grid b{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums}
   }
 </style>
 </head>
@@ -203,28 +374,23 @@
 
 <header>
   <div class="brand">
-    <span class="code" id="brandCode">FEFCO 201</span>
     <span class="name" id="brandName">Regular Slotted Container</span>
+    <span class="part" id="brandCode">FEFCO 201</span>
     <span class="sub">Parametric dieline generator</span>
   </div>
+  <div class="header-spacer"></div>
   <div class="actions">
-    <label class="levelLabel" for="style">Level</label>
-    <select id="style" class="styleSel" title="Active level — which level of the project the rails edit and every view shows"></select>
-    <div class="seg" role="tablist">
-      <button id="tab2d" class="on">2D Dieline</button>
-      <button id="tab3d">3D Fold</button>
-      <button id="tabPal">Palletize</button>
-      <button id="tabBuild">Build</button>
-    </div>
-    <button class="btn" id="btnDXF">Export DXF</button>
+    <span class="statechip" id="stateChip"><span class="dot"></span>Ready to export</span>
+    <label class="eyebrow-inline" for="style">Level</label>
+    <select id="style" class="lvlsel" title="Active level — which level of the project the rails edit and every view shows"></select>
+    <button class="btn primary" id="btnDXF">Export DXF</button>
     <button class="btn" id="btnArt" style="display:none">Artwork SVG</button>
     <button class="btn" id="btnSpec" style="display:none">Copy film spec</button>
-    <div class="seg" role="group" title="Project file — the durable, portable save format">
-      <button id="btnSaveFile">Save</button>
-      <button id="btnLoadFile">Load</button>
-    </div>
+    <span class="hsep"></span>
+    <button class="btn" id="btnSaveFile">Save</button>
+    <button class="btn" id="btnLoadFile">Load</button>
     <input type="file" id="fileLoadInput" accept="application/json,.json" style="display:none">
-    <select id="slotSel" class="styleSel" title="localStorage slots — convenience only, not the source of truth"></select>
+    <select id="slotSel" class="lvlsel" title="localStorage slots — convenience only, not the source of truth"></select>
     <button class="btn" id="btnSlotSave">Save to slot</button>
     <button class="btn" id="btnSlotLoad" disabled>Load slot</button>
   </div>
@@ -254,7 +420,7 @@
       <h2 style="margin-top:6px">Pallet</h2>
       <div class="field">
         <label>Pallet size <span class="hint">L x W</span></label>
-        <div class="inp"><input id="pal" type="text" value="48 x 40" autocomplete="off" style="padding-right:42px"><span class="unit" id="uPal">in</span></div>
+        <div class="inp"><input id="pal" type="text" value="48 x 40" autocomplete="off"><span class="unit" id="uPal">in</span></div>
       </div>
       <div class="field">
         <label>Max load height <span class="hint">incl. pallet</span></label>
@@ -278,11 +444,22 @@
     </div>
   </aside>
 
-  <!-- CENTER: drawing -->
+  <!-- CENTER: drawing (the hero) -->
   <section class="stage">
+    <div class="stagegrid"></div>
     <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
     <div id="cvWrap"></div>
     <div id="buildWrap"></div>
+
+    <div class="toolbar" id="viewToolbar">
+      <div class="seg" role="tablist">
+        <button id="tab2d" class="on">2D Dieline</button>
+        <button id="tab3d">3D Fold</button>
+        <button id="tabPal">Palletize</button>
+        <button id="tabBuild">Build</button>
+      </div>
+    </div>
+
     <div class="mode3d" id="mode3d" style="display:none">
       <div class="seg"><button id="m3fold">Fold</button></div>
       <div class="seg depthsel">
@@ -291,6 +468,7 @@
         ><button id="d_pallet">Pallet</button>
       </div>
     </div>
+
     <div class="hud" id="hud">
       <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
       <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>
@@ -299,6 +477,7 @@
     <div class="hud hier" id="hierHud" style="display:none"></div>
     <div class="hud hierlegend" id="hierLegend" style="display:none"></div>
     <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
+
     <div class="viewcube" id="viewCubeWrap" style="display:none">
       <div class="vc-stage" id="viewCubeStage"></div>
       <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
@@ -306,6 +485,15 @@
       <button class="vc-arrow left" id="viewCubeLeft" title="Rotate left 15°">&#9664;</button>
       <button class="vc-arrow right" id="viewCubeRight" title="Rotate right 15°">&#9654;</button>
       <button id="viewCubeHome" title="Home view (three-quarter isometric)">&#8962;</button>
+    </div>
+
+    <!-- engineering title block (signature): active-level summary readouts -->
+    <div class="titleblock" id="titleBlock">
+      <div class="tbhead"><span id="tbPart">FEFCO 201</span><span id="tbLevel">CARTON</span></div>
+      <div class="tbrow"><div class="k">Blank</div><div class="v" id="tbBlank">—</div></div>
+      <div class="tbrow"><div class="k">Outer</div><div class="v" id="tbOuter">—</div></div>
+      <div class="tbrow"><div class="k">Board area</div><div class="v" id="tbArea">—</div></div>
+      <div class="tbrow"><div class="k">On pallet</div><div class="v" id="tbPallet">—</div></div>
     </div>
   </section>
 
@@ -334,6 +522,17 @@
       <div class="stat"><span class="lab">Deck coverage</span><span class="val" id="palCov">--</span></div>
     </div>
   </aside>
+
+  <!-- mobile-only: the title-block summary drops below the canvas -->
+  <div class="mobile-spec" id="mobileSpec">
+    <div class="ms-head"><span id="msTitle">FEFCO 201 · Carton</span><span class="ms-ready" id="msState">● Ready</span></div>
+    <div class="ms-grid">
+      <div><span>Blank</span><b id="msBlank">—</b></div>
+      <div><span>Outer</span><b id="msOuter">—</b></div>
+      <div><span>Board area</span><b id="msArea">—</b></div>
+      <div><span>On pallet</span><b id="msPallet">—</b></div>
+    </div>
+  </div>
 </main>
 
 <script type="module" src="src/ui/app.js"></script>

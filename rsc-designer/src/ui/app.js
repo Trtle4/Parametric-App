@@ -98,6 +98,18 @@ function activeRow(){
 }
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
+
+/** Mirror the active level's summary readouts into the right-rail readout
+ *  (#blank/#area), the canvas title block, and the mobile spec panel — all
+ *  from ONE writer (refresh2d), so the three displays can never drift. The
+ *  outer-dims text is also fed to the title block/mobile panel here; the
+ *  rail keeps its own #styleStats block (set alongside in refresh2d). */
+function setSummary(blank, outer, area){
+  el('blank').textContent = blank; el('tbBlank').textContent = blank; el('msBlank').textContent = blank;
+  el('area').textContent  = area;  el('tbArea').textContent  = area;  el('msArea').textContent  = area;
+  el('tbOuter').textContent = outer; el('msOuter').textContent = outer;
+}
+
 function refresh2d(){
   const u = inputs.getUnit();
   if(activeLevel === 'product'){
@@ -108,38 +120,38 @@ function refresh2d(){
     // readout.
     const piece = resolveProductPiece(build.project.primary);
     if(!piece){
-      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#9aa6b2" font-family="var(--mono)" font-size="14">No piece configured yet</text>`;
+      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--ink-3)" font-family="var(--mono)" font-size="14">No piece configured yet</text>`;
     }else{
       drawProduct2d(el('svg'), piece, u);
     }
-    el('blank').textContent = '—'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
     return;
   }
   if(!isStyleLevel()){
     // pallet has no dieline — say so plainly rather than showing a blank
     // or a stale drawing from another level
-    el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="#9aa6b2" font-family="var(--mono)" font-size="14">No dieline for the ${LEVELS[activeLevel].label} level — select Wrap, Carton, or Case</text>`;
-    el('blank').textContent = '—'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--ink-3)" font-family="var(--mono)" font-size="14">No dieline for the ${LEVELS[activeLevel].label} level — select Wrap, Carton, or Case</text>`;
+    setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
     return;
   }
   const g = activeGeometry();
   if(!g){
     el('svg').innerHTML = '';
-    el('blank').textContent = 'does not fit'; el('area').textContent = '--'; el('styleStats').innerHTML = '';
+    setSummary('does not fit', '—', '--'); el('styleStats').innerHTML = '';
     return;
   }
   const {w, h} = draw2d(el('svg'), g, u, build.project.printText);
   const areaU = u === 'mm' ? 'm²' : 'ft²';
   const wq = fromMM(w, u), hq = fromMM(h, u);
   const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
-  el('blank').textContent = `${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`;
-  el('area').textContent  = `${areaConv.toFixed(3)} ${areaU}`;
+  const outerText = `${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u}`;
+  setSummary(`${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`, outerText, `${areaConv.toFixed(3)} ${areaU}`);
   const style = activeStyle();
   // every level's outer (formed) dimensions, stated plainly — for the wrap
   // this is the envelope PLUS seals, the number that actually sizes the
   // carton; reading it should never require doing the compensation
   // arithmetic by hand
-  const outerStat = `<div class="stat"><span class="lab">Outer dimensions</span><span class="val">${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u}</span></div>`;
+  const outerStat = `<div class="stat"><span class="lab">Outer dimensions</span><span class="val">${outerText}</span></div>`;
   el('styleStats').innerHTML = outerStat + (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
       r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
@@ -166,12 +178,19 @@ function refresh3d(){
 function refreshPal(){
   const p = build.project.pallet;
   const g = levelGeometry(build.project, 'case', build.getRounding(), selKey());
-  if(!g){ ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--'); return; }
+  if(!g){
+    ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
+    el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
+    return;
+  }
   const stats = buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, view === 'pal');
   el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
+  // title block / mobile spec: the pallet total, always the case-on-pallet
+  const palText = stats.total > 0 ? `${stats.total} cases` : (stats.perLayer > 0 ? '—' : 'does not fit');
+  el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -502,6 +521,17 @@ const LEVEL_BRAND = {
  *  way every other readout can't — even though today the only things that
  *  change it (enable/disable, style change) already force a full remount
  *  through setActiveLevel, which calls this directly too. */
+/** The header state chip + mobile spec state marker — honest about export
+ *  readiness, driven from the SAME writer as the export-button state so it
+ *  can never claim "ready" while the button is disabled. */
+function setStateChip(kind, text){
+  const chip = el('stateChip');
+  chip.className = 'statechip' + (kind === 'valid' ? '' : ' ' + kind);
+  chip.innerHTML = `<span class="dot"></span>${text}`;
+  el('msState').textContent = '● ' + text;
+  el('msState').style.color = kind === 'valid' ? 'var(--valid)' : kind === 'warn' ? 'var(--warn)' : 'var(--ink-3)';
+}
+
 function updateExportButtonsState(){
   const lvl = LEVELS[activeLevel];
   if(lvl.kind !== 'style'){
@@ -511,6 +541,7 @@ function updateExportButtonsState(){
       : 'No dieline at this level — select Wrap, Carton, or Case';
     el('btnArt').style.display = 'none';
     el('btnSpec').style.display = 'none';
+    setStateChip('muted', lvl.kind === 'product' ? 'Product view' : 'No dieline here');
     return;
   }
   const style = activeStyle();
@@ -521,6 +552,8 @@ function updateExportButtonsState(){
     : flex ? 'No die for a flexible style — export the artwork template instead' : '';
   el('btnArt').style.display = flex ? '' : 'none';
   el('btnSpec').style.display = flex ? '' : 'none';
+  setStateChip(disabledTier ? 'muted' : flex ? 'warn' : 'valid',
+    disabledTier ? 'Tier disabled' : flex ? 'Flexible — export artwork' : 'Ready to export');
 }
 
 function setActiveLevel(level){
@@ -534,6 +567,10 @@ function setActiveLevel(level){
     el('brandCode').textContent = LEVEL_BRAND[level].code;
     el('brandName').textContent = LEVEL_BRAND[level].sub;
   }
+  // title block + mobile spec header follow the active level's part + name
+  el('tbPart').textContent = el('brandCode').textContent;
+  el('tbLevel').textContent = lvl.label.toUpperCase();
+  el('msTitle').textContent = `${el('brandCode').textContent} · ${lvl.label}`;
   updateExportButtonsState();
   if(el('style').value !== level) el('style').value = level;
   // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
@@ -735,6 +772,10 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  // the title block is a drawing-sheet overlay — the Build view is a table,
+  // not a sheet, so hide it there (it would float over the candidate table).
+  // The view toolbar STAYS (it holds the tabs — the only way back out of Build).
+  el('titleBlock').style.display = v === 'build' ? 'none' : '';
   // the ViewCube mirrors the SAME shared camera the hierarchy/fold views use
   // (fold3d.js's single orbit) — it works at every depth and in FOLD mode
   // for free, since none of that is camera-specific. It does NOT extend to
