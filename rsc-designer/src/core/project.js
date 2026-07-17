@@ -159,6 +159,12 @@ export function newProject(){
     // the save file) even though its input control is hidden from the UI, so
     // it is never an orphaned, unsaveable Path-A value again.
     printText: 'FRAGILE',
+    // the three settable counts (cases/pallet is solved, never a default):
+    // product/wrap is the collation above (3 stacks of 2 = 6, unchanged),
+    // wraps/carton = 8 (explicit 1x4x2 — its own product IS 8), cartons/
+    // case = 12 (auto). Every test/golden pin that depends on one of these
+    // must pin its own explicit value rather than inherit these — see the
+    // "not a pin" comments in project.test.html/saveload.test.html.
     links: [
       {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
       {parent: 'secondary', child: 'primary', count: 8, arrangement: {nx: 1, ny: 4, nz: 2}, locked: false}

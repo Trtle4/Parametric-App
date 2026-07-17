@@ -381,7 +381,7 @@ function mountPlacement(){
        <div id="plInCount" style="display:contents"></div>`;
     inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, projectChanged);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8], 2, 1, 1, primaryNoun, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), 2, 1, 1, primaryNoun, projectChanged);
     return;
   }
 
@@ -399,7 +399,7 @@ function mountPlacement(){
        <div id="plOutClear" style="display:contents"></div>`;
     inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, projectChanged);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), [12, 24, 36], 4, 3, 1, childNoun, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged);
     inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
       {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},
       projectChanged);
@@ -570,13 +570,13 @@ function refreshPlacementControls(){
   if(activeLevel === 'carton'){
     inputs.refreshVertControl('pIn', proj.primary);
     inputs.refreshClearanceControl('pIn', proj.primary.clearance);
-    inputs.refreshCountArrangement('pIn', linkFor(proj, 'secondary'), [1, 2, 4, 6, 8]);
+    inputs.refreshCountArrangement('pIn', linkFor(proj, 'secondary'));
   }else if(activeLevel === 'case'){
     const secondaryIn = proj.secondary.enabled !== false;
     const childLevel = secondaryIn ? proj.secondary : proj.primary;
     inputs.refreshVertControl('pIn', childLevel);
     inputs.refreshClearanceControl('pIn', childLevel.clearance);
-    inputs.refreshCountArrangement('pIn', linkFor(proj, 'tertiary'), [12, 24, 36]);
+    inputs.refreshCountArrangement('pIn', linkFor(proj, 'tertiary'));
     inputs.refreshVertControl('pOut', proj.tertiary);
     inputs.refreshClearanceControl('pOut', proj.tertiary.clearance);
   }

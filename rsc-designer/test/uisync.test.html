@@ -401,9 +401,11 @@ await (async () => {
    the link starts 'auto' (cartons/case) or explicit nx*ny*nz (wraps/
    carton, the default). Diagnosis: with an explicit arrangement, count
    was PURELY DERIVED (nx*ny*nz) and never read by the solver at all —
-   typing into the count field had zero effect. The fix: choosing a
-   count (preset or custom) always switches the link to 'auto' first,
-   since a specific total and a fixed grid are mutually exclusive asks.
+   typing into the count field had zero effect. The fix: typing a count
+   always switches the link to 'auto' first, since a specific total and
+   a fixed grid are mutually exclusive asks. The count control itself is
+   a single number input now (no preset dropdown + separate "custom"
+   field) — that two-control split was the exact seam this bug lived in.
    ================================================================== */
 await (async () => {
   setLevel('carton'); el('tab2d').click(); await settle();
@@ -412,12 +414,11 @@ await (async () => {
   // force it back to an EXPLICIT grid so this block tests what it says
   link1.arrangement = {nx: 1, ny: 4, nz: 2}; link1.count = 8;
   el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change'); await settle();
-  t('custom count at carton level (wraps/carton, starts EXPLICIT): typing a custom count switches to auto and is honored', () => {
+  t('custom count at carton level (wraps/carton, starts EXPLICIT): typing a count switches to auto and is honored', () => {
     if(link1.arrangement === 'auto') throw new Error('test assumption violated: this link should start explicit');
-    el('pInCSel').value = 'custom'; fire(el('pInCSel'), 'change');
     el('pInC').value = '5'; fire(el('pInC'), 'input');
-    eq(link1.arrangement, 'auto', 'custom count forces auto arrangement:');
-    eq(link1.count, 5, 'custom count written to the project:');
+    eq(link1.arrangement, 'auto', 'typed count forces auto arrangement:');
+    eq(link1.count, 5, 'typed count written to the project:');
   });
   t('custom count at carton level actually reaches the solved chain, not just the link', () => {
     const rows = build.getRows();
@@ -430,13 +431,60 @@ await (async () => {
   const link0 = linkFor(build.project, 'tertiary');   // cartons-per-case — defaults AUTO
   t('custom count at case level (cartons/case, starts AUTO): a custom count is honored directly', () => {
     if(link0.arrangement !== 'auto') throw new Error('test assumption violated: this link should start auto');
-    el('pInCSel').value = 'custom'; fire(el('pInCSel'), 'change');
     el('pInC').value = '17'; fire(el('pInC'), 'input');
     eq(link0.arrangement, 'auto', 'still auto (was already):');
     eq(link0.count, 17, 'custom count written to the project:');
     const rows = build.getRows();
     if(!rows.length) throw new Error('no candidate rows for a custom count of 17');
   });
+})();
+
+/* ==================================================================
+   The count field is a bare <input type=number>, not a dropdown — so
+   the browser's own numeric parsing is the only thing standing between
+   a keystroke and a corrupted project. 0, negative, decimal, and empty
+   must all clamp or revert to a valid value, never write 0 or NaN into
+   link.count (which would propagate into a 0-child solve downstream).
+   ================================================================== */
+await (async () => {
+  setLevel('carton'); await settle();
+  const link1 = linkFor(build.project, 'secondary');
+  link1.arrangement = 'auto'; link1.count = 8; inputs.refreshCountArrangement('pIn', link1);
+  t('invalid count at carton level: 0 does not corrupt the project', () => {
+    el('pInC').value = '0'; fire(el('pInC'), 'input');
+    if(!(Number.isInteger(link1.count) && link1.count >= 1)) throw new Error(`count corrupted: ${link1.count}`);
+  });
+  t('invalid count at carton level: negative does not corrupt the project', () => {
+    el('pInC').value = '-3'; fire(el('pInC'), 'input');
+    if(!(Number.isInteger(link1.count) && link1.count >= 1)) throw new Error(`count corrupted: ${link1.count}`);
+  });
+  t('invalid count at carton level: decimal rounds to an integer, never truncated to 0', () => {
+    link1.count = 8;
+    el('pInC').value = '5.6'; fire(el('pInC'), 'input');
+    eq(link1.count, 6, 'rounds to nearest integer:');
+  });
+  t('invalid count at carton level: empty reverts to the current valid value, not 0/NaN', () => {
+    link1.count = 8;
+    el('pInC').value = ''; fire(el('pInC'), 'input');
+    eq(link1.count, 8, 'unchanged, not 0/NaN:');
+  });
+
+  setLevel('case'); await settle();
+  const link0 = linkFor(build.project, 'tertiary');
+  link0.arrangement = 'auto'; link0.count = 12; inputs.refreshCountArrangement('pIn', link0);
+  t('invalid count at case level: 0/negative/decimal/empty all clamp or revert, never 0/NaN', () => {
+    el('pInC').value = '0'; fire(el('pInC'), 'input');
+    if(!(Number.isInteger(link0.count) && link0.count >= 1)) throw new Error(`0 corrupted count: ${link0.count}`);
+    el('pInC').value = '-9'; fire(el('pInC'), 'input');
+    if(!(Number.isInteger(link0.count) && link0.count >= 1)) throw new Error(`negative corrupted count: ${link0.count}`);
+    link0.count = 12;
+    el('pInC').value = '3.2'; fire(el('pInC'), 'input');
+    eq(link0.count, 3, 'decimal rounds:');
+    link0.count = 12;
+    el('pInC').value = ''; fire(el('pInC'), 'input');
+    eq(link0.count, 12, 'empty reverts, not 0/NaN:');
+  });
+  link0.count = 12; link0.arrangement = 'auto'; inputs.refreshCountArrangement('pIn', link0);
 })();
 
 /* ==================================================================

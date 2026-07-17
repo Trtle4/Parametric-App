@@ -327,12 +327,23 @@ export function refreshClearanceControl(idp, clearance){
   if(headEl && !isFocused(headEl)) headEl.value = L(clearance.top);
 }
 
+/** Read a count field as a clamped positive integer: non-numeric, empty,
+ *  decimal-rounded (Math.round handles that), or < 1 all fall back to
+ *  `fallback` (the current valid value) — never 0, never NaN. A bare number
+ *  input has no "custom" escape hatch to fall back on, so this validation
+ *  IS the field's only guard against garbage reaching the project. */
+function clampCount(raw, fallback){
+  const n = Math.round(+raw);
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
 /** Child count + arrangement for `link` (mutated in place) — "how many of
- *  my child fit inside me". `presets` are convenience shortcuts (typed
- *  values always work via "custom"); an explicit arrangement shows its OWN
- *  grid, never a placeholder default, so re-rendering from a loaded project
- *  is faithful to what was loaded. */
-export function mountCountArrangement(host, idp, link, presets, defNx, defNy, defNz, childNoun, onInput){
+ *  my child fit inside me". One plain number input for the count (no
+ *  preset dropdown, no separate "custom" field — that two-control split let
+ *  an explicit arrangement silently ignore whatever the count field showed);
+ *  an explicit arrangement shows its OWN grid, never a placeholder default,
+ *  so re-rendering from a loaded project is faithful to what was loaded. */
+export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, childNoun, onInput){
   function render(){
     const explicit = link.arrangement !== 'auto';
     const nx = explicit ? link.arrangement.nx : defNx;
@@ -340,32 +351,21 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
     const nz = explicit ? link.arrangement.nz : defNz;
     host.innerHTML =
       `<div class="field"><label>${childNoun}s <span class="hint">count</span></label>
-        <div class="inp"><select id="${idp}CSel">${presets.map(p => `<option${p === link.count ? ' selected' : ''}>${p}</option>`).join('')}<option value="custom"${presets.includes(link.count) ? '' : ' selected'}>custom</option></select>
-        <input id="${idp}C" type="number" min="1" value="${link.count}" style="${presets.includes(link.count) ? 'display:none' : ''}"></div></div>
+        <div class="inp"><input id="${idp}C" type="number" min="1" step="1" value="${link.count}"></div></div>
       <div class="field"><label>Arrangement</label>
         <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
       (explicit ? `<div class="field"><label>Grid</label>
         <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%;padding-right:10px"> &times;
         <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%;padding-right:10px"> &times;
         <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '');
-    el(idp + 'CSel').addEventListener('change', () => {
-      const custom = el(idp + 'CSel').value === 'custom';
-      if(!custom) link.count = +el(idp + 'CSel').value;
-      // A chosen count (preset or custom) always means "solve a grid that
-      // holds this many" — the count control has no effect while an
-      // explicit nx*ny*nz grid is active (that grid's own product IS the
-      // count, unconditionally); honoring a count means switching to auto
-      // FOR it, not writing a count nothing reads. Only re-render (losing
-      // this field's focus) on the actual mode transition, never on a
-      // same-mode edit.
-      const wasExplicit = link.arrangement !== 'auto';
-      link.arrangement = 'auto';
-      if(wasExplicit) render();
-      else el(idp + 'C').style.display = custom ? '' : 'none';
-      onInput();
-    });
     el(idp + 'C').addEventListener('input', () => {
-      link.count = Math.max(1, Math.round(+el(idp + 'C').value || 1));
+      link.count = clampCount(el(idp + 'C').value, link.count);
+      // A typed count always means "solve a grid that holds this many" — the
+      // count field has no effect while an explicit nx*ny*nz grid is active
+      // (that grid's own product IS the count, unconditionally); honoring a
+      // count means switching to auto FOR it, not writing a count nothing
+      // reads. Only re-render (losing this field's focus) on the actual
+      // mode transition, never on a same-mode edit.
       const wasExplicit = link.arrangement !== 'auto';
       link.arrangement = 'auto';
       if(wasExplicit) render();
@@ -378,7 +378,11 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
       render(); onInput();
     });
     if(explicit) ['Nx', 'Ny', 'Nz'].forEach(k => el(idp + k).addEventListener('input', () => {
-      link.arrangement = {nx: +el(idp + 'Nx').value || 1, ny: +el(idp + 'Ny').value || 1, nz: +el(idp + 'Nz').value || 1};
+      link.arrangement = {
+        nx: clampCount(el(idp + 'Nx').value, link.arrangement.nx),
+        ny: clampCount(el(idp + 'Ny').value, link.arrangement.ny),
+        nz: clampCount(el(idp + 'Nz').value, link.arrangement.nz)
+      };
       link.count = link.arrangement.nx*link.arrangement.ny*link.arrangement.nz;
       onInput();
     }));
@@ -392,14 +396,10 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
  *  own `render()` does that, and only in response to its OWN Arrangement
  *  select — nothing else writes link.arrangement's auto-vs-object shape),
  *  so it only ever needs to update values already present in the DOM. */
-export function refreshCountArrangement(idp, link, presets){
-  const cSel = el(idp + 'CSel');
-  if(!cSel) return;
-  const isPreset = presets.includes(link.count);
-  if(!isFocused(cSel)) cSel.value = isPreset ? String(link.count) : 'custom';
+export function refreshCountArrangement(idp, link){
   const cInput = el(idp + 'C');
+  if(!cInput) return;
   if(!isFocused(cInput)) cInput.value = link.count;
-  cInput.style.display = isPreset ? 'none' : '';
   if(link.arrangement !== 'auto'){
     const nxEl = el(idp + 'Nx');
     if(nxEl){
