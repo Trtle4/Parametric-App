@@ -498,16 +498,24 @@ export function buildHierarchy(bundle, depth, sel){
   sel = sel || {};
 
   // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
-  const cartonTier = {
+  // cartonTier only exists when the carton level is actually enabled
+  // (bundle.cartonGeo non-null). When it's disabled, the case's own
+  // children ARE the wraps (or whatever the case's real child is) — the
+  // carton tier collapses out of the cascade rather than leaving a gap.
+  const cartonTier = bundle.cartonGeo ? {
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
     children: bundle.wraps ? bundle.wraps.placements : [],
     childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : bundle.cartonGeo.outer, childMat: filmClosedMat,
     buildChild: (b, s, path) => buildWrapOpened(b)
-  };
+  } : null;
   const caseTier = {
-    name: 'case', geo: bundle.caseGeo, mat: board, childKind: 'carton',
-    children: bundle.cartons.placements, childOuter: bundle.cartonGeo.outer, childMat: board2,
-    buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)
+    name: 'case', geo: bundle.caseGeo, mat: board,
+    children: bundle.cartons.placements,
+    ...(bundle.cartonGeo
+      ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2,
+         buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
+      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : bundle.caseGeo.inner, childMat: filmClosedMat,
+         buildChild: (b, s, path) => buildWrapOpened(b)})
   };
 
   // default openings: outer-corner unit nearest the camera, per level, where

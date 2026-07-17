@@ -55,8 +55,16 @@
 </div>
 
 <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
-<div id="cvWrap"></div>
+<div id="cvWrap" style="width:600px;height:400px"></div>
 <div id="buildWrap"></div>
+<div id="viewCubeWrap" style="display:none">
+  <div id="viewCubeStage"></div>
+  <button id="viewCubeTop">^</button>
+  <button id="viewCubeBottom">v</button>
+  <button id="viewCubeLeft">&lt;</button>
+  <button id="viewCubeRight">&gt;</button>
+  <button id="viewCubeHome">home</button>
+</div>
 <div id="mode3d" style="display:none">
   <button id="m3fold">Fold</button>
   <button id="d_product">Product</button><button id="d_wrap">Wrap</button
@@ -386,6 +394,112 @@ await (async () => {
     if(JSON.stringify(after) === JSON.stringify(before)) throw new Error('3D hierarchy data source (build.getRows()) did not change');
     el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
   });
+})();
+
+/* ==================================================================
+   Bug 1: a custom child count must be honored AT EVERY LEVEL, whether
+   the link starts 'auto' (cartons/case) or explicit nx*ny*nz (wraps/
+   carton, the default). Diagnosis: with an explicit arrangement, count
+   was PURELY DERIVED (nx*ny*nz) and never read by the solver at all —
+   typing into the count field had zero effect. The fix: choosing a
+   count (preset or custom) always switches the link to 'auto' first,
+   since a specific total and a fixed grid are mutually exclusive asks.
+   ================================================================== */
+await (async () => {
+  setLevel('carton'); el('tab2d').click(); await settle();
+  const link1 = linkFor(build.project, 'secondary');   // wraps-per-carton
+  // earlier tests in this file may have left this link in either shape —
+  // force it back to an EXPLICIT grid so this block tests what it says
+  link1.arrangement = {nx: 1, ny: 4, nz: 2}; link1.count = 8;
+  el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change'); await settle();
+  t('custom count at carton level (wraps/carton, starts EXPLICIT): typing a custom count switches to auto and is honored', () => {
+    if(link1.arrangement === 'auto') throw new Error('test assumption violated: this link should start explicit');
+    el('pInCSel').value = 'custom'; fire(el('pInCSel'), 'change');
+    el('pInC').value = '5'; fire(el('pInC'), 'input');
+    eq(link1.arrangement, 'auto', 'custom count forces auto arrangement:');
+    eq(link1.count, 5, 'custom count written to the project:');
+  });
+  t('custom count at carton level actually reaches the solved chain, not just the link', () => {
+    const rows = build.getRows();
+    if(!rows.length) throw new Error('no rows after setting a custom count');
+    // 5 wraps/carton, each wrap holding this project's default 6-piece collation -> 30 pieces/carton
+    eq(rows[0].piecesPerCarton, 30, 'piecesPerCarton reflects the custom count of 5, not the old derived 8:');
+  });
+
+  setLevel('case'); await settle();
+  const link0 = linkFor(build.project, 'tertiary');   // cartons-per-case — defaults AUTO
+  t('custom count at case level (cartons/case, starts AUTO): a custom count is honored directly', () => {
+    if(link0.arrangement !== 'auto') throw new Error('test assumption violated: this link should start auto');
+    el('pInCSel').value = 'custom'; fire(el('pInCSel'), 'change');
+    el('pInC').value = '17'; fire(el('pInC'), 'input');
+    eq(link0.arrangement, 'auto', 'still auto (was already):');
+    eq(link0.count, 17, 'custom count written to the project:');
+    const rows = build.getRows();
+    if(!rows.length) throw new Error('no candidate rows for a custom count of 17');
+  });
+})();
+
+/* ==================================================================
+   Bug 2: disabling the carton (wrap -> case directly) must not blank
+   the 3D hierarchy view. Diagnosis: buildHierarchy() unconditionally
+   read bundle.cartonGeo.outer to build the case tier's child dims —
+   a null deref (TypeError) the instant the carton level is disabled,
+   thrown from inside a DOM event handler (recompute's own notify
+   cycle), so it never surfaced as a normal exception — it just left
+   the 3D canvas showing whatever it last rendered, i.e. nothing, since
+   hierHud/the group were never (re)populated past that point.
+   ================================================================== */
+// disabling a tier asks for confirmation via showNotice()'s dynamically
+// built action buttons (no stable id) — find the "Disable ..." button by
+// its text and click it, same as a user would.
+function confirmDisable(){
+  const btn = [...el('loadNotice').querySelectorAll('button')].find(b => b.textContent.startsWith('Disable'));
+  if(!btn) throw new Error('confirmation button not found — toggleTier\'s notice shape changed');
+  btn.click();
+}
+
+await (async () => {
+  setLevel('carton'); el('tab3d').click(); await settle();
+  const hudBeforeDisable = el('hierHud').textContent;
+  el('tierToggleBtn').click(); await settle();   // opens the "Disable carton?" confirmation
+  confirmDisable(); await settle();
+
+  t('carton disabled: the 3D hierarchy view still renders (HUD populated, not stuck empty from a crash)', () => {
+    if(el('hierHud').style.display === 'none' || !el('hierHud').textContent)
+      throw new Error('hierHud is empty/hidden -- buildHierarchy likely threw (the null cartonGeo crash)');
+    if(el('hierHud').textContent === hudBeforeDisable)
+      throw new Error('HUD did not update at all -- render did not actually run after the toggle');
+  });
+  t('carton disabled: Carton depth collapses out of the cascade (button disabled), Case/Pallet stay available', () => {
+    if(!el('d_carton').disabled) throw new Error('Carton depth should be unavailable once the carton level is disabled');
+    if(el('d_case').disabled) throw new Error('Case depth should still be available');
+    if(el('d_pallet').disabled) throw new Error('Pallet depth should still be available');
+  });
+  el('tierToggleBtn').click(); await settle();   // re-enable (no confirmation needed for this direction)
+  t('carton disabled: re-enabling restores Carton depth without leaving the view broken', () => {
+    if(el('d_carton').disabled) throw new Error('Carton depth should be available again once re-enabled');
+    if(!el('hierHud').textContent) throw new Error('HUD went empty after re-enabling');
+  });
+})();
+
+/* ==================================================================
+   Bug 3: named save slots only ever behaved as slot 1. Diagnosis:
+   refreshSlotSelect() rebuilds the <select>'s innerHTML from scratch —
+   including from ITS OWN 'change' handler — without re-marking the
+   just-picked value as selected, so choosing any slot but the first
+   immediately snapped back to slot 1 before the user could act on it.
+   ================================================================== */
+await (async () => {
+  el('slotSel').value = '3'; fire(el('slotSel'), 'change'); await settle();
+  t('save slots: picking slot 3 stays on slot 3 (does not snap back to slot 1)', () => {
+    eq(el('slotSel').value, '3', 'selection survives its own change handler\'s rebuild:');
+  });
+  el('slotSel').value = '5'; fire(el('slotSel'), 'change'); await settle();
+  t('save slots: picking a different slot (5) also sticks, independently', () => {
+    eq(el('slotSel').value, '5');
+  });
+  save.clearSlot(3); save.clearSlot(5);
+  el('slotSel').value = '1'; fire(el('slotSel'), 'change'); await settle();
 })();
 
 save.clearAutosave();

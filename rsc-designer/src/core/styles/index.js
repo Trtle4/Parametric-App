@@ -12,6 +12,13 @@
 import {fefco201} from './fefco201.js';
 import {a6120} from './a6120.js';
 import {flowwrap} from './flowwrap.js';
+import {trayGeometry} from './tray.js';
+import {sealend} from './sealend.js';
+
+const trayReadouts = geo => [
+  {label: 'Board layers, bottom', text: String(geo.meta.boardLayersBottom)},
+  {label: 'Board layers, top', text: String(geo.meta.boardLayersTop)}
+];
 
 export const styles = [
   {
@@ -118,6 +125,62 @@ export const styles = [
     ],
     defaultOrientations: ['LWH', 'WLH'],
     defaultClearance: {wall: 0, between: 0}
+  },
+  {
+    id: 'tray',
+    name: 'FEFCO 0300 Tray',
+    brand: {code: 'FEFCO 0300', sub: 'Die-cut tray, glued corners'},
+    tier: 'tertiary',
+    material: 'corrugated',
+    structure: 'rigid',
+    dimsLabel: 'Inside dimensions',
+    params: [
+      {key: 'L',       label: 'Length',        hint: 'L',     group: 'dims',     min: 1, step: 1,   default: 300},
+      {key: 'W',       label: 'Width',         hint: 'W',     group: 'dims',     min: 1, step: 1,   default: 200},
+      {key: 'H',       label: 'Height',        hint: 'H',     group: 'dims',     min: 1, step: 1,   default: 80},
+      {key: 'caliper', label: 'Board caliper', hint: 't',     group: 'material', min: 0, step: 0.1, default: 3},
+      {key: 'cornerFlapDepth', label: 'Corner flap depth', hint: '<=W/2', group: 'material', min: 0, step: 1, default: 40}
+    ],
+    options: [],
+    geometry: trayGeometry,
+    readouts: trayReadouts,
+    defaultOrientations: ['LWH', 'WLH'],
+    defaultClearance: {wall: 0, between: 0},
+    // open top: the tray corrals FOOTPRINT only. Its own wall height (H) is
+    // an independent design input, not solved from whatever's inside — a
+    // level using this style may still override openTop: false (e.g. once
+    // paired with a telescoping HSC cap, a future style, which DOES close it).
+    defaultOpenTop: true
+  },
+  {
+    id: 'sealend',
+    name: 'Seal End Carton (glued overlap)',
+    brand: {code: 'SEAL END', sub: 'Glued overlap closure'},
+    tier: 'secondary',
+    material: 'folding-carton',
+    structure: 'rigid',
+    dimsLabel: 'Inside dimensions',
+    params: [
+      {key: 'L',         label: 'Length',        hint: 'L',      group: 'dims',     min: 1, step: 1,    default: 100},
+      {key: 'W',         label: 'Width',         hint: 'W',      group: 'dims',     min: 1, step: 1,    default: 60},
+      {key: 'H',         label: 'Height',        hint: 'H',      group: 'dims',     min: 1, step: 1,    default: 150},
+      {key: 'caliper',   label: 'Board caliper', hint: 't',      group: 'material', min: 0, step: 0.01, default: 0.457},
+      {key: 'glueTab',   label: 'Glue tab',      hint: 'joint',  group: 'material', min: 0, step: 0.5,  default: 15},
+      {key: 'dustDepth', label: 'Dust flap depth', hint: '0.625W', group: 'material', min: 0, step: 0.5, default: 37.5},
+      {key: 'overlap',   label: 'Seal overlap',  hint: 'glue zone', group: 'material', min: 0, step: 0.5, default: 20},
+      {key: 'cornerStyle', label: 'Corner style', hint: '45°',   group: 'material', type: 'select', default: 'chamfered',
+       choices: [{value: 'chamfered', label: 'Chamfered 45°'}]}
+    ],
+    options: [],
+    geometry: sealend,
+    readouts: geo => [
+      {label: 'Major flap depth (W/2)', len: geo.meta.majorFlapDepth},
+      {label: 'Seal flap depth (W/2 + overlap/2)', len: geo.meta.sealFlapDepth},
+      {label: 'Dust flap depth', len: geo.meta.dustDepth},
+      {label: 'Overlap', len: geo.meta.overlap}
+    ],
+    defaultOrientations: ['LWH', 'WLH', 'LHW', 'HLW'],
+    defaultClearance: {wall: 0.5, between: 0}
   }
 ];
 

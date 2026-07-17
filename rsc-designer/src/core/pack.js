@@ -90,9 +90,19 @@ export function packLayer({childL, childW, parentL, parentW, pattern, wall = 0, 
  * @param {number} [o.between=0]  layer-to-layer clearance
  * @param {number} [o.gapBelow=wall]  clearance under the first layer
  * @param {number} [o.gapAbove=wall]  clearance above the last layer (headspace)
+ * @param {boolean} [o.unboundedH=false]  parent does not constrain height (an
+ *        open-top level) — `layers` comes from `o.wantLayers` instead of the
+ *        height budget; `parentMaxH`/`baseH` are unused in this mode.
+ * @param {number} [o.wantLayers=1]  layers to place when o.unboundedH is set
  * @returns {{layers: number, total: number, loadHeight: number}}
  */
-export function stack({perLayer, childH, parentMaxH, baseH, wall = 0, between = 0, gapBelow = wall, gapAbove = wall}){
+export function stack({perLayer, childH, parentMaxH, baseH, wall = 0, between = 0, gapBelow = wall, gapAbove = wall,
+                        unboundedH = false, wantLayers = 1}){
+  if(unboundedH){
+    const layers = perLayer > 0 ? wantLayers : 0;
+    const loadHeight = layers > 0 ? gapBelow + gapAbove + layers*childH + (layers - 1)*between : 0;
+    return {layers, total: perLayer*layers, loadHeight};
+  }
   const budget = parentMaxH - baseH - gapBelow - gapAbove + between;
   const layers = perLayer > 0 ? Math.max(0, Math.floor(budget/(childH + between))) : 0;
   const loadHeight = baseH + (layers > 0 ? gapBelow + gapAbove + layers*childH + (layers - 1)*between : 0);

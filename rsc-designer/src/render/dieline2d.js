@@ -45,6 +45,52 @@ export function draw2d(svg, g, unit, printText){
     creases += `<line x1="${fx(c[0]).toFixed(2)}" y1="${fy(c[1]).toFixed(2)}" x2="${fx(c[2]).toFixed(2)}" y2="${fy(c[3]).toFixed(2)}" stroke="var(--crease)" stroke-width="${strokeW}" stroke-dasharray="${strokeW*4} ${strokeW*3}"/>`;
   });
 
+  // Seal zones and bleed (style-provided, generic — no styleId check): the
+  // SAME g.meta.sealZones the artwork exporter draws from (export/
+  // artwork.js), styled identically (bleed amber/dashed, seal zones pink/
+  // solid) so the 2D view and the artwork template can never show two
+  // different pictures of the same annotation data. `ends`/`fin` span the
+  // full opposite axis (a seal band runs edge-to-edge); `bleeds` likewise.
+  const sz = g.meta.sealZones || {};
+  const ZONE_LABEL = {ends: 'END SEAL', bleeds: 'BLEED', fin: 'FIN SEAL'};
+  let zones = '', zoneLabels = '';
+  const zoneFS = strokeW*8;
+  // `ends`/`bleeds` zones are narrow COLUMNS (endSealBleed/endSealWidth are
+  // typically single-digit-to-low-double-digit mm) — horizontal text would
+  // overflow into the neighbouring zone and collide (confirmed: BLEED and
+  // END SEAL rendered on top of each other before this rotated). `fin`
+  // zones are full-width rows, so their label stays horizontal.
+  const zoneLabelV = (x, y, text) =>
+    `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${zoneFS}" text-anchor="middle" dominant-baseline="middle" transform="rotate(-90 ${x.toFixed(1)} ${y.toFixed(1)})">${text}</text>`;
+  const zoneLabelH = (x, y, text) =>
+    `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${zoneFS}" text-anchor="middle" dominant-baseline="middle">${text}</text>`;
+  for(const b of sz.bleeds || []){
+    const x = fx(b.x0), y = fy(h), rw = b.x1 - b.x0;
+    zones += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${rw.toFixed(2)}" height="${h.toFixed(2)}" fill="#f5a62333" stroke="#f5a623" stroke-width="${strokeW*0.7}" stroke-dasharray="${strokeW*3} ${strokeW*2}"/>`;
+    zoneLabels += zoneLabelV(x + rw/2, fy(h/2), ZONE_LABEL.bleeds);
+  }
+  for(const e of sz.ends || []){
+    const x = fx(e.x0), y = fy(h), rw = e.x1 - e.x0;
+    zones += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${rw.toFixed(2)}" height="${h.toFixed(2)}" fill="#e5484d22" stroke="#e5484d" stroke-width="${strokeW*0.7}"/>`;
+    zoneLabels += zoneLabelV(x + rw/2, fy(h/2), ZONE_LABEL.ends);
+  }
+  for(const f of sz.fin || []){
+    const x = fx(0), y = fy(f.y1), rh = f.y1 - f.y0;
+    zones += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${rh.toFixed(2)}" fill="#e5484d22" stroke="#e5484d" stroke-width="${strokeW*0.7}"/>`;
+    zoneLabels += zoneLabelH(fx(w/2), y + rh/2, ZONE_LABEL.fin);
+  }
+
+  // Fold/panel-boundary REFERENCES (style-provided, generic — no styleId
+  // check): g.meta.refLines are explicitly NOT creases (a film is never
+  // scored; a rigid style has none today). Styled distinctly from the
+  // crease layer above — grey and a different dash rhythm, never
+  // var(--crease)/blue — so a reference line can never be mistaken for an
+  // actual fold, on screen or at a glance.
+  let refs = '';
+  (g.meta.refLines || []).forEach(r => {
+    refs += `<line x1="${fx(r[0]).toFixed(2)}" y1="${fy(r[1]).toFixed(2)}" x2="${fx(r[2]).toFixed(2)}" y2="${fy(r[3]).toFixed(2)}" stroke="#8593a1" stroke-width="${strokeW*0.7}" stroke-dasharray="${strokeW*2.5} ${strokeW*1.5}"/>`;
+  });
+
   // panel labels (style-provided)
   const labels = (g.meta.labels || []).map(l =>
     `<text x="${fx(l.x).toFixed(1)}" y="${fy(l.y).toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${strokeW*11}" text-anchor="middle" dominant-baseline="middle">${esc(l.text)}</text>`
@@ -94,9 +140,11 @@ export function draw2d(svg, g, unit, printText){
   view2d.base = [0, 0, VW, VH];
   apply2dView(svg);
   svg.innerHTML = `
+    ${zones}
     ${creases}
     <polygon points="${pts}" fill="rgba(229,72,77,0.04)" stroke="var(--cut)" stroke-width="${strokeW}" stroke-linejoin="round"/>
-    ${labels}${printTxt}${dims}${overall}`;
+    ${refs}
+    ${labels}${zoneLabels}${printTxt}${dims}${overall}`;
 
   return {w, h};
 }

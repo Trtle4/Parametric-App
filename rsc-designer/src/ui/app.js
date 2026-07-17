@@ -150,7 +150,15 @@ function refresh3d(){
   const g = activeGeometry();
   if(!g) return;                                  // product/pallet fold nothing — the nest renders them
   const lvl = LEVELS[activeLevel];
-  fold.buildBox(foldBuilders[activeStyleId()], g, build.project.printText, lvl.optionsOf(build.project));
+  const builder = foldBuilders[activeStyleId()];
+  // a style with no registered fold-open animation (e.g. the tray styles,
+  // which only ship a 2D dieline + fold-flat 3D geometry today) must never
+  // crash the fold view — hide the box rather than call an undefined
+  // builder. The hierarchy/cutaway view (mode3d 'hier') is unaffected,
+  // since it renders every style's static erected geometry directly, not
+  // through foldBuilders.
+  if(!builder){ fold.showBox(false); return; }
+  fold.buildBox(builder, g, build.project.printText, lvl.optionsOf(build.project));
 }
 
 /** The pallet-stats readout: always the CASE on the pallet (the shipper),
@@ -593,14 +601,19 @@ function hierarchyBundle(){
   const row = build.getSelected() || best;
   if(!row || !row.arr) return null;
   const {cases, cartons, wraps, pieces} = row.arr;
+  // when the carton is disabled, the wrap (if any) is the CASE's direct
+  // child — its placements are already `cartons` (whatever fits directly
+  // into the case), since `wraps` (wraps arranged WITHIN a carton) doesn't
+  // apply when there's no carton for them to be within.
+  const wrapPlacements = row.geo.carton ? (wraps ? wraps.placements : null) : cartons.placements;
   return {
     caseGeo: row.geo.case,
     cartonGeo: row.geo.carton,
     wrapGeo: row.geo.wrap,
     cases: {placements: cases.placements, count: cases.count, deck: cases.deck},
     cartons: {placements: cartons.placements},
-    wraps: pieces ? {
-      placements: wraps.placements, envelope: pieces.envelope, pieces: pieces.placements,
+    wraps: (pieces && wrapPlacements) ? {
+      placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,
       piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
       nx: pieces.nx, ny: pieces.ny,            // collation grid — used to detect a single round slug
       wrapAxis: pieces.wrapAxis                // resolved 'L'|'W' — the renderer's taper/fin axis
@@ -613,9 +626,11 @@ function hierarchyBundle(){
   };
 }
 
-// depths reachable given the config (Product/Wrap need a primary/wrap level)
+// depths reachable given the config (Product/Wrap need a primary/wrap level;
+// Carton needs the carton level itself enabled — collapses out when it isn't)
 function depthAvailable(bundle, d){
   if(d === 'product' || d === 'wrap') return !!(bundle && bundle.wraps);
+  if(d === 'carton') return !!(bundle && bundle.cartonGeo);
   return !!bundle;
 }
 
@@ -995,7 +1010,15 @@ document.addEventListener('drop', e => {
 function refreshSlotSelect(){
   const sel = el('slotSel');
   const slots = save.listSlots();
-  sel.innerHTML = slots.map(s => `<option value="${s.index}">${s.index}. ${s.name ? s.name : '(empty)'}</option>`).join('');
+  // rebuilding <option>s replaces the DOM the browser tracks selection on —
+  // without re-marking the CURRENT value as selected, the select snaps back
+  // to its first option every time this runs, including when IT ITSELF is
+  // the thing that just fired (this function is the select's own 'change'
+  // handler): pick slot 3, the rebuild it triggers reverts to slot 1 before
+  // the user can do anything with the pick. Read the value BEFORE rebuild,
+  // re-apply it after.
+  const cur = sel.options.length ? +sel.value : 1;
+  sel.innerHTML = slots.map(s => `<option value="${s.index}"${s.index === cur ? ' selected' : ''}>${s.index}. ${s.name ? s.name : '(empty)'}</option>`).join('');
   el('btnSlotLoad').disabled = !slots[+sel.value - 1] || !slots[+sel.value - 1].name;
 }
 if(!save.hasStorage){

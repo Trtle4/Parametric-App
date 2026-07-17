@@ -13,3 +13,6 @@ dist/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# local tool permissions — machine-specific, not repo content
+.claude/settings.local.json

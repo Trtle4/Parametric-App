@@ -350,11 +350,27 @@ export function mountCountArrangement(host, idp, link, presets, defNx, defNy, de
         <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '');
     el(idp + 'CSel').addEventListener('change', () => {
       const custom = el(idp + 'CSel').value === 'custom';
-      el(idp + 'C').style.display = custom ? '' : 'none';
       if(!custom) link.count = +el(idp + 'CSel').value;
+      // A chosen count (preset or custom) always means "solve a grid that
+      // holds this many" — the count control has no effect while an
+      // explicit nx*ny*nz grid is active (that grid's own product IS the
+      // count, unconditionally); honoring a count means switching to auto
+      // FOR it, not writing a count nothing reads. Only re-render (losing
+      // this field's focus) on the actual mode transition, never on a
+      // same-mode edit.
+      const wasExplicit = link.arrangement !== 'auto';
+      link.arrangement = 'auto';
+      if(wasExplicit) render();
+      else el(idp + 'C').style.display = custom ? '' : 'none';
       onInput();
     });
-    el(idp + 'C').addEventListener('input', () => { link.count = Math.max(1, Math.round(+el(idp + 'C').value || 1)); onInput(); });
+    el(idp + 'C').addEventListener('input', () => {
+      link.count = Math.max(1, Math.round(+el(idp + 'C').value || 1));
+      const wasExplicit = link.arrangement !== 'auto';
+      link.arrangement = 'auto';
+      if(wasExplicit) render();
+      onInput();
+    });
     el(idp + 'Arr').addEventListener('change', () => {
       const exp = el(idp + 'Arr').value === 'explicit';
       link.arrangement = exp ? {nx: defNx, ny: defNy, nz: defNz} : 'auto';

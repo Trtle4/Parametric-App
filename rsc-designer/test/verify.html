@@ -6,7 +6,7 @@
 import {styleById} from '../src/core/styles/index.js';
 import {fitInto} from '../src/core/containment.js';
 import {toMM, fromMM} from '../src/core/units.js';
-import {newProject, candidateCases} from '../src/core/project.js';
+import {newProject, candidateCases, styleDefaults} from '../src/core/project.js';
 
 const golden = await (await fetch('golden.json')).json();
 const report = {pass: 0, fail: 0, mismatches: []};
@@ -95,6 +95,15 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
   }
   p.secondary.allowedOrientations = ch.config.orientations;
   p.secondary.clearance = {...ch.config.clearance};
+  // pins that swap the case (tertiary) style off the fefco201 default —
+  // e.g. a tray as the case — via ch.config.case: {styleId, params}.
+  // L/W/H are solved by candidateCases and overwritten regardless; params
+  // here only need to supply the style's OTHER inputs (caliper, glueTab,
+  // lid, ...), defaulted from the registry for anything omitted.
+  if(ch.config.case){
+    p.tertiary.styleId = ch.config.case.styleId;
+    p.tertiary.params = {...styleDefaults(ch.config.case.styleId), ...ch.config.case.params};
+  }
   p.links[0].count = ch.config.count;
   p.links[0].arrangement = ch.config.arrangement;
   const a = ch.config.arrangement;

@@ -6,7 +6,7 @@
 /* Unit tests for core/containment.js + core/pack.js clearance math.
    The modules under test are DOM-free; this page is only a runner.
    Every expected value is hand-checked (see comments). */
-import {fitInto, solveParent, orientDims, ORIENTATIONS} from '../src/core/containment.js';
+import {fitInto, solveParent, orientDims, ORIENTATIONS, parentCandidates} from '../src/core/containment.js';
 import {packLayer, stack} from '../src/core/pack.js';
 
 const results = [];
@@ -145,6 +145,35 @@ t('solveParent rejects orientation preference outside allowed', () =>
   throws(() => solveParent(box(1, 1, 1, ['LWH']), 2, undefined, {orientations:['HWL']})));
 t('solveParent count < 1 throws', () =>
   throws(() => solveParent(box(1, 1, 1, ['LWH']), 0)));
+
+/* ---------- openTop (containment relationship, not a style read) ---------- */
+// child 20×20×50 standing PROUD of a cavity only 30 tall: with the default
+// (openTop off), height rejects it entirely, matching every existing
+// behaviour bit-for-bit.
+t('closed (openTop off, default): a child taller than the cavity does not fit', () => {
+  const a = fitInto(box(20, 20, 50, ['LWH']), {L:100, W:100, H:30});
+  eq(a.layers, 0); eq(a.total, 0);
+});
+t('open top: the SAME child, SAME cavity fits when opts.openTop is set — footprint still governs, height does not', () => {
+  const a = fitInto(box(20, 20, 50, ['LWH']), {L:100, W:100, H:30}, undefined, 'column', {openTop: true});
+  eq(a.perLayer, 25, 'footprint packing unaffected: 5x5 grid of 20x20 in 100x100');
+  eq(a.layers, 1, 'default one layer when no wantCount given');
+  eq(a.total, 25);
+});
+t('open top with wantCount: layers computed from the target, not overshot', () => {
+  const a = fitInto(box(20, 20, 50, ['LWH']), {L:100, W:100, H:30}, undefined, 'column', {openTop: true, wantCount: 60});
+  eq(a.perLayer, 25); eq(a.layers, 3, 'ceil(60/25)=3, not an arbitrary/unbounded number'); eq(a.total, 75);
+});
+t('parentCandidates with openTop: cavity.H comes from opts.fixedH, NOT layers*childH', () => {
+  const cands = parentCandidates(box(20, 20, 50, ['LWH']), 25, {wall:0, between:0}, {openTop: true, fixedH: 30});
+  for(const c of cands) eq(c.cavity.H, 30, `candidate nx=${c.nx} ny=${c.ny} layers=${c.layers}`);
+});
+t('parentCandidates openTop requires opts.fixedH', () =>
+  throws(() => parentCandidates(box(1, 1, 1, ['LWH']), 1, undefined, {openTop: true})));
+t('parentCandidates without openTop is bit-identical to before (no opts.openTop at all)', () => {
+  const cands = parentCandidates(box(10, 10, 10, ['LWH']), 4, {wall:0, between:0}, {layers: 1});
+  eq(cands[0].cavity, {L: cands[0].nx*10, W: cands[0].ny*10, H: 10}, 'H derived from layers*childH, as always');
+});
 
 /* ---------- report ---------- */
 const fails = results.filter(r => r.startsWith('FAIL')).length;

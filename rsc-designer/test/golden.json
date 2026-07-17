@@ -253,6 +253,25 @@
         "coveragePct": 90, "cubeUtilPct": 77
       }
     },
+    "carton12_4x3x1_tray_case": {
+      "note": "TRAY AS THE CASE, not fefco201. tray_lid (self-locking hinged-lid tray) was the wrong construction and is removed; this pin now uses the corrected FEFCO 0300 open tray (glued corner flaps, no lid). Same carton/arrangement as carton12_4x3x1_upright (a6120 100x60x150 @0.457, 12 cartons 4x3x1, wall 1.5) so cavity/casesPerLayer/cartonsPerPallet-per-case are IDENTICAL to that pin (the case style never affects the child-fit solve, only its own outer dims) -- proves candidateCases is generic across tertiary styleId. tray @ caliper 3 / cornerFlapDepth 40: outer.H = cavity.H + 3 = 155 (one board layer bottom, ZERO top -- open, not fefco201's +12 stack and not the old tray_lid's +6), so outer/boardAreaM2/caseLayers/casesPerPallet/cubeUtilPct differ from both the RSC pin and the old (wrong) tray_lid pin; cavity/casesPerLayer must not.",
+      "config": {
+        "carton": { "L": 100, "W": 60, "H": 150, "caliper": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+        "case": { "styleId": "tray", "params": { "caliper": 3, "cornerFlapDepth": 40 } },
+        "count": 12, "arrangement": { "nx": 4, "ny": 3, "nz": 1 },
+        "orientations": ["LWH", "WLH"],
+        "clearance": { "wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "rounding": "1mm"
+      },
+      "expected": {
+        "cavity": { "L": 407, "W": 186, "H": 152 },
+        "outer": { "L": 413, "W": 192, "H": 155 },
+        "boardAreaM2": 0.34839,
+        "casesPerLayer": 14, "caseLayers": 9,
+        "casesPerPallet": 126, "cartonsPerPallet": 1512,
+        "coveragePct": 90, "cubeUtilPct": 82
+      }
+    },
     "cylinder40_2x2x10_upright_4x3x1": {
       "note": "cylindrical product through the full chain: d50 x t6 pucks, 'multiple pieces collated' 10/stack Z 2x2 (envelope 100x100x60, 40 pieces, fill pi/4), upright into an a6120 @0.457 with zero allowances, 12 cartons 4x3x1 into a fefco201 @3, GMA pallet, optimal pattern",
       "config": {

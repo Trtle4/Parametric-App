@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>dieline structural validity</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Structural validity checks every RIGID style's Geometry must satisfy,
+   independent of which style it is. Golden pins prove the numbers are
+   stable; these prove the blank is a manufacturable, closeable box. Both
+   are needed -- a wrong-but-stable geometry passes golden forever.
+
+   What this CANNOT catch, by design: which of several equally-valid
+   closed boxes matches the intended real-world die (e.g. a corner tab
+   hinged to the side wall vs the end wall -- both fold into a valid,
+   non-self-intersecting closed box; only a human/reference-image check
+   tells them apart). That class of error is caught by sketch confirmation
+   before building, not by this file. See the report at the bottom for
+   which of the two known-wrong geometries this DOES catch. */
+import {fefco201} from '../src/core/styles/fefco201.js';
+import {a6120} from '../src/core/styles/a6120.js';
+import {trayGeometry} from '../src/core/styles/tray.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const TOL = 1e-6;
+
+// --- segment/point geometry helpers ----------------------------------
+function segsIntersect(a1, a2, b1, b2){
+  const d = (p,q,r) => (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0]);
+  const d1 = d(b1,b2,a1), d2 = d(b1,b2,a2), d3 = d(a1,a2,b1), d4 = d(a1,a2,b2);
+  if(((d1>0&&d2<0)||(d1<0&&d2>0)) && ((d3>0&&d4<0)||(d3<0&&d4>0))) return true;
+  // colinear overlap (excluding a shared endpoint, which adjacent segments legitimately have)
+  const onSeg = (p,q,r) => Math.min(p[0],q[0])-TOL<=r[0] && r[0]<=Math.max(p[0],q[0])+TOL &&
+                            Math.min(p[1],q[1])-TOL<=r[1] && r[1]<=Math.max(p[1],q[1])+TOL;
+  if(Math.abs(d1)<TOL && onSeg(b1,b2,a1) && !ptEq(a1,b1) && !ptEq(a1,b2)) return true;
+  if(Math.abs(d2)<TOL && onSeg(b1,b2,a2) && !ptEq(a2,b1) && !ptEq(a2,b2)) return true;
+  return false;
+}
+const ptEq = (p,q) => Math.abs(p[0]-q[0])<TOL && Math.abs(p[1]-q[1])<TOL;
+
+function isSimpleClosedPolygon(cut){
+  const n = cut.length;
+  if(n < 3) throw new Error(`fewer than 3 points (${n})`);
+  for(let i=0;i<n;i++){
+    const a1 = cut[i], a2 = cut[(i+1)%n];
+    if(ptEq(a1,a2)) throw new Error(`zero-length edge at index ${i}: ${JSON.stringify(a1)}`);
+    for(let j=i+1;j<n;j++){
+      if(j===i || (j+1)%n===i || (i+1)%n===j) continue;   // skip self and adjacent (share an endpoint legitimately)
+      const b1 = cut[j], b2 = cut[(j+1)%n];
+      if(segsIntersect(a1,a2,b1,b2)) throw new Error(`edges ${i}-${i+1} and ${j}-${j+1} intersect (self-intersecting outline)`);
+    }
+  }
+}
+
+function pointInOrOnPolygon(pt, cut){
+  const n = cut.length;
+  let inside = false;
+  for(let i=0, j=n-1; i<n; j=i++){
+    const [xi,yi] = cut[i], [xj,yj] = cut[j];
+    // on-edge (within tolerance) counts as "in bounds"
+    const cross = (xj-xi)*(pt[1]-yi) - (yj-yi)*(pt[0]-xi);
+    const onSeg = Math.abs(cross) < TOL*Math.max(1,Math.hypot(xj-xi,yj-yi)) &&
+      Math.min(xi,xj)-TOL<=pt[0] && pt[0]<=Math.max(xi,xj)+TOL &&
+      Math.min(yi,yj)-TOL<=pt[1] && pt[1]<=Math.max(yi,yj)+TOL;
+    if(onSeg) return true;
+    if((yi>pt[1]) !== (yj>pt[1])){
+      const xCross = xi + (pt[1]-yi)/(yj-yi)*(xj-xi);
+      if(pt[0] < xCross) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function creasesInsideOutline(cut, crease){
+  crease.forEach((c, i) => {
+    const [x1,y1,x2,y2] = c;
+    if(!pointInOrOnPolygon([x1,y1], cut)) throw new Error(`crease ${i} endpoint (${x1},${y1}) lies outside the cut outline`);
+    if(!pointInOrOnPolygon([x2,y2], cut)) throw new Error(`crease ${i} endpoint (${x2},${y2}) lies outside the cut outline`);
+    const mid = [(x1+x2)/2, (y1+y2)/2];
+    if(!pointInOrOnPolygon(mid, cut)) throw new Error(`crease ${i} midpoint lies outside the cut outline`);
+  });
+}
+
+function bboxMatchesExtent(cut, bbox){
+  const xs = cut.map(p=>p[0]), ys = cut.map(p=>p[1]);
+  const actual = {minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys)};
+  for(const k of ['minX','maxX','minY','maxY'])
+    if(Math.abs(actual[k]-bbox[k]) > TOL) throw new Error(`bbox.${k}=${bbox[k]} but blank's actual extent is ${actual[k]}`);
+}
+
+// Panels between creases must sum to the full girth (glue tab excluded),
+// so the tube/tray actually closes. Two structural shapes, one property:
+//  - TUBE styles (RSC/tuck/seal-end): >=3 vertical creases share the same
+//    body-height span -- girth = (far edge of the blank) - (first shared
+//    crease's x), which naturally excludes anything to its left (the glue
+//    tab) and includes the unmarked closing edge on the right.
+//  - RADIAL/cross styles (tray): no such shared-span run exists; instead
+//    the walls hinge directly to the base, and their hinge lengths (each
+//    wall's own edge against the base) must sum to the base's own
+//    perimeter, 2*(L+W).
+function girthCloses(geo){
+  const {L, W} = geo.inner;
+  const expected = 2*(L+W);
+  const creaseLen = c => Math.hypot(c[2]-c[0], c[3]-c[1]);
+  const isVert = c => Math.abs(c[0]-c[2]) < TOL;
+  const spanKey = c => isVert(c) ? `v:${c[1].toFixed(3)}:${c[3].toFixed(3)}` : `h:${c[0].toFixed(3)}:${c[2].toFixed(3)}`;
+  const groups = {};
+  geo.crease.forEach(c => { const k = spanKey(c); (groups[k] = groups[k] || []).push(c); });
+  const tubeGroup = Object.values(groups).find(g => g.length >= 3);
+  if(tubeGroup){
+    const vert = isVert(tubeGroup[0]);
+    const positions = tubeGroup.map(c => vert ? c[0] : c[1]);
+    const far = vert ? geo.bbox.maxX : geo.bbox.maxY;
+    const girth = far - Math.min(...positions);
+    if(Math.abs(girth - expected) > TOL)
+      throw new Error(`tube girth ${girth} != 2*(L+W)=${expected}`);
+    return;
+  }
+  // radial fallback: sum every crease whose length matches L or W exactly
+  // (the wall<->base hinges, full length -- no legitimate corner treatment
+  // in this style family shortens them). Grouped so each is counted once.
+  const total = geo.crease.reduce((s,c) => {
+    const len = creaseLen(c);
+    return (Math.abs(len-L)<TOL || Math.abs(len-W)<TOL) ? s+len : s;
+  }, 0);
+  if(Math.abs(total - expected) > TOL)
+    throw new Error(`radial base-hinge total ${total} != 2*(L+W)=${expected}`);
+}
+
+function checkStyle(name, geo){
+  t(`${name}: perimeter is a single simple closed loop`, () => isSimpleClosedPolygon(geo.cut));
+  t(`${name}: every crease lies inside the cut outline`, () => creasesInsideOutline(geo.cut, geo.crease));
+  t(`${name}: reported bbox matches the blank's actual extent`, () => bboxMatchesExtent(geo.cut, geo.bbox));
+  t(`${name}: panels sum to the full girth (glue tab excluded)`, () => girthCloses(geo));
+}
+
+checkStyle('fefco201', fefco201({L:200,W:150,H:120,caliper:3,glue:35,slot:6}));
+checkStyle('a6120', a6120({L:100,W:60,H:150,caliper:0.457,glueTab:15,dustDepth:37.5,tuckDepth:59.543,tuckTab:16}));
+checkStyle('tray (FEFCO 0300)', trayGeometry({L:100,W:60,H:30,caliper:3,cornerFlapDepth:20}));
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

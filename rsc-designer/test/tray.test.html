@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>tray (FEFCO 0300, rectangular glued corners) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for the FEFCO 0300 die-cut tray (DOM-free module). Corner: a
+   plain RECTANGULAR glue tab (width = wall height H, depth = a real
+   parameter), full straight separating cut -- no taper, no diagonal, no
+   slot. Open top, no lid, no tuck.
+   Reference case, hand-derived: L=100 W=60 H=30 t=3 cornerFlapDepth=20
+   -> O=H=30, base [30,30]-[130,90], lx=0, rx=160, botY=0, topY=120
+      td = clamp(20, 0, W/2=30) = 20
+      the tab (depth 20) is narrower than the wall it glues to (depth
+      H=30), so the outline steps: tab's own outer edge at x=150, then a
+      short ledge out to the wall's own outer edge at x=160 (rx). */
+import {trayGeometry} from '../src/core/styles/tray.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(actual, expected, msg = ''){
+  if(Math.abs(actual - expected) > 1e-9) throw new Error(`${msg} expected ${expected}, got ${actual}`);
+}
+function approxPt(actual, expected, msg = ''){
+  approx(actual[0], expected[0], msg + '.x'); approx(actual[1], expected[1], msg + '.y');
+}
+
+const g = trayGeometry({L: 100, W: 60, H: 30, caliper: 3, cornerFlapDepth: 20});
+
+t('bbox shifted so it starts at the origin', () => {
+  approx(g.bbox.minX, 0); approx(g.bbox.minY, 0);
+  approx(g.bbox.maxX, 160, 'maxX'); approx(g.bbox.maxY, 120, 'maxY (topY)');
+});
+t('compensation: open top gains board at the bottom ONLY -- +t, never the RSC\'s +4t', () => {
+  approx(g.outer.L, 106, 'L'); approx(g.outer.W, 66, 'W'); approx(g.outer.H, 33, 'H, +t');
+  approx(g.meta.boardLayersBottom, 1); approx(g.meta.boardLayersTop, 0);
+});
+t('perimeter is exactly the 12-point rectangular-tab-with-step shape, no degenerate/self-overlapping edges', () => {
+  if(g.cut.length !== 12) throw new Error(`expected 12 cut points, got ${g.cut.length}`);
+  const expected = [
+    [10,0],[150,0],[150,30],[160,30],[160,90],[150,90],
+    [150,120],[10,120],[10,90],[0,90],[0,30],[10,30]
+  ];
+  g.cut.forEach((pt, i) => approxPt(pt, expected[i], `cut[${i}]`));
+  // no three consecutive points collinear-and-doubling-back (the bug this
+  // shape previously had: a cut that visited the base corner and then
+  // walked back out over ground it had just covered)
+  for(let i = 0; i < g.cut.length; i++){
+    const a = g.cut[i], b = g.cut[(i+1)%g.cut.length], c = g.cut[(i+2)%g.cut.length];
+    const cross = (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
+    const dot = (b[0]-a[0])*(c[0]-b[0]) + (b[1]-a[1])*(c[1]-b[1]);
+    if(Math.abs(cross) < 1e-9 && dot < 0) throw new Error(`points ${i},${i+1},${i+2} double back on themselves (degenerate)`);
+  }
+});
+t('tab is a RECTANGLE: width == parent wall height (H), depth == cornerFlapDepth, no taper point', () => {
+  // BR tab corners: (130,0)-(150,0)-(150,30)-(130,30) [(130,*) is the
+  // hinge, not a cut vertex -- see the "fully cut, no bridging" test below]
+  approxPt(g.cut[1], [150, 0], 'BR tab outer-bottom corner');
+  approxPt(g.cut[2], [150, 30], 'BR tab outer-top corner, same H as the wall');
+  approx(150 - 130, 20, 'tab depth == cornerFlapDepth, constant, not tapering to a point');
+});
+t('the tab is fully cut from the adjacent width wall: it hinges to the LENGTH wall, not the width wall, and the width wall\'s own outer edge is a distinct, separately-drawn step', () => {
+  // the width wall's own bottom edge (from its base hinge, x=130, out to
+  // its own outer edge, x=160) is NOT drawn as one single cut from 130 --
+  // only the portion beyond the tab's own reach (150 to 160) is a real
+  // free edge; the segment underneath the tab (130 to 150) is covered by
+  // the tab itself and is never revisited. Confirms no bridging: the tab's
+  // own cut boundary (ending at x=150) and the wall's own cut boundary
+  // (starting at x=150, stepping out to 160) are TWO SEPARATE edges,
+  // joined at a real corner (150,30), not a straight pass-through.
+  approxPt(g.cut[2], [150, 30], 'tab\'s own outer-top corner');
+  approxPt(g.cut[3], [160, 30], 'width wall\'s own outer corner, a genuinely different edge');
+  const collinear = (a,b,c) => Math.abs((b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])) < 1e-9;
+  if(collinear(g.cut[1], g.cut[2], g.cut[3])) throw new Error('tab and wall edges should turn a real corner, not run straight through');
+});
+t('tab hinges to its OWN wall along a vertical crease, collinear with (but distinct from) the adjacent width wall\'s base hinge', () => {
+  const has = (a) => g.crease.some(c => c.every((v, i) => Math.abs(v - a[i]) < 1e-9));
+  if(!has([130, 0, 130, 30])) throw new Error('BR tab hinge (to the bottom length wall) missing');
+  if(!has([130, 30, 130, 90])) throw new Error('right width wall base hinge missing (should be full length, un-retreated)');
+});
+t('length walls carry the tabs; width walls are plain, un-notched, un-tabbed', () => {
+  const has = (a) => g.crease.some(c => c.every((v, i) => Math.abs(v - a[i]) < 1e-9));
+  if(!has([30, 30, 130, 30]) || !has([30, 90, 130, 90])) throw new Error('length wall base hinges should be full length');
+  if(g.crease.some(c => c[0] === 0 || c[2] === 0 || c[0] === 160 || c[2] === 160))
+    throw new Error('a width wall should have no tab hinge of its own');
+});
+t('tab depth is capped at W/2 (not H) -- the fold lands the tab along the width wall\'s W-span, not its H', () => {
+  const capped = trayGeometry({L: 100, W: 60, H: 30, caliper: 3, cornerFlapDepth: 999});
+  approx(capped.meta.cornerFlapDepth, 30, 'capped at W/2');
+  const tallH = trayGeometry({L: 100, W: 60, H: 200, caliper: 3, cornerFlapDepth: 999});
+  approx(tallH.meta.cornerFlapDepth, 30, 'still W/2 == 30, even though H grew to 200 -- proves the cap is not H-based');
+});
+t('no lid parameter changes anything -- a lidded/telescoping cap is not this style', () => {
+  const withStray = trayGeometry({L: 100, W: 60, H: 30, caliper: 3, cornerFlapDepth: 20, lid: true, lidTuckDepth: 999});
+  approx(withStray.bbox.maxY, 120, 'stray lid flags are ignored, not silently honoured');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

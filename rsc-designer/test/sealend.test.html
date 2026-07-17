@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>seal-end carton tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for the glued seal-end carton (DOM-free module). Rebuilt from
+   a confirmed sketch: FOUR flaps per end (2 dust, 1 major, 1 seal), the
+   SAME panel (front) sealing BOTH ends -- not an alternating RSC-slotted
+   pattern, which was the earlier (wrong) build.
+   Reference case, hand-derived: L=100 W=60 H=150 t=0.457 glueTab=15
+   dustDepth=37.5 overlap=20
+   -> majorFlapDepth=W/2=30, F=30+10=40, x-landmarks 15|115|175|275|335,
+      ext=max(40,37.5)=40, yb=40, yt=190, chF=min(5,40*0.4)=5, cg=min(7.5,5)=5 */
+import {sealend} from '../src/core/styles/sealend.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(actual, expected, msg = ''){
+  if(Math.abs(actual - expected) > 1e-9) throw new Error(`${msg} expected ${expected}, got ${actual}`);
+}
+function approxPt(actual, expected, msg = ''){
+  approx(actual[0], expected[0], msg + '.x'); approx(actual[1], expected[1], msg + '.y');
+}
+
+const P = {L: 100, W: 60, H: 150, caliper: 0.457, glueTab: 15, dustDepth: 37.5, overlap: 20};
+const g = sealend(P);
+const yb = 40, yt = 190;
+
+t('overlap parameter drives sealFlapDepth past the major flap\'s own reach', () => {
+  approx(g.meta.majorFlapDepth, 30, 'major flap reaches the centreline, W/2');
+  approx(g.meta.overlap, 20); approx(g.meta.sealFlapDepth, 40, 'F = W/2 + overlap/2');
+});
+t('blank bbox', () => {
+  approx(g.bbox.minX, 0); approx(g.bbox.minY, 0);
+  approx(g.bbox.maxX, 335, 'maxX'); approx(g.bbox.maxY, 230, 'maxY');
+});
+t('outer compensation: +2t / +2t / +6t -- THREE layers stack at each end (dust+major+seal), not two', () => {
+  approx(g.outer.L, 100.914, 'L'); approx(g.outer.W, 60.914, 'W'); approx(g.outer.H, 152.742, 'H, +6t');
+  approx(g.meta.boardLayersTop, 3); approx(g.meta.boardLayersBottom, 3);
+});
+t('perimeter has 32 points, no duplicate seam points, and closes', () => {
+  if(g.cut.length !== 32) throw new Error(`expected 32 cut points, got ${g.cut.length}`);
+  approxPt(g.cut[0], [15, yb], 'cut[0]');
+  approxPt(g.cut[31], [15, 10], 'cut[31], last point before closing back to cut[0]');
+  // no zero-length segment at either seam (glue-tab->top-end, bottom-end->close)
+  if(g.cut[3][0] === g.cut[4][0] && g.cut[3][1] === g.cut[4][1]) throw new Error('duplicate point at glue-tab/top-end seam');
+});
+t('glue tab with chamfered ends (cg = min(glueTab*0.5, 5))', () => {
+  approxPt(g.cut[1], [0, yb + 5], 'cut[1]');
+  approxPt(g.cut[2], [0, yt - 5], 'cut[2]');
+});
+t('TOP end: major flap (back, x1-x2) is a PLAIN rectangle reaching the centreline -- not a tuck, not chamfered', () => {
+  approxPt(g.cut[4], [15, 220], 'major flap left edge, yt+majorFlapDepth');
+  approxPt(g.cut[5], [115, 220], 'major flap top edge');
+  approxPt(g.cut[6], [115, yt], 'major flap right edge, back to baseline');
+});
+t('TOP end: seal flap (front, x3-x4) is chamfered and reaches PAST the major flap by overlap/2', () => {
+  approxPt(g.cut[11], [180, 230], 'seal flap tip corner');
+  approxPt(g.cut[12], [270, 230], 'seal flap far tip corner');
+  approx(230 - 220, 10, 'seal flap reaches overlap/2 = 10 further than the major flap');
+});
+t('BOTTOM end mirrors the TOP: major flap under back (x1-x2), seal flap under front (x3-x4) -- SAME panels both ends, not alternated', () => {
+  const iBotStart = g.cut.findIndex((p, i) => i > 15 && p[0] === 335 && p[1] === yb);
+  approxPt(g.cut[iBotStart + 3], [275, 40], 'back to baseline after bottom seal flap');
+  approxPt(g.cut[iBotStart + 6], [180, 0], 'bottom seal flap tip -- same front panel (x3-x4) as the top');
+  approxPt(g.cut[iBotStart + 12], [115, 10], 'bottom major flap tip -- same back panel (x1-x2) as the top');
+});
+t('dust flaps: 20deg swept trapezoids on both side panels, at BOTH ends', () => {
+  const di = 37.5*Math.tan(20*Math.PI/180);
+  approxPt(g.cut[7], [115 + di, 227.5], 'top dust flap 1, left edge (mirrors a6120 convention)');
+  approxPt(g.cut[8], [175 - di, 227.5], 'top dust flap 1, right edge');
+  approxPt(g.cut[15], [275 + di, 227.5], 'top dust flap 2, left edge');
+  approxPt(g.cut[16], [335 - di, 227.5], 'top dust flap 2, right edge');
+});
+t('creases: 4 vertical panel folds + 2 full-width roots (major|dust|seal|dust hinged together)', () => {
+  if(g.crease.length !== 6) throw new Error(`expected 6 creases, got ${g.crease.length}`);
+  const has = (a) => g.crease.some(c => c.every((v, i) => Math.abs(v - a[i]) < 1e-9));
+  if(!has([15, yb, 15, yt])) throw new Error('missing glue-tab panel fold');
+  if(!has([15, yt, 335, yt])) throw new Error('missing top roots crease spanning all 4 top flaps');
+  if(!has([15, yb, 335, yb])) throw new Error('missing bottom roots crease spanning all 4 bottom flaps');
+});
+t('wider overlap deepens the seal flap without moving the panel run or the major flap', () => {
+  const g2 = sealend({...P, overlap: 40});
+  approx(g2.meta.majorFlapDepth, 30, 'major flap unaffected by overlap');
+  approx(g2.meta.sealFlapDepth, 50, 'F grows to W/2+20');
+  approx(g2.outer.L, 100.914, 'L unaffected'); approx(g2.outer.W, 60.914, 'W unaffected');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

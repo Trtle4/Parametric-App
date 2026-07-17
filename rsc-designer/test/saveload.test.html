@@ -76,6 +76,42 @@ t('a file at exactly the current version passes through with an empty migration 
   eq(result.migrationsRun, []);
 });
 
+t('v2 file referencing the removed tray_lid style migrates to tray, params mapped, lidTuckDepth dropped', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 2,
+    project: {
+      ...base,
+      tertiary: {styleId: 'tray_lid', params: {L: 300, W: 200, H: 80, caliper: 3, glueTab: 25, lidTuckDepth: 20},
+                 allowedOrientations: ['LWH', 'WLH'], clearance: {wall: 0, between: 0}, enabled: true}
+    }
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.tertiary.styleId, 'tray', 'styleId migrated:');
+  // fillProjectDefaults fills missing keys against its OWN (fefco201-shaped)
+  // template regardless of styleId -- pre-existing, style-agnostic behaviour,
+  // unrelated to this migration; it adds harmless unused glue/slot keys here
+  eq(result.project.tertiary.params,
+     {L: 300, W: 200, H: 80, caliper: 3, cornerFlapDepth: 25, glue: 35, slot: 6}, 'params mapped, lidTuckDepth dropped:');
+  if(result.migrationsRun.length < 1 || !result.migrationsRun.some(m => m.startsWith('v2 -> v3')))
+    throw new Error('expected a v2->v3 migration step in the log');
+});
+
+t('a plain "tray" reference (never tray_lid) round-trips untouched by the v2->v3 migration', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 2,
+    project: {
+      ...base,
+      tertiary: {styleId: 'tray', params: {L: 300, W: 200, H: 80, caliper: 3, cornerFlapDepth: 40},
+                 allowedOrientations: ['LWH', 'WLH'], clearance: {wall: 0, between: 0}, enabled: true}
+    }
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.tertiary.styleId, 'tray');
+  eq(result.project.tertiary.params, {L: 300, W: 200, H: 80, caliper: 3, cornerFlapDepth: 40, glue: 35, slot: 6});
+});
+
 /* ---- missing fields: defaulted AND reported ----------------------------- */
 t('a missing field is filled from newProject()\'s default and reported', () => {
   const doc = {schemaVersion: 1, project: {secondary: {styleId: 'a6120', params: {caliper: 0.457}, allowedOrientations: ['LWH', 'WLH']}}};
@@ -238,14 +274,20 @@ function findSelected(rows, key){
 await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
   const result = deserializeProject(raw);
-  // this fixture predates schema v2 (finFace rename) — it MUST run that one
-  // migration now, not stay "already current": a frozen v1 file whose
-  // migration count silently changed to 0 would mean the migration stopped
-  // applying to it, not that the file caught up
-  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  // this fixture predates schema v2 (finFace rename) and v3 (tray_lid
+  // removal) — it MUST run both migrations now, not stay "already
+  // current": a frozen v1 file whose migration count silently changed
+  // would mean a migration stopped applying to it, not that it caught up
+  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
   if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
+  if(!result.migrationsRun[1].startsWith('v2 -> v3')) throw new Error(`unexpected migration: ${result.migrationsRun[1]}`);
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
-  eq(result.defaulted, [], 'a fixture has nothing missing:');
+  // this fixture predates openTop entirely (a genuinely new field) -- it is
+  // correctly reported as defaulted, from each level's OWN style (both
+  // false here: a6120 and fefco201 are both closed), not silently absent
+  eq(result.defaulted, ['secondary.openTop', 'tertiary.openTop'], 'only the new openTop field is missing:');
+  eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
+  eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
@@ -262,7 +304,7 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
 await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
   const rows = candidateCases(result.project, result.rounding);
@@ -281,7 +323,7 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
 await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 1, 'runs exactly the v1->v2 finFace migration:');
+  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');
   const rows = candidateCases(result.project, result.rounding);

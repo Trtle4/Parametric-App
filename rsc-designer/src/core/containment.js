@@ -117,13 +117,28 @@ function orientationGroups(allowed){
 /**
  * Fit children into a FIXED parent cavity.
  * @param {Child} child
- * @param {Cavity} cavity            // H must be bounded here
+ * @param {Cavity} cavity            // H must be bounded here, unless opts.openTop
  * @param {Clearance} [clearance]
  * @param {'optimal'|'column'|'interlock'} [pattern]
+ * @param {Object} [opts]
+ * @param {boolean} [opts.openTop=false]  the PARENT does not constrain height —
+ *        a containment-relationship fact (is this parent's ceiling real?),
+ *        never inferred from the child or any style name. Height stops being
+ *        a fit criterion; layers come from opts.wantCount instead (computed
+ *        per orientation group, since perLayer varies by group).
+ * @param {number} [opts.wantCount=perLayer]  desired total when opts.openTop
+ *        is set — layers = ceil(wantCount/perLayer) for each group's own
+ *        perLayer, so "does at least N fit" doesn't overshoot into layers
+ *        nobody asked for. Defaults to exactly one layer.
  * @returns {Arrangement}
  */
-export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, pattern = 'optimal'){
+export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, pattern = 'optimal', opts = {}){
   validateOrientations(child.allowedOrientations);
+  const openTop = !!opts.openTop;
+  // cavity.H is always a real value (a wall's own height is never "null") —
+  // opts.openTop changes whether it's used as a FIT ceiling, not whether it
+  // exists. An open-top parent's H is an independent design input, supplied
+  // here like any other; it simply stops constraining how many children fit.
   if(cavity.H == null)
     throw new Error('fitInto needs a bounded cavity height; use solveParent to size a parent');
   const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
@@ -134,8 +149,10 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
     const {l, w, h} = orientDims(child.outer, grp.base);
     const layer = packLayer({childL: l, childW: w, parentL: cavity.L, parentW: cavity.W,
                              pattern, wall, between, allowRotate: grp.allowRotate});
+    const wantLayers = layer.perLayer > 0 ? Math.ceil((opts.wantCount ?? layer.perLayer)/layer.perLayer) : 0;
     const st = stack({perLayer: layer.perLayer, childH: h, parentMaxH: cavity.H, baseH: 0,
-                      between: betweenZ, gapBelow: bottom, gapAbove: top});
+                      between: betweenZ, gapBelow: bottom, gapAbove: top,
+                      unboundedH: openTop, wantLayers});
     if(!best || st.total > best.st.total) best = {grp, dims: {l, w, h}, layer, st};
   }
   const {grp, dims, layer, st} = best;
@@ -194,6 +211,12 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
  * @param {number} [opts.aspect=1]       preferred cavity L:W ratio (tie-break)
  * @param {number} [opts.layers]         layer count hint (restricts the search)
  * @param {Orientation[]} [opts.orientations]  preference-ordered subset of allowedOrientations
+ * @param {boolean} [opts.openTop=false]  the PARENT does not constrain height —
+ *        cavity.H is NOT derived from the child stack; it comes from
+ *        opts.fixedH instead (an independent design input, e.g. a tray
+ *        wall's own user-set height). L/W are still solved from the
+ *        footprint exactly as usual.
+ * @param {number} [opts.fixedH]  required when opts.openTop is set
  * @returns {{cavity: Cavity, arrangement: Arrangement}}
  */
 /**
@@ -210,6 +233,9 @@ export function parentCandidates(child, count, clearance = {wall: 0, between: 0}
   validateOrientations(child.allowedOrientations);
   if(!(count >= 1)) throw new Error('parentCandidates needs count >= 1');
   const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
+  const openTop = !!opts.openTop;
+  if(openTop && typeof opts.fixedH !== 'number')
+    throw new Error('parentCandidates needs opts.fixedH for an open-top parent — its H is an independent input, not solved from the child stack');
 
   let orientations = child.allowedOrientations;
   if(opts.orientations){
@@ -231,7 +257,7 @@ export function parentCandidates(child, count, clearance = {wall: 0, between: 0}
           cavity: {
             L: nx*l + (nx - 1)*between + 2*wall,
             W: ny*w + (ny - 1)*between + 2*wall,
-            H: layers*h + (layers - 1)*betweenZ + bottom + top
+            H: openTop ? opts.fixedH : layers*h + (layers - 1)*betweenZ + bottom + top
           },
           nx, ny, layers, oi, o: orientations[oi], l, w, h
         });

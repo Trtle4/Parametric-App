@@ -17,7 +17,7 @@
  *   - a field present in the loaded doc but not part of the current
  *     schema is "unknown" -> preserved through the round trip untouched.
  */
-import {newProject} from './project.js';
+import {newProject, styleOpenTopDefault} from './project.js';
 import {migrate, CURRENT_SCHEMA_VERSION} from './schemaMigrations.js';
 
 const APP_VERSION = 'rsc-designer-dev';   // human reference only, never used for logic
@@ -135,6 +135,11 @@ function fillProjectDefaults(loadedProject){
       baseForLevel = {...base.primary, collation: {...base.primary.collation, piece: pieceDefault}, box: boxDefault};
     }
     const merged = mergeDefaults(loadedLevel, baseForLevel, level, report);
+    // openTop's correct default depends on THIS level's own styleId (a
+    // tray defaults open, an RSC doesn't) — not on newProject()'s template
+    // style, which the generic merge above just filled in blindly.
+    if(loadedLevel.openTop === undefined && merged.styleId)
+      merged.openTop = styleOpenTopDefault(merged.styleId);
     out[level] = merged;
   }
   out.pallet = mergeDefaults(loadedProject.pallet, base.pallet, 'pallet', report);

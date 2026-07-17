@@ -44,6 +44,17 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   to it. For any UI change, verify the rendered result at real size, not
   just that `.value` is correct. The blank GRID fields held the right
   value in a zero-width box.
+- Test harnesses can produce false greens. A bare DOM fixture missing
+  elements the real app has (ViewCube nodes, the real stylesheet) can make
+  a whole class of assertions pass against an environment that never
+  actually renders. `test/uisync.test.html`'s skeleton was missing
+  `#viewCubeWrap` after the ViewCube feature landed, so `setView()` threw
+  on every `#tab3d` click and 3D init silently never ran — every prior
+  3D-hierarchy assertion in that file had been passing against a scene
+  that was never actually built. When adding a UI feature, update every
+  test harness's DOM skeleton to match, and periodically confirm 3D/render
+  assertions run against a real initialized scene, not a silently-aborted
+  one.
 
 ## Known simplifications to revisit
 
@@ -56,3 +67,13 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.
+- **`openTop` is wired for the outermost tier only.** A `Level.openTop`
+  (containment.js: `fitInto`/`parentCandidates` `opts.openTop`/`fixedH`/
+  `wantCount`) makes that level's own H an independent input instead of
+  solved-from-child, and stops it constraining how many children fit —
+  correct today when the open-top container IS the case (`candidateCases`/
+  `checkLockedCase`/`chainMetrics` all read `outerLevel.openTop`). An
+  open-top container nested as an INNER level (e.g. a tray riding inside a
+  case, solved via `solveSecondaryInner`) still constrains height as if
+  closed — that path never reads `openTop`. Extend `solveSecondaryInner` if
+  that case ever arises.

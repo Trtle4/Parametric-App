@@ -17,7 +17,7 @@
  * match.
  */
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * One entry per version step. `migrate` receives and returns a plain
@@ -51,6 +51,37 @@ export const MIGRATIONS = [
       return {
         ...doc,
         project: {...proj, primary: {...proj.primary, wrap: {...proj.primary.wrap, params: {...params, finFace: 'bottom'}}}}
+      };
+    }
+  },
+  {
+    from: 2, to: 3,
+    describe: "tray_lid removed: it modeled a self-locking hinged-lid tray, " +
+      "the wrong construction for the glued-corner tray this app actually " +
+      "builds. Any level referencing styleId 'tray_lid' migrates to 'tray' " +
+      "(the corrected FEFCO 0300 die-cut tray) — L/W/H/caliper carry over " +
+      "unchanged, any prior corner-tab param (glueTab or cornerFlapDepth) " +
+      "maps to cornerFlapDepth, and lidTuckDepth is dropped (the tray has " +
+      "no lid). The old plain 'tray' style is corrected in place — same id, " +
+      "no migration needed for it.",
+    migrate: doc => {
+      const proj = doc.project;
+      if(!proj) return doc;
+      const fixLevel = level => {
+        if(!level || level.styleId !== 'tray_lid') return level;
+        const old = level.params || {};
+        return {
+          ...level,
+          styleId: 'tray',
+          params: {
+            L: old.L, W: old.W, H: old.H, caliper: old.caliper,
+            cornerFlapDepth: old.cornerFlapDepth ?? old.glueTab ?? 40
+          }
+        };
+      };
+      return {
+        ...doc,
+        project: {...proj, secondary: fixLevel(proj.secondary), tertiary: fixLevel(proj.tertiary)}
       };
     }
   }

@@ -8,7 +8,7 @@
  * DOM-free, THREE-free, mm-only. The pallet's physical height (timber) is
  * passed in via PalletConfig.baseH so this module knows nothing about decks.
  */
-import {fitInto, parentCandidates, solveParent} from './containment.js';
+import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel} from './collation.js';
 
@@ -21,6 +21,13 @@ import {collate, orientationLabel} from './collation.js';
  * @property {Object} params                       // style params, mm
  * @property {Orientation[]} allowedOrientations   // how THIS level may sit inside its parent
  * @property {Clearance} clearance                 // how much room THIS level needs inside its parent
+ * @property {boolean} [openTop]                   // this level, as a PARENT to whatever it holds,
+ *   does not constrain height — its own H is an independent design input
+ *   (e.g. a tray's wall height), not solved from its child's stack, and
+ *   doesn't bound how many children fit. A containment-relationship fact,
+ *   defaulted from the style's own defaultOpenTop but overridable per level
+ *   (the same tray under a telescoping cap is no longer open) — containment.js
+ *   never reads a style, only this flag. Defaults to false (closed).
  * @property {Object} [geometry]                   // derived, cached
  *
  * @typedef {Object} PalletConfig
@@ -68,6 +75,13 @@ export function styleOptionDefaults(styleId){
   const out = {};
   for(const d of (styleById(styleId).options || [])) out[d.key] = d.default;
   return out;
+}
+
+/** A level's openTop DEFAULTS from its style (e.g. the FEFCO 0300 tray is
+ *  open by default) but is a level field, not a style read at chain time —
+ *  see the Level typedef. */
+export function styleOpenTopDefault(styleId){
+  return !!styleById(styleId).defaultOpenTop;
 }
 
 /** A fresh project: collated product driving a carton driving a case, on a
@@ -125,6 +139,7 @@ export function newProject(){
       // non-uniform: cartons bear on the case floor (bottom 0), headspace
       // (top) is a first-class Build input, layers stack directly (betweenZ 0)
       clearance: {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0},
+      openTop: styleOpenTopDefault('a6120'),         // false: a6120 is closed
       // false = this tier is skipped: its own parent's child re-points to
       // whatever is next enabled below it. At least one of secondary/
       // tertiary must stay enabled — see resolveChainShape.
@@ -136,6 +151,7 @@ export function newProject(){
       options: styleOptionDefaults('fefco201'),      // {outerFlaps:'L'} — the 3D-fold major-panel choice
       allowedOrientations: ['LWH', 'WLH'],           // cases upright on the pallet
       clearance: {wall: 0, between: 0},
+      openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal'},
@@ -429,14 +445,15 @@ function solveBelowOutermost(project, shape, step){
 /** Whatever feeds the outermost tier, fitted into its cavity in the
  *  candidate's chosen orientation. Generalizes what was `fitCartonsInCase`:
  *  the CHILD's own allowedOrientations/clearance apply — whichever level
- *  actually produced it, never the outermost's own settings. */
-function fitChildInOuter(child, cavity, chosenOrientation){
+ *  actually produced it, never the outermost's own settings.
+ *  @param {Object} [opts] forwarded to fitInto (openTop/wantCount) */
+function fitChildInOuter(child, cavity, chosenOrientation, opts){
   const c = {
     outer: child.outer,
     allowedOrientations: typeof chosenOrientation === 'string' && chosenOrientation.length === 3
       ? [chosenOrientation] : child.allowedOrientations
   };
-  return fitInto(c, cavity, child.clearance, 'column');
+  return fitInto(c, cavity, child.clearance, 'column', opts);
 }
 
 /** The legacy bare-carton chain (`project.primary === null`): no content
@@ -476,13 +493,20 @@ export function candidateCases(project, rounding = '1mm'){
   const outerLink = linkFor(project, outerKey);
   const child = below.child;
   const childVol = child.outer.L*child.outer.W*child.outer.H;
+  // openTop: a containment-relationship fact on THIS level (defaults from
+  // the style, overridable — see styles/index.js's defaultOpenTop), never
+  // read by containment.js itself. When set, the outer's own H is an
+  // independent design input (outerLevel.params.H), not solved from the
+  // child stack, and it stops constraining how many children fit.
+  const openTop = !!outerLevel.openTop;
+  const openTopOpts = openTop ? {openTop: true, fixedH: outerLevel.params.H} : {};
 
   let cands;
   if(outerLink.arrangement === 'auto'){
-    cands = parentCandidates(child, outerLink.count, child.clearance).filter(c => irreducible(c, outerLink.count));
+    cands = parentCandidates(child, outerLink.count, child.clearance, openTopOpts).filter(c => irreducible(c, outerLink.count));
   }else{
     const {nx, ny, nz} = outerLink.arrangement;
-    cands = parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz})
+    cands = parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz, ...openTopOpts})
       .filter(c => c.nx === nx && c.ny === ny);
   }
 
@@ -491,8 +515,8 @@ export function candidateCases(project, rounding = '1mm'){
     const cavity = roundCavityUp(c.cavity, step);
     const outerParams = {...outerLevel.params, L: cavity.L, W: cavity.W, H: cavity.H};
     const outerGeo = styleById(outerLevel.styleId).geometry(outerParams);
-    const row = chainMetrics(project, outerKey, c, cavity, outerParams, outerGeo, childVol, outerLink.count);
-    const childFit = fitChildInOuter(child, cavity, c.o);
+    const row = chainMetrics(project, outerKey, c, cavity, outerParams, outerGeo, childVol, outerLink.count, child);
+    const childFit = fitChildInOuter(child, cavity, c.o, openTop ? {openTop: true, wantCount: c.nx*c.ny*c.layers} : {});
     rows.push(decorateRow(row, project, below, outerKey, outerGeo, row.casesFit, childFit));
   }
   return rows;
@@ -508,18 +532,19 @@ export function checkLockedCase(project, rounding = '1mm'){
   const outerLink = linkFor(project, outerKey);
   const child = below.child;
   const cavity = {L: outerLevel.params.L, W: outerLevel.params.W, H: outerLevel.params.H};
+  const openTop = !!outerLevel.openTop;
   // the child's orientation into ITS parent is a different rotational
   // relationship than the outermost's own contents — passing it here would
   // wrongly restrict the fit check to whichever orientation the child
   // happened to use, so a level locked at exactly its own solved cavity
   // could spuriously "not fit". Pass none: fitChildInOuter falls back to
   // the child's own allowedOrientations, same as the unlocked path.
-  const childFit = fitChildInOuter(child, cavity, null);
+  const childFit = fitChildInOuter(child, cavity, null, openTop ? {openTop: true, wantCount: outerLink.count} : {});
   const outerGeo = styleById(outerLevel.styleId).geometry(outerLevel.params);
   const childVol = child.outer.L*child.outer.W*child.outer.H;
   const cand = {nx: '—', ny: '—', layers: childFit.layers,
                 o: childFit.placements[0] ? childFit.placements[0].orientation : '—'};
-  const row = chainMetrics(project, outerKey, cand, cavity, outerLevel.params, outerGeo, childVol, outerLink.count);
+  const row = chainMetrics(project, outerKey, cand, cavity, outerLevel.params, outerGeo, childVol, outerLink.count, child);
   row.capacity = childFit.total;
   const outerFits = childFit.total >= outerLink.count;
   const upstreamFits = (below.secondaryVariant ? below.secondaryVariant.fits : true)
@@ -646,16 +671,27 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
  *  disabled — either way, the right multiplier to reach a per-pallet total.
  *  When secondary itself is outermost (no case), that multiplier is 1: the
  *  outermost unit IS what's on the pallet, nothing further to multiply. */
-function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, childVol, count){
+function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, childVol, count, child){
   const outerLevel = project[outerKey];
   const p = project.pallet;
+  // Effective per-unit stacking height on the pallet. An open-top parent's
+  // own outer.H does not bound its contents (they may stand proud of the
+  // walls) -- the pallet must stack at whichever is taller: the parent's
+  // own outer height, or its immediate child's standing height in the
+  // orientation this candidate actually placed it (cand.o), not the
+  // child's raw, unoriented L/W/H. Closed styles: openTop is false, this
+  // is always outerGeo.outer.H exactly as before -- bit-identical.
+  const openTop = !!outerLevel.openTop;
+  const childStandingH = child && typeof cand.o === 'string' && cand.o.length === 3
+    ? orientDims(child.outer, cand.o).h : (child ? child.outer.H : 0);
+  const stackH = openTop && child ? Math.max(outerGeo.outer.H, childStandingH) : outerGeo.outer.H;
   const fit = fitInto(
-    {outer: outerGeo.outer, allowedOrientations: outerLevel.allowedOrientations},
+    {outer: {...outerGeo.outer, H: stackH}, allowedOrientations: outerLevel.allowedOrientations},
     {L: p.L, W: p.W, H: p.maxH - p.baseH},
     outerLevel.clearance,
     p.pattern
   );
-  const loadH = fit.layers*outerGeo.outer.H;
+  const loadH = fit.layers*stackH;
   const perPalletMultiplier = outerKey === 'tertiary' ? count : 1;
   const cartonsPerPallet = fit.total*perPalletMultiplier;
   // the "productive volume" cube-util measures is whatever `cartonsPerPallet`
@@ -678,6 +714,10 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     casesPerPallet: fit.total,
     cartonsPerPallet,
     coveragePct: Math.round(fit.perLayer*outerGeo.outer.L*outerGeo.outer.W/(p.L*p.W)*100),
+    // effective per-unit stacking height actually used for the pallet load
+    // (== outer.H for closed styles; max(outer.H, child standing height)
+    // for an open-top parent whose contents may stand proud of its walls)
+    loadH,
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
