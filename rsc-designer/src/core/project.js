@@ -10,7 +10,7 @@
  */
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {styleById} from './styles/index.js';
-import {collate, orientationLabel} from './collation.js';
+import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
 /**
  * @typedef {import('./containment.js').Orientation} Orientation
@@ -232,20 +232,24 @@ export function swapLW(dims, axis){
 }
 
 /**
- * Round girth (π·d) is only physically meaningful for a single cylindrical
- * slug wrapped along its OWN axis: one stack, 1×1, with the collation's
- * stack axis aligned to the resolved wrapAxis — the only geometry whose
- * wrap path is actually a circle. Any other collation (or a slug wrapped
- * across its axis instead of along it) makes "round" report a fabricated
- * film-area number. The Build UI uses this same predicate to grey out the
- * option and to detect a stale selection, so the two can never silently
- * disagree.
+ * Round girth (π·d) is only physically meaningful when the collation forms a
+ * single circular tube wrapped along its OWN axis: one stack (nx=ny=1) of
+ * cylinders lying ON EDGE (axis horizontal, along the stack), with that axis
+ * aligned to the resolved wrapAxis. This covers both a lone slug and an
+ * on-edge sleeve of N — same tube, longer. A FLAT stack presents a
+ * rectangular d×t profile to the wrap, not a circle, and any multi-stack
+ * arrangement (nx or ny > 1) is not one tube — both make "round" report a
+ * fabricated film-area number, so they stay rectangular. The Build UI uses
+ * this same predicate to grey out the option and to detect a stale
+ * selection, so the two can never silently disagree.
  * @param {'L'|'W'} wrapAxis  the RESOLVED axis (see resolveWrapAxis), not the raw setting
  */
 export function roundGirthEligible(collation, wrapAxis){
+  if(collation.piece.kind !== 'cylinder') return false;
+  if(collation.nx !== 1 || collation.ny !== 1) return false;
+  if(resolvePieceOrientation(collation) !== 'on-edge') return false;
   const requiredStackAxis = wrapAxis === 'W' ? 'Y' : 'X';
-  return collation.piece.kind === 'cylinder' && collation.nx === 1 && collation.ny === 1
-    && collation.stackAxis === requiredStackAxis;
+  return collation.stackAxis === requiredStackAxis;
 }
 
 /* ---------------- candidate enumeration + full-chain metrics ------------ */

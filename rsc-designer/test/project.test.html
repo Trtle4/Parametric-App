@@ -16,7 +16,8 @@
        grid 6×2 rotated = 12/layer, floor(1397/164) = 8 layers
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
-        verticalToOrientations, resolveWrapAxis, swapLW, resolveChainShape} from '../src/core/project.js';
+        verticalToOrientations, resolveWrapAxis, swapLW, resolveChainShape,
+        roundGirthEligible} from '../src/core/project.js';
 import {fitInto, solveParent} from '../src/core/containment.js';
 import {styleById} from '../src/core/styles/index.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
@@ -623,6 +624,37 @@ t('the SAME tray with openTop:false constrains height normally (the capped/close
   eq(r.outer, {L: 413, W: 192, H: 155}, 'tray outer.H = 152+3:');
   approx(r.loadH, 9*155, 'pallet stacks at the TRAY\'s own outer height, exactly like any closed style:');
   eq(r.caseLayers, 9); eq(r.casesPerPallet, 126);
+});
+
+/* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ---- */
+t('on-edge sleeve makes round girth eligible; flat / multi-stack do not', () => {
+  const cyl = {kind: 'cylinder', diameter: 50, thickness: 6};
+  const sleeve = {piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+  // envelope 60×50×50 -> wrapAxis L (60>50) -> the tube axis must run along X
+  const wa = resolveWrapAxis({L: 60, W: 50, H: 50}, 'auto');
+  eq(wa, 'L', 'wrap axis resolves to L for this envelope:');
+  if(roundGirthEligible(sleeve, wa) !== true) throw new Error('an on-edge sleeve should be round-eligible');
+  // a flat stack presents a rectangular d×t profile to the wrap, not a circle
+  if(roundGirthEligible({...sleeve, pieceOrientation: 'flat'}, wa) !== false) throw new Error('flat must not be round-eligible');
+  // more than one stack is not a single tube
+  if(roundGirthEligible({...sleeve, nx: 2}, wa) !== false) throw new Error('multi-stack must not be round-eligible');
+});
+t('the chain resolves round girth with diameter d for an on-edge sleeve (not a rectangular fallback)', () => {
+  const p = newProject();
+  p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6}, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+  p.primary.allowedOrientations = ['LWH'];
+  p.primary.wrap.params = {...p.primary.wrap.params, sealType: 'fin', finTreatment: 'standing', finHeight: 8, finSealBand: 5, endSealWidth: 10, endSealBleed: 3, girthBasis: 'round', roundDiameter: 0};
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  const rRound = candidateCases(p, '1mm')[0];
+  // round girth = π·d (d=50); web = π·50 + (2·8+5); cut = 60 + 2·(10+3)
+  const expected = (Math.PI*50 + 2*8 + 5)*(60 + 2*(10 + 3))/1e6;
+  approx(rRound.filmAreaM2, expected, 'film area uses round girth π·d, d=50:');
+  // same sleeve on the rectangular basis uses 2(W+H)=200 > π·50 -> more film,
+  // proving the round path actually fired rather than silently falling back
+  p.primary.wrap.params.girthBasis = 'rectangular';
+  const rRect = candidateCases(p, '1mm')[0];
+  if(!(rRect.filmAreaM2 > rRound.filmAreaM2)) throw new Error('rectangular girth should use more film than round — round did not resolve');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

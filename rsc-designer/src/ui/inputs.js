@@ -12,6 +12,7 @@
  */
 import {toMM, fromMM, fmtInputValue} from '../core/units.js';
 import {VERTICAL_CHOICES, verticalToOrientations} from '../core/project.js';
+import {resolvePieceOrientation} from '../core/collation.js';
 
 export const el = id => document.getElementById(id);
 
@@ -195,7 +196,18 @@ export function mountProduct(prim, m){
       ? numF('cD', 'Diameter', 'Ø', collation.piece.diameter) + numF('cT', 'Thickness', 'axial', collation.piece.thickness)
       : numF('cL', 'Length', 'L', collation.piece.L) + numF('cW', 'Width', 'W', collation.piece.W) + numF('cH', 'Height', 'H', collation.piece.H));
 
+  // cylinder-only: flat (axis vertical, pucks lie down) vs on-edge (axis
+  // horizontal, the sleeve/tube form). Segmented toggle; boxes never see it.
+  const orient = resolvePieceOrientation(collation);
+  const orientSeg = isCyl ? `
+    <div class="field"><label>Cookie orientation <span class="hint">cylinder</span></label>
+      <div class="seg" id="cOrient" role="group">
+        <button type="button" data-o="flat"${orient === 'flat' ? ' class="on"' : ''}>Flat</button>
+        <button type="button" data-o="on-edge"${orient === 'on-edge' ? ' class="on"' : ''}>On edge</button>
+      </div></div>` : '';
+
   mat.innerHTML =
+    orientSeg +
     cntF('cPer', 'Per stack', 'count', collation.perStack) +
     `<div class="field"><label>Stack axis <span class="hint">dir</span></label>
       <div class="inp"><select id="cAxis">${['X', 'Y', 'Z'].map(a => `<option${a === collation.stackAxis ? ' selected' : ''}>${a}</option>`).join('')}</select></div></div>` +
@@ -218,6 +230,16 @@ export function mountProduct(prim, m){
   if(isCyl){
     el('cD').addEventListener('input', () => { collation.piece.diameter = mm('cD'); m.onInput(); });
     el('cT').addEventListener('input', () => { collation.piece.thickness = mm('cT'); m.onInput(); });
+    el('cOrient').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      collation.pieceOrientation = b.dataset.o;
+      // a sleeve needs a horizontal stack: turning pucks on edge while the
+      // stack is still vertical would be degenerate, so run it along X (the
+      // machine axis). This does NOT touch the girth basis — on-edge merely
+      // makes round SELECTABLE; choosing it stays the user's call.
+      if(b.dataset.o === 'on-edge' && collation.stackAxis === 'Z') collation.stackAxis = 'X';
+      mountProduct(prim, m);   // re-render: active toggle + stack-axis select follow
+      m.onInput();
+    }));
   }else{
     el('cL').addEventListener('input', () => { collation.piece.L = mm('cL'); m.onInput(); });
     el('cW').addEventListener('input', () => { collation.piece.W = mm('cW'); m.onInput(); });

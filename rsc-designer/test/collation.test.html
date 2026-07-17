@@ -5,7 +5,7 @@
 <script type="module">
 /* Unit tests for core/collation.js — hand-checked envelope per preset.
    Box piece 90×50×20; cylinder piece d50 × t6 (biscuit). DOM-free module. */
-import {collate, orientationLabel} from '../src/core/collation.js';
+import {collate, orientationLabel, resolvePieceOrientation} from '../src/core/collation.js';
 
 const results = [];
 function t(name, fn){
@@ -36,6 +36,26 @@ t('In line on edge: 10 cylinders axis X', () => {
   approx(r.placements[0].x, -27, 'first biscuit centre');    // -30 + 3
   approx(r.placements[0].z, 25, 'resting height');
   if(r.placements.some(p => p.axis !== 'X')) throw new Error('cylinder axis must follow the stack');
+});
+t('pieceOrientation on-edge (explicit): sleeve (N·t) × d × d, cylinder axis horizontal', () => {
+  const r = collate({piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'});
+  env(r, 60, 50, 50);
+  if(r.placements.some(p => p.axis !== 'X')) throw new Error('on-edge cylinder axis follows the horizontal stack');
+});
+t('pieceOrientation flat (explicit) decouples from a horizontal stack axis', () => {
+  // same stackAxis X, but flat forces the cylinder axis VERTICAL: each puck
+  // now contributes its diameter d (not t) along the row, t is the height —
+  // proof the orientation, not the stack axis, sets the round axis
+  const r = collate({piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'flat'});
+  env(r, 10*50, 50, 6);
+  if(r.placements.some(p => p.axis !== 'Z')) throw new Error('flat cylinder axis is vertical regardless of the stack axis');
+});
+t('pieceOrientation default derives from the stack axis (back-compat, field absent)', () => {
+  const eqs = (a, e) => { if(a !== e) throw new Error(`expected "${e}", got "${a}"`); };
+  eqs(resolvePieceOrientation({piece: cyl, stackAxis: 'X'}), 'on-edge');   // a horizontal stack was always a sleeve
+  eqs(resolvePieceOrientation({piece: cyl, stackAxis: 'Z'}), 'flat');      // a vertical stack was always flat
+  eqs(resolvePieceOrientation({piece: box, stackAxis: 'X'}), 'flat');      // boxes have no round axis
+  eqs(resolvePieceOrientation({piece: cyl, stackAxis: 'Z', pieceOrientation: 'on-edge'}), 'on-edge');  // explicit wins
 });
 t('Stacked: 25 cylinders vertical', () => {
   const r = collate({piece: cyl, perStack: 25, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0});

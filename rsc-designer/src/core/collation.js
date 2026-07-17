@@ -20,7 +20,29 @@ import {pieceDims, pieceVolume, validatePiece} from './shape.js';
  * @property {number} ny             // stacks deep
  * @property {number} stackGap       // mm between stacks
  * @property {number} pieceGap       // mm between pieces within a stack (usually 0)
+ * @property {'flat'|'on-edge'} [pieceOrientation]  // cylinders only — see resolvePieceOrientation
  */
+
+/**
+ * Cylinder orientation within the envelope:
+ *   - `flat`:    the cylinder's axis is vertical (a puck lying down) — d×d in
+ *                plan, thickness t up the stack.
+ *   - `on-edge`: the cylinder's axis is horizontal, laid along the stack (a
+ *                sleeve/tube on its curved side) — d tall, d deep, t along
+ *                the stack.
+ * Only meaningful for cylinders (a box has no round axis). When the field is
+ * ABSENT it derives from the stack axis, so every collation authored before
+ * this field existed keeps its exact envelope: a horizontal stack was already
+ * an on-edge sleeve (the cylinder axis followed the stack), a vertical stack
+ * was already flat. New callers set it explicitly.
+ * @param {Collation} c
+ * @returns {'flat'|'on-edge'}
+ */
+export function resolvePieceOrientation(c){
+  if(c.piece.kind !== 'cylinder') return 'flat';
+  if(c.pieceOrientation === 'flat' || c.pieceOrientation === 'on-edge') return c.pieceOrientation;
+  return c.stackAxis === 'Z' ? 'flat' : 'on-edge';
+}
 
 /**
  * Named presets: parameter sets only. `n` fields marked editable keep the
@@ -29,7 +51,7 @@ import {pieceDims, pieceVolume, validatePiece} from './shape.js';
 export const PRESETS = [
   {id: 'standard',  label: 'Standard',                 set: {perStack: 1, stackAxis: 'Z', nx: 1, ny: 1}},
   {id: 'inline',    label: 'In line',                  set: {perStack: 1, stackAxis: 'Z', ny: 1}},          // nx editable
-  {id: 'onedge',    label: 'In line on edge',          set: {stackAxis: 'X', nx: 1, ny: 1}},                // perStack editable
+  {id: 'onedge',    label: 'In line on edge',          set: {stackAxis: 'X', nx: 1, ny: 1, pieceOrientation: 'on-edge'}},   // perStack editable
   {id: 'stacked',   label: 'Stacked',                  set: {stackAxis: 'Z', nx: 1, ny: 1}},                // perStack editable
   {id: 'sideby',    label: 'Side by side',             set: {perStack: 1, stackAxis: 'Z'}},                 // nx, ny editable
   {id: 'multi',     label: 'Multiple pieces collated', set: {stackAxis: 'Z'}}                               // all editable
@@ -53,9 +75,15 @@ export function collate(c){
   const axis = c.stackAxis;
   if(!['X', 'Y', 'Z'].includes(axis)) throw new Error(`unknown stackAxis "${axis}"`);
 
-  // pieces stack face-to-face along the stack axis; a cylinder's own axis
-  // travels with the stack direction (that is what "on edge" means)
-  const d = pieceDims(c.piece, c.piece.kind === 'cylinder' ? axis : 'Z');
+  // a cylinder's own axis is set by pieceOrientation, not the stack axis:
+  // on-edge lays the axis along the (horizontal) stack — the sleeve, t along
+  // the stack, d tall/deep; flat stands the axis vertical — d×d in plan,
+  // t up the stack. Boxes have no round axis. resolvePieceOrientation keeps
+  // pre-existing collations bit-identical (a horizontal stack derived
+  // on-edge, matching the old axis-follows-stack behaviour).
+  const cylAxis = c.piece.kind === 'cylinder'
+    ? (resolvePieceOrientation(c) === 'on-edge' ? axis : 'Z') : 'Z';
+  const d = pieceDims(c.piece, cylAxis);
 
   // one stack: n pieces pitched along the stack axis
   const stack = {x: d.x, y: d.y, z: d.z};
@@ -76,7 +104,7 @@ export function collate(c){
     const sx = (ix + 0.5)*(stack.x + sg) - nx*(stack.x + sg)/2;
     const sy = (iy + 0.5)*(stack.y + sg) - ny*(stack.y + sg)/2;
     for(let k = 0; k < n; k++){
-      const p = {x: sx, y: sy, z: stack.z/2, axis: c.piece.kind === 'cylinder' ? axis : null};
+      const p = {x: sx, y: sy, z: stack.z/2, axis: c.piece.kind === 'cylinder' ? cylAxis : null};
       if(ax === 'x') p.x = sx - stack.x/2 + d.x/2 + k*pitch;
       if(ax === 'y') p.y = sy - stack.y/2 + d.y/2 + k*pitch;
       if(ax === 'z') p.z = d.z/2 + k*pitch;
