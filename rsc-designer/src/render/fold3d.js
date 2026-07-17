@@ -35,7 +35,10 @@ export const onFrame = cb => { frameCbs.add(cb); return () => frameCbs.delete(cb
 
 export function init3d(container){
   cvWrap = container;
-  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  // preserveDrawingBuffer keeps the colour buffer readable AFTER the frame so
+  // capturePNG's toDataURL isn't blank — WebGL clears the buffer on present by
+  // default (the same cleared-buffer trap the ViewCube diagnosis hit).
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, preserveDrawingBuffer:true});
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   container.appendChild(renderer.domElement);
   scene = new THREE.Scene();
@@ -232,6 +235,30 @@ function frameCamera(){
   camera.position.set(Math.sin(rotY)*Math.cos(rotX)*r, Math.sin(rotX)*r, Math.cos(rotY)*Math.cos(rotX)*r);
   camera.lookAt(0, 0, 0);
   camera.far = r*10; camera.updateProjectionMatrix();
+}
+
+/** Snapshot the current 3D view (exactly the on-screen camera/orbit/zoom, the
+ *  active scene) as a PNG data URL, rendered at `scale`× the on-screen pixels
+ *  for a crisp deck image. The ViewCube is a SEPARATE renderer/canvas, so it
+ *  is never composited in. Renders once at the higher backing-store size,
+ *  reads it back (needs preserveDrawingBuffer), then restores the on-screen
+ *  size — all synchronous, so the animation loop never sees the enlarged
+ *  buffer. Returns null if the 3D view isn't initialised. */
+export function capturePNG(scale = 2){
+  if(!renderer || !scene || !camera || !cvWrap) return null;
+  const w = cvWrap.clientWidth, h = cvWrap.clientHeight;
+  if(!w || !h) return null;
+  const prevPR = renderer.getPixelRatio();
+  renderer.setPixelRatio(1);
+  renderer.setSize(w*scale, h*scale, false);   // backing store only; CSS size (updateStyle=false) untouched
+  frameCamera();                                // exact current orbit/zoom/span
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/png');
+  renderer.setPixelRatio(prevPR);
+  renderer.setSize(w, h, false);                // restore, then repaint on-screen
+  frameCamera();
+  renderer.render(scene, camera);
+  return url;
 }
 
 export function startLoop(){

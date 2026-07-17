@@ -22,6 +22,7 @@ import {LEGEND} from '../render/hierarchy3d.js';
 import * as viewcube from '../render/viewcube.js';
 import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, filmSpecText} from '../export/artwork.js';
+import {downloadSvgPNG, savePNG} from '../export/png.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
@@ -556,6 +557,19 @@ function updateExportButtonsState(){
     disabledTier ? 'Tier disabled' : flex ? 'Flexible — export artwork' : 'Ready to export');
 }
 
+/** PNG snapshot buttons: the 2D exists for every level with a 2D drawing
+ *  (product/wrap/carton/case), never the pallet; the 3D captures the live
+ *  camera, so it's only meaningful while the 3D view is up. Not a live
+ *  display — just button availability, refreshed alongside level/view changes. */
+function updatePngButtonsState(){
+  const no2d = LEVELS[activeLevel].kind === 'pallet';
+  el('btnPng2d').disabled = no2d;
+  el('btnPng2d').title = no2d ? 'No 2D dieline at the pallet level' : 'Download the 2D dieline/blank as a PNG';
+  const can3d = view === '3d' && fold.isInit();
+  el('btnPng3d').disabled = !can3d;
+  el('btnPng3d').title = can3d ? 'Download the current 3D view as a PNG' : 'Switch to the 3D view to capture the camera';
+}
+
 function setActiveLevel(level){
   activeLevel = level;
   const lvl = LEVELS[level];
@@ -572,6 +586,7 @@ function setActiveLevel(level){
   el('tbLevel').textContent = lvl.label.toUpperCase();
   el('msTitle').textContent = `${el('brandCode').textContent} · ${lvl.label}`;
   updateExportButtonsState();
+  updatePngButtonsState();
   if(el('style').value !== level) el('style').value = level;
   // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
   LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && d === level));
@@ -820,6 +835,7 @@ function setView(v){
     fold.resize3d();
     fold.startLoop();
   }
+  updatePngButtonsState();   // the 3D snapshot is only capturable while 3D is up
 }
 
 /* ---------- wiring ---------- */
@@ -930,6 +946,28 @@ el('btnSpec').addEventListener('click', () => {
   navigator.clipboard.writeText(filmSpecText(g, inputs.getUnit()));
   el('btnSpec').textContent = 'Copied ✓';
   setTimeout(() => el('btnSpec').textContent = 'Copy film spec', 1200);
+});
+
+// PNG snapshots — one-shot client-side actions (GitHub Pages, no server), NOT
+// registered with recompute(). Filenames mirror the DXF's level+dims shape.
+function pngBaseName(){
+  const u = inputs.getUnit();
+  const d = v => Math.round(fromMM(v, u));
+  const code = isStyleLevel() ? activeStyleId().toUpperCase() : LEVELS[activeLevel].label.toUpperCase();
+  const g = activeGeometry();
+  return g ? `${code}_${d(g.inner.L)}x${d(g.inner.W)}x${d(g.inner.H)}_${u}` : code;
+}
+// 2D: the full blank/dieline from geometry, view-independent (ignores zoom/pan).
+el('btnPng2d').addEventListener('click', () => {
+  if(LEVELS[activeLevel].kind === 'pallet') return;   // no 2D at the pallet level
+  const suffix = isStyleLevel() ? (activeStyle().structure === 'flexible' ? 'blank' : 'dieline') : 'product';
+  downloadSvgPNG(el('svg'), `${pngBaseName()}_${suffix}.png`);
+});
+// 3D: exactly the on-screen camera (fold3d reads its own canvas; the ViewCube
+// is a separate renderer, never composited in).
+el('btnPng3d').addEventListener('click', () => {
+  const url = fold.capturePNG(2);
+  if(url) savePNG(url, `${pngBaseName()}_${activeLevel}_3d.png`);
 });
 
 // 2D zoom & pan
