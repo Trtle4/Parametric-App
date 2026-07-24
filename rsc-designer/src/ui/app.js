@@ -15,7 +15,8 @@ import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
 import {foldBuilders} from '../render/folds/index.js';
-import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {buildPallet, palletStats, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
 import {LEGEND} from '../render/hierarchy3d.js';
@@ -182,16 +183,62 @@ function refreshPal(){
   if(!g){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
+    clearBCT();
     return;
   }
-  const stats = buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, view === 'pal');
+  // the fit stats + BCT are CHEAP and always relevant (right-rail readout) —
+  // computed on every recompute. The heavy 3D pallet build only runs when the
+  // Palletize view is actually up.
+  const stats = palletStats(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern);
   el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
-  // title block / mobile spec: the pallet total, always the case-on-pallet
   const palText = stats.total > 0 ? `${stats.total} cases` : (stats.perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
+  renderBCT(g, stats);
+  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack));
+}
+
+/* ---------- stacking strength (BCT) — engineering guidance, not a guarantee ----
+ * The load-bearing bottom box is the CASE (the shipper on the pallet). McKee's
+ * ECT short form (core/bct.js) predicts SHORT-TERM lab compression; the safety
+ * factor absorbs the field deratings, shown in the "how" panel. Registered via
+ * refreshPal (a recompute consumer), so it updates live on every input. */
+function clearBCT(){
+  ['bctRatio', 'bctVal', 'bctLoad'].forEach(id => el(id).textContent = '--');
+  el('bctRatio').style.color = ''; el('bctNote').textContent = ''; el('bctHowBody').innerHTML = '';
+}
+function renderBCT(g, stats){
+  const st = build.project.pallet.stacking || {};
+  const isRSC = build.project.tertiary.styleId === 'fefco201';
+  const boxesAbove = boxesAboveBottom(stats.layers || 0, !!st.doubleStack);
+  const a = stackAnalysis({
+    ectLbPerIn: st.ect, caliperMm: g.meta.caliper || 0, L_mm: g.outer.L, W_mm: g.outer.W,
+    boxesAbove, unitWeightLb: st.unitWeightLb, targetRatio: st.target, isRSC
+  });
+  const noLoad = a.ratio === Infinity;
+  el('bctRatio').textContent = (noLoad ? '— : 1' : `${a.ratio.toFixed(2)} : 1`) + ` (target ${(+st.target).toFixed(1)})`;
+  el('bctRatio').style.color = noLoad ? 'var(--ink-3)' : (a.meetsTarget ? 'var(--valid)' : 'var(--danger)');
+  el('bctVal').textContent = `${Math.round(a.bctLb)} lb${a.approximate ? ' · approx' : ''}`;
+  el('bctLoad').textContent = `${Math.round(a.loadLb)} lb  (${boxesAbove} box${boxesAbove === 1 ? '' : 'es'} × ${st.unitWeightLb} lb${st.doubleStack ? ', double-stack' : ''})`;
+  el('bctNote').innerHTML = (noLoad ? '' : a.meetsTarget ? '' : '<strong>Below target.</strong> ') +
+    (a.approximate ? 'Non-RSC style — McKee is a rougher estimate here. ' : '') + 'An estimate, not a guarantee.';
+  el('bctNote').style.color = (!noLoad && !a.meetsTarget) ? 'var(--danger)' : 'var(--ink-3)';
+  const f2 = v => (+v).toFixed(2);
+  el('bctHowBody').innerHTML =
+    `<div class="bcteq">BCT = 5.87 × ECT × √(caliper × perimeter)</div>` +
+    `<table class="bcttbl">` +
+      `<tr><td>ECT</td><td>${st.ect} lb/in</td></tr>` +
+      `<tr><td>caliper</td><td>${f2(a.caliperIn)} in</td></tr>` +
+      `<tr><td>perimeter 2(L+W)</td><td>${f2(a.perimeterIn)} in</td></tr>` +
+      `<tr><td>→ BCT</td><td>${Math.round(a.bctLb)} lb${a.approximate ? ' (approx — non-RSC)' : ''}</td></tr>` +
+      `<tr><td>load = boxes × weight</td><td>${boxesAbove} × ${st.unitWeightLb} = ${Math.round(a.loadLb)} lb</td></tr>` +
+      `<tr><td>safety = BCT ÷ load</td><td>${noLoad ? '∞' : f2(a.ratio)} : 1 (target ${(+st.target).toFixed(1)})</td></tr>` +
+    `</table>` +
+    `<div class="bctderate">McKee predicts <em>short-term lab</em> strength. Real field strength is reduced by:` +
+      `<ul>${DERATINGS.map(d => `<li>${d}</li>`).join('')}</ul>` +
+      `The safety factor is what absorbs these.</div>`;
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -854,6 +901,12 @@ function commitPallet(){
   const {L, W, maxH} = inputs.readPallet();
   build.project.pallet.L = L; build.project.pallet.W = W; build.project.pallet.maxH = maxH;
   build.project.pallet.pattern = el('palPattern').value;
+  // stacking (BCT) inputs -> project.pallet.stacking (one writer)
+  const st = build.project.pallet.stacking || (build.project.pallet.stacking = {});
+  st.ect = Math.max(0, +el('bctEct').value || 0);
+  st.unitWeightLb = Math.max(0, +el('bctWeight').value || 0);
+  st.target = Math.max(0, +el('bctTarget').value || 0);
+  st.doubleStack = el('bctDouble').checked;
 }
 /** Write project.pallet back into the pallet rail fields (after a load). */
 function writePalletFields(){
@@ -862,6 +915,11 @@ function writePalletFields(){
   el('pal').value = `${fmtP(fromMM(p.L, pu))} x ${fmtP(fromMM(p.W, pu))}`;
   el('palMaxH').value = fmtP(fromMM(p.maxH, pu));
   el('palPattern').value = p.pattern;
+  const st = p.stacking || {};
+  el('bctEct').value = st.ect ?? 32;
+  el('bctWeight').value = st.unitWeightLb ?? 20;
+  el('bctTarget').value = st.target ?? 3;
+  el('bctDouble').checked = !!st.doubleStack;
 }
 function onPalletEdited(){
   commitPallet();
@@ -870,8 +928,8 @@ function onPalletEdited(){
   // all of them instead of a hand-picked subset keyed off the current tab
   projectChanged();
 }
-['pal', 'palMaxH'].forEach(id => el(id).addEventListener('input', onPalletEdited));
-el('palPattern').addEventListener('change', onPalletEdited);
+['pal', 'palMaxH', 'bctEct', 'bctWeight', 'bctTarget'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+['palPattern', 'bctDouble'].forEach(id => el(id).addEventListener('change', onPalletEdited));
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
@@ -1149,7 +1207,11 @@ notify.onRefresh('chainString', renderChainString);
 notify.onRefresh('dieline2d', refresh2d);
 notify.onRefresh('fold3d', () => { if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d(); });
 notify.onRefresh('hier3d', () => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
-notify.onRefresh('palletize', () => { if(view === 'pal') refreshPal(); });
+// refreshPal now does the CHEAP pallet stats + BCT readout on every recompute
+// (right-rail readout is always visible); it only builds the heavy 3D pallet
+// when the Palletize view is up. So it runs unconditionally here — this is what
+// makes the BCT readout update live on box/ECT/weight/double-stack/style edits.
+notify.onRefresh('palletize', refreshPal);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
 

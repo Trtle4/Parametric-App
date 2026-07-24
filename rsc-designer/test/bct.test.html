@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>BCT (McKee ECT short form) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/bct.js. The critical risk is the mm->in conversion: the
+   5.87 McKee constant is imperial, so a unit slip gives a plausible-but-wrong
+   safety number. Hand-worked reference (all imperial):
+     ECT 32 lb/in, caliper 0.16 in, box 12 x 10 in -> perimeter 44 in
+     BCT = 5.87 * 32 * sqrt(0.16 * 44) = 187.84 * sqrt(7.04) = 498.394 lb
+   In mm: caliper 4.064 mm, box 304.8 x 254 mm, perimeter 1117.6 mm. */
+import {estimateBCT, stackAnalysis, boxesAboveBottom, MCKEE_K, DERATINGS} from '../src/core/bct.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+
+// hand-worked imperial reference computed independently of the module
+const ECT = 32, caliperIn = 0.16, Lin = 12, Win = 10;
+const perimIn = 2*(Lin + Win);                       // 44
+const bctRef = 5.87 * ECT * Math.sqrt(caliperIn * perimIn);   // 498.394...
+
+t('McKee constant is 5.87 (imperial ECT short form)', () => {
+  approx(MCKEE_K, 5.87);
+});
+
+t('mm->in conversion is exact: 4.064 mm caliper -> 0.16 in, 1117.6 mm perimeter -> 44 in', () => {
+  const r = estimateBCT({ectLbPerIn: ECT, caliperMm: 4.064, perimeterMm: 1117.6});
+  approx(r.caliperIn, 0.16, 'caliper in');
+  approx(r.perimeterIn, 44, 'perimeter in');
+});
+
+t('BCT from mm inputs matches the hand-worked imperial value (498.39 lb)', () => {
+  const r = estimateBCT({ectLbPerIn: ECT, caliperMm: 0.16*25.4, perimeterMm: 44*25.4});
+  approx(r.bctLb, bctRef, 'bct', 1e-6);
+  approx(r.bctLb, 498.396, 'bct absolute', 1e-2);
+});
+
+t('a unit slip (feeding mm where inches belong) would NOT match — guards the conversion', () => {
+  // if the module forgot to convert, it would compute sqrt(4.064*1117.6) -> a
+  // hugely different number. Prove the real result is the imperial one, not that.
+  const wrong = 5.87 * ECT * Math.sqrt(4.064 * 1117.6);
+  const r = estimateBCT({ectLbPerIn: ECT, caliperMm: 4.064, perimeterMm: 1117.6});
+  if(Math.abs(r.bctLb - wrong) < 1) throw new Error('module appears to skip the mm->in conversion');
+  approx(r.bctLb, bctRef, 'still the correct imperial BCT');
+});
+
+t('stackAnalysis: full chain, ratio and target flag', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
+                           boxesAbove: 8, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.bctLb, bctRef, 'bct');
+  approx(a.loadLb, 160, 'load = 8 * 20');
+  approx(a.ratio, bctRef/160, 'ratio', 1e-9);
+  if(!a.meetsTarget) throw new Error('3.11 should meet a 3.0 target');
+  if(a.approximate) throw new Error('an RSC is not approximate');
+});
+
+t('below-target load flags meetsTarget=false', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
+                           boxesAbove: 20, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.loadLb, 400);
+  if(a.ratio >= 3.0) throw new Error('ratio should be below target here');
+  if(a.meetsTarget) throw new Error('should not meet target');
+});
+
+t('boxesAboveBottom: (layers-1), doubled for double-stack; never negative', () => {
+  approx(boxesAboveBottom(9, false), 8, 'single');
+  approx(boxesAboveBottom(9, true), 16, 'double = 2x');
+  approx(boxesAboveBottom(1, false), 0, 'a lone box carries nothing');
+  approx(boxesAboveBottom(1, true), 0);
+  approx(boxesAboveBottom(0, true), 0, 'never negative');
+});
+
+t('double-stack doubles the bottom-box load and HALVES the safety factor', () => {
+  const base = {ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4, unitWeightLb: 20, targetRatio: 3.0, isRSC: true};
+  const single = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, false)});
+  const dbl    = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, true)});
+  approx(dbl.loadLb, single.loadLb*2, 'load doubles');
+  approx(dbl.ratio, single.ratio/2, 'safety factor halves', 1e-9);
+});
+
+t('non-RSC style is flagged approximate (rougher McKee fit)', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 4, L_mm: 300, W_mm: 200,
+                           boxesAbove: 5, unitWeightLb: 10, targetRatio: 3.0, isRSC: false});
+  if(!a.approximate) throw new Error('a non-RSC must be flagged approximate');
+});
+
+t('zero load -> ratio is Infinity (a lone bottom box bears nothing), not a divide-by-zero', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 4, L_mm: 300, W_mm: 200,
+                           boxesAbove: 0, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.loadLb, 0);
+  if(a.ratio !== Infinity) throw new Error('no load should give Infinity ratio');
+  if(!a.meetsTarget) throw new Error('no load trivially meets target');
+});
+
+t('the field deratings are surfaced for the UI to show (creep, humidity, overhang, cutouts)', () => {
+  if(DERATINGS.length < 4) throw new Error('expected the four field deratings');
+  const joined = DERATINGS.join(' ').toLowerCase();
+  ['creep', 'humidity', 'overhang', 'cutout'].forEach(k => { if(!joined.includes(k)) throw new Error(`deratings should mention ${k}`); });
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

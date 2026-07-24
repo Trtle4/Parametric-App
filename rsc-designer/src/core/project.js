@@ -151,7 +151,12 @@ export function newProject(){
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
     },
-    pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal'},
+    pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal',
+      // stacking-strength (BCT) inputs — engineering guidance, not packing math.
+      // ect: edge crush lb/in; unitWeightLb: gross weight per box (tare +
+      // contents, which the app can't know); target: required safety factor;
+      // doubleStack: two unit loads high in the warehouse (doubles the column).
+      stacking: {ect: 32, unitWeightLb: 20, target: 3.0, doubleStack: false}},
     // free print text on the package's print panel — lives in the model (and
     // the save file) even though its input control is hidden from the UI, so
     // it is never an orphaned, unsaveable Path-A value again.

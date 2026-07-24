@@ -282,10 +282,11 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
   if(!result.migrationsRun[1].startsWith('v2 -> v3')) throw new Error(`unexpected migration: ${result.migrationsRun[1]}`);
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
-  // this fixture predates openTop entirely (a genuinely new field) -- it is
-  // correctly reported as defaulted, from each level's OWN style (both
-  // false here: a6120 and fefco201 are both closed), not silently absent
-  eq(result.defaulted, ['secondary.openTop', 'tertiary.openTop'], 'only the new openTop field is missing:');
+  // this fixture predates openTop AND the pallet.stacking (BCT) block --
+  // both are genuinely new fields, correctly reported as defaulted (openTop
+  // from each level's OWN style, both false here for a6120/fefco201), not
+  // silently absent
+  eq(result.defaulted, ['secondary.openTop', 'tertiary.openTop', 'pallet.stacking'], 'the new openTop + pallet.stacking fields are filled:');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
   const rows = candidateCases(result.project, result.rounding);

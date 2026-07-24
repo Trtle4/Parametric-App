@@ -54,7 +54,15 @@
   <span id="uPalMaxH">in</span>
   <select id="palUnits"><option value="in">in</option><option value="mm">mm</option></select>
   <select id="palPattern"><option value="optimal">optimal</option><option value="column">column</option><option value="interlock">interlock</option></select>
+  <!-- BCT stacking inputs the real app wires at boot -->
+  <input id="bctEct" type="number" value="32">
+  <input id="bctWeight" type="number" value="20">
+  <input id="bctTarget" type="number" value="3">
+  <input id="bctDouble" type="checkbox">
 </div>
+<!-- BCT readout elements refreshPal writes to -->
+<span id="bctRatio"></span><span id="bctVal"></span><span id="bctLoad"></span>
+<div id="bctNote"></div><details id="bctHow"><div id="bctHowBody"></div></details>
 
 <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
 <div id="cvWrap" style="width:600px;height:400px"></div>
