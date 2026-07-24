@@ -124,6 +124,10 @@ function makeFlap(hinge, axis, closedAngle, openOffset, geo, mat, phase){
 }
 
 let flaps = [], boxOpenParts = [], boxClosedParts = [];
+// an OPEN structure (e.g. the FEFCO 0300 tray) has no closed rounded shell to
+// morph into — its erected panels/flaps ARE the final form, so the fold never
+// swaps them out. Closed boxes leave this false and keep the shell swap.
+let openStructure = false;
 
 /**
  * Assemble the fold view from a style's fold builder. Style-agnostic:
@@ -151,23 +155,27 @@ export function buildBox(build, geo, printText, options){
   const t = Math.max(geo.meta.caliper || 0, RENDER_MIN_THICKNESS);
 
   const built = build(geo, printText, options || {}, {t, kraft, kraft2, makeFlap, makeTextMaterial});
+  openStructure = !!built.openStructure;
   built.parts.forEach(o => boxGroup.add(o));
   built.flaps.forEach(f => { if(!f.parent) boxGroup.add(f); }); // nested hinges stay parented to their panel
   flaps = built.flaps;
   boxOpenParts = [...boxGroup.children];   // separate panels & flaps: shown while folding
 
   // continuous closed carton, swapped in when the fold completes — one rounded
-  // shell (no gaps at the creases), print decal, plus style-provided extras
+  // shell (no gaps at the creases), print decal, plus style-provided extras.
+  // Skipped entirely for an OPEN structure: its erected panels stay the form.
   boxClosedParts = [];
-  const rr = Math.min(t*1.6, Math.min(L, W, H)*0.1);
-  const shell = new THREE.Mesh(roundedBoxGeo(L + t, H + t, W + t, rr, 3), kraft);
-  shell.position.y = H/2;
-  boxClosedParts.push(shell);
-  const decal = new THREE.Mesh(new THREE.PlaneGeometry(L*0.92, H*0.92), makeTextMaterial(L, H, true, printText));
-  decal.position.set(0, H/2, (W + t)/2 + Math.max(t*0.1, 0.25));
-  boxClosedParts.push(decal);
-  (built.closedExtras || []).forEach(o => boxClosedParts.push(o));
-  boxClosedParts.forEach(o => {o.visible = false; boxGroup.add(o);});
+  if(!openStructure){
+    const rr = Math.min(t*1.6, Math.min(L, W, H)*0.1);
+    const shell = new THREE.Mesh(roundedBoxGeo(L + t, H + t, W + t, rr, 3), kraft);
+    shell.position.y = H/2;
+    boxClosedParts.push(shell);
+    const decal = new THREE.Mesh(new THREE.PlaneGeometry(L*0.92, H*0.92), makeTextMaterial(L, H, true, printText));
+    decal.position.set(0, H/2, (W + t)/2 + Math.max(t*0.1, 0.25));
+    boxClosedParts.push(decal);
+    (built.closedExtras || []).forEach(o => boxClosedParts.push(o));
+    boxClosedParts.forEach(o => {o.visible = false; boxGroup.add(o);});
+  }
 
   boxGroup.position.y = -H/2;         // centre vertically for orbit
   pivot.add(boxGroup);
@@ -182,8 +190,10 @@ export function applyFold(t){
     const lt = Math.min(1, Math.max(0, (t - (phase ? 0.5 : 0))*2)); // inner pair folds in first half, outer in second
     f.rotation[axis] = closedAngle*lt;
   });
-  // fully folded → swap the panel construction for the continuous rounded carton
-  const closed = t >= 1;
+  // fully folded → swap the panel construction for the continuous rounded
+  // carton. An OPEN structure has no shell to swap to, so its erected panels
+  // stay visible at every t (they ARE the final erected tray).
+  const closed = t >= 1 && !openStructure;
   boxOpenParts.forEach(o => o.visible = !closed);
   boxClosedParts.forEach(o => o.visible = closed);
 }

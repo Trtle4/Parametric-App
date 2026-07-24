@@ -138,7 +138,7 @@ function checkStyle(name, geo){
 
 checkStyle('fefco201', fefco201({L:200,W:150,H:120,caliper:3,glue:35,slot:6}));
 checkStyle('a6120', a6120({L:100,W:60,H:150,caliper:0.457,glueTab:15,dustDepth:37.5,tuckDepth:59.543,tuckTab:16}));
-checkStyle('tray (FEFCO 0300)', trayGeometry({L:100,W:60,H:30,caliper:3,cornerFlapDepth:20}));
+checkStyle('tray (FEFCO 0300)', trayGeometry({L:100,W:60,H:30,caliper:3,cornerGap:8}));
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;
 document.getElementById('out').textContent =

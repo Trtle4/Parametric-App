@@ -139,7 +139,7 @@ export const styles = [
       {key: 'W',       label: 'Width',         hint: 'W',     group: 'dims',     min: 1, step: 1,   default: 200},
       {key: 'H',       label: 'Height',        hint: 'H',     group: 'dims',     min: 1, step: 1,   default: 80},
       {key: 'caliper', label: 'Board caliper', hint: 't',     group: 'material', min: 0, step: 0.1, default: 3},
-      {key: 'cornerFlapDepth', label: 'Corner flap depth', hint: '<=W/2', group: 'material', min: 0, step: 1, default: 40}
+      {key: 'cornerGap', label: 'Corner cut gap', hint: 'fold clearance', group: 'material', min: 0, step: 0.5, default: 6}
     ],
     options: [],
     geometry: trayGeometry,
