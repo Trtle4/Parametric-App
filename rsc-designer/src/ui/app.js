@@ -14,6 +14,7 @@ import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
+import {dimsSVG} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, palletStats, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
@@ -32,6 +33,13 @@ import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describe
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
 let hierSel = {};              // opened index per tier {case,carton,wrap}
+
+// Dims overlay: L×W×H callouts on the active component, off by default. Each
+// view's refresh caches the subject's OUTER dims (mm, centred on the origin —
+// the shared world convention x=L,y=H,z=W); drawDims picks the right one for
+// the current view and reprojects it every frame so the numbers track the orbit.
+let showDims = false;
+const subjectDims = {fold: null, nest: null, pal: null};
 
 /* ---------- the active level: the ONE thing the rails + 2D/3D/DXF show ----
  * There is no detached style instance any more (Path A is gone). The rails
@@ -171,8 +179,9 @@ function refresh3d(){
   // builder. The hierarchy/cutaway view (mode3d 'hier') is unaffected,
   // since it renders every style's static erected geometry directly, not
   // through foldBuilders.
-  if(!builder){ fold.showBox(false); return; }
+  if(!builder){ fold.showBox(false); subjectDims.fold = null; return; }
   fold.buildBox(builder, g, build.project.printText, lvl.optionsOf(build.project));
+  subjectDims.fold = {L: g.outer.L, W: g.outer.W, H: g.outer.H};
 }
 
 /** The pallet-stats readout: always the CASE on the pallet (the shipper),
@@ -183,7 +192,9 @@ function refreshPal(){
   if(!g){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
+    subjectDims.pal = null;
     clearBCT();
+    drawDims();
     return;
   }
   // the fit stats + BCT are CHEAP and always relevant (right-rail readout) —
@@ -202,7 +213,13 @@ function refreshPal(){
   const palText = stats.total > 0 ? `${stats.total} cases` : (stats.perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
   renderBCT(g, stats);
+  // the loaded-pallet Dims box: deck footprint x (pallet deck + case stack),
+  // doubled when double-stacked — the same totalH pallet3d centres on the origin
+  const oneLoadH = PALLET_HEIGHT + stats.layers*effH;
+  const nLoads = (p.stacking && p.stacking.doubleStack) ? 2 : 1;
+  subjectDims.pal = {L: p.L, W: p.W, H: nLoads*oneLoadH};
   if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack), effH);
+  drawDims();
 }
 
 /* ---------- stacking strength (BCT) — engineering guidance, not a guarantee ----
@@ -761,17 +778,19 @@ function applyHierarchy(resetCam){
   fold.stopFold(); fold.showBox(false); showPallet(false); showNest(false); showProduct(false);
   const bundle = hierarchyBundle();
   LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
-  if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; return; }
+  if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
   // the active level IS the depth; if it isn't reachable for this config,
   // render the case (without disturbing the selector's own state)
   const depth = depthAvailable(bundle, activeLevel) ? activeLevel : 'case';
   if(resetCam) fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
   const res = hier.buildHierarchy(bundle, depth, hierSel);
+  subjectDims.nest = res.outer || null;
   hier.show(true);
   el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
   renderLegend(bundle, depth);
+  drawDims();
 }
 
 /** Legend naming every coloured element, plus (at wrap depth) the seal
@@ -820,11 +839,41 @@ function applyFoldMode(){
   refresh3d(); fold.showBox(true);
   if(activeStyle().structure === 'flexible') fold.jumpClosed();
   else fold.startFold();
+  drawDims();   // refresh the callout numbers now; the frame loop reprojects them
 }
 
 // product/pallet have no fold — they only exist in the nest cascade, so a
 // fold request on those levels falls through to the hierarchy
 function apply3dMode(){ if(mode3d === 'fold' && isStyleLevel()) applyFoldMode(); else applyHierarchy(true); }
+
+/* ---------- Dims overlay: L×W×H callouts on the active component ---------- */
+
+// which cached subject box the CURRENT view annotates — mirrors exactly what
+// apply3dMode/setView chose to render, so the callouts never label a component
+// other than the one on screen (fold falls through to the nest for product/
+// pallet, just like the render does).
+function currentDimsBox(){
+  if(view === 'pal') return subjectDims.pal;
+  if(view === '3d') return (mode3d === 'fold' && isStyleLevel()) ? subjectDims.fold : subjectDims.nest;
+  return null;
+}
+
+// Reproject + redraw the callouts. Registered once with fold.onFrame, so it
+// runs every frame and the numbers track the orbit. A no-op (overlay hidden)
+// unless the toggle is on AND the current view has a subject to annotate.
+function drawDims(){
+  const ov = el('dimsOverlay');
+  const d = showDims ? currentDimsBox() : null;
+  const w = fold.isInit() ? el('cvWrap').clientWidth : 0, h = fold.isInit() ? el('cvWrap').clientHeight : 0;
+  if(!d || !w || !h){ if(ov.style.display !== 'none') ov.style.display = 'none'; return; }
+  const box = new THREE.Box3(
+    new THREE.Vector3(-d.L/2, -d.H/2, -d.W/2),
+    new THREE.Vector3( d.L/2,  d.H/2,  d.W/2));
+  const u = inputs.getUnit(), lab = v => `${fmtLen(v, u)} ${u}`;
+  ov.setAttribute('width', w); ov.setAttribute('height', h); ov.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  ov.innerHTML = dimsSVG(box, {L: lab(d.L), W: lab(d.W), H: lab(d.H)}, fold.getCamera(), w, h);
+  ov.style.display = 'block';
+}
 
 /* ---------- view switching ---------- */
 function setView(v){
@@ -889,6 +938,7 @@ function setView(v){
     fold.startLoop();
   }
   updatePngButtonsState();   // the 3D snapshot is only capturable while 3D is up
+  drawDims();                // show/hide + refresh the Dims callouts for the new view
 }
 
 /* ---------- wiring ---------- */
@@ -950,6 +1000,18 @@ el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
+// Dims: toggle the L×W×H callout overlay (off by default). drawDims runs on
+// the render loop, so flipping the flag is enough; call it once for immediacy.
+el('m3dims').addEventListener('click', () => {
+  showDims = !showDims;
+  el('m3dims').classList.toggle('on', showDims);
+  drawDims();
+});
+// Reproject the Dims callouts every frame so they track the orbit. Registered
+// once here (fold3d's frame-callback Set exists from import, before init3d), NOT
+// inside the viewcube-mount guard — that guard can already be satisfied by the
+// time the 3D view first opens, which would silently drop the registration.
+fold.onFrame(drawDims);
 // the 3D depth buttons ARE active-level buttons — one control, so the rails
 // and the cascade always point at the same level
 LEVEL_ORDER.forEach(d =>

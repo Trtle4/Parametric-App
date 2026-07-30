@@ -527,32 +527,42 @@ export function buildHierarchy(bundle, depth, sel){
     wrap:   sel.wrap   ?? (bundle.wraps ? nearestCameraCorner(bundle.wraps.placements) : 0)
   };
 
-  let span = 100, opened = {};
+  // `outer` = the top-level subject's world x/y/z extent (L,W,H mm), centred on
+  // the origin like every depth's render — the Dims overlay annotates exactly
+  // this box, so it can never drift from what's drawn.
+  let span = 100, opened = {}, outer = null;
   if(depth === 'product'){
     const p = bundle.wraps.piece;
     const {geo} = pieceGeo(p, bundle.wraps.stackAxis, 'LWH');
     group.add(new THREE.Mesh(geo, pieceMat));
     span = p.kind === 'cylinder' ? p.diameter : Math.max(p.L, p.W, p.H);
+    geo.computeBoundingBox();
+    const s = geo.boundingBox.getSize(new THREE.Vector3());
+    outer = {L: s.x, W: s.z, H: s.y};
   }else if(depth === 'wrap'){
     group.add(buildWrapOpened(bundle));
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
+    const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
     group.add(buildContainer(cartonTier, bundle, S, []));
     opened = {wrap: S.wrap};
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
+    outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
     group.add(buildContainer(caseTier, bundle, S, []));
     opened = {carton: S.carton, wrap: S.wrap};
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
+    outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'pallet'){
-    span = buildPallet(bundle, caseTier, S);
+    const r = buildPallet(bundle, caseTier, S);
+    span = r.span; outer = r.outer;
     opened = {case: S.case, carton: S.carton, wrap: S.wrap};
   }
 
   pivot.add(group);
   setCamSpan(span);
   registerFrame();
-  return {opened: S, span, counts: bundle.counts};
+  return {opened: S, span, counts: bundle.counts, outer};
 }
 
 function buildPallet(bundle, caseTier, S){
@@ -587,7 +597,11 @@ function buildPallet(bundle, caseTier, S){
     group.add(cg);
   }
   group.position.y = -(deckH + loadH)/2;
-  return Math.max(bundle.cases.deck.L, bundle.cases.deck.W, loadH);
+  return {
+    span: Math.max(bundle.cases.deck.L, bundle.cases.deck.W, loadH),
+    // loaded pallet: the deck footprint x (deck + case stack) height
+    outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: deckH + loadH}
+  };
 }
 
 /* ---------- per-frame cutaway: hide walls facing the camera ---------- */
