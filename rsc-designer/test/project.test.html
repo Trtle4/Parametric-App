@@ -600,6 +600,17 @@ t('the SAME tray with openTop:false constrains height normally (the capped/close
   eq(r.caseLayers, 9); eq(r.casesPerPallet, 126);
 });
 
+t('open-top proud tray exposes unitStackH = the proud content height (the pallet stacks at THIS pitch, not the short tray wall — the render reads it to avoid overlapping layers)', () => {
+  const r = candidateCases(trayProject(true), '1mm').find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  approx(r.unitStackH, 151.828, 'stack pitch = carton standing height:');
+  if(r.unitStackH <= r.outer.H) throw new Error('proud content must raise the stack pitch above the tray outer.H (53), or layers overlap');
+  approx(r.unitStackH, r.loadH/r.caseLayers, 'unitStackH is exactly loadH / caseLayers:');
+});
+t('closed tray (openTop false) exposes unitStackH = its own outer.H — closed styles unchanged', () => {
+  const r = candidateCases(trayProject(false), '1mm').find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
+  approx(r.unitStackH, r.outer.H, 'closed: stack pitch = own outer height (155):');
+});
+
 /* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ---- */
 t('on-edge sleeve makes round girth eligible; flat / multi-stack do not', () => {
   const cyl = {kind: 'cylinder', diameter: 50, thickness: 6};

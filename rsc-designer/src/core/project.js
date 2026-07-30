@@ -694,8 +694,10 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     coveragePct: Math.round(fit.perLayer*outerGeo.outer.L*outerGeo.outer.W/(p.L*p.W)*100),
     // effective per-unit stacking height actually used for the pallet load
     // (== outer.H for closed styles; max(outer.H, child standing height)
-    // for an open-top parent whose contents may stand proud of its walls)
-    loadH,
+    // for an open-top parent whose contents may stand proud of its walls).
+    // Exposed so the RENDER stacks at the same pitch the fit used, instead of
+    // re-deriving from outer.H (which would let proud-content layers overlap).
+    loadH, unitStackH: stackH,
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number

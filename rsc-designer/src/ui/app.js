@@ -188,8 +188,13 @@ function refreshPal(){
   }
   // the fit stats + BCT are CHEAP and always relevant (right-rail readout) —
   // computed on every recompute. The heavy 3D pallet build only runs when the
-  // Palletize view is actually up.
-  const stats = palletStats(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern);
+  // Palletize view is actually up. effH = the chain's effective per-unit
+  // stacking height (row.unitStackH): for an open tray with proud contents it
+  // is the standing-content height, so the render's layer pitch matches the
+  // chain and layers never interpenetrate.
+  const palRow = build.getSelected() || build.getRows()[0];
+  const effH = (palRow && palRow.unitStackH) || g.outer.H;
+  const stats = palletStats(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, effH);
   el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
@@ -197,7 +202,7 @@ function refreshPal(){
   const palText = stats.total > 0 ? `${stats.total} cases` : (stats.perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
   renderBCT(g, stats);
-  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack));
+  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack), effH);
 }
 
 /* ---------- stacking strength (BCT) — engineering guidance, not a guarantee ----

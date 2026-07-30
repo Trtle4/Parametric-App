@@ -29,12 +29,19 @@ export const PALLET_HEIGHT = BOTTOM_T + STRINGER_H + DECK_T;
 
 let palletGroup = null;
 
+/** Effective per-unit stacking height. For an OPEN tray whose contents stand
+ *  proud of its walls, the layer pitch must reserve the taller of the two —
+ *  the chain already computes this (row.unitStackH) and threads it in here, so
+ *  the render stacks at the same pitch and layers never interpenetrate. Falls
+ *  back to outer.H when no effective height is supplied (every closed style). */
+const stackHeightOf = (geo, effectiveH) => (effectiveH && effectiveH > 0) ? effectiveH : geo.outer.H;
+
 /** Pure pallet-fit stats (no rendering) — the cheap path the always-visible
  *  readout + BCT use on every recompute. Same fitInto call buildPallet makes,
  *  so the numbers match the 3D view exactly. */
-export function palletStats(geo, pallet, pattern){
+export function palletStats(geo, pallet, pattern, effectiveH){
   const arr = fitInto(
-    {outer: geo.outer, allowedOrientations: ['LWH', 'WLH'], styleId: geo.meta.style},
+    {outer: {...geo.outer, H: stackHeightOf(geo, effectiveH)}, allowedOrientations: ['LWH', 'WLH'], styleId: geo.meta.style},
     {L: pallet.L, W: pallet.W, H: pallet.maxH - PALLET_HEIGHT},
     {wall: 0, between: 0},
     pattern
@@ -84,9 +91,11 @@ function buildTimber(pl, pw){
  * @param {'optimal'|'column'|'interlock'} pattern
  * @param {boolean} visible whether the pallet view is active
  * @param {boolean} doubleStack render a second unit load on top (two pallets high)
+ * @param {number} [effectiveH] per-unit stacking height (row.unitStackH) — the
+ *        proud-content height for an open tray; defaults to outer.H (closed)
  * @returns {{label:string, perLayer:number, layers:number, total:number, coveragePct:number}}
  */
-export function buildPallet(geo, pallet, pattern, visible, doubleStack){
+export function buildPallet(geo, pallet, pattern, visible, doubleStack, effectiveH){
   const pivot = getPivot();
   if(palletGroup){
     pivot.remove(palletGroup);
@@ -95,19 +104,21 @@ export function buildPallet(geo, pallet, pattern, visible, doubleStack){
   palletGroup = new THREE.Group();
 
   const ol = geo.outer.L, ow = geo.outer.W, oh = geo.outer.H;
+  const sh = stackHeightOf(geo, effectiveH);           // layer pitch (>= oh for a proud open tray)
   const ph = PALLET_HEIGHT;
   const pl = pallet.L, pw = pallet.W;
 
   // containment does the layout: fixed cavity above the deck, cases rotate
-  // about the vertical axis only, flush stacking (zero clearance)
+  // about the vertical axis only, flush stacking (zero clearance). The fit
+  // uses the EFFECTIVE height so proud-content layers reserve their full pitch.
   const arr = fitInto(
-    {outer: geo.outer, allowedOrientations: ['LWH', 'WLH'], styleId: geo.meta.style},
+    {outer: {...geo.outer, H: sh}, allowedOrientations: ['LWH', 'WLH'], styleId: geo.meta.style},
     {L: pl, W: pw, H: pallet.maxH - ph},
     {wall: 0, between: 0},
     pattern
   );
 
-  const oneLoadH = ph + arr.layers*oh;                 // pallet + its case stack
+  const oneLoadH = ph + arr.layers*sh;                 // pallet + its case stack (proud pitch)
   const nLoads = doubleStack ? 2 : 1;
   const shown = Math.min(arr.total, SHOWN_CAP);
   const caseGeo = arr.total > 0
