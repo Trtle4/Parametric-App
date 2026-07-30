@@ -14,7 +14,7 @@ import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
-import {dimsSVG} from '../render/dims3d.js';
+import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, palletStats, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
@@ -217,7 +217,9 @@ function refreshPal(){
   // doubled when double-stacked — the same totalH pallet3d centres on the origin
   const oneLoadH = PALLET_HEIGHT + stats.layers*effH;
   const nLoads = (p.stacking && p.stacking.doubleStack) ? 2 : 1;
-  subjectDims.pal = {L: p.L, W: p.W, H: nLoads*oneLoadH};
+  // palletMM flags this as a pallet subject so the Dims overlay splits the
+  // height into Pallet (deck) / Load (stack) / Total
+  subjectDims.pal = {L: p.L, W: p.W, H: nLoads*oneLoadH, palletMM: PALLET_HEIGHT};
   if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack), effH);
   drawDims();
 }
@@ -784,7 +786,8 @@ function applyHierarchy(resetCam){
   const depth = depthAvailable(bundle, activeLevel) ? activeLevel : 'case';
   if(resetCam) fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
   const res = hier.buildHierarchy(bundle, depth, hierSel);
-  subjectDims.nest = res.outer || null;
+  // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
+  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT} : res.outer) : null;
   hier.show(true);
   el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
@@ -870,8 +873,21 @@ function drawDims(){
     new THREE.Vector3(-d.L/2, -d.H/2, -d.W/2),
     new THREE.Vector3( d.L/2,  d.H/2,  d.W/2));
   const u = inputs.getUnit(), lab = v => `${fmtLen(v, u)} ${u}`;
+  // at pallet level the height splits into Pallet (deck) / Load (stack) / Total
+  let labels;
+  if(d.palletMM){
+    const s = splitHeight(d.H, d.palletMM);
+    labels = {L: lab(d.L), W: lab(d.W), heights: {
+      palletMM: s.pallet,
+      pallet: `Pallet  ${lab(s.pallet)}`,
+      load:   `Load  ${lab(s.load)}`,
+      total:  `Total  ${lab(s.total)}`
+    }};
+  }else{
+    labels = {L: lab(d.L), W: lab(d.W), H: lab(d.H)};
+  }
   ov.setAttribute('width', w); ov.setAttribute('height', h); ov.setAttribute('viewBox', `0 0 ${w} ${h}`);
-  ov.innerHTML = dimsSVG(box, {L: lab(d.L), W: lab(d.W), H: lab(d.H)}, fold.getCamera(), w, h);
+  ov.innerHTML = dimsSVG(box, labels, fold.getCamera(), w, h);
   ov.style.display = 'block';
 }
 
@@ -932,6 +948,10 @@ function setView(v){
     }else{
       fold.showBox(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
+      // frame the loaded pallet with margin on entry (like the hierarchy view
+      // resets its camera) so it fits the pane AND leaves room for the Dims
+      // callouts to stand outboard of the geometry rather than spilling off
+      fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.7);
       refreshPal();
     }
     fold.resize3d();

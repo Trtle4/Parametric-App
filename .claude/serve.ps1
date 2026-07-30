@@ -17,6 +17,8 @@ while ($listener.IsListening) {
       $bytes = [IO.File]::ReadAllBytes($full)
       $ext = [IO.Path]::GetExtension($full).ToLower()
       if ($mime.ContainsKey($ext)) { $ctx.Response.ContentType = $mime[$ext] }
+      # dev server: never let the browser cache modules, or edits silently fail to load
+      $ctx.Response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
       $ctx.Response.ContentLength64 = $bytes.Length
       $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     } else {

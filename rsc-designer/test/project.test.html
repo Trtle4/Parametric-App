@@ -21,6 +21,7 @@ import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
 import {fitInto, solveParent} from '../src/core/containment.js';
 import {styleById} from '../src/core/styles/index.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
+import {splitHeight} from '../src/render/dims3d.js';
 
 const results = [];
 function t(name, fn){
@@ -609,6 +610,20 @@ t('open-top proud tray exposes unitStackH = the proud content height (the pallet
 t('closed tray (openTop false) exposes unitStackH = its own outer.H — closed styles unchanged', () => {
   const r = candidateCases(trayProject(false), '1mm').find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
   approx(r.unitStackH, r.outer.H, 'closed: stack pitch = own outer height (155):');
+});
+
+/* ---- pallet height split (Dims overlay): Total = Pallet + Load ---- */
+t('pallet height split: Total always equals Pallet + Load', () => {
+  [[1509, 127], [254, 127], [3000, 127]].forEach(([total, palletH]) => {
+    const s = splitHeight(total, palletH);
+    if(s.pallet !== palletH) throw new Error(`pallet should be the deck height ${palletH}, got ${s.pallet}`);
+    if(s.total !== total) throw new Error(`total should be ${total}, got ${s.total}`);
+    if(s.pallet + s.load !== s.total) throw new Error(`Pallet(${s.pallet}) + Load(${s.load}) must equal Total(${s.total})`);
+  });
+});
+t('pallet height split: Load is the stack above the deck (Total - deck)', () => {
+  const s = splitHeight(1509, 127);
+  approx(s.load, 1382, 'load = total - pallet deck');
 });
 
 /* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ---- */
