@@ -13,6 +13,7 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
+import {buildGmaPallet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
 
 const T_FLOOR = 0.6;                    // min rendered wall thickness, mm
@@ -39,7 +40,6 @@ const filmMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, 
 const filmClosedMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, metalness: 0,
   transparent: true, opacity: 0.7, side: THREE.DoubleSide});
 const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, metalness: 0, side: THREE.DoubleSide});
-const deckMat = new THREE.MeshStandardMaterial({color: 0xA0815A, roughness: 0.95, metalness: 0});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
 
 let group = null;                       // the whole hierarchy scene
@@ -573,10 +573,10 @@ function buildPallet(bundle, caseTier, S){
   const deckH = bundle.cases.deck.baseH;
   const openIdx = S.case ?? nearestCameraCorner(cases.placements);
 
-  // deck slab
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(bundle.cases.deck.L, deckH, bundle.cases.deck.W), deckMat);
-  deck.position.y = deckH/2;
-  group.add(deck);
+  // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
+  // the SAME asset the Palletize view builds, so both pallet views render an
+  // identical pallet instead of this view's former bare slab
+  group.add(buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W));
 
   // closed cases (instanced per orientation), opened one recursed
   for(const [o, list] of groupByOrientation(cases.placements, openIdx)){

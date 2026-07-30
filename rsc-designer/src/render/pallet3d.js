@@ -4,28 +4,23 @@
  *
  * One consumer of core/containment.js: the deck is a fixed cavity, the case
  * outer envelope is the child, and cases may rotate about the vertical axis
- * only. Pallet-specific knowledge (timber, deck, GMA sizes) lives here and
- * nowhere else. RENDER ONLY — the fit math (palletStats/fitInto) is unchanged;
- * PALLET_HEIGHT stays 127 mm so the load-height budget the chain reads is
- * identical. All lengths in mm.
+ * only. The pallet timber itself is the ONE shared render asset in
+ * render/palletmesh.js (buildGmaPallet) — both this view and the 3D-Fold
+ * pallet-depth view build the SAME pallet from there. RENDER ONLY — the fit
+ * math (palletStats/fitInto) is unchanged; PALLET_HEIGHT stays 127 mm so the
+ * load-height budget the chain reads is identical. All lengths in mm.
  */
 import {fitInto} from '../core/containment.js';
 import {getPivot, setCamSpan, kraft, roundedBoxGeo} from './fold3d.js';
+import {buildGmaPallet, PALLET_HEIGHT} from './palletmesh.js';
 
-// GMA-style timber, mm. The three sum to PALLET_HEIGHT (127) — do NOT change
-// that sum, it is the load-height budget the pallet fit reads.
-const BOTTOM_T = 16, STRINGER_H = 95, DECK_T = 16;   // board thicknesses (sum 127)
-const STRINGER_W = 38;                               // stringer width (1.5 in)
-const DECK_W = 130;                                  // deck-board width
-const DECK_PITCH = 190;                              // target top-deck spacing -> ~7 boards on 48"
-const NOTCH_H = 42, LEG_L = 150;                     // 4-way stringer notch: legs at ends+centre, gaps between = fork openings
 const CASE_GAP = 2;                                  // visual seam between cases
 const SHOWN_CAP = 4000;                              // instancing cap for absurd inputs
 
-const wood = new THREE.MeshStandardMaterial({color: 0xA0815A, roughness: 0.95, metalness: 0});
-
-/** Deck assembly height — exported so the project chain can budget for it. */
-export const PALLET_HEIGHT = BOTTOM_T + STRINGER_H + DECK_T;
+// re-exported so existing consumers (app.js, the chain height budget) keep
+// importing the deck-assembly height from here, even though the pallet mesh
+// and PALLET_HEIGHT now live in palletmesh.js
+export {PALLET_HEIGHT};
 
 let palletGroup = null;
 
@@ -50,39 +45,6 @@ export function palletStats(geo, pallet, pattern, effectiveH){
     label: arr.label, perLayer: arr.perLayer, layers: arr.layers, total: arr.total,
     coveragePct: Math.round(arr.perLayer*geo.outer.L*geo.outer.W/(pallet.L*pallet.W)*100)
   };
-}
-
-/** One GMA 4-way stringer pallet as a group: bottom deck, three notched
- *  stringers running the 48-in length (legs at both ends + centre, the two
- *  gaps between them are the fork notches for entry from all four sides), and
- *  the ~7-board top deck across the 40-in width. */
-function buildTimber(pl, pw){
-  const g = new THREE.Group();
-  // bottom deck: boards across the width (run along z), spaced along the length
-  const nBot = 5;
-  for(let i = 0; i < nBot; i++){
-    const x = -pl/2 + DECK_W/2 + i*((pl - DECK_W)/(nBot - 1));
-    const b = new THREE.Mesh(new THREE.BoxGeometry(DECK_W, BOTTOM_T, pw), wood);
-    b.position.set(x, BOTTOM_T/2, 0); g.add(b);
-  }
-  // three notched stringers along the length (x), placed across the width (z)
-  const railH = STRINGER_H - NOTCH_H;
-  [-pw/2 + STRINGER_W/2, 0, pw/2 - STRINGER_W/2].forEach(z => {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(pl, railH, STRINGER_W), wood);   // continuous upper rail
-    rail.position.set(0, BOTTOM_T + NOTCH_H + railH/2, z); g.add(rail);
-    [-pl/2 + LEG_L/2, 0, pl/2 - LEG_L/2].forEach(x => {                                // three feet; two gaps = 4-way notches
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(LEG_L, NOTCH_H, STRINGER_W), wood);
-      leg.position.set(x, BOTTOM_T + NOTCH_H/2, z); g.add(leg);
-    });
-  });
-  // top deck: ~7 boards across the width (run along z), spaced along the length
-  const nTop = Math.max(3, (Math.round(pl/DECK_PITCH) | 1));
-  for(let i = 0; i < nTop; i++){
-    const x = -pl/2 + DECK_W/2 + i*((pl - DECK_W)/(nTop - 1));
-    const d = new THREE.Mesh(new THREE.BoxGeometry(DECK_W, DECK_T, pw), wood);
-    d.position.set(x, BOTTOM_T + STRINGER_H + DECK_T/2, 0); g.add(d);
-  }
-  return g;
 }
 
 /**
@@ -127,7 +89,7 @@ export function buildPallet(geo, pallet, pattern, visible, doubleStack, effectiv
 
   for(let u = 0; u < nLoads; u++){
     const yBase = u*oneLoadH;                           // second unit load sits on top of the first
-    const timber = buildTimber(pl, pw);
+    const timber = buildGmaPallet(pl, pw);
     timber.position.y = yBase;
     palletGroup.add(timber);
 
