@@ -52,6 +52,8 @@
     padding:2px 8px;border:1px solid var(--line);border-radius:20px;white-space:nowrap;
   }
   .brand .sub{font-size:12px;color:var(--ink-3);white-space:nowrap}
+  /* deploy-time build id — low-key diagnostic, mono + muted, never chrome */
+  .brand .buildid{font-family:var(--mono);font-size:10px;color:var(--ink-2);letter-spacing:.02em;opacity:.7;white-space:nowrap;cursor:default}
   .header-spacer{flex:1 1 12px;min-width:0}
   .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:8px 0}
   .statechip{
@@ -498,6 +500,10 @@
     <span class="name" id="brandName">Regular Slotted Container</span>
     <span class="part" id="brandCode">FEFCO 201</span>
     <span class="sub">Parametric dieline generator</span>
+    <!-- deploy-time build id (git short SHA · date), injected via version.json
+         by the Pages workflow; "dev" when the file isn't present (local/offline).
+         Diagnostic only — match against `git rev-parse --short HEAD` on origin/main. -->
+    <span class="buildid" id="buildId" title="Build identifier — match against origin/main">dev</span>
   </div>
   <div class="header-spacer"></div>
   <div class="actions">
@@ -745,5 +751,25 @@
 </main>
 
 <script type="module" src="src/ui/app.js"></script>
+<!-- Build identifier: fetch the deploy-time version.json and show short SHA ·
+     date. Kept a standalone classic script (not part of the app module graph)
+     so the diagnostic still renders even if the app fails to boot. On any
+     failure (no file locally/offline, bad JSON) the element keeps its "dev"
+     default rather than showing a stale value. -->
+<script>
+(function(){
+  var elBuild = document.getElementById('buildId');
+  if(!elBuild) return;
+  fetch('version.json', {cache: 'no-store'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(v){
+      if(!v || !v.sha) return;                       // keep "dev"
+      var day = (v.builtAt || '').slice(0, 10);      // ISO date, no time
+      elBuild.textContent = v.sha + (day ? ' · ' + day : '');
+      elBuild.title = 'Build ' + v.sha + (v.builtAt ? ' · ' + v.builtAt : '') + ' — match against origin/main';
+    })
+    .catch(function(){ /* offline / local: keep "dev" */ });
+})();
+</script>
 </body>
 </html>

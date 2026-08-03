@@ -1,0 +1,56 @@
+# Deploy the rsc-designer app to GitHub Pages, stamping a deploy-time build
+# identifier into version.json (git short SHA + UTC timestamp). No build step —
+# the app is plain ES modules; this only injects the version file and publishes.
+#
+# NOTE: this uses the GitHub Actions Pages deployment, so the repository's
+# Pages "Source" must be set to "GitHub Actions" (Settings → Pages). The site
+# root becomes the rsc-designer/ directory (index.html at the root).
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deploy at a time; let a newer push supersede an in-flight run
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Injected at deploy time, never committed — a hardcoded hash would go
+      # stale on the next commit and lie. Written next to index.html so the
+      # app's relative fetch('version.json') resolves regardless of the site root.
+      - name: Stamp build identifier
+        run: |
+          printf '{"sha":"%s","builtAt":"%s"}\n' \
+            "$(git rev-parse --short HEAD)" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > rsc-designer/version.json
+          cat rsc-designer/version.json
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: rsc-designer
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

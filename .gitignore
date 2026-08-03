@@ -9,6 +9,10 @@
 node_modules/
 dist/
 
+# deploy-time build identifier — injected by the Pages workflow, never committed
+# (a committed hash goes stale on the next commit and lies)
+rsc-designer/version.json
+
 # OS cruft
 Thumbs.db
 Desktop.ini
