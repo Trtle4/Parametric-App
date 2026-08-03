@@ -142,8 +142,10 @@ function defaultCollation(){
  *  plain-box ruling — a single manual outer with no inner and no
  *  compensation. Shown above whichever editor is active. */
 function contentModeField(isBox){
-  return `<div class="field"><label>Content <span class="hint">mode</span></label>
-    <div class="inp"><select id="cMode"><option value="collation"${isBox ? '' : ' selected'}>Collation</option><option value="box"${isBox ? ' selected' : ''}>Plain box</option></select></div></div>`;
+  // "collation"/"box" stay as internal values; the labels are plain language
+  // (UAT #6 — "collation" is jargon the user doesn't recognise).
+  return `<div class="field"><label>Product <span class="hint">type</span></label>
+    <div class="inp"><select id="cMode"><option value="collation"${isBox ? '' : ' selected'}>Multiple pieces</option><option value="box"${isBox ? ' selected' : ''}>Single box</option></select></div></div>`;
 }
 
 /**
@@ -214,15 +216,24 @@ export function mountProduct(prim, m){
       </div>
       <div class="hint" style="margin-top:5px;line-height:1.35">${machineNote}</div></div>` : '';
 
-  mat.innerHTML =
-    orientSeg +
-    cntF('cPer', 'Per stack', 'count', collation.perStack) +
-    `<div class="field"><label>Stack axis <span class="hint">dir</span></label>
-      <div class="inp"><select id="cAxis">${['X', 'Y', 'Z'].map(a => `<option${a === collation.stackAxis ? ' selected' : ''}>${a}</option>`).join('')}</select></div></div>` +
-    cntF('cNx', 'Stacks across', 'nx', collation.nx) +
-    cntF('cNy', 'Stacks deep', 'ny', collation.ny) +
-    numF('cSg', 'Stack gap', 'between stacks', collation.stackGap) +
-    numF('cPg', 'Piece gap', 'within stack', collation.pieceGap);
+  // Grouping (stacks/grid) is only meaningful when pieces are actually being
+  // arranged into a pack: a wrap is in the chain, or the current config already
+  // groups more than one piece (UAT #6 conditional show). A single piece with
+  // no wrap feeds the carton directly — hide the grid, show a short note, so
+  // the panel isn't cluttered with inert controls. Never hide a grid that is
+  // already doing something (multi-piece), which would strand real settings.
+  const multiPiece = collation.perStack > 1 || collation.nx > 1 || collation.ny > 1;
+  const showGrouping = !!m.hasWrap || multiPiece;
+  const groupingHTML = showGrouping
+    ? cntF('cPer', 'Per stack', 'count', collation.perStack) +
+      `<div class="field"><label>Stack axis <span class="hint">dir</span></label>
+        <div class="inp"><select id="cAxis">${['X', 'Y', 'Z'].map(a => `<option${a === collation.stackAxis ? ' selected' : ''}>${a}</option>`).join('')}</select></div></div>` +
+      cntF('cNx', 'Stacks across', 'nx', collation.nx) +
+      cntF('cNy', 'Stacks deep', 'ny', collation.ny) +
+      numF('cSg', 'Stack gap', 'between stacks', collation.stackGap) +
+      numF('cPg', 'Piece gap', 'within stack', collation.pieceGap)
+    : `<div class="field bnote" style="color:var(--ink-3);font-size:11px;line-height:1.4">One piece feeds the carton directly. Add a wrap (chain strip) to arrange multiple pieces into a pack.</div>`;
+  mat.innerHTML = orientSeg + groupingHTML;
 
   const cnt = id => Math.max(1, Math.round(+el(id).value || 1));
   el('cMode').addEventListener('change', () => {
@@ -253,12 +264,14 @@ export function mountProduct(prim, m){
     el('cW').addEventListener('input', () => { collation.piece.W = mm('cW'); m.onInput(); });
     el('cH').addEventListener('input', () => { collation.piece.H = mm('cH'); m.onInput(); });
   }
-  el('cPer').addEventListener('input', () => { collation.perStack = cnt('cPer'); m.onInput(); });
-  el('cAxis').addEventListener('change', () => { collation.stackAxis = el('cAxis').value; m.onInput(); });
-  el('cNx').addEventListener('input', () => { collation.nx = cnt('cNx'); m.onInput(); });
-  el('cNy').addEventListener('input', () => { collation.ny = cnt('cNy'); m.onInput(); });
-  el('cSg').addEventListener('input', () => { collation.stackGap = mm('cSg'); m.onInput(); });
-  el('cPg').addEventListener('input', () => { collation.pieceGap = mm('cPg'); m.onInput(); });
+  if(showGrouping){
+    el('cPer').addEventListener('input', () => { collation.perStack = cnt('cPer'); m.onInput(); });
+    el('cAxis').addEventListener('change', () => { collation.stackAxis = el('cAxis').value; m.onInput(); });
+    el('cNx').addEventListener('input', () => { collation.nx = cnt('cNx'); m.onInput(); });
+    el('cNy').addEventListener('input', () => { collation.ny = cnt('cNy'); m.onInput(); });
+    el('cSg').addEventListener('input', () => { collation.stackGap = mm('cSg'); m.onInput(); });
+    el('cPg').addEventListener('input', () => { collation.pieceGap = mm('cPg'); m.onInput(); });
+  }
 }
 
 /* ---------- placement: orientation + clearance + count/arrangement ------
@@ -300,7 +313,8 @@ export function mountVertControl(host, idp, level, opts, onInput){
         const dis = disabledAxes.includes(c.axis);
         return `<option value="${c.axis}"${c.axis === vert.axis ? ' selected' : ''}${dis ? ` disabled title="${disabledReason}"` : ''}>${c.label} &middot; ${c.codes}</option>`;
       }).join('')}</select></div></div>
-    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${vert.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label></div>`;
+    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${vert.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label>
+      <div class="rotinert" id="${idp}RotHint" style="display:none">No effect with a manual grid — the grid already fixes the layout.</div></div>`;
   const apply = () => {
     level.allowedOrientations = verticalToOrientations(el(idp + 'Axis').value, el(idp + 'Rot').checked);
     onInput();
@@ -379,26 +393,50 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
     const nx = explicit ? link.arrangement.nx : defNx;
     const ny = explicit ? link.arrangement.ny : defNy;
     const nz = explicit ? link.arrangement.nz : defNz;
+    // AUTO (solver chose) vs MANUAL (user grid) badge — so "the solver is
+    // arranging within my grid" is never confused with "the app overrode me".
+    const badge = `<span class="arrbadge${explicit ? ' manual' : ''}"><span class="dot"></span>${explicit ? 'MANUAL' : 'AUTO'}</span>`;
     host.innerHTML =
       `<div class="field"><label>${childNoun}s <span class="hint">count</span></label>
         <div class="inp"><input id="${idp}C" type="number" min="1" step="1" value="${link.count}"></div></div>
-      <div class="field"><label>Arrangement</label>
+      <div class="field"><label>Arrangement ${badge}</label>
         <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
       (explicit ? `<div class="field"><label>Grid</label>
         <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%;padding-right:10px"> &times;
         <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%;padding-right:10px"> &times;
-        <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '');
+        <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '') +
+      `<div id="${idp}Warn"></div>`;
+
+    // typing a count while an explicit grid is active would REPLACE that grid
+    // (a count and a fixed nx*ny*nz are mutually exclusive asks). That switch
+    // used to happen silently — the real cause of "the app fights my
+    // arrangement" (UAT #3). Warn instead: hold the grid until the user
+    // chooses. In auto mode a typed count just writes straight through.
+    function showCountAdvisory(n){
+      const a = link.arrangement;
+      const warn = el(idp + 'Warn');
+      warn.innerHTML =
+        `<div class="countwarn">A custom count switches this level to <b>auto</b> — your ${a.nx}×${a.ny}×${a.nz} grid will be replaced.
+          <div class="cw-acts">
+            <button type="button" id="${idp}Keep">keep grid</button>
+            <button type="button" id="${idp}Use" class="cw-primary">use count (${n})</button>
+          </div></div>`;
+      el(idp + 'Keep').addEventListener('click', () => {
+        el(idp + 'C').value = a.nx*a.ny*a.nz;   // restore the field to the grid's product
+        warn.innerHTML = '';
+      });
+      el(idp + 'Use').addEventListener('click', () => {
+        link.arrangement = 'auto';
+        link.count = n;
+        render();          // rebuild in auto shape (grid fields gone, badge → AUTO)
+        onInput();
+      });
+    }
+
     el(idp + 'C').addEventListener('input', () => {
-      link.count = clampCount(el(idp + 'C').value, link.count);
-      // A typed count always means "solve a grid that holds this many" — the
-      // count field has no effect while an explicit nx*ny*nz grid is active
-      // (that grid's own product IS the count, unconditionally); honoring a
-      // count means switching to auto FOR it, not writing a count nothing
-      // reads. Only re-render (losing this field's focus) on the actual
-      // mode transition, never on a same-mode edit.
-      const wasExplicit = link.arrangement !== 'auto';
-      link.arrangement = 'auto';
-      if(wasExplicit) render();
+      const n = clampCount(el(idp + 'C').value, link.count);
+      if(link.arrangement !== 'auto'){ showCountAdvisory(n); return; }   // no silent grid loss
+      link.count = n;
       onInput();
     });
     el(idp + 'Arr').addEventListener('change', () => {

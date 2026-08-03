@@ -99,6 +99,7 @@
 <span id="palCnt">--</span>
 <span id="palTot">--</span>
 <span id="palCov">--</span>
+<div id="palRowLabel"></div>
 
 <!-- header state chip -->
 <span id="stateChip"></span>
@@ -336,13 +337,14 @@ await (async () => {
     for(const k of Object.keys(solvedShown)) approx(solvedShown[k], solvedParams[k], `${k} re-solved:`);
   });
 
-  t('disable/enable carton: rail structurally rebuilds, chain string reflects it', () => {
+  t('disable/enable carton: rail structurally rebuilds, chain strip marks the carton disabled', () => {
     try{
       el('tierToggleBtn').click();   // opens the confirm notice, does not itself disable
       const confirmBtn = Array.from(document.querySelectorAll('#loadNotice button')).find(b => /^Disable/.test(b.textContent));
       confirmBtn.click();
       eq(build.project.secondary.enabled, false, 'project reflects disabled:');
-      if(!/carton disabled/.test(el('chainString').textContent)) throw new Error('chain string does not name the disabled tier');
+      const cartonNode = [...el('chainString').querySelectorAll('.cs-node')].find(n => /Carton/.test(n.textContent));
+      if(!cartonNode || !cartonNode.classList.contains('disabled')) throw new Error('chain strip does not mark the carton node disabled');
     }finally{
       if(build.project.secondary.enabled === false) el('tierToggleBtn').click();   // re-enable, no confirm needed
     }
@@ -446,13 +448,32 @@ await (async () => {
   // force it back to an EXPLICIT grid so this block tests what it says
   link1.arrangement = {nx: 1, ny: 4, nz: 2}; link1.count = 8;
   el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change'); await settle();
-  t('custom count at carton level (wraps/carton, starts EXPLICIT): typing a count switches to auto and is honored', () => {
+  // set a known grid through the real inputs (the Arr→explicit handler seeds
+  // the tier's defaults, so drive nx/ny/nz to fix a value this block asserts on)
+  el('pInNx').value = '1'; fire(el('pInNx'), 'input');
+  el('pInNy').value = '4'; fire(el('pInNy'), 'input');
+  el('pInNz').value = '2'; fire(el('pInNz'), 'input');
+  const gridProduct = link1.arrangement.nx*link1.arrangement.ny*link1.arrangement.nz;   // 8
+  // UAT #3: typing a count while a MANUAL grid is active must WARN, not
+  // silently discard the grid. The switch is deferred to a deliberate choice.
+  t('custom count vs manual grid: typing a count does NOT silently discard the grid; it warns', () => {
     if(link1.arrangement === 'auto') throw new Error('test assumption violated: this link should start explicit');
     el('pInC').value = '5'; fire(el('pInC'), 'input');
-    eq(link1.arrangement, 'auto', 'typed count forces auto arrangement:');
+    if(link1.arrangement === 'auto') throw new Error('grid silently discarded — the exact UAT #3 regression');
+    if(!el('pInWarn').querySelector('.countwarn')) throw new Error('no count advisory shown');
+  });
+  t('count advisory "keep grid" preserves the manual arrangement', () => {
+    el('pInKeep').click();
+    if(link1.arrangement === 'auto') throw new Error('keep grid should retain the explicit arrangement');
+    eq(link1.arrangement.nx*link1.arrangement.ny*link1.arrangement.nz, gridProduct, 'grid intact:');
+  });
+  t('count advisory "use count" switches to auto and is honored', () => {
+    el('pInC').value = '5'; fire(el('pInC'), 'input');   // re-open the advisory
+    el('pInUse').click();
+    eq(link1.arrangement, 'auto', 'switched to auto only on the deliberate choice:');
     eq(link1.count, 5, 'typed count written to the project:');
   });
-  t('custom count at carton level actually reaches the solved chain, not just the link', () => {
+  t('custom count actually reaches the solved chain, not just the link', () => {
     const rows = build.getRows();
     if(!rows.length) throw new Error('no rows after setting a custom count');
     // 5 wraps/carton, each wrap holding this project's default 6-piece collation -> 30 pieces/carton
@@ -738,6 +759,56 @@ await (async () => {
     if(!cells.some(c => new RegExp(`\\b${resolved.casesPerPallet}\\b`).test(c)))
       throw new Error(`no Build row shows ${resolved.casesPerPallet} cases/pallet; cells=${JSON.stringify(cells)}`);
     el('tab2d').click();
+  });
+})();
+
+/* ==================================================================
+   Part B (chain legibility): the chain strip, the arrangement badge +
+   inert-rotate hint, and the "which candidate row" label are all native,
+   recompute-driven displays. Presentational — no computed value changes.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); el('tab2d').click(); await settle();
+  const stripNode = label => [...el('chainString').querySelectorAll('.cs-node')]
+    .find(n => n.querySelector('.cs-lvl').textContent === label);
+
+  t('chain strip: one node per level, the active one highlighted', () => {
+    eq(el('chainString').querySelectorAll('.cs-node').length, 5, 'five level nodes:');
+    if(!stripNode('Case').classList.contains('active')) throw new Error('active level (Case) not highlighted');
+  });
+  t('chain strip: clicking a node changes the active level', () => {
+    stripNode('Carton').click();
+    eq(el('style').value, 'carton', 'active level follows the strip click:');
+    setLevel('case');
+  });
+  t('chain strip: disabling via the strip struck-throughs the node and labels the re-point arrow', () => {
+    stripNode('Carton').querySelector('.cs-tog').click();   // opens confirm
+    [...document.querySelectorAll('#loadNotice button')].find(b => /^Disable/.test(b.textContent)).click();
+    if(!stripNode('Carton').classList.contains('disabled')) throw new Error('carton node not struck-through after disable');
+    const repoint = [...el('chainString').querySelectorAll('.cs-repoint')].map(e => e.textContent).join(' | ');
+    if(!/feeds case directly/.test(repoint)) throw new Error(`no re-point label on the arrow: "${repoint}"`);
+    stripNode('Carton').querySelector('.cs-tog').click();   // re-enable (no confirm)
+    eq(build.project.secondary.enabled, true, 're-enabled via strip:');
+  });
+
+  t('arrangement badge + inert rotate: MANUAL disables rotate with a hint; AUTO re-enables it', () => {
+    setLevel('carton');
+    el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
+    let badge = el('levelPlacement').querySelector('.arrbadge');
+    if(!badge || !/AUTO/.test(badge.textContent)) throw new Error('expected AUTO badge in auto mode');
+    if(el('pInRot').disabled) throw new Error('rotate should be live in auto mode');
+    el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
+    badge = el('levelPlacement').querySelector('.arrbadge');
+    if(!badge || !badge.classList.contains('manual') || !/MANUAL/.test(badge.textContent)) throw new Error('expected MANUAL badge for an explicit grid');
+    if(!el('pInRot').disabled) throw new Error('rotate should be inert (disabled) with a manual grid');
+    if(el('pInRotHint').style.display === 'none') throw new Error('inert hint should be visible with a manual grid');
+    el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');   // restore
+    if(el('pInRot').disabled) throw new Error('rotate should be live again after returning to auto');
+  });
+
+  t('which-row label: shown on the pallet readout, names row N of M', () => {
+    if(el('palRowLabel').style.display === 'none') throw new Error('row label hidden while a valid pallet result exists');
+    if(!/row \d+ of \d+/.test(el('palRowLabel').textContent)) throw new Error(`row label malformed: "${el('palRowLabel').textContent}"`);
   });
 })();
 

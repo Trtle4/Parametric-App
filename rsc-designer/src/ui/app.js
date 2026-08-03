@@ -55,14 +55,14 @@ const LEVELS = {
            paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
            optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
-           derivedFrom: p => p.primary.box ? 'the box' : 'the collation', fitsOf: row => row.wrapFits,
+           derivedFrom: p => 'the ' + plainNoun(p.primary.box ? 'box' : 'collation'), fitsOf: row => row.wrapFits,
            enabledOf: p => !!p.primary.wrap},
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
-           derivedFrom: p => p.primary.wrap ? 'the wrap' : (p.primary.box ? 'the box' : 'the collation'),
+           derivedFrom: p => 'the ' + plainNoun(p.primary.wrap ? 'wrap' : (p.primary.box ? 'box' : 'collation')),
            fitsOf: row => row.secondaryFits,
            enabledOf: p => p.secondary.enabled !== false},
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
@@ -71,7 +71,7 @@ const LEVELS = {
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
            // re-pointed per the enabled chain (describeChain), never hardcoded
-           derivedFrom: p => `the ${describeChain(p).childNoun}`,
+           derivedFrom: p => `the ${plainNoun(describeChain(p).childNoun)}`,
            fitsOf: row => row.tertiaryFits,
            enabledOf: p => p.tertiary.enabled !== false},
   pallet: {label: 'Pallet', kind: 'pallet'}
@@ -203,6 +203,7 @@ function refreshPal(){
   if(!g){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
+    el('palRowLabel').style.display = 'none';
     subjectDims.pal = null;
     clearBCT();
     drawDims();
@@ -216,6 +217,22 @@ function refreshPal(){
   el('palCov').textContent = perLayer > 0 ? `${row.coveragePct}%` : '--';
   const palText = total > 0 ? `${total} ${outerNoun}s` : (perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
+  // which candidate row every view (2D/3D/DXF/readout) is reflecting (UAT #B2):
+  // resolveActiveRow re-derives a fresh row, so locate it in the Build rows by
+  // its candidate key rather than by identity.
+  const rows = build.getRows();
+  const sel = build.getSelectedCandidateKey();
+  const sameKey = (a, b) => a && b && a.nx === b.nx && a.ny === b.ny && a.nz === b.nz && a.orientation === b.orientation;
+  const idx = rows.findIndex(r => sameKey(r, row));
+  const rl = el('palRowLabel');
+  if(idx >= 0){
+    const basis = sameKey(sel, row) ? 'selected candidate' : 'best cartons/pallet';
+    rl.innerHTML = `<span class="rl-eyebrow">showing</span>${basis} · row ${idx + 1} of ${rows.length}` +
+      ` &middot; <span class="rl-link">open Build</span>`;
+    rl.style.display = 'flex';
+  }else{
+    rl.style.display = 'none';
+  }
   renderBCT(g, {perLayer, layers, total, coveragePct: row.coveragePct});
   // the loaded-pallet Dims box: deck footprint x (pallet deck + case stack),
   // doubled when double-stacked — the same totalH pallet3d centres on the origin.
@@ -385,19 +402,81 @@ function contentLabel(proj){
   return `${kind} (${col.nx}×${col.ny}, ${col.perStack}/stack)`;
 }
 
-/** The always-visible chain string: derived from the enabled chain, never
- *  hardcoded — e.g. "Pucks (2x3, stacked) -> Flow wrap -> Case -> Pallet
- *  [carton disabled]". Every disabled tier gets its own bracketed note. */
-function renderChainString(){
+/** Map internal chain nouns to plain user-facing language (UAT #6): the
+ *  model's 'collation' is packaging jargon — show "product" everywhere it
+ *  reaches the UI. Code/internal names (collation.js, project.collation) stay. */
+function plainNoun(noun){ return noun === 'collation' ? 'product' : noun; }
+
+/** Short style/content label for a chain-strip node. */
+function nodeStyleLabel(k){
   const proj = build.project;
-  const parts = [contentLabel(proj)];
-  if(proj.primary.wrap) parts.push(styleById(proj.primary.wrap.styleId).name);
-  if(isTierEnabled('carton')) parts.push(styleById(proj.secondary.styleId).name);
-  if(isTierEnabled('case')) parts.push(styleById(proj.tertiary.styleId).name);
-  parts.push('Pallet');
-  const disabled = ['wrap', 'carton', 'case'].filter(l => !isTierEnabled(l));
-  const note = disabled.length ? `<span class="disabledNote">     [${disabled.map(l => `${l} disabled`).join(', ')}]</span>` : '';
-  el('chainString').innerHTML = parts.join(' &rarr; ') + note;
+  if(k === 'product'){
+    if(proj.primary.box) return 'single box';
+    const c = proj.primary.collation;
+    return `${c.piece.kind === 'cylinder' ? 'cylinders' : 'pieces'} ${c.nx}×${c.ny}`;
+  }
+  if(k === 'pallet'){
+    const u = inputs.getPalUnit();
+    return `${Math.round(fromMM(proj.pallet.L, u))}×${Math.round(fromMM(proj.pallet.W, u))} ${u}`;
+  }
+  if(!isTierEnabled(k)) return '';
+  const s = styleById(LEVELS[k].styleIdOf(proj));
+  return (s.brand && s.brand.code) ? s.brand.code : s.name;
+}
+
+/** Present-tense re-point note for a disabled optional tier — what NOW feeds
+ *  the next enabled tier in its place. Rides the chain-strip arrow so the
+ *  parent re-point is permanently visible, not a transient toast (UAT #4). */
+function repointNote(k){
+  const proj = build.project;
+  const contentNoun = plainNoun(proj.primary.box ? 'box' : 'collation');
+  if(k === 'wrap')   return `${contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(k === 'carton') return `${proj.primary.wrap ? 'wrap' : contentNoun} feeds case directly`;
+  if(k === 'case')   return 'carton rides the pallet directly';
+  return '';
+}
+
+/** The always-visible, interactive chain strip (UAT #4/#5): every level as a
+ *  clickable node showing its style; the active level highlighted; disabled
+ *  optional tiers struck-through with an enable affordance; and each arrow
+ *  after a skipped tier labeled with the re-point. Derived from the enabled
+ *  chain, never hardcoded. Registered with recompute() (see notify block). */
+const CHAIN_OPTIONAL = {wrap: true, carton: true, case: true};
+function renderChainString(){
+  const host = el('chainString');
+  host.className = 'chainStrip';
+  host.innerHTML = '';
+  LEVEL_ORDER.forEach((k, i) => {
+    const enabled = CHAIN_OPTIONAL[k] ? isTierEnabled(k) : true;
+    const node = document.createElement('div');
+    node.className = 'cs-node' + (k === activeLevel ? ' active' : '') + (enabled ? '' : ' disabled');
+    node.tabIndex = 0;
+    node.setAttribute('role', 'button');
+    node.setAttribute('aria-label', `${LEVELS[k].label}${enabled ? '' : ' (disabled)'}`);
+    const styleLbl = nodeStyleLabel(k);
+    node.innerHTML = `<span class="cs-lvl">${LEVELS[k].label}</span>` +
+      `<span class="cs-style">${enabled ? styleLbl : 'skipped'}</span>`;
+    if(CHAIN_OPTIONAL[k]){
+      const tog = document.createElement('button');
+      tog.className = 'cs-tog';
+      tog.textContent = enabled ? 'in chain' : 'enable';
+      tog.title = enabled ? `Disable ${k}` : `Enable ${k}`;
+      tog.addEventListener('click', e => { e.stopPropagation(); toggleTier(k); });
+      node.appendChild(tog);
+    }
+    // node body: click to make active (enabled), or to enable it (disabled)
+    const activate = () => { enabled ? setActiveLevel(k) : toggleTier(k); };
+    node.addEventListener('click', activate);
+    node.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); activate(); } });
+    host.appendChild(node);
+    if(i < LEVEL_ORDER.length - 1){
+      const arrow = document.createElement('div');
+      arrow.className = 'cs-arrow';
+      const note = (CHAIN_OPTIONAL[k] && !enabled) ? repointNote(k) : '';
+      arrow.innerHTML = `<span class="cs-ar">&#9656;</span>` + (note ? `<span class="cs-repoint">${note}</span>` : '');
+      host.appendChild(arrow);
+    }
+  });
 }
 
 /** The lock/unlock control for the active level's dimensions. Solved (the
@@ -477,7 +556,7 @@ function mountPlacement(){
   if(lvl.kind !== 'style' || !lvl.enabledOf(proj)){ host.innerHTML = ''; return; }
 
   if(activeLevel === 'carton'){
-    const primaryNoun = cap(proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation'));
+    const primaryNoun = cap(plainNoun(proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation')));
     host.innerHTML =
       `<h2 style="margin-top:6px">Inside the carton</h2>
        <div id="plInVert" style="display:contents"></div>
@@ -486,13 +565,14 @@ function mountPlacement(){
     inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, projectChanged);
     inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), 2, 1, 1, primaryNoun, projectChanged);
+    syncRotInert('pIn', linkFor(proj, 'secondary'));
     return;
   }
 
   if(activeLevel === 'case'){
     const secondaryIn = proj.secondary.enabled !== false;
     const childLevel = secondaryIn ? proj.secondary : proj.primary;
-    const childNoun = cap(secondaryIn ? 'carton' : (proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation')));
+    const childNoun = cap(plainNoun(secondaryIn ? 'carton' : (proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation'))));
     host.innerHTML =
       `<h2 style="margin-top:6px">Inside the case <span class="hint">from the ${childNoun.toLowerCase()}</span></h2>
        <div id="plInVert" style="display:contents"></div>
@@ -504,6 +584,7 @@ function mountPlacement(){
     inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, projectChanged);
     inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged);
+    syncRotInert('pIn', linkFor(proj, 'tertiary'));
     inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
       {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},
       projectChanged);
@@ -587,7 +668,9 @@ function mountActiveLevel(){
       onInput: () => projectChanged()
     });
   }else if(lvl.kind === 'product'){
-    inputs.mountProduct(proj.primary, {onInput: () => projectChanged()});
+    // hasWrap gates the piece-arrangement editor: grouping pieces into a wrap
+    // is only meaningful when a wrap is in the chain (UAT #6 conditional show)
+    inputs.mountProduct(proj.primary, {onInput: () => projectChanged(), hasWrap: !!proj.primary.wrap});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -595,7 +678,7 @@ function mountActiveLevel(){
 }
 
 const LEVEL_BRAND = {
-  product: {code: 'PRODUCT', sub: 'Collation'},
+  product: {code: 'PRODUCT', sub: 'Product arrangement'},
   pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
 };
 
@@ -700,6 +783,17 @@ function projectChanged(){ build.recompute(); }
  *  steal focus from a field mid-edit). No-op for whichever instances
  *  aren't mounted right now (refreshVertControl/refreshClearanceControl/
  *  refreshCountArrangement all return early when their idp isn't present). */
+/** "May rotate about vertical" has no effect when an explicit grid already
+ *  fixes the layout (UAT #8) — disable the checkbox and show a hint rather
+ *  than leaving a dead-looking control. Driven from the sibling arrangement
+ *  link, kept in sync on every recompute (the Arr auto↔explicit toggle routes
+ *  through onInput → recompute → refreshPlacementControls). */
+function syncRotInert(idp, link){
+  const inert = link && link.arrangement !== 'auto';
+  const rot = el(idp + 'Rot'); if(rot) rot.disabled = inert;
+  const hint = el(idp + 'RotHint'); if(hint) hint.style.display = inert ? '' : 'none';
+}
+
 function refreshPlacementControls(){
   const lvl = LEVELS[activeLevel], proj = build.project;
   if(lvl.kind !== 'style' || !lvl.enabledOf(proj)) return;
@@ -707,12 +801,14 @@ function refreshPlacementControls(){
     inputs.refreshVertControl('pIn', proj.primary);
     inputs.refreshClearanceControl('pIn', proj.primary.clearance);
     inputs.refreshCountArrangement('pIn', linkFor(proj, 'secondary'));
+    syncRotInert('pIn', linkFor(proj, 'secondary'));
   }else if(activeLevel === 'case'){
     const secondaryIn = proj.secondary.enabled !== false;
     const childLevel = secondaryIn ? proj.secondary : proj.primary;
     inputs.refreshVertControl('pIn', childLevel);
     inputs.refreshClearanceControl('pIn', childLevel.clearance);
     inputs.refreshCountArrangement('pIn', linkFor(proj, 'tertiary'));
+    syncRotInert('pIn', linkFor(proj, 'tertiary'));
     inputs.refreshVertControl('pOut', proj.tertiary);
     inputs.refreshClearanceControl('pOut', proj.tertiary.clearance);
   }
@@ -1039,6 +1135,8 @@ el('tab2d').addEventListener('click', () => setView('2d'));
 el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabBuild').addEventListener('click', () => setView('build'));
+// the "which candidate row" label (pallet readout) jumps to the Build table
+el('palRowLabel').addEventListener('click', () => setView('build'));
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
 // Dims: toggle the L×W×H callout overlay (off by default). drawDims runs on
 // the render loop, so flipping the flag is enough; call it once for immediacy.
