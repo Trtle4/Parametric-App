@@ -564,7 +564,9 @@ export function buildHierarchy(bundle, depth, sel){
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'pallet'){
-    const r = buildPallet(bundle, caseTier, S);
+    // the case rides the pallet normally; once it's disabled the carton does
+    // (its cutaway tier), so pass whichever tier is actually outermost
+    const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S);
     span = r.span; outer = r.outer;
     opened = {case: S.case, carton: S.carton, wrap: S.wrap};
   }
@@ -575,33 +577,38 @@ export function buildHierarchy(bundle, depth, sel){
   return {opened: S, span, counts: bundle.counts, outer};
 }
 
-function buildPallet(bundle, caseTier, S){
-  const {caseGeo, cases} = bundle;
-  const co = caseGeo.outer;
+// `outerTier` is whichever tier actually rides the pallet — the case
+// normally, or the carton once the case is disabled. bundle.cases carries
+// that outermost tier's placements/deck regardless of which tier it is, so
+// the geometry and the tier NAME (for picking/opening) come from outerTier,
+// never a hardcoded 'case' that is null when the case is off.
+function buildPallet(bundle, outerTier, S){
+  const {cases} = bundle;
+  const co = outerTier.geo.outer;
   const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
   const loadH = layers * co.H;
   const deckH = bundle.cases.deck.baseH;
-  const openIdx = S.case ?? nearestCameraCorner(cases.placements);
+  const openIdx = S[outerTier.name] ?? nearestCameraCorner(cases.placements);
 
   // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
   // the SAME asset the Palletize view builds, so both pallet views render an
   // identical pallet instead of this view's former bare slab
   group.add(buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W));
 
-  // closed cases (instanced per orientation), opened one recursed
+  // closed units (instanced per orientation), opened one recursed
   for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
     const od = orient(co, o);
     const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
     const inst = new THREE.InstancedMesh(cgeo, board, list.length);
     const M = new THREE.Matrix4();
     list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
-    inst.userData = {pick: list.map(x => x.i), tierName: 'case'};
-    pickables.push({mesh: inst, tier: 'case'});
+    inst.userData = {pick: list.map(x => x.i), tierName: outerTier.name};
+    pickables.push({mesh: inst, tier: outerTier.name});
     group.add(inst);
   }
   if(cases.placements[openIdx]){
     const pl = cases.placements[openIdx];
-    const cg = buildContainer(caseTier, bundle, S, [openIdx]);
+    const cg = buildContainer(outerTier, bundle, S, [openIdx]);
     cg.position.set(pl.x, deckH + pl.z, pl.y);
     cg.quaternion.copy(orientQuat(pl.orientation));
     group.add(cg);

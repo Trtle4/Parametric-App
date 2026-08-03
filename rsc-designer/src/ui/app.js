@@ -184,11 +184,18 @@ function refresh3d(){
   subjectDims.fold = {L: g.outer.L, W: g.outer.W, H: g.outer.H};
 }
 
-/** The pallet-stats readout: always the CASE on the pallet (the shipper),
- *  independent of the active level — the pallet result the chain produced. */
+/** The pallet-stats readout: the OUTERMOST enabled tier on the pallet — the
+ *  case (the shipper) normally, or the carton once the case is disabled —
+ *  independent of the active level, the pallet result the chain produced. */
 function refreshPal(){
   const p = build.project.pallet;
-  const g = levelGeometry(build.project, 'case', build.getRounding(), selKey());
+  // the pallet carries the OUTERMOST enabled tier — the case normally, or the
+  // carton once the case is disabled — never a hardcoded 'case', whose
+  // geometry is null when the case is off (which blanked this whole readout
+  // and the Palletize view even though the carton palletized fine). outerNoun
+  // is 'case' or 'carton', both valid levelGeometry keys.
+  const outerNoun = describeChain(build.project).outerNoun;
+  const g = levelGeometry(build.project, outerNoun, build.getRounding(), selKey());
   if(!g){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
@@ -210,7 +217,7 @@ function refreshPal(){
   el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
   el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
   el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
-  const palText = stats.total > 0 ? `${stats.total} cases` : (stats.perLayer > 0 ? '—' : 'does not fit');
+  const palText = stats.total > 0 ? `${stats.total} ${outerNoun}s` : (stats.perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
   renderBCT(g, stats);
   // the loaded-pallet Dims box: deck footprint x (pallet deck + case stack),
@@ -235,7 +242,11 @@ function clearBCT(){
 }
 function renderBCT(g, stats){
   const st = build.project.pallet.stacking || {};
-  const isRSC = build.project.tertiary.styleId === 'fefco201';
+  // the load-bearing bottom box is the OUTERMOST tier on the pallet — the case
+  // normally, the carton once the case is disabled (project.tertiary is then
+  // off, so reading it would misjudge the style). Identical for the default
+  // case-enabled chain, where outerKey is 'tertiary'.
+  const isRSC = build.project[describeChain(build.project).outerKey].styleId === 'fefco201';
   const boxesAbove = boxesAboveBottom(stats.layers || 0, !!st.doubleStack);
   const a = stackAnalysis({
     ectLbPerIn: st.ect, caliperMm: g.meta.caliper || 0, L_mm: g.outer.L, W_mm: g.outer.W,

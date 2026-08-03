@@ -657,6 +657,51 @@ await (async () => {
   }
 })();
 
+/* ==================================================================
+   Fix #2 (P0): the pallet readout + 3D pallet render read the
+   OUTERMOST enabled tier, not a hardcoded 'case'. With the case
+   disabled the carton rides the pallet; refreshPal() hardcoded the
+   (now-null) case geometry, which blanked the readout and the
+   Palletize view even though the carton palletized fine, and the
+   3D-Fold pallet depth dereferenced that null case geometry outright.
+   ================================================================== */
+await (async () => {
+  const totNum = () => { const m = el('palTot').textContent.match(/(\d+)/); return m ? +m[1] : null; };
+
+  // baseline (case enabled): the shipper on the pallet is the case
+  setLevel('case'); el('tab2d').click(); await settle();
+  t('palletize (case enabled): readout is populated and the title block names CASES', () => {
+    if(!(totNum() > 0)) throw new Error(`pallet total not populated with case enabled: "${el('palTot').textContent}"`);
+    if(!/\bcases\b/.test(el('tbPallet').textContent)) throw new Error(`title block should name cases: "${el('tbPallet').textContent}"`);
+  });
+
+  // disable the case -> the CARTON now rides the pallet directly
+  el('tierToggleBtn').click(); await settle();      // "Disable case?" confirmation
+  confirmDisable(); await settle();
+  t('palletize (case disabled): readout is NOT blanked — the carton palletizes', () => {
+    if(el('palTot').textContent === '--' || !(totNum() > 0))
+      throw new Error(`pallet readout blanked with the case disabled (the exact Fix #2 regression): palTot="${el('palTot').textContent}"`);
+  });
+  t('palletize (case disabled): the title block names CARTONS, not cases (reads the outermost tier)', () => {
+    if(!/\bcartons\b/.test(el('tbPallet').textContent))
+      throw new Error(`title block should name cartons once the case is off: "${el('tbPallet').textContent}"`);
+  });
+
+  // the 3D-Fold pallet DEPTH must render the outermost tier without throwing
+  uncaught.length = 0;
+  el('tab3d').click(); await settle();
+  el('d_pallet').click(); await settle();           // pallet depth, case still disabled
+  t('palletize (case disabled): the 3D pallet depth renders without throwing', () => {
+    if(uncaught.length) throw new Error(`3D pallet depth threw with the case disabled: ${uncaught.join('; ')}`);
+    if(el('hierHud').style.display === 'none' || !el('hierHud').textContent)
+      throw new Error('3D pallet hierarchy HUD is empty/hidden — buildPallet likely bailed on the null case geometry');
+  });
+
+  // restore for any later work / a clean end state
+  el('tab2d').click(); setLevel('case'); await settle();
+  el('tierToggleBtn').click(); await settle();       // re-enable the case (no confirm)
+})();
+
 save.clearAutosave();
 save.cancelAutosave();
 
