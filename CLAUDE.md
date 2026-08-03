@@ -23,6 +23,15 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   value with two writers will diverge; a value with a hand-maintained
   refresh path will go stale. Both have happened in this codebase; neither
   should happen again.
+- One question, one computation. A physical quantity (cases per pallet,
+  load height, a dimension) must be computed in exactly one place and read
+  from there by every display. If two code paths compute "the same" number,
+  they will diverge — and the wrong one is often plausible enough to hide
+  for a long time. When two displays disagree, suspect a duplicated
+  computation before suspecting a display bug. The pallet count read 132 in
+  one place and 72 in another for weeks because a second fitInto re-packed
+  with mismatched inputs; the fix was deleting the second computation, not
+  reconciling the two.
 - Verify 3D/UI changes at the size and from the angle the user actually
   sees. Orientation and legibility bugs survive a zoomed-in screenshot and
   the default isometric view precisely because those are the conditions
