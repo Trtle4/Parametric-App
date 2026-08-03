@@ -49,6 +49,10 @@ const subjectDims = {fold: null, nest: null, pal: null};
 // shopper, as an orientation string consumed by fitInto/orientDims (see
 // FRONT_PANELS): o[0]=across, o[1]=depth (back-to-front), o[2]=up.
 const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH'};
+// the shelf's natural angle IS the shopper's: mostly front-on (looking at the
+// front panels), tilted down slightly and turned a touch to read the depth of
+// the fill. One source for both entry and the ViewCube Home reset.
+const SHELF_ORBIT = {rotX: 0.34, rotY: -0.5, span: 1.6};
 // front-panel choices: which pack FACE points at the shopper. The front face
 // is (across × up), so the depth axis is the middle char. Defaults to L×H —
 // the carton's printed front panel, upright.
@@ -1127,7 +1131,13 @@ function setView(v){
     if(!viewcube.isMounted()){
       viewcube.mount(el('viewCubeStage'), (rx, ry) => fold.tweenOrbit(rx, ry));
       fold.onFrame(() => viewcube.sync());   // the ONE per-frame hook every camera-follower uses
-      el('viewCubeHome').addEventListener('click', () => fold.tweenOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY));
+      // Home returns each view to its OWN natural angle — for the shelf that's
+      // the shopper 3/4, its entry default; every other canvas view uses the
+      // shared isometric home.
+      el('viewCubeHome').addEventListener('click', () => {
+        const home = (view === 'shelf') ? SHELF_ORBIT : fold.HOME_ORBIT;
+        fold.tweenOrbit(home.rotX, home.rotY);
+      });
       // the 4 orbit arrows are fixed DOM buttons around the cube (never
       // rotate with it, Prompt 21 #1) — each nudges 15° via viewcube's
       // own pure stepOrbit() math, then asks fold3d to tween there
@@ -1145,9 +1155,7 @@ function setView(v){
     }else if(v === 'shelf'){
       fold.showBox(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
       fold.stopFold();
-      // a natural shopper angle: mostly front-on (looking at the front panels),
-      // tilted down slightly and turned a touch to read the depth of the fill
-      fold.setOrbit(0.34, -0.5, 1.6);
+      fold.setOrbit(SHELF_ORBIT.rotX, SHELF_ORBIT.rotY, SHELF_ORBIT.span);
       el('orbithint').textContent = 'drag to orbit · scroll to zoom · front panels face you';
       refreshShelf();
     }else{
