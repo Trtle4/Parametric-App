@@ -32,6 +32,16 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   one place and 72 in another for weeks because a second fitInto re-packed
   with mismatched inputs; the fix was deleting the second computation, not
   reconciling the two.
+- A shared source must be fully consumed. When a function returns multiple
+  values that together define a result (geometry + rotation, count +
+  arrangement, value + unit), every consumer must use all of them. A consumer
+  that takes {geo} and drops rot, or reads the count and ignores the
+  arrangement, produces a result that's subtly wrong in exactly the cases the
+  dropped value governed. When two views of "the same thing" disagree, suspect
+  a partial consumer before suspecting two sources. The bare-piece 3D view
+  drew a standing coin in On Edge mode for exactly this reason: it took {geo}
+  from pieceGeo and dropped the rot that lays the cylinder on its side, while
+  the wrap/carton views applied both.
 - Verify 3D/UI changes at the size and from the angle the user actually
   sees. Orientation and legibility bugs survive a zoomed-in screenshot and
   the default isometric view precisely because those are the conditions
