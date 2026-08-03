@@ -625,19 +625,31 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
   row.geo = {case: caseGeo, carton: cartonGeo, wrap: primaryResult ? primaryResult.geo : null};
+  // The immediate child-unit placements inside the carton, and the collation
+  // pieces inside one such unit, are retained WHETHER OR NOT a wrap is present.
+  // Without a wrap the child unit is the bare collation envelope (no film) and
+  // the piece-level `seals`/`wrapAxis` are null — but the placements and pieces
+  // still exist, so the 3D hierarchy can render the product inside a carton/
+  // case that has no wrap. (Previously both were gated on the wrap geometry,
+  // which blanked the innermost contents the moment the wrap was disabled.)
+  // Wrap-present output is unchanged: when primaryResult.geo exists, seals and
+  // wrapAxis are populated exactly as before.
+  const hasWrapGeo = !!(primaryResult && primaryResult.geo);
   row.arr = {
     cases:   {placements: casesFit.placements, count: casesFit.total, deck: {L: p.L, W: p.W, baseH: p.baseH}},
     cartons: {placements: childFit.placements, count: childFit.total},
-    wraps:   (secondaryVariant && secondaryVariant.arrangement && primaryResult && primaryResult.geo)
+    wraps:   (secondaryVariant && secondaryVariant.arrangement)
       ? {placements: secondaryVariant.arrangement.placements, count: secondaryVariant.arrangement.total} : null,
-    pieces:  (content && content.collation && primaryResult && primaryResult.geo)
+    pieces:  (content && content.collation)
       ? {placements: content.collation.placements, envelope: content.collation.envelope,
          piece: content.config.piece, stackAxis: content.config.stackAxis,
-         nx: content.config.nx, ny: content.config.ny, wrapAxis: primaryResult.wrapAxis,
-         seals: {sealType: primaryResult.wp.sealType, finTreatment: primaryResult.wp.finTreatment,
-                 finHeight: primaryResult.wp.finHeight, finSealBand: primaryResult.wp.finSealBand,
-                 endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'bottom',
-                 gauge: primaryResult.wp.gauge}} : null
+         nx: content.config.nx, ny: content.config.ny,
+         wrapAxis: hasWrapGeo ? primaryResult.wrapAxis : null,
+         seals: hasWrapGeo
+           ? {sealType: primaryResult.wp.sealType, finTreatment: primaryResult.wp.finTreatment,
+              finHeight: primaryResult.wp.finHeight, finSealBand: primaryResult.wp.finSealBand,
+              endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'bottom',
+              gauge: primaryResult.wp.gauge} : null} : null
   };
   return row;
 }

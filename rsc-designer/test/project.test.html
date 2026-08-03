@@ -451,16 +451,21 @@ t('Step 4 pin — no carton: content feeds the case directly', () => {
 });
 
 /* Pin: "no wrap" — wrap disabled (bare collation drives the carton). Reuses
-   cylProject (defined above, already hand-derived) — asserts the Step 4
-   invariant specifically: no wrap style configured means no wrap geometry
-   at all, and wrapFits defaults true (nothing to misreport), not a
-   leftover from some prior wrapped state. */
-t('Step 4 pin — no wrap: bare collation drives the carton, no wrap geometry', () => {
+   cylProject (defined above, already hand-derived). No wrap style configured
+   means no wrap GEOMETRY (r.geo.wrap null) and wrapFits defaults true. But
+   "no wrap" means no FILM, not no CONTENTS: the content-unit placements and
+   the collation pieces are STILL retained on the row (with seals/wrapAxis
+   null), so the 3D hierarchy can render the product inside a wrapless carton/
+   case. Retaining them null-out was the bug that blanked those views. */
+t('Step 4 pin — no wrap: bare collation drives the carton, no wrap geometry but contents retained', () => {
   const rows = candidateCases(cylProject(), '1mm');
   const r = rows.find(x => x.nx === 4 && x.ny === 3 && x.nz === 1 && x.orientation === 'LWH');
   eq(r.geo.wrap, null, 'no wrap style configured -> no wrap geometry:');
   eq(r.wrapFits, true, 'nothing to misreport when there is no wrap:');
-  eq(r.arr.wraps, null, 'no wrap arrangement stored:');
+  if(!r.arr.wraps) throw new Error('content-unit placements must be retained without a wrap (for rendering)');
+  if(!r.arr.pieces) throw new Error('collation pieces must be retained without a wrap (for rendering)');
+  eq(r.arr.pieces.seals, null, 'no film seals stored without a wrap:');
+  eq(r.arr.pieces.wrapAxis, null, 'no wrap axis stored without a wrap:');
   if(r.geo.carton === null || r.geo.case === null) throw new Error('carton/case must still resolve without a wrap');
 });
 

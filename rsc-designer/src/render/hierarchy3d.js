@@ -379,7 +379,10 @@ function buildWrapOpened(bundle){
   if(!bundle.wraps) return g;
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
-  g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
+  // the film is drawn only when a wrap is actually in the chain (seals present);
+  // a wrapless pack shows the bare collation pieces alone (no conforming film).
+  if(bundle.wraps.seals)
+    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -424,10 +427,11 @@ function buildContainer(tier, bundle, sel, path){
   // box, so it must never reach the rigid-box branch below.
   const w = childKind === 'wrap' ? bundle.wraps : null;
   if(childKind === 'wrap' && w){
-    const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
-    const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
-    if(closed.length){
+    if(w.seals && closed.length){
+      // filmed wrap: instanced conforming-film parts per closed unit
+      const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
+      const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
       const partDefs = [
         {geo: parts.bodyGeo, mat: filmClosedMat},
         {geo: parts.taperPos, mat: sealMat},
@@ -446,6 +450,20 @@ function buildContainer(tier, bundle, sel, path){
         // a closed wrap is pickable too — click it to open it, same as any
         // other level's closed child
         inst.userData = {pick: closed.map(x => x.i), tierName: 'wrap'};
+        pickables.push({mesh: inst, tier: tier.name});
+        g.add(inst);
+      }
+    }else if(!w.seals && closed.length){
+      // wrapless pack (no film): render each closed content unit as the bare
+      // collation envelope, a translucent box oriented per its placement —
+      // pickable to open into the pieces, same as a filmed wrap.
+      for(const [o, list] of groupByOrientation(children, openIdx)){
+        const od = orient(w.envelope, o);
+        const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);
+        const inst = new THREE.InstancedMesh(cg, filmClosedMat, list.length);
+        const M = new THREE.Matrix4();
+        list.forEach(({pl}, k) => { M.identity(); M.setPosition(...childPos(pl, parentInnerH).toArray()); inst.setMatrixAt(k, M); });
+        inst.userData = {pick: list.map(x => x.i), tierName: 'wrap'};
         pickables.push({mesh: inst, tier: tier.name});
         g.add(inst);
       }
@@ -515,7 +533,7 @@ export function buildHierarchy(bundle, depth, sel){
   const cartonTier = bundle.cartonGeo ? {
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
     children: bundle.wraps ? bundle.wraps.placements : [],
-    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : bundle.cartonGeo.outer, childMat: filmClosedMat,
+    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
     buildChild: (b, s, path) => buildWrapOpened(b)
   } : null;
   const caseTier = {
@@ -524,7 +542,7 @@ export function buildHierarchy(bundle, depth, sel){
     ...(bundle.cartonGeo
       ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2,
          buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
-      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : bundle.caseGeo.inner, childMat: filmClosedMat,
+      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
          buildChild: (b, s, path) => buildWrapOpened(b)})
   };
 

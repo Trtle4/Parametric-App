@@ -863,7 +863,13 @@ function hierarchyBundle(){
 // Case likewise needs the case enabled, or its geometry is null and there is
 // nothing to cut away). Pallet is always available while a chain resolves.
 function depthAvailable(bundle, d){
-  if(d === 'product' || d === 'wrap') return !!(bundle && bundle.wraps);
+  // Product depth needs the collation (bundle.wraps carries the piece even
+  // when there's no film). Wrap depth needs an actual WRAP (wrapGeo) — the
+  // bundle now carries wraps/pieces without a wrap too (so a wrapless carton/
+  // case still renders its product), so wrap availability keys on wrapGeo, not
+  // on bundle.wraps.
+  if(d === 'product') return !!(bundle && bundle.wraps);
+  if(d === 'wrap') return !!(bundle && bundle.wrapGeo);
   if(d === 'carton') return !!(bundle && bundle.cartonGeo);
   if(d === 'case') return !!(bundle && bundle.caseGeo);
   return !!bundle;
@@ -871,17 +877,20 @@ function depthAvailable(bundle, d){
 
 function hudText(bundle, opened, depth){
   const c = bundle.counts;
+  // the immediate child unit inside a carton/case is a "wrap" only when a wrap
+  // is in the chain; without one it's the bare product pack.
+  const unit = bundle.wrapGeo ? 'wrap' : 'pack';
   const parts = [];
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} cases`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
-  else if(depth === 'carton') parts.push(`Carton: ${c.wrapsPerCarton} wrap${c.wrapsPerCarton === 1 ? '' : 's'}`);
+  else if(depth === 'carton') parts.push(`Carton: ${c.wrapsPerCarton} ${unit}${c.wrapsPerCarton === 1 ? '' : 's'}`);
   else if(depth === 'wrap') parts.push(`Wrap: ${c.piecesPerWrap} pieces`);
   else parts.push('Product: 1 piece');
   const chan = [];
   if(depth === 'pallet') chan.push(`case ${(opened.case ?? 0) + 1} of ${c.cases}`);
   if(depth === 'pallet' || depth === 'case') chan.push(`carton ${(opened.carton ?? 0) + 1} of ${c.cartonsPerCase}`);
   if((depth === 'pallet' || depth === 'case' || depth === 'carton') && c.wrapsPerCarton)
-    chan.push(`wrap ${(opened.wrap ?? 0) + 1} of ${c.wrapsPerCarton}`);
+    chan.push(`${unit} ${(opened.wrap ?? 0) + 1} of ${c.wrapsPerCarton}`);
   return parts.join(' · ') + (chan.length ? `. Opened: ${chan.join(', ')}` : '');
 }
 
