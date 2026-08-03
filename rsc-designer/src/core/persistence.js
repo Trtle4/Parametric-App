@@ -112,27 +112,33 @@ function fillProjectDefaults(loadedProject){
   const out = {...loadedProject};
 
   for(const level of ['primary', 'secondary', 'tertiary']){
-    const loadedLevel = loadedProject[level];
+    let loadedLevel = loadedProject[level];
     if(loadedLevel === undefined){ report.push(level); out[level] = clone(base[level]); continue; }
     if(loadedLevel === null){ out[level] = null; continue; }         // primary disabled deliberately
 
     let baseForLevel = base[level];
     if(level === 'primary'){
+      // MIGRATION: the "plain box" content type was removed — a simple box
+      // envelope is now a Rectangular piece, 1 per stack, 1x1. A loaded
+      // primary.box becomes exactly that (its L/W/H carried over, missing dims
+      // filled), and the box field is dropped so it never reaches the model.
+      if(loadedLevel.box){
+        const b = loadedLevel.box;
+        loadedLevel = {...loadedLevel};
+        if(!loadedLevel.collation)
+          loadedLevel.collation = {piece: {kind: 'box', L: b.L ?? 90, W: b.W ?? 50, H: b.H ?? 20},
+                                   perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+        delete loadedLevel.box;
+        report.push('primary.box → Rectangular 1x1 collation');
+      }
       // collation.piece is a discriminated union (box vs cylinder). Shape
       // the DEFAULT to match the loaded piece's own kind before merging,
-      // rather than merging against newProject()'s (box) default and
-      // patching afterward — patching after the fact would still leave
-      // the generic pass's bogus box-shaped reports (a defaulted "L", "W",
-      // "H" for what is actually a cylinder) sitting in `report`.
+      // rather than merging against newProject()'s default and patching
+      // afterward — patching after the fact would still leave the generic
+      // pass's bogus reports (a defaulted "L","W","H" for a cylinder) in report.
       const kind = loadedLevel.collation && loadedLevel.collation.piece && loadedLevel.collation.piece.kind;
       const pieceDefault = PIECE_DEFAULTS[kind] || PIECE_DEFAULTS.box;
-      // `box` (a plain product envelope) is null-by-default like `wrap` —
-      // mergeDefaults short-circuits null-vs-null and preserves any real
-      // value untouched, so a full shape here only matters when the loaded
-      // doc actually has a box, filling ITS missing L/W/H rather than
-      // leaving them undefined.
-      const boxDefault = loadedLevel.box ? {L: 90, W: 50, H: 20} : null;
-      baseForLevel = {...base.primary, collation: {...base.primary.collation, piece: pieceDefault}, box: boxDefault};
+      baseForLevel = {...base.primary, collation: {...base.primary.collation, piece: pieceDefault}};
     }
     const merged = mergeDefaults(loadedLevel, baseForLevel, level, report);
     // openTop's correct default depends on THIS level's own styleId (a

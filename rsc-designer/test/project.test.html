@@ -330,8 +330,9 @@ t('explicit arrangement respects orientation: H-up vs L-up give different, hand-
 t("auto minimizes material area, not volume: a genuine volume/board-area divergence", () => {
   function project(orientOrder){
     const p = newProject();
-    p.primary.box = {L: 100, W: 50, H: 30};
-    p.primary.collation = null;
+    // a simple 100x50x30 box envelope — now a Rectangular piece, 1 per stack,
+    // 1x1 (the removed plain-box type's behavior, reachable through the model)
+    p.primary.collation = {piece: {kind: 'box', L: 100, W: 50, H: 30}, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
     p.primary.wrap = null;
     p.primary.allowedOrientations = orientOrder;
     p.primary.clearance = {wall: 0, between: 0, bottom: 0, top: 0, betweenZ: 0};
@@ -499,16 +500,19 @@ t('Step 4 pin — carton-only: no case, the carton itself rides the pallet', () 
   eq(r.cartonsPerPallet, r.casesPerPallet, 'no case multiplier — the carton rides the pallet 1:1:');
 });
 
-/* Pin: "plain-box content straight to a case" — a manual outer with no
-   inner and no compensation, no collation, no wrap, no carton. Box
-   200x100x50 feeds the case directly. Explicit 2x1x1 grid, zero clearance:
+/* Pin: "simple box content straight to a case" — the removed plain-box type,
+   now a Rectangular piece 1 per stack 1x1 (envelope == the box). No wrap, no
+   carton; box 200x100x50 feeds the case directly. Explicit 2x1x1 grid of
+   content units, zero clearance:
      cavity L = 2*200 = 400, W = 100, H = 50
-     case (fefco201, caliper 3) outer: +2t/+2t/+4t = 406 x 106 x 62       */
+     case (fefco201, caliper 3) outer: +2t/+2t/+4t = 406 x 106 x 62
+   Cavity/outer are bit-identical to the old plain-box path. The one pin MOVE:
+   a Rect 1x1 collation IS a collation, so it now carries a (trivial) stack
+   label where a plain box carried none. */
 function boxProject(){
   const p = newProject();
   p.primary.wrap = null;
-  p.primary.collation = null;
-  p.primary.box = {L: 200, W: 100, H: 50};
+  p.primary.collation = {piece: {kind: 'box', L: 200, W: 100, H: 50}, perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
   p.primary.allowedOrientations = ['LWH'];
   p.secondary.enabled = false;
   p.links[0].count = 2;
@@ -516,15 +520,17 @@ function boxProject(){
   return p;
 }
 
-t('Step 4 pin — plain-box content: outer feeds the case, no inner, no compensation', () => {
+t('Step 4 pin — simple box (Rect 1x1) content: envelope feeds the case, bit-identical outer', () => {
   const rows = candidateCases(boxProject(), '1mm');
   const r = rows.find(x => x.nx === 2 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
   if(!r) throw new Error('2×1×1 case row missing');
-  eq(r.cavity, {L: 400, W: 100, H: 50}, 'cavity = 2 boxes side by side, zero clearance:');
+  eq(r.cavity, {L: 400, W: 100, H: 50}, 'cavity = 2 envelopes side by side, zero clearance:');
   eq(r.outer, {L: 406, W: 106, H: 62}, 'case outer, caliper 3 (+2t/+2t/+4t):');
-  eq(r.geo.carton, null, 'no carton — box content skips straight to the case:');
+  eq(r.geo.carton, null, 'no carton — content skips straight to the case:');
   eq(r.piecesPerCarton, null, 'no carton, no "pieces/carton" concept:');
-  eq(r.primaryLabel, null, 'no collation -> no stack-axis label for a plain box:');
+  // pin MOVE: a Rect 1x1 collation carries a stack-axis label (upright), where
+  // the old plain box carried none (r.primaryLabel === null before).
+  eq(r.primaryLabel, 'Stacks upright', 'Rect 1x1 collation carries a trivial upright stack label:');
 });
 
 /* At least one packaging level must stay enabled. */

@@ -28,16 +28,13 @@ import {view2d, apply2dView} from './dieline2d.js';
 
 const DIM_C = 'var(--ink-2)';
 
-/** Resolve the piece's own shape from whichever of the three primary-level
- *  input modes is active today — plain box, a box-piece collation, or a
- *  cylinder-piece collation — collapsing them into ONE small shape
- *  descriptor a renderer can draw without caring which mode produced it.
- *  Returns null if there's nothing to draw (no box and no collation
- *  piece configured yet). Plain-box content IS a product envelope and is
- *  drawn the same rectangular three-view as a box piece. */
+/** Resolve the piece's own shape from the collation — a box-piece or a
+ *  cylinder-piece — as ONE small shape descriptor a renderer can draw. A
+ *  simple box envelope is just a Rectangular piece (1 per stack, 1x1), so
+ *  there is no separate plain-box mode to resolve. Returns null if there's
+ *  nothing to draw (no collation piece configured yet). */
 export function resolveProductPiece(primary){
   if(!primary) return null;
-  if(primary.box) return {kind: 'box', L: primary.box.L, W: primary.box.W, H: primary.box.H};
   const piece = primary.collation && primary.collation.piece;
   if(!piece) return null;
   return piece.kind === 'cylinder'

@@ -175,12 +175,18 @@ t('a level explicitly disabled (enabled: false) is preserved, not defaulted back
   if(result.defaulted.includes('tertiary.enabled')) throw new Error('an explicit false was wrongly reported as defaulted');
 });
 
-t('a plain-box content fills its OWN missing L/W/H, never the collation\'s defaults', () => {
+t('a legacy plain-box content migrates to a Rectangular 1x1 collation, carrying its dims', () => {
+  // the "plain box" content type was removed; a simple box envelope is now a
+  // Rectangular piece, 1 per stack, 1x1. A loaded box migrates to exactly that,
+  // its L/W/H carried over (missing dims filled), and the box field is dropped.
   const base = newProject();
-  const doc = {schemaVersion: 1, project: {...base, primary: {...base.primary, box: {L: 300}}}};
-  const result = deserializeProject(doc);
-  eq(result.project.primary.box, {L: 300, W: 50, H: 20});
-  if(result.defaulted.some(d => d.includes('collation'))) throw new Error('box defaulting leaked into the (unused) collation report');
+  const doc = {schemaVersion: 1, project: {...base, primary: {...base.primary, collation: undefined, box: {L: 300}}}};
+  const result = deserializeProject(JSON.parse(JSON.stringify(doc)));
+  const prim = result.project.primary;
+  if(prim.box !== undefined) throw new Error('the removed plain-box field should be gone after migration');
+  eq(prim.collation.piece, {kind: 'box', L: 300, W: 50, H: 20}, 'box dims carried into a Rect piece:');
+  eq(prim.collation.perStack, 1, 'one per stack:');
+  eq(prim.collation.nx, 1, 'one across:'); eq(prim.collation.ny, 1, 'one deep:');
 });
 
 /* ---- links: element-wise, not an opaque leaf ----------------------------- */

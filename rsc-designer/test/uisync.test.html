@@ -121,7 +121,8 @@ import * as build from '../src/ui/build.js';
 import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
-import {newProject, linkFor} from '../src/core/project.js';
+import * as hier from '../src/render/hierarchy3d.js';
+import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {toMM} from '../src/core/units.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
@@ -810,6 +811,82 @@ await (async () => {
     if(el('palRowLabel').style.display === 'none') throw new Error('row label hidden while a valid pallet result exists');
     if(!/row \d+ of \d+/.test(el('palRowLabel').textContent)) throw new Error(`row label malformed: "${el('palRowLabel').textContent}"`);
   });
+})();
+
+/* ==================================================================
+   Disabled-level RENDER MATRIX (closes the fixed-chain-assumption class):
+   for every enabled/disabled combination of the optional levels (wrap,
+   carton, case), no enabled level with valid geometry may blank a view.
+   Drives the REAL app through 2D / 3D-hierarchy / palletize and asserts:
+     - the resolved row carries geometry for every enabled level AND the
+       product pieces (renderable), and
+     - every reachable 3D depth renders meshes with no uncaught error, and
+     - the 2D dieline for each enabled level shows geometry (not the empty
+       "no dieline" message), and the pallet readout is populated.
+   Let the matrix find gaps that weren't hand-enumerated.
+   ================================================================== */
+await (async () => {
+  const defaultWrap = JSON.parse(JSON.stringify(build.project.primary.wrap));
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const svgHasGeometry = () => /<(path|polygon|line|rect|circle)/.test(el('svg').innerHTML) &&
+    !/No dieline|No piece|does not fit/.test(el('svg').textContent || '');
+
+  for(const wrapOn of [true, false]) for(const cartonOn of [true, false]) for(const caseOn of [true, false]){
+    if(!cartonOn && !caseOn) continue;   // guard: at least one packaging level stays enabled
+    const tag = `wrap:${wrapOn?'on':'off'} carton:${cartonOn?'on':'off'} case:${caseOn?'on':'off'}`;
+    // set the combo directly on the model, then rebuild the active level
+    build.project.primary.wrap = wrapOn ? clone(defaultWrap) : null;
+    build.project.secondary.enabled = cartonOn;
+    build.project.tertiary.enabled = caseOn;
+    build.recompute();
+
+    // model invariant: the resolved row exposes renderable data for every
+    // enabled level and for the product pieces
+    t(`matrix [${tag}]: resolved row carries geometry for every enabled level + product`, () => {
+      const row = resolveActiveRow(build.project, build.getRounding(), null);
+      if(!row) throw new Error('no resolved row');
+      if(!row.arr.pieces) throw new Error('product pieces not retained — innermost view would blank');
+      if(wrapOn && !row.geo.wrap) throw new Error('wrap enabled but no wrap geometry');
+      if(cartonOn && !row.geo.carton) throw new Error('carton enabled but no carton geometry');
+      if(caseOn && !row.geo.case) throw new Error('case enabled but no case geometry');
+    });
+
+    // 2D dieline for each ENABLED style level shows real geometry
+    for(const lvl of ['wrap', 'carton', 'case']){
+      const on = lvl === 'wrap' ? wrapOn : lvl === 'carton' ? cartonOn : caseOn;
+      if(!on) continue;
+      setLevel(lvl); el('tab2d').click(); await settle();
+      t(`matrix [${tag}]: 2D ${lvl} dieline renders geometry (not blank)`, () => {
+        if(!svgHasGeometry()) throw new Error(`2D ${lvl} blank: ${el('svg').innerHTML.slice(0, 80)}`);
+      });
+    }
+
+    // 3D hierarchy: every reachable depth renders meshes, no uncaught error
+    el('tab3d').click(); await settle();
+    for(const depth of ['product', 'wrap', 'carton', 'case', 'pallet']){
+      if(el('d_' + depth).disabled) continue;   // depth not reachable for this combo
+      uncaught.length = 0;
+      el('d_' + depth).click(); await settle();
+      t(`matrix [${tag}]: 3D ${depth} depth renders meshes, no throw`, () => {
+        if(uncaught.length) throw new Error(`3D ${depth} threw: ${uncaught.join('; ')}`);
+        if(hier.renderedMeshCount() === 0) throw new Error(`3D ${depth} rendered nothing (blank) for ${tag}`);
+      });
+    }
+
+    // palletize: the outermost enabled tier is on the pallet, readout populated
+    el('tabPal').click(); await settle();
+    t(`matrix [${tag}]: palletize readout populated (outermost tier on the pallet)`, () => {
+      if(el('palTot').textContent === '--') throw new Error(`pallet readout blank for ${tag}`);
+    });
+    el('tab2d').click(); await settle();
+  }
+
+  // restore the default all-enabled chain for any later work
+  build.project.primary.wrap = clone(defaultWrap);
+  build.project.secondary.enabled = true;
+  build.project.tertiary.enabled = true;
+  build.recompute();
+  setLevel('case'); await settle();
 })();
 
 save.clearAutosave();

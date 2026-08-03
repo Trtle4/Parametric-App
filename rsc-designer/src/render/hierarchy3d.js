@@ -676,6 +676,16 @@ export function pick(nx, ny){
 
 export function show(v){ if(group) group.visible = v; }
 export function isBuilt(){ return !!group; }
+/** Count the rendered meshes in the current hierarchy group — a test hook for
+ *  the "no enabled level with valid geometry ever blanks a view" invariant:
+ *  a view that should show contents but rendered nothing reads as an empty
+ *  (or container-only) group. Read-only. */
+export function renderedMeshCount(){
+  if(!group) return 0;
+  let n = 0;
+  group.traverse(o => { if(o.isMesh || o.isInstancedMesh) n++; });
+  return n;
+}
 
 function clear(){
   const pivot = getPivot();

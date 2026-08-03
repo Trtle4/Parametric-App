@@ -97,11 +97,6 @@ export function newProject(){
         piece: {kind: 'cylinder', diameter: 47, thickness: 12},
         perStack: 2, stackAxis: 'Z', nx: 3, ny: 1, stackGap: 0, pieceGap: 0
       },
-      // a plain product envelope instead of a collation — a single manual
-      // outer, no inner, no compensation. Mutually exclusive with
-      // `collation` (and with `wrap`, which wraps collated pieces, not a
-      // box that's already its own envelope); null = use `collation` above.
-      box: null,
       // the flow wrap around the collation. null = bare envelope (legacy).
       // Seal values are editable defaults, not conventions.
       wrap: {
@@ -271,20 +266,18 @@ export function resolveChainShape(project){
 export function describeChain(project){
   if(!project.primary) return {outerKey: 'tertiary', outerNoun: 'case', childNoun: 'carton'};
   const shape = resolveChainShape(project);
-  const contentNoun = project.primary.wrap ? 'wrap' : (project.primary.box ? 'box' : 'collation');
+  const contentNoun = project.primary.wrap ? 'wrap' : 'collation';
   const childNoun = (shape.outermost === 'tertiary' && shape.secondaryIsInner) ? 'carton' : contentNoun;
   return {outerKey: shape.outermost, outerNoun: TIER_NOUN[shape.outermost], childNoun};
 }
 
-/** The content at the bottom of the chain: a collated set of pieces, or —
- *  per the plain-box ruling — a single manual outer with no inner and no
- *  compensation (a product envelope, not a package). Mutually exclusive:
- *  `box` set means `collation` is not consulted. `collation` is collate()'s
+/** The content at the bottom of the chain: always a collation. A simple box
+ *  envelope is a Rectangular piece, 1 per stack, 1x1 — it falls out of this
+ *  model, so there is no separate plain-box type. `collation` is collate()'s
  *  own result (envelope/placements/count/fillEfficiency only — it carries
  *  none of the raw config); `config` is the raw collation config itself
  *  (piece/stackAxis/nx/ny), needed separately for labels and readouts. */
 function contentEnvelope(prim){
-  if(prim.box) return {outer: prim.box, count: 1, collation: null, config: null};
   const col = collate(prim.collation);
   return {outer: col.envelope, count: col.count, collation: col, config: prim.collation};
 }

@@ -12,7 +12,6 @@
  */
 import {toMM, fromMM, fmtInputValue} from '../core/units.js';
 import {VERTICAL_CHOICES, verticalToOrientations} from '../core/project.js';
-import {resolvePieceOrientation} from '../core/collation.js';
 
 export const el = id => document.getElementById(id);
 
@@ -132,58 +131,41 @@ export function refreshDims(effectiveDims){
   }
 }
 
-/** A fresh default collation, used when switching FROM plain-box mode back
- *  to a collation — matches newProject()'s own shape. */
-function defaultCollation(){
-  return {piece: {kind: 'box', L: 90, W: 50, H: 20}, perStack: 6, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
-}
-
-/** The content-mode switch: a collation (many pieces) or — per the
- *  plain-box ruling — a single manual outer with no inner and no
- *  compensation. Shown above whichever editor is active. */
-function contentModeField(isBox){
-  // "collation"/"box" stay as internal values; the labels are plain language
-  // (UAT #6 — "collation" is jargon the user doesn't recognise).
-  return `<div class="field"><label>Product <span class="hint">type</span></label>
-    <div class="inp"><select id="cMode"><option value="collation"${isBox ? '' : ' selected'}>Multiple pieces</option><option value="box"${isBox ? ' selected' : ''}>Single box</option></select></div></div>`;
-}
-
 /**
- * Mount the PRODUCT (content) level: the collation editor, or — in
- * plain-box mode — three manual L/W/H fields feeding straight into
- * `project.primary.box`. Piece dims go in the left rail, stacking in the
- * right rail; every field writes straight into the project object (mm for
- * lengths). This is the content's parameters — a plain product envelope,
- * edited here, nowhere else once Build becomes table-only.
+ * Mount the PRODUCT (content) level as a clean 2 x 2, with EVERY control
+ * always visible — these are properties of the product, upstream of wrap/
+ * carton/case, and conditionally hiding them is exactly what hid On Edge:
+ *   - Content mode (segmented): Pile Pack | On Edge
+ *   - Piece shape  (segmented): Round | Rectangular
+ * plus the grouping counts (pieces per stack, stacks across/deep) and gaps.
+ * Both toggles are independent; all four combinations are valid. Every field
+ * writes straight into project.primary.collation (mm for lengths).
+ *
+ * Mode maps to the collation's existing stackAxis + pieceOrientation machinery
+ * (the on-edge-sleeve work — no new geometry): Pile Pack = flat, stack up Z;
+ * On Edge = on-edge, run along X. Shape maps to the piece kind (cylinder/box).
+ * A single Rectangular piece (per stack / across / deep all 1) is the simple
+ * box envelope the removed "plain box" type used to provide.
  * @param {Object} prim  project.primary (mutated in place)
  * @param {Object} m     {onInput()}
  */
 export function mountProduct(prim, m){
   const dims = el('dimFields'), mat = el('matFields');
   el('optFields').innerHTML = '';
-  const mm = id => toMM(+el(id).value || 0, unit);
+  const c = prim.collation;
+  const isRound = c.piece.kind === 'cylinder';
+  // On Edge is stored as pieceOrientation 'on-edge' (stack axis X); anything
+  // else is a flat Pile Pack. Legacy collations without the field fall back to
+  // the stack axis (matching resolvePieceOrientation) so a saved on-edge sleeve
+  // still reads as On Edge. This mode read works for boxes too (which store the
+  // field even though the envelope math treats every box as flat).
+  const mode = (c.pieceOrientation === 'on-edge' || (c.pieceOrientation == null && c.stackAxis !== 'Z')) ? 'onedge' : 'pile';
 
-  if(prim.box){
-    const L = v => fmtInputValue(fromMM(v, unit), unit);
-    const numF = (id, label, mmVal) =>
-      `<div class="field"><label>${label}</label>
-        <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(mmVal)}"><span class="unit">${unit}</span></div></div>`;
-    dims.innerHTML = contentModeField(true) +
-      numF('bxL', 'Length', prim.box.L) + numF('bxW', 'Width', prim.box.W) + numF('bxH', 'Height', prim.box.H);
-    mat.innerHTML = `<div class="field bnote" style="color:var(--muted);font-size:11px">A plain box is a product envelope — outer dims only, no inner, no compensation.</div>`;
-    el('cMode').addEventListener('change', () => {
-      if(el('cMode').value === 'collation'){ prim.box = null; prim.collation = prim.collation || defaultCollation(); }
-      mountProduct(prim, m); m.onInput();
-    });
-    el('bxL').addEventListener('input', () => { prim.box.L = mm('bxL'); m.onInput(); });
-    el('bxW').addEventListener('input', () => { prim.box.W = mm('bxW'); m.onInput(); });
-    el('bxH').addEventListener('input', () => { prim.box.H = mm('bxH'); m.onInput(); });
-    return;
-  }
-
-  const collation = prim.collation;
-  const isCyl = collation.piece.kind === 'cylinder';
   const L = v => fmtInputValue(fromMM(v, unit), unit);
+  const mm = id => toMM(+el(id).value || 0, unit);
+  const cnt = id => Math.max(1, Math.round(+el(id).value || 1));
+  const seg = (id, opts, cur) => `<div class="seg" id="${id}" role="group">${
+    opts.map(o => `<button type="button" data-v="${o.v}"${o.v === cur ? ' class="on"' : ''}>${o.label}</button>`).join('')}</div>`;
   const numF = (id, label, hint, v) =>
     `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
       <div class="inp"><input id="${id}" type="number" min="0" step="1" value="${L(v)}"><span class="unit">${unit}</span></div></div>`;
@@ -191,87 +173,57 @@ export function mountProduct(prim, m){
     `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
       <div class="inp"><input id="${id}" type="number" min="1" step="1" value="${v}"></div></div>`;
 
-  dims.innerHTML = contentModeField(false) +
-    `<div class="field"><label>Piece <span class="hint">shape</span></label>
-      <div class="inp"><select id="cKind"><option value="box"${isCyl ? '' : ' selected'}>Box</option><option value="cylinder"${isCyl ? ' selected' : ''}>Cylinder</option></select></div></div>` +
-    (isCyl
-      ? numF('cD', 'Diameter', 'Ø', collation.piece.diameter) + numF('cT', 'Thickness', 'axial', collation.piece.thickness)
-      : numF('cL', 'Length', 'L', collation.piece.L) + numF('cW', 'Width', 'W', collation.piece.W) + numF('cH', 'Height', 'H', collation.piece.H));
+  const modeNote = mode === 'onedge'
+    ? 'On edge: pieces laid on their side (a sleeve / log), the run along machine direction (envelope L).'
+    : 'Pile pack: pieces stacked flat.';
 
-  // cylinder-only: flat (axis vertical, pucks lie down) vs on-edge (axis
-  // horizontal, the sleeve/tube form). Segmented toggle; boxes never see it.
-  // The machine direction is fixed at envelope L, so orientation is how the
-  // user chooses the pack shape / tube run — stated under the toggle.
-  const orient = resolvePieceOrientation(collation);
-  const machineNote = isCyl
-    ? (orient === 'on-edge'
-        ? 'On edge: the sleeve runs along envelope L — the machine direction (tube length). Seals at the L-ends.'
-        : 'Flat: pucks lie down. Machine direction is fixed at envelope L (seals at the L-ends).')
-    : '';
-  const orientSeg = isCyl ? `
-    <div class="field"><label>Cookie orientation <span class="hint">cylinder</span></label>
-      <div class="seg" id="cOrient" role="group">
-        <button type="button" data-o="flat"${orient === 'flat' ? ' class="on"' : ''}>Flat</button>
-        <button type="button" data-o="on-edge"${orient === 'on-edge' ? ' class="on"' : ''}>On edge</button>
-      </div>
-      <div class="hint" style="margin-top:5px;line-height:1.35">${machineNote}</div></div>` : '';
+  // LEFT rail: the 2 x 2 (mode + shape) + piece dimensions
+  dims.innerHTML =
+    `<div class="field"><label>Content mode <span class="hint">how pieces sit</span></label>
+      ${seg('cMode', [{v: 'pile', label: 'Pile Pack'}, {v: 'onedge', label: 'On Edge'}], mode)}
+      <div class="hint" style="margin-top:5px;line-height:1.35">${modeNote}</div></div>` +
+    `<div class="field"><label>Piece shape</label>
+      ${seg('cShape', [{v: 'round', label: 'Round'}, {v: 'rect', label: 'Rectangular'}], isRound ? 'round' : 'rect')}</div>` +
+    (isRound
+      ? numF('cD', 'Diameter', 'Ø', c.piece.diameter) + numF('cT', 'Thickness', 'axial', c.piece.thickness)
+      : numF('cL', 'Length', 'L', c.piece.L) + numF('cW', 'Width', 'W', c.piece.W) + numF('cH', 'Height', 'H', c.piece.H));
 
-  // Grouping (stacks/grid) is only meaningful when pieces are actually being
-  // arranged into a pack: a wrap is in the chain, or the current config already
-  // groups more than one piece (UAT #6 conditional show). A single piece with
-  // no wrap feeds the carton directly — hide the grid, show a short note, so
-  // the panel isn't cluttered with inert controls. Never hide a grid that is
-  // already doing something (multi-piece), which would strand real settings.
-  const multiPiece = collation.perStack > 1 || collation.nx > 1 || collation.ny > 1;
-  const showGrouping = !!m.hasWrap || multiPiece;
-  const groupingHTML = showGrouping
-    ? cntF('cPer', 'Per stack', 'count', collation.perStack) +
-      `<div class="field"><label>Stack axis <span class="hint">dir</span></label>
-        <div class="inp"><select id="cAxis">${['X', 'Y', 'Z'].map(a => `<option${a === collation.stackAxis ? ' selected' : ''}>${a}</option>`).join('')}</select></div></div>` +
-      cntF('cNx', 'Stacks across', 'nx', collation.nx) +
-      cntF('cNy', 'Stacks deep', 'ny', collation.ny) +
-      numF('cSg', 'Stack gap', 'between stacks', collation.stackGap) +
-      numF('cPg', 'Piece gap', 'within stack', collation.pieceGap)
-    : `<div class="field bnote" style="color:var(--ink-3);font-size:11px;line-height:1.4">One piece feeds the carton directly. Add a wrap (chain strip) to arrange multiple pieces into a pack.</div>`;
-  mat.innerHTML = orientSeg + groupingHTML;
+  // RIGHT rail: grouping counts + gaps (always visible)
+  mat.innerHTML =
+    cntF('cPer', 'Pieces per stack', 'count', c.perStack) +
+    cntF('cNx', 'Stacks across', 'nx', c.nx) +
+    cntF('cNy', 'Stacks deep', 'ny', c.ny) +
+    numF('cSg', 'Stack gap', 'between stacks', c.stackGap) +
+    numF('cPg', 'Piece gap', 'within stack', c.pieceGap);
 
-  const cnt = id => Math.max(1, Math.round(+el(id).value || 1));
-  el('cMode').addEventListener('change', () => {
-    if(el('cMode').value === 'box') prim.box = {L: 90, W: 50, H: 20};
+  el('cMode').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+    if(btn.dataset.v === 'onedge'){
+      // sleeve / log: run along X, a single run by default (across/deep = 1)
+      c.pieceOrientation = 'on-edge'; c.stackAxis = 'X'; c.nx = 1; c.ny = 1;
+    }else{
+      c.pieceOrientation = 'flat'; c.stackAxis = 'Z';
+    }
     mountProduct(prim, m); m.onInput();
-  });
-  el('cKind').addEventListener('change', () => {
-    collation.piece = el('cKind').value === 'cylinder'
+  }));
+  el('cShape').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+    c.piece = btn.dataset.v === 'round'
       ? {kind: 'cylinder', diameter: 50, thickness: 6} : {kind: 'box', L: 90, W: 50, H: 20};
-    mountProduct(prim, m);   // box<->cylinder swap re-renders the dim fields
+    mountProduct(prim, m);   // shape swap re-renders the dim fields
     m.onInput();
-  });
-  if(isCyl){
-    el('cD').addEventListener('input', () => { collation.piece.diameter = mm('cD'); m.onInput(); });
-    el('cT').addEventListener('input', () => { collation.piece.thickness = mm('cT'); m.onInput(); });
-    el('cOrient').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-      collation.pieceOrientation = b.dataset.o;
-      // a sleeve needs a horizontal stack: turning pucks on edge while the
-      // stack is still vertical would be degenerate, so run it along X (the
-      // machine axis). This does NOT touch the girth basis — on-edge merely
-      // makes round SELECTABLE; choosing it stays the user's call.
-      if(b.dataset.o === 'on-edge' && collation.stackAxis === 'Z') collation.stackAxis = 'X';
-      mountProduct(prim, m);   // re-render: active toggle + stack-axis select follow
-      m.onInput();
-    }));
+  }));
+  if(isRound){
+    el('cD').addEventListener('input', () => { c.piece.diameter = mm('cD'); m.onInput(); });
+    el('cT').addEventListener('input', () => { c.piece.thickness = mm('cT'); m.onInput(); });
   }else{
-    el('cL').addEventListener('input', () => { collation.piece.L = mm('cL'); m.onInput(); });
-    el('cW').addEventListener('input', () => { collation.piece.W = mm('cW'); m.onInput(); });
-    el('cH').addEventListener('input', () => { collation.piece.H = mm('cH'); m.onInput(); });
+    el('cL').addEventListener('input', () => { c.piece.L = mm('cL'); m.onInput(); });
+    el('cW').addEventListener('input', () => { c.piece.W = mm('cW'); m.onInput(); });
+    el('cH').addEventListener('input', () => { c.piece.H = mm('cH'); m.onInput(); });
   }
-  if(showGrouping){
-    el('cPer').addEventListener('input', () => { collation.perStack = cnt('cPer'); m.onInput(); });
-    el('cAxis').addEventListener('change', () => { collation.stackAxis = el('cAxis').value; m.onInput(); });
-    el('cNx').addEventListener('input', () => { collation.nx = cnt('cNx'); m.onInput(); });
-    el('cNy').addEventListener('input', () => { collation.ny = cnt('cNy'); m.onInput(); });
-    el('cSg').addEventListener('input', () => { collation.stackGap = mm('cSg'); m.onInput(); });
-    el('cPg').addEventListener('input', () => { collation.pieceGap = mm('cPg'); m.onInput(); });
-  }
+  el('cPer').addEventListener('input', () => { c.perStack = cnt('cPer'); m.onInput(); });
+  el('cNx').addEventListener('input', () => { c.nx = cnt('cNx'); m.onInput(); });
+  el('cNy').addEventListener('input', () => { c.ny = cnt('cNy'); m.onInput(); });
+  el('cSg').addEventListener('input', () => { c.stackGap = mm('cSg'); m.onInput(); });
+  el('cPg').addEventListener('input', () => { c.pieceGap = mm('cPg'); m.onInput(); });
 }
 
 /* ---------- placement: orientation + clearance + count/arrangement ------

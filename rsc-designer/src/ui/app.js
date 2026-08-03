@@ -55,14 +55,14 @@ const LEVELS = {
            paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
            optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
-           derivedFrom: p => 'the ' + plainNoun(p.primary.box ? 'box' : 'collation'), fitsOf: row => row.wrapFits,
+           derivedFrom: p => 'the ' + plainNoun('collation'), fitsOf: row => row.wrapFits,
            enabledOf: p => !!p.primary.wrap},
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
-           derivedFrom: p => 'the ' + plainNoun(p.primary.wrap ? 'wrap' : (p.primary.box ? 'box' : 'collation')),
+           derivedFrom: p => 'the ' + plainNoun(p.primary.wrap ? 'wrap' : 'collation'),
            fitsOf: row => row.secondaryFits,
            enabledOf: p => p.secondary.enabled !== false},
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
@@ -339,7 +339,7 @@ function newDefaultWrap(){
  *  warning so a toggle-off is never silent about what re-points to what. */
 function pairingAfterDisabling(level){
   const proj = build.project;
-  const contentNoun = proj.primary.box ? 'box' : 'collation';
+  const contentNoun = plainNoun('collation');
   if(level === 'wrap') return `the ${contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(level === 'carton') return `the ${proj.primary.wrap ? 'wrap' : contentNoun} will feed the case directly`;
   if(level === 'case') return 'the carton will ride the pallet directly, with no case';
@@ -392,16 +392,6 @@ function mountEnableToggle(){
   el('tierToggleBtn').addEventListener('click', () => toggleTier(activeLevel));
 }
 
-/** A short label for the content at the bottom of the chain — a collation
- *  summary or the plain-box dims — never hardcoded to "collation". */
-function contentLabel(proj){
-  const prim = proj.primary;
-  if(prim.box) return `Box ${fmtLen(prim.box.L, 'mm')}×${fmtLen(prim.box.W, 'mm')}×${fmtLen(prim.box.H, 'mm')} mm`;
-  const col = prim.collation;
-  const kind = col.piece.kind === 'cylinder' ? 'Cylinders' : 'Pieces';
-  return `${kind} (${col.nx}×${col.ny}, ${col.perStack}/stack)`;
-}
-
 /** Map internal chain nouns to plain user-facing language (UAT #6): the
  *  model's 'collation' is packaging jargon — show "product" everywhere it
  *  reaches the UI. Code/internal names (collation.js, project.collation) stay. */
@@ -411,7 +401,6 @@ function plainNoun(noun){ return noun === 'collation' ? 'product' : noun; }
 function nodeStyleLabel(k){
   const proj = build.project;
   if(k === 'product'){
-    if(proj.primary.box) return 'single box';
     const c = proj.primary.collation;
     return `${c.piece.kind === 'cylinder' ? 'cylinders' : 'pieces'} ${c.nx}×${c.ny}`;
   }
@@ -429,7 +418,7 @@ function nodeStyleLabel(k){
  *  parent re-point is permanently visible, not a transient toast (UAT #4). */
 function repointNote(k){
   const proj = build.project;
-  const contentNoun = plainNoun(proj.primary.box ? 'box' : 'collation');
+  const contentNoun = plainNoun('collation');
   if(k === 'wrap')   return `${contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(k === 'carton') return `${proj.primary.wrap ? 'wrap' : contentNoun} feeds case directly`;
   if(k === 'case')   return 'carton rides the pallet directly';
@@ -556,7 +545,7 @@ function mountPlacement(){
   if(lvl.kind !== 'style' || !lvl.enabledOf(proj)){ host.innerHTML = ''; return; }
 
   if(activeLevel === 'carton'){
-    const primaryNoun = cap(plainNoun(proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation')));
+    const primaryNoun = cap(plainNoun(proj.primary.wrap ? 'wrap' : 'collation'));
     host.innerHTML =
       `<h2 style="margin-top:6px">Inside the carton</h2>
        <div id="plInVert" style="display:contents"></div>
@@ -572,7 +561,7 @@ function mountPlacement(){
   if(activeLevel === 'case'){
     const secondaryIn = proj.secondary.enabled !== false;
     const childLevel = secondaryIn ? proj.secondary : proj.primary;
-    const childNoun = cap(plainNoun(secondaryIn ? 'carton' : (proj.primary.wrap ? 'wrap' : (proj.primary.box ? 'box' : 'collation'))));
+    const childNoun = cap(plainNoun(secondaryIn ? 'carton' : (proj.primary.wrap ? 'wrap' : 'collation')));
     host.innerHTML =
       `<h2 style="margin-top:6px">Inside the case <span class="hint">from the ${childNoun.toLowerCase()}</span></h2>
        <div id="plInVert" style="display:contents"></div>
@@ -668,9 +657,9 @@ function mountActiveLevel(){
       onInput: () => projectChanged()
     });
   }else if(lvl.kind === 'product'){
-    // hasWrap gates the piece-arrangement editor: grouping pieces into a wrap
-    // is only meaningful when a wrap is in the chain (UAT #6 conditional show)
-    inputs.mountProduct(proj.primary, {onInput: () => projectChanged(), hasWrap: !!proj.primary.wrap});
+    // the product 2 x 2 (content mode + piece shape) and its grouping counts
+    // are ALWAYS visible — never gated on the chain (that hid On Edge)
+    inputs.mountProduct(proj.primary, {onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -833,11 +822,13 @@ function hierarchyBundle(){
   const row = build.getSelected() || best;
   if(!row || !row.arr) return null;
   const {cases, cartons, wraps, pieces} = row.arr;
-  // when the carton is disabled, the wrap (if any) is the CASE's direct
-  // child — its placements are already `cartons` (whatever fits directly
-  // into the case), since `wraps` (wraps arranged WITHIN a carton) doesn't
-  // apply when there's no carton for them to be within.
-  const wrapPlacements = row.geo.carton ? (wraps ? wraps.placements : null) : cartons.placements;
+  // the immediate-child-unit placements: `wraps` (the carton's own inner solve)
+  // when the carton is an INNER tier, else `cartons` (the outermost tier's
+  // childFit) — which already holds those same unit placements when the carton
+  // is itself outermost (case disabled) OR is disabled entirely. Keying on
+  // `wraps` presence, not on row.geo.carton, is what lets a carton-outermost
+  // chain (case off) still render its wrap/pack contents.
+  const wrapPlacements = wraps ? wraps.placements : cartons.placements;
   return {
     caseGeo: row.geo.case,
     cartonGeo: row.geo.carton,
