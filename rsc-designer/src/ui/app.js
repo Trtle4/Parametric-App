@@ -17,6 +17,8 @@ import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {buildShelf, showShelf} from '../render/shelf3d.js';
+import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
@@ -40,6 +42,21 @@ let hierSel = {};              // opened index per tier {case,carton,wrap}
 // the current view and reprojects it every frame so the numbers track the orbit.
 let showDims = false;
 const subjectDims = {fold: null, nest: null, pal: null};
+
+// Retail shelf view state — a visualization config, not a design parameter,
+// so it lives here (like `view`/`mode3d`), never on the project. Counts are a
+// number or 'auto' (fill to the shelf). `front` is which face points at the
+// shopper, as an orientation string consumed by fitInto/orientDims (see
+// FRONT_PANELS): o[0]=across, o[1]=depth (back-to-front), o[2]=up.
+const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH'};
+// front-panel choices: which pack FACE points at the shopper. The front face
+// is (across × up), so the depth axis is the middle char. Defaults to L×H —
+// the carton's printed front panel, upright.
+const FRONT_PANELS = [
+  {v: 'LWH', label: 'L × H face (upright)'},
+  {v: 'WLH', label: 'W × H face (turned)'},
+  {v: 'LHW', label: 'L × W face (laid flat)'}
+];
 
 /* ---------- the active level: the ONE thing the rails + 2D/3D/DXF show ----
  * There is no detached style instance any more (Path A is gone). The rails
@@ -293,6 +310,67 @@ function renderBCT(g, stats){
     `<div class="bctderate">McKee predicts <em>short-term lab</em> strength. Real field strength is reduced by:` +
       `<ul>${DERATINGS.map(d => `<li>${d}</li>`).join('')}</ul>` +
       `The safety factor is what absorbs these.</div>`;
+}
+
+/* ---------- retail shelf fill: fitInto with the shelf as the parent cavity ----
+ * The sellable pack is the outermost USER-FACING unit — the carton if there is
+ * one, else the case (the shipper). The shelf opening (width × depth × height)
+ * is a plain fitInto cavity and the pack outer is the child, fixed to the
+ * chosen front-panel orientation. fitInto returns the MAX fill; a user-set
+ * facings/stack/deep selects a subset of those SAME placements (kept from the
+ * back wall forward), so the count and the render come from one packing result
+ * — never a second hand-rolled grid. containment.js is untouched. */
+
+/** The sellable pack noun + its resolved geometry for the current chain. */
+function shelfSellable(){
+  const proj = build.project;
+  const noun = (proj.secondary.enabled !== false) ? 'carton' : 'case';
+  const row = resolveActiveRow(proj, build.getRounding(), selKey());
+  return {noun, geo: row && row.geo ? row.geo[noun] : null};
+}
+
+const shelfKey = v => +v.toFixed(3);   // stable grouping key for placement coords
+
+function refreshShelf(){
+  if(view !== 'shelf') return;         // only compute while the shelf view is up
+  const {noun, geo} = shelfSellable();
+  el('spUnit').textContent = noun + 's';
+  if(!geo){
+    el('shReadout').innerHTML = 'No sellable pack geometry for this chain.';
+    showShelf(false);
+    return;
+  }
+  const cavity = {L: shelf.width, W: shelf.depth, H: shelf.height};
+  // fixed to the front-panel orientation — the shopper-facing face is the
+  // user's choice, not a solver optimization; 'column' gives a clean aligned
+  // grid to subset. x = facings (across), y = depth (back→front), z = stack.
+  const arr = fitInto({outer: geo.outer, allowedOrientations: [shelf.front], styleId: geo.meta.style},
+                      cavity, {wall: 0, between: 0}, 'column');
+  const xs = [...new Set(arr.placements.map(p => shelfKey(p.x)))].sort((a, b) => a - b);
+  const ys = [...new Set(arr.placements.map(p => shelfKey(p.y)))].sort((a, b) => a - b);
+  const zs = [...new Set(arr.placements.map(p => shelfKey(p.z)))].sort((a, b) => a - b);
+  const maxF = xs.length, maxD = ys.length, maxS = zs.length;
+  const eff = (v, max) => (v === 'auto' || !(v >= 1)) ? max : Math.min(max, Math.round(v));
+  const facings = eff(shelf.facings, maxF), stack = eff(shelf.stack, maxS), deep = eff(shelf.deep, maxD);
+  // subset: left-most facings, bottom stack, back-most `deep` rows (largest y —
+  // the back wall sits at +depth), i.e. stocked from the back forward.
+  const keepX = new Set(xs.slice(0, facings));
+  const keepZ = new Set(zs.slice(0, stack));
+  const keepY = new Set(ys.slice(ys.length - deep));
+  const placements = arr.placements.filter(p =>
+    keepX.has(shelfKey(p.x)) && keepZ.has(shelfKey(p.z)) && keepY.has(shelfKey(p.y)));
+  const total = facings*stack*deep;
+
+  const od = orientDims(geo.outer, shelf.front);
+  const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;
+  el('shReadout').innerHTML = (maxF && maxD && maxS)
+    ? `<b>${total}</b> ${noun}${total === 1 ? '' : 's'} on shelf<br>` +
+      `${facings} facings × ${stack} high × ${deep} deep` +
+      `<div class="sp-util">uses ${pct(facings*od.l, shelf.width)}% width · ` +
+      `${pct(stack*od.h, shelf.height)}% height · ${pct(deep*od.w, shelf.depth)}% depth</div>`
+    : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
+
+  buildShelf(od, shelf, placements, true);
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -1013,14 +1091,16 @@ function setView(v){
   el('tab2d').classList.toggle('on', v === '2d');
   el('tab3d').classList.toggle('on', v === '3d');
   el('tabPal').classList.toggle('on', v === 'pal');
+  el('tabShelf').classList.toggle('on', v === 'shelf');
   el('tabBuild').classList.toggle('on', v === 'build');
-  const canvas = v === '3d' || v === 'pal';
+  const canvas = v === '3d' || v === 'pal' || v === 'shelf';
   el('svgWrap').style.display   = v === '2d' ? 'flex' : 'none';
   el('cvWrap').style.display    = canvas ? 'block' : 'none';
   el('buildWrap').style.display = v === 'build' ? 'block' : 'none';
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
   // the title block is a drawing-sheet overlay — the Build view is a table,
   // not a sheet, so hide it there (it would float over the candidate table).
   // The view toolbar STAYS (it holds the tabs — the only way back out of Build).
@@ -1032,7 +1112,7 @@ function setView(v){
   // from the hierarchy depth of the same name (a flat case-count render,
   // not the cutaway cascade), and the prompt's own depth list (product/
   // wrap/carton/case/pallet) names the hierarchy depths, not that tab.
-  el('viewCubeWrap').style.display = v === '3d' ? 'block' : 'none';
+  el('viewCubeWrap').style.display = (v === '3d' || v === 'shelf') ? 'block' : 'none';
   // (which rail fields show is driven by the ACTIVE LEVEL now, not the view —
   // see toggleRailSections/mountActiveLevel)
   if(v !== '3d'){ el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none'; }
@@ -1058,9 +1138,18 @@ function setView(v){
           fold.tweenOrbit(rx, ry);
         }));
     }
+    showShelf(v === 'shelf');   // the shelf subject is hidden in every other canvas view
     if(v === '3d'){
       showPallet(false);
       apply3dMode();
+    }else if(v === 'shelf'){
+      fold.showBox(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
+      fold.stopFold();
+      // a natural shopper angle: mostly front-on (looking at the front panels),
+      // tilted down slightly and turned a touch to read the depth of the fill
+      fold.setOrbit(0.34, -0.5, 1.6);
+      el('orbithint').textContent = 'drag to orbit · scroll to zoom · front panels face you';
+      refreshShelf();
     }else{
       fold.showBox(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
@@ -1134,9 +1223,29 @@ el('palUnits').addEventListener('change', () => {
 el('tab2d').addEventListener('click', () => setView('2d'));
 el('tab3d').addEventListener('click', () => setView('3d'));
 el('tabPal').addEventListener('click', () => setView('pal'));
+el('tabShelf').addEventListener('click', () => setView('shelf'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 // the "which candidate row" label (pallet readout) jumps to the Build table
 el('palRowLabel').addEventListener('click', () => setView('build'));
+
+/* ---------- retail shelf controls: view-local state, live-update the fill --- */
+el('shFront').innerHTML = FRONT_PANELS.map(f => `<option value="${f.v}">${f.label}</option>`).join('');
+(function writeShelfFields(){
+  el('shWidth').value = shelf.width; el('shDepth').value = shelf.depth; el('shHeight').value = shelf.height;
+  el('shFront').value = shelf.front;
+  el('shFacings').value = shelf.facings === 'auto' ? '' : shelf.facings;
+  el('shStack').value = shelf.stack === 'auto' ? '' : shelf.stack;
+  el('shDeep').value = shelf.deep === 'auto' ? '' : shelf.deep;
+})();
+const shelfDim = (v, fb) => { const n = Math.round(+v); return Number.isFinite(n) && n >= 1 ? n : fb; };
+const shelfCount = raw => raw.trim() === '' ? 'auto' : Math.max(1, Math.round(+raw) || 1);
+el('shWidth').addEventListener('input',  () => { shelf.width  = shelfDim(el('shWidth').value,  shelf.width);  refreshShelf(); });
+el('shDepth').addEventListener('input',  () => { shelf.depth  = shelfDim(el('shDepth').value,  shelf.depth);  refreshShelf(); });
+el('shHeight').addEventListener('input', () => { shelf.height = shelfDim(el('shHeight').value, shelf.height); refreshShelf(); });
+el('shFront').addEventListener('change', () => { shelf.front = el('shFront').value; refreshShelf(); });
+el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el('shFacings').value); refreshShelf(); });
+el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
+el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
 // Dims: toggle the L×W×H callout overlay (off by default). drawDims runs on
 // the render loop, so flipping the flag is enough; call it once for immediacy.
@@ -1421,6 +1530,9 @@ notify.onRefresh('hier3d', () => { if(view === '3d' && mode3d === 'hier') applyH
 // when the Palletize view is up. So it runs unconditionally here — this is what
 // makes the BCT readout update live on box/ECT/weight/double-stack/style edits.
 notify.onRefresh('palletize', refreshPal);
+// the retail shelf reflects the sellable pack's geometry, so it re-fills on
+// every project change too (refreshShelf no-ops unless the Shelf view is up).
+notify.onRefresh('shelf', refreshShelf);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
 

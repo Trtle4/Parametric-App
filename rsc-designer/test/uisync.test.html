@@ -27,6 +27,7 @@
 <button id="tab2d" class="on">2D</button>
 <button id="tab3d">3D</button>
 <button id="tabPal">Pal</button>
+<button id="tabShelf">Shelf</button>
 <button id="tabBuild">Build</button>
 <button id="btnDXF">DXF</button>
 <button id="btnArt" style="display:none">Art</button>
@@ -87,6 +88,18 @@
 <div id="hierHud" style="display:none"></div>
 <div id="hierLegend" style="display:none"></div>
 <div id="orbithint"></div>
+<!-- Retail shelf-fill panel the real app wires at boot -->
+<div id="shelfPanel" style="display:none">
+  <select id="shFront"></select>
+  <input id="shWidth" type="number" value="1000">
+  <input id="shDepth" type="number" value="500">
+  <input id="shHeight" type="number" value="300">
+  <input id="shFacings" type="text">
+  <input id="shStack" type="text">
+  <input id="shDeep" type="text">
+  <div id="shReadout"></div>
+  <span id="spUnit"></span>
+</div>
 
 <div id="matFields" style="display:contents"></div>
 <div id="levelPlacement" style="display:contents"></div>
