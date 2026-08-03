@@ -889,6 +889,39 @@ await (async () => {
   setLevel('case'); await settle();
 })();
 
+/* ==================================================================
+   Product-depth piece orientation shares ONE source with the deeper views:
+   the same pieceGeo(piece, stackAxis) drives how a Round piece lies. In Pile
+   pack it stands (thickness up); in On Edge it lies on its side (thickness
+   along the run, diameter tall) — the bare-piece view must not hardcode a
+   separate upright. Asserted via the hierarchy's rendered oriented extent.
+   ================================================================== */
+await (async () => {
+  const setSeg = (id, v) => [...el(id).querySelectorAll('button')].find(b => b.dataset.v === v).click();
+  const productOuter = async mode => {
+    setLevel('product'); await settle();
+    setSeg('cShape', 'round'); await settle();
+    setSeg('cMode', mode); await settle();
+    el('tab3d').click(); await settle();
+    el('d_product').click(); await settle();
+    return hier.renderedOuter();
+  };
+  const pile = await productOuter('pile');
+  const edge = await productOuter('onedge');
+  t('product depth: a Round piece STANDS in Pile pack (thickness up, round face in plan)', () => {
+    if(!(Math.abs(pile.L - pile.W) < 1e-6 && pile.H < pile.L))
+      throw new Error(`not a standing coin: ${JSON.stringify(pile)}`);
+  });
+  t('product depth: a Round piece lies ON ITS SIDE in On Edge (same source as deeper views)', () => {
+    if(!(edge.L < edge.H && Math.abs(edge.W - edge.H) < 1e-6))
+      throw new Error(`not on its side: ${JSON.stringify(edge)}`);
+    if(edge.L === pile.L) throw new Error('On Edge did not re-orient the bare piece at product depth');
+  });
+  // restore a clean default state
+  setLevel('product'); await settle(); setSeg('cMode', 'pile'); await settle();
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
 save.clearAutosave();
 save.cancelAutosave();
 

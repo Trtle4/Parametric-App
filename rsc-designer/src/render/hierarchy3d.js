@@ -561,11 +561,19 @@ export function buildHierarchy(bundle, depth, sel){
   let span = 100, opened = {}, outer = null;
   if(depth === 'product'){
     const p = bundle.wraps.piece;
-    const {geo} = pieceGeo(p, bundle.wraps.stackAxis, 'LWH');
-    group.add(new THREE.Mesh(geo, pieceMat));
+    // ONE source for "which way the piece lies": the same pieceGeo(piece,
+    // stackAxis) the wrap/carton depths use. It returns a `rot` that lays a
+    // cylinder on its side in On Edge mode (stack axis X) and stands it in
+    // Pile mode (stack axis Z) — the bare-piece view must apply that rot too,
+    // or a Round piece reads as a standing coin in On Edge and makes the user
+    // doubt the orientation is applied. The Dims box follows the rotated extent.
+    const {geo, rot} = pieceGeo(p, bundle.wraps.stackAxis, 'LWH');
+    const mesh = new THREE.Mesh(geo, pieceMat);
+    if(rot) mesh.applyMatrix4(rot);
+    group.add(mesh);
     span = p.kind === 'cylinder' ? p.diameter : Math.max(p.L, p.W, p.H);
     geo.computeBoundingBox();
-    const s = geo.boundingBox.getSize(new THREE.Vector3());
+    const s = (rot ? geo.boundingBox.clone().applyMatrix4(rot) : geo.boundingBox).getSize(new THREE.Vector3());
     outer = {L: s.x, W: s.z, H: s.y};
   }else if(depth === 'wrap'){
     group.add(buildWrapOpened(bundle));
@@ -592,8 +600,16 @@ export function buildHierarchy(bundle, depth, sel){
   pivot.add(group);
   setCamSpan(span);
   registerFrame();
+  lastOuter = outer;
   return {opened: S, span, counts: bundle.counts, outer};
 }
+
+/** The oriented L/W/H extent of the last-built subject — a test hook: at
+ *  product depth it reflects how the single piece actually lies (On Edge lays
+ *  a Round piece on its side), so a regression can pin that the bare-piece
+ *  view shares the deeper views' orientation source. */
+let lastOuter = null;
+export function renderedOuter(){ return lastOuter; }
 
 // `outerTier` is whichever tier actually rides the pallet — the case
 // normally, or the carton once the case is disabled. bundle.cases carries
