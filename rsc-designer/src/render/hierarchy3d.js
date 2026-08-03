@@ -372,6 +372,11 @@ function pieceGeo(piece, stackAxis, o){
 function buildWrapOpened(bundle){
   // an opened wrap: translucent conforming film + all pieces inside
   const g = new THREE.Group();
+  // no wrap/piece data on the row means the film tier is disabled (or the
+  // content never collates into a wrap): there is nothing to open — return
+  // the empty group rather than dereferencing a null bundle.wraps. The
+  // parent container's own cutaway box still renders around it.
+  if(!bundle.wraps) return g;
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
   g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
@@ -412,8 +417,13 @@ function buildContainer(tier, bundle, sel, path){
   const openIdx = clampIdx(sel[tier.name], children);
   const parentInnerH = geo.inner.H;
 
-  if(childKind === 'wrap'){
-    const w = bundle.wraps;
+  // a 'wrap' childKind whose bundle.wraps is null means the film tier is
+  // disabled (or the content never collates into a wrap): there are no wrap
+  // instances to draw, so fall through to neither branch — the container's
+  // own cutaway box (added above) is the whole render. A wrap child is NOT a
+  // box, so it must never reach the rigid-box branch below.
+  const w = childKind === 'wrap' ? bundle.wraps : null;
+  if(childKind === 'wrap' && w){
     const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
     const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
@@ -440,7 +450,7 @@ function buildContainer(tier, bundle, sel, path){
         g.add(inst);
       }
     }
-  }else{
+  }else if(childKind !== 'wrap'){
     for(const [o, list] of groupByOrientation(children, openIdx)){
       const od = orient(tier.childOuter, o);
       const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);

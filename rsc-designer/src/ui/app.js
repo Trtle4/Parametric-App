@@ -750,10 +750,13 @@ function hierarchyBundle(){
 }
 
 // depths reachable given the config (Product/Wrap need a primary/wrap level;
-// Carton needs the carton level itself enabled — collapses out when it isn't)
+// Carton needs the carton level itself enabled — collapses out when it isn't;
+// Case likewise needs the case enabled, or its geometry is null and there is
+// nothing to cut away). Pallet is always available while a chain resolves.
 function depthAvailable(bundle, d){
   if(d === 'product' || d === 'wrap') return !!(bundle && bundle.wraps);
   if(d === 'carton') return !!(bundle && bundle.cartonGeo);
+  if(d === 'case') return !!(bundle && bundle.caseGeo);
   return !!bundle;
 }
 
@@ -781,9 +784,13 @@ function applyHierarchy(resetCam){
   const bundle = hierarchyBundle();
   LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
-  // the active level IS the depth; if it isn't reachable for this config,
-  // render the case (without disturbing the selector's own state)
-  const depth = depthAvailable(bundle, activeLevel) ? activeLevel : 'case';
+  // the active level IS the depth; if it isn't reachable for this config
+  // (e.g. the case is the active level but has just been disabled), fall back
+  // to the outermost depth that IS available — never a hardcoded 'case', which
+  // is itself null when the case tier is off. Pallet is always available while
+  // a chain resolves, so this find() never comes back empty.
+  const depth = depthAvailable(bundle, activeLevel) ? activeLevel
+    : ['case', 'carton', 'pallet'].find(d => depthAvailable(bundle, d));
   if(resetCam) fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
   const res = hier.buildHierarchy(bundle, depth, hierSel);
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
@@ -1284,7 +1291,11 @@ if(!save.hasStorage){
  * relevance is the refresher's own business, exactly like refresh2d/
  * refresh3d/refreshPal already did before this rework. */
 notify.onRefresh('railDims', () => {
-  if(!isStyleLevel() || LEVELS[activeLevel].lockedOf(build.project)) return;
+  const lvl = LEVELS[activeLevel];
+  // A disabled tier has no params/lock to read (wrap goes null outright), so
+  // there are no derived dims boxes to resync — and reading lockedOf on a
+  // null level would throw. Bail on !enabled BEFORE touching lockedOf.
+  if(!isStyleLevel() || !lvl.enabledOf(build.project) || lvl.lockedOf(build.project)) return;
   const g = activeGeometry();
   inputs.refreshDims(g ? g.inner : null);
 });

@@ -119,6 +119,7 @@
 import * as build from '../src/ui/build.js';
 import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
+import * as notify from '../src/ui/notify.js';
 import {newProject, linkFor} from '../src/core/project.js';
 import {toMM} from '../src/core/units.js';
 
@@ -130,6 +131,12 @@ await import('../src/ui/app.js');
 save.clearAutosave();   // app.js's own startup recompute schedules one; don't leave it behind
 
 const el = id => document.getElementById(id);
+// Exceptions thrown inside a DOM event listener do NOT propagate out of
+// dispatchEvent()/click() — the browser reports them via window.onerror
+// instead — so a plain try/catch in t() would MISS a crash fired from a
+// change/click handler and the test would falsely pass. Trap them here.
+const uncaught = [];
+window.addEventListener('error', e => uncaught.push(e.message || (e.error && e.error.message) || 'unknown error'));
 const results = [];
 function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
 function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
@@ -573,6 +580,81 @@ await (async () => {
   });
   save.clearSlot(3); save.clearSlot(5);
   el('slotSel').value = '1'; fire(el('slotSel'), 'change'); await settle();
+})();
+
+/* ==================================================================
+   Fix #1 (P0): disabling ANY single level must never throw, and must
+   never blank a view that still has valid data.
+
+   The regression: the 'railDims' refresh consumer read
+   LEVELS.wrap.lockedOf(project) === project.primary.wrap.locked, which
+   throws the instant the wrap goes null (disabled) while Wrap is the
+   active level. Because refreshAll() ran every consumer in ONE loop,
+   that first throw aborted every LATER consumer (chain string, 2D/3D,
+   the pallet readout, autosave) for that edit — one bad read killed the
+   whole notify cycle. The throw escaped through a DOM event handler, so
+   it never surfaced as a catchable exception (hence the window-error
+   trap above). Two fixes, tested here: guard the null read, AND isolate
+   each consumer in refreshAll() so one throw can't abort the rest.
+   ================================================================== */
+await (async () => {
+  // exercise the 3D hierarchy view explicitly: disabling a tier re-runs the
+  // hierarchy render synchronously (setActiveLevel -> apply3dMode), a path the
+  // refreshAll isolation does NOT wrap — disabling the wrap here used to deref
+  // a null bundle.wraps in hierarchy3d and crash. Cover it directly.
+  el('tab3d').click(); await settle();
+  for(const lvl of ['wrap', 'carton', 'case']){
+    setLevel(lvl); await settle();
+    uncaught.length = 0;
+    el('tierToggleBtn').click(); await settle();   // opens the "Disable ...?" confirmation
+    confirmDisable(); await settle();
+
+    t(`disable ${lvl} (as the active level): no uncaught error escapes the notify cycle`, () => {
+      if(uncaught.length) throw new Error(`disabling ${lvl} threw: ${uncaught.join('; ')}`);
+    });
+    t(`disable ${lvl}: the chain still resolves to valid candidates (Build view not blanked)`, () => {
+      if(build.getRows().length === 0) throw new Error(`getRows() empty after disabling ${lvl} — a downstream view has no data`);
+    });
+    // wrap/carton disabled leaves the CASE outermost — a valid tier still
+    // rides the pallet, so its readout must not fall back to the '--'
+    // no-geometry placeholder. (Case-disabled -> carton-outermost is
+    // Fix #2's concern and is asserted in its own block below.)
+    if(lvl !== 'case'){
+      t(`disable ${lvl}: the pallet readout still shows a count (view not blanked)`, () => {
+        if(el('palTot').textContent === '--') throw new Error(`pallet total blanked ('--') though the case still rides the pallet after disabling ${lvl}`);
+      });
+    }
+
+    setLevel(lvl); await settle();                 // re-enable (no confirm needed) for the next iteration
+    el('tierToggleBtn').click(); await settle();
+  }
+  t('after disabling/re-enabling every tier in turn, the full chain is restored', () => {
+    eq(build.project.secondary.enabled, true, 'carton re-enabled:');
+    eq(build.project.tertiary.enabled, true, 'case re-enabled:');
+    if(!build.project.primary.wrap) throw new Error('wrap not restored');
+  });
+})();
+
+/* refreshAll() isolation, tested directly: a consumer that throws must
+   NOT stop a consumer registered after it from running, and the throw
+   must be contained (logged), not surface as an uncaught error. */
+await (async () => {
+  let laterRan = false;
+  notify.onRefresh('__uisync_thrower', () => { throw new Error('deliberate consumer failure'); });
+  notify.onRefresh('__uisync_sentinel', () => { laterRan = true; });
+  try{
+    uncaught.length = 0;
+    build.recompute();   // runs refreshAll() as its own last step
+    t('refreshAll isolation: a consumer registered after a throwing one still runs', () => {
+      if(!laterRan) throw new Error('sentinel consumer did not run — a thrown consumer aborted the rest');
+    });
+    t('refreshAll isolation: the thrown error is contained, not an uncaught window error', () => {
+      if(uncaught.length) throw new Error(`isolation leaked an uncaught error: ${uncaught.join('; ')}`);
+    });
+  }finally{
+    notify.offRefresh('__uisync_thrower');
+    notify.offRefresh('__uisync_sentinel');
+  }
 })();
 
 save.clearAutosave();

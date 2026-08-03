@@ -38,10 +38,24 @@ let running = false;
  *  second half of "one recompute() resolves the chain and notifies every
  *  registered consumer" — see build.recompute(), which calls this as its
  *  own last step so nothing that mutates the project has to remember to
- *  call this separately. */
+ *  call this separately.
+ *
+ *  Each refresher runs in its OWN try/catch: a consumer that throws (a bad
+ *  read against a transient project state — e.g. a level going null under
+ *  it) must degrade to ONE stale panel, never abort the consumers after it.
+ *  Before this isolation, the refreshers ran in a single loop, so the FIRST
+ *  one to throw silently killed every later one (chain string, 2D/3D, the
+ *  pallet readout, autosave) for that edit — a whole dead app from one bad
+ *  read. The failure is logged with the offending consumer's name and the
+ *  error, so a degraded panel is diagnosable, not mysterious. */
 export function refreshAll(){
   if(running) return;
   running = true;
-  try{ for(const fn of refreshers.values()) fn(); }
+  try{
+    for(const [name, fn] of refreshers){
+      try{ fn(); }
+      catch(e){ console.error(`refreshAll: consumer "${name}" threw — its panel is left stale, others still ran:`, e); }
+    }
+  }
   finally{ running = false; }
 }
