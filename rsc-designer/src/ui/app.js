@@ -16,7 +16,7 @@ import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
-import {buildPallet, palletStats, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
@@ -190,12 +190,16 @@ function refresh3d(){
 function refreshPal(){
   const p = build.project.pallet;
   // the pallet carries the OUTERMOST enabled tier — the case normally, or the
-  // carton once the case is disabled — never a hardcoded 'case', whose
-  // geometry is null when the case is off (which blanked this whole readout
-  // and the Palletize view even though the carton palletized fine). outerNoun
-  // is 'case' or 'carton', both valid levelGeometry keys.
+  // carton once the case is disabled. outerNoun is 'case' or 'carton'.
   const outerNoun = describeChain(build.project).outerNoun;
-  const g = levelGeometry(build.project, outerNoun, build.getRounding(), selKey());
+  // ONE authoritative pallet result: the resolved candidate row's OWN fit —
+  // the exact filled-unit count the Build table and the 3D hierarchy already
+  // show, read straight off the row. The readout NEVER re-packs the pallet
+  // itself: that independent second computation is what silently diverged
+  // (it stacked the resolved case at a layer pitch borrowed from an unrelated
+  // candidate row, reporting 132 where only 72 physically fit).
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const g = row && row.geo ? row.geo[outerNoun] : null;
   if(!g){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
@@ -204,30 +208,28 @@ function refreshPal(){
     drawDims();
     return;
   }
-  // the fit stats + BCT are CHEAP and always relevant (right-rail readout) —
-  // computed on every recompute. The heavy 3D pallet build only runs when the
-  // Palletize view is actually up. effH = the chain's effective per-unit
-  // stacking height (row.unitStackH): for an open tray with proud contents it
-  // is the standing-content height, so the render's layer pitch matches the
-  // chain and layers never interpenetrate.
-  const palRow = build.getSelected() || build.getRows()[0];
-  const effH = (palRow && palRow.unitStackH) || g.outer.H;
-  const stats = palletStats(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, effH);
-  el('palPat').textContent = stats.perLayer > 0 ? stats.label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
-  el('palCnt').textContent = stats.perLayer > 0 ? `${stats.perLayer} × ${stats.layers}` : '--';
-  el('palTot').textContent = stats.total > 0 ? `${stats.total} boxes` : '0';
-  el('palCov').textContent = stats.perLayer > 0 ? `${stats.coveragePct}%` : '--';
-  const palText = stats.total > 0 ? `${stats.total} ${outerNoun}s` : (stats.perLayer > 0 ? '—' : 'does not fit');
+  const perLayer = row.casesPerLayer, layers = row.caseLayers, total = row.casesPerPallet;
+  const label = row.casesFit ? row.casesFit.label : '';
+  el('palPat').textContent = perLayer > 0 ? label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
+  el('palCnt').textContent = perLayer > 0 ? `${perLayer} × ${layers}` : '--';
+  el('palTot').textContent = total > 0 ? `${total} ${outerNoun}s` : '0';
+  el('palCov').textContent = perLayer > 0 ? `${row.coveragePct}%` : '--';
+  const palText = total > 0 ? `${total} ${outerNoun}s` : (perLayer > 0 ? '—' : 'does not fit');
   el('tbPallet').textContent = palText; el('msPallet').textContent = palText;
-  renderBCT(g, stats);
+  renderBCT(g, {perLayer, layers, total, coveragePct: row.coveragePct});
   // the loaded-pallet Dims box: deck footprint x (pallet deck + case stack),
-  // doubled when double-stacked — the same totalH pallet3d centres on the origin
-  const oneLoadH = PALLET_HEIGHT + stats.layers*effH;
+  // doubled when double-stacked — the same totalH pallet3d centres on the origin.
+  // effH is the chain's per-unit stacking pitch (row.unitStackH): for an open
+  // tray with proud contents it is the standing-content height.
+  const effH = row.unitStackH || g.outer.H;
+  const oneLoadH = PALLET_HEIGHT + layers*effH;
   const nLoads = (p.stacking && p.stacking.doubleStack) ? 2 : 1;
   // palletMM flags this as a pallet subject so the Dims overlay splits the
   // height into Pallet (deck) / Load (stack) / Total
   subjectDims.pal = {L: p.L, W: p.W, H: nLoads*oneLoadH, palletMM: PALLET_HEIGHT};
-  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, p.pattern, true, !!(p.stacking && p.stacking.doubleStack), effH);
+  // the 3D Palletize view renders the SAME placements the chain solved (never a
+  // second fitInto), so the boxes on screen match the readout count exactly
+  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, row.arr.cases.placements, layers, effH, true, nLoads === 2);
   drawDims();
 }
 

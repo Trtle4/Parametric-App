@@ -702,6 +702,45 @@ await (async () => {
   el('tierToggleBtn').click(); await settle();       // re-enable the case (no confirm)
 })();
 
+/* ==================================================================
+   Cases-per-pallet has ONE source. The right-rail readout, the title
+   block, and the mobile spec must all show the SAME filled-case count as
+   the resolved candidate row (row.casesPerPallet) — the number core
+   computed — never an independent in-view re-pack. That second packer
+   diverged: it stacked the resolved case at a layer pitch borrowed from
+   an unrelated candidate row, reporting 132 filled cases where only 72
+   physically fit (22 layers of a 114 mm case in a 1397 mm budget). Pinned
+   to the default project's 72.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); el('tab2d').click(); await settle();
+  const num = id => { const m = el(id).textContent.match(/(\d+)/); return m ? +m[1] : null; };
+  // the resolved row (what every view renders when nothing is picked) is the
+  // freight-optimal one — resolveActiveRow(null)'s max-cartonsPerPallet pick
+  const resolved = build.getRows().reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+  t('cases/pallet: right-rail total equals the resolved row\'s casesPerPallet (single source)', () => {
+    eq(num('palTot'), resolved.casesPerPallet, 'palTot vs row.casesPerPallet:');
+  });
+  t('cases/pallet: title block + mobile spec equal the right-rail total', () => {
+    eq(num('tbPallet'), num('palTot'), 'tbPallet vs palTot:');
+    eq(num('msPallet'), num('palTot'), 'msPallet vs palTot:');
+  });
+  t('cases/pallet: default project pins to 72 filled cases, 12 layers (not the old 132 / 22)', () => {
+    eq(num('palTot'), 72, 'default cases/pallet:');
+    eq(el('palCnt').textContent.replace(/\s/g, ''), '6×12', 'per-layer × layers:');
+  });
+  t('cases/pallet: the Build table shows that same count for the resolved row', () => {
+    el('tabBuild').click();
+    const heads = [...document.querySelectorAll('#bTable th')].map(x => x.textContent.trim());
+    const ci = heads.findIndex(h => /Cases\/pallet/.test(h));
+    const cells = [...document.querySelectorAll('#bTable tbody tr')]
+      .map(tr => [...tr.querySelectorAll('td')][ci].textContent);
+    if(!cells.some(c => new RegExp(`\\b${resolved.casesPerPallet}\\b`).test(c)))
+      throw new Error(`no Build row shows ${resolved.casesPerPallet} cases/pallet; cells=${JSON.stringify(cells)}`);
+    el('tab2d').click();
+  });
+})();
+
 save.clearAutosave();
 save.cancelAutosave();
 
