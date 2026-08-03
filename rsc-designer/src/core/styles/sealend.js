@@ -108,7 +108,24 @@ export function sealend(p){
       vDims: [
         {from: yb - F, to: yb, v: F}, {from: yb, to: yt, v: H}, {from: yt, to: yt + F, v: F}
       ],
-      print: {x0: x3, x1: x4, y0: yb, y1: yt}   // front panel body
+      print: {x0: x3, x1: x4, y0: yb, y1: yt},   // front panel body
+      // ARTWORK MAP — identical tube convention to a6120 (upright carton:
+      // extrude along H, girth around back|side|front|side, FRONT at +Z). Same
+      // shared template/upload/map system, fed by this style's own panel run.
+      artMap: {
+        canvas: {w: x5, h: yt + ext},
+        up: 'v',
+        extrude: 'y', extrudeIsU: false, length: H,
+        section: [
+          [-L/2, -W/2], [L/2, -W/2], [L/2, W/2], [-L/2, W/2], [-L/2, -W/2]
+        ],
+        faces: [
+          {panel: 'back',  u0: x1, u1: x2, v0: yb, v1: yt},
+          {panel: 'side',  u0: x2, u1: x3, v0: yb, v1: yt},
+          {panel: 'front', u0: x3, u1: x4, v0: yb, v1: yt},
+          {panel: 'side',  u0: x4, u1: x5, v0: yb, v1: yt}
+        ]
+      }
     }
   };
 }

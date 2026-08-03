@@ -4,6 +4,7 @@
  * geometry stays mm throughout.
  */
 import {fmtLen} from '../core/units.js';
+import {artImageSVG} from './artwork.js';
 
 const esc = s => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
@@ -25,9 +26,11 @@ export function apply2dView(svg){
  * @param {import('../core/types.js').Geometry} g
  * @param {'mm'|'in'} unit    display unit for labels only
  * @param {string} printText
+ * @param {{src:string,fit:string,dx:number,dy:number,scale:number}|null} art
+ *        uploaded artwork placed over the blank (under the outlines), or null
  * @returns {{w:number, h:number}} blank extents, mm
  */
-export function draw2d(svg, g, unit, printText){
+export function draw2d(svg, g, unit, printText, art){
   // margin: the mm constant matches the old per-unit margins exactly
   // (old: +24 in mm mode, +1 inch = +25.4 mm in inch mode)
   const m = Math.max(g.bbox.maxX, g.bbox.maxY)*0.14 + (unit === 'mm' ? 24 : 25.4);
@@ -137,9 +140,17 @@ export function draw2d(svg, g, unit, printText){
   const overall = `
     <text x="${(fx(0) + fx(w))/2}" y="${(fy(0) + m*0.68).toFixed(1)}" fill="var(--muted)" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle">blank ${fmt(w)} × ${fmt(h)} ${unit}</text>`;
 
+  // uploaded artwork sits UNDERNEATH the panel outlines/labels so registration
+  // is visibly correct. The blank canvas is the bbox (0..w × 0..h) — the same
+  // canvas the template exported and the designer painted on — so a template-
+  // sized upload maps 1:1 with the default 'stretch' fit.
+  let artLayer = '';
+  if(art && art.src) artLayer = artImageSVG(art, w, h, fx, fy, 'artClip');
+
   view2d.base = [0, 0, VW, VH];
   apply2dView(svg);
   svg.innerHTML = `
+    ${artLayer}
     ${zones}
     ${creases}
     <polygon points="${pts}" fill="rgba(229,72,77,0.04)" stroke="var(--cut)" stroke-width="${strokeW}" stroke-linejoin="round"/>

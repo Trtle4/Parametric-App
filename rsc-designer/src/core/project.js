@@ -165,7 +165,12 @@ export function newProject(){
     links: [
       {parent: 'tertiary', child: 'secondary', count: 12, arrangement: 'auto', locked: false},
       {parent: 'secondary', child: 'primary', count: 8, arrangement: {nx: 1, ny: 4, nz: 2}, locked: false}
-    ]
+    ],
+    // uploaded artwork, keyed by style level ('wrap'|'carton'|'case'). Each
+    // entry is {src, natW, natH, fit, dx, dy, scale} — `src` a downscaled data
+    // URL (see save.js) so the save file round-trips the art without bloating.
+    // Empty by default; a level appears only once art is uploaded there.
+    artwork: {}
   };
 }
 

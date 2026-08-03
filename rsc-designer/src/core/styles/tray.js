@@ -132,7 +132,21 @@ export function trayGeometry(p){
       vDims: [
         {from: 0, to: H, v: H}, {from: H, to: H + W, v: W}, {from: H + W, to: yT1, v: H}
       ],
-      print: {x0: bx0 + hg, x1: bx1 - hg, y0: 0, y1: H}   // bottom wall main panel — the visible outer face
+      print: {x0: bx0 + hg, x1: bx1 - hg, y0: 0, y1: H},   // bottom wall main panel — the visible outer face
+      // ARTWORK MAP — the tray is an OPEN cross-blank (a base with four walls
+      // folding up), not a tube, so it does not get the extrude-tube 3D
+      // cladding the wrap/cartons use (each wall's height runs a DIFFERENT way
+      // in the blank; a single tube UV would rotate two of them). `flat: true`
+      // opts the tray into the shared TEMPLATE + 2D overlay + upload/remove and
+      // out of the 3D tube — the honest boundary until a per-wall tray UV
+      // builder exists. The whole blank is the canvas, so a template-sized
+      // upload still maps 1:1 on the 2D dieline.
+      artMap: {
+        canvas: {w: xR1, h: yT1},
+        product: {x0: bx0, x1: bx1},
+        up: 'v',
+        flat: true
+      }
     }
   };
 }

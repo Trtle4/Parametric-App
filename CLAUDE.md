@@ -96,3 +96,17 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   case, solved via `solveSecondaryInner`) still constrains height as if
   closed — that path never reads `openTop`. Extend `solveSecondaryInner` if
   that case ever arises.
+- **Artwork 3D is a tube; the tray is opted out.** The artwork round-trip
+  (template -> upload -> map) is one system fed by each style's
+  `meta.artMap` (render/artwork.js, render/artwork3d.js). The 3D cladding
+  models a pack as a cross-section extruded along one axis (a tube): correct
+  for the flow wrap (extrude along L) and the closed cartons a6120/sealend
+  (extrude upright along H, girth around the four walls). The FEFCO 0300
+  tray is an OPEN cross-blank — a base with four walls that each run a
+  different way in the flat — so a single tube UV would rotate two walls.
+  Its `artMap` sets `flat: true`, which opts it into the shared template +
+  2D overlay + upload/remove and OUT of the 3D tube (app.js refresh3d skips
+  the tube for `flat` maps). A per-wall tray UV builder is the follow-up.
+  The template, 2D map and 3D UVs all derive from that one `artMap`, so they
+  can't disagree; artwork is persisted downscaled (render/artwork.js
+  `MAX_EDGE`) so the save file round-trips the art without bloating.

@@ -99,7 +99,30 @@ export function a6120(p){
         {from: yb, to: yt, v: H},
         {from: yt, to: yt+T, v: T}, {from: yt+T, to: yt+T+TT, v: TT}
       ],
-      print: {x0: x3, x1: x4, y0: yb, y1: yt}   // front panel body
+      print: {x0: x3, x1: x4, y0: yb, y1: yt},   // front panel body
+      // ARTWORK MAP — same shape the flow wrap publishes, so the shared
+      // template/upload/map system clads the carton without a per-style path.
+      // The carton is a tube stood UPRIGHT: extrude along H (height, world Y),
+      // girth around the four body walls (back|side|front|side), FRONT at +Z.
+      // Height carries v (yb..yt, the body band); the wall run carries u (each
+      // panel's x-range on the blank). Top/bottom are tuck/dust flaps — no art
+      // ends. The whole blank is the canvas, so a template-sized upload maps 1:1.
+      artMap: {
+        canvas: {w: x5, h: yt + Math.max(T + TT, D)},
+        up: 'v',
+        extrude: 'y', extrudeIsU: false, length: H,
+        // cross-section (x,z): front/back width L (along x), side depth W (z),
+        // FRONT at +Z. Walk back(z-) → side(x+) → front(z+) → side(x-).
+        section: [
+          [-L/2, -W/2], [L/2, -W/2], [L/2, W/2], [-L/2, W/2], [-L/2, -W/2]
+        ],
+        faces: [
+          {panel: 'back',  u0: x1, u1: x2, v0: yb, v1: yt},
+          {panel: 'side',  u0: x2, u1: x3, v0: yb, v1: yt},
+          {panel: 'front', u0: x3, u1: x4, v0: yb, v1: yt},
+          {panel: 'side',  u0: x4, u1: x5, v0: yb, v1: yt}
+        ]
+      }
     }
   };
 }

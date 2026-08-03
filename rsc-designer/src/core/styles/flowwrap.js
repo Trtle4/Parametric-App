@@ -143,7 +143,41 @@ export function flowwrap(p){
         {from: yB[3], to: yB[4], v: bands[2]}, {from: yB[4], to: yB[5], v: bands[3]},
         {from: yB[5], to: yB[6], v: bands[4]}
       ],
-      print: {x0: border, x1: cutLength - border, y0: yB[3], y1: yB[4]}   // FRONT panel
+      print: {x0: border, x1: cutLength - border, y0: yB[3], y1: yB[4]},   // FRONT panel
+      // ARTWORK MAP — the ONE panel decomposition the template export, the 2D
+      // artwork overlay and the 3D UV wrap all read (render/artwork.js,
+      // render/artwork3d.js). Derived here, at the same site that owns yB/bands/
+      // border, so those three consumers can never disagree with the 2D view or
+      // the template about where a panel is. Coordinates are template-canvas mm:
+      // u = repeat (0..cutLength, x), v = girth (0..webWidth, y, 0 = bottom).
+      artMap: (() => {
+        const fw = bands[2], sh = bands[1];                     // front/back & side face widths
+        const p0 = border, p1 = cutLength - border;            // the L run (u), seals excluded
+        return {
+          canvas: {w: cutLength, h: webWidth},
+          product: {x0: p0, x1: p1},                            // used by the template running-direction arrow
+          up: 'v',                                              // "up" on the flat = +v (template arrow)
+          // 3D tube: extruded along X (the film run, L), girth around the Y-Z
+          // cross-section. The film run carries u, the girth carries v.
+          extrude: 'x', extrudeIsU: true, length: L,
+          // cross-section polyline (y,z): FRONT at +Z, the two BACK halves meet
+          // at the rear seam (y=0, z=-sh/2). One segment per band, same order.
+          section: [
+            [0, -sh/2], [-fw/2, -sh/2], [-fw/2, sh/2], [fw/2, sh/2], [fw/2, -sh/2], [0, -sh/2]
+          ],
+          faces: [                                              // template rect (mm) per band
+            {panel: 'back',  u0: p0, u1: p1, v0: yB[1], v1: yB[2]},
+            {panel: 'side',  u0: p0, u1: p1, v0: yB[2], v1: yB[3]},
+            {panel: 'front', u0: p0, u1: p1, v0: yB[3], v1: yB[4]},
+            {panel: 'side',  u0: p0, u1: p1, v0: yB[4], v1: yB[5]},
+            {panel: 'back',  u0: p0, u1: p1, v0: yB[5], v1: yB[6]}
+          ],
+          ends: [                                               // crimped end-seal columns
+            {u0: p.endSealBleed, u1: border},
+            {u0: cutLength - border, u1: cutLength - p.endSealBleed}
+          ]
+        };
+      })()
     }
   };
 }

@@ -100,6 +100,23 @@
   <div id="shReadout"></div>
   <span id="spUnit"></span>
 </div>
+<!-- Artwork panel the real app wires at boot -->
+<div id="artPanel" style="display:none">
+  <span id="artLevelName"></span>
+  <button id="btnArtTplSvg">SVG</button>
+  <button id="btnArtTplPng">PNG</button>
+  <button id="btnArtUpload">Upload</button>
+  <input type="file" id="artFileInput" style="display:none">
+  <div id="artControls" style="display:none">
+    <select id="artFit"><option value="stretch">stretch</option><option value="fit">fit</option><option value="fill">fill</option></select>
+    <input id="artDx" type="number" value="0">
+    <input id="artDy" type="number" value="0">
+    <input id="artScale" type="number" value="100">
+    <div id="artInfo"></div>
+    <button id="btnArtRemove">Remove</button>
+  </div>
+  <div id="artHint"></div>
+</div>
 
 <div id="matFields" style="display:contents"></div>
 <div id="levelPlacement" style="display:contents"></div>

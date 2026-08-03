@@ -25,7 +25,9 @@ import * as hier from '../render/hierarchy3d.js';
 import {LEGEND} from '../render/hierarchy3d.js';
 import * as viewcube from '../render/viewcube.js';
 import {downloadDXF} from '../export/dxf.js';
-import {downloadArtwork, filmSpecText} from '../export/artwork.js';
+import {downloadArtwork, downloadArtworkPNG, filmSpecText} from '../export/artwork.js';
+import {loadArtworkFile, defaultFit, composeArtCanvas, artImage} from '../render/artwork.js';
+import {buildWrapArt, showWrapArt, clearWrapArt} from '../render/artwork3d.js';
 import {downloadSvgPNG, savePNG} from '../export/png.js';
 import * as build from './build.js';
 import * as save from './save.js';
@@ -171,7 +173,7 @@ function refresh2d(){
     setSummary('does not fit', '—', '--'); el('styleStats').innerHTML = '';
     return;
   }
-  const {w, h} = draw2d(el('svg'), g, u, build.project.printText);
+  const {w, h} = draw2d(el('svg'), g, u, build.project.printText, artFor(activeLevel, g));
   const areaU = u === 'mm' ? 'm²' : 'ft²';
   const wq = fromMM(w, u), hq = fromMM(h, u);
   const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
@@ -200,9 +202,75 @@ function refresh3d(){
   // builder. The hierarchy/cutaway view (mode3d 'hier') is unaffected,
   // since it renders every style's static erected geometry directly, not
   // through foldBuilders.
-  if(!builder){ fold.showBox(false); subjectDims.fold = null; return; }
+  if(!builder){ fold.showBox(false); showWrapArt(false); subjectDims.fold = null; return; }
   fold.buildBox(builder, g, build.project.printText, lvl.optionsOf(build.project));
   subjectDims.fold = {L: g.outer.L, W: g.outer.W, H: g.outer.H};
+  // artwork cladding: if this level has uploaded art AND the style publishes a
+  // panel map, clad the pack with the art (UV-mapped per artMap) and hide the
+  // plain kraft box; otherwise ensure any old ribbon is gone and the box shows.
+  // Owned HERE so both the fold-mode entry and the recompute notifier apply it.
+  const art = artFor(activeLevel, g);
+  if(art && !g.meta.artMap.flat){          // flat maps (tray) get 2D+template only, no 3D tube
+    // re-render once the image has decoded (composeArtCanvas needs it complete)
+    const img = artImage(art.src, () => { if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d(); });
+    const canvas = composeArtCanvas(g.meta.artMap, art, img, 1600);
+    if(canvas){ buildWrapArt(g, canvas, true); fold.showBox(false); return; }
+  }
+  clearWrapArt(); fold.showBox(true);
+}
+
+/** The uploaded artwork record for a level, but only when the level's style
+ *  actually publishes a panel map (geo.meta.artMap) — the one gate that says
+ *  "this style supports the round-trip". null otherwise, so 2D/3D/UI all agree. */
+function artFor(level, g){
+  const geo = g || (isStyleLevel() ? activeGeometry() : null);
+  if(!geo || !geo.meta.artMap) return null;
+  const a = build.project.artwork && build.project.artwork[level];
+  return (a && a.src) ? a : null;
+}
+
+/* ---------- artwork panel (template / upload / fit / remove) ---------- */
+
+/** This level can round-trip artwork iff its style publishes a panel map. */
+function artSupported(){
+  const g = isStyleLevel() ? activeGeometry() : null;
+  return !!(g && g.meta.artMap);
+}
+
+/** Show + populate the artwork panel for the active level (2D/3D views only).
+ *  Reads state from the project's artwork record — the single writer. */
+function updateArtPanel(){
+  const show = artSupported() && (view === '2d' || view === '3d');
+  el('artPanel').style.display = show ? 'block' : 'none';
+  if(!show) return;
+  el('artLevelName').textContent = LEVELS[activeLevel].label.toLowerCase();
+  const art = build.project.artwork[activeLevel];
+  const has = !!(art && art.src);
+  el('artControls').style.display = has ? 'block' : 'none';
+  el('artHint').style.display = has ? 'none' : 'block';
+  if(has){
+    el('artFit').value = art.fit || 'stretch';
+    el('artDx').value = art.dx || 0;
+    el('artDy').value = art.dy || 0;
+    el('artScale').value = Math.round((art.scale || 1)*100);
+    el('artInfo').textContent = `${art.natW}×${art.natH}px source · ${Math.round((art.bytes || 0)/1024)} KB stored`;
+  }
+}
+
+/** Re-render after an artwork change through the ONE notification path: every
+ *  view consumer (2D dieline, 3D fold) already re-reads the project's artwork,
+ *  and autosave picks up the new bytes. Then resync the panel controls. */
+function afterArtChange(){
+  projectChanged();
+  updateArtPanel();
+}
+
+/** Apply a fit-control edit to the active level's artwork record (the writer). */
+function editArt(patch){
+  const art = build.project.artwork[activeLevel];
+  if(!art) return;
+  Object.assign(art, patch);
+  afterArtChange();
 }
 
 /** The pallet-stats readout: the OUTERMOST enabled tier on the pallet — the
@@ -831,6 +899,7 @@ function setActiveLevel(level){
   mountActiveLevel();
   renderChainString();
   refresh2d();
+  updateArtPanel();
   if(view === 'pal') refreshPal();
   if(view === '3d') apply3dMode();
 }
@@ -971,7 +1040,7 @@ function applyHierarchy(resetCam){
   el('m3fold').classList.remove('on');
   LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && activeLevel === d));
   if(view !== '3d') return;
-  fold.stopFold(); fold.showBox(false); showPallet(false); showNest(false); showProduct(false);
+  fold.stopFold(); fold.showBox(false); showWrapArt(false); showPallet(false); showNest(false); showProduct(false);
   const bundle = hierarchyBundle();
   LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
@@ -1037,7 +1106,7 @@ function applyFoldMode(){
   if(view !== '3d') return;
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('orbithint').textContent = 'drag to orbit · scroll to zoom';
-  refresh3d(); fold.showBox(true);
+  refresh3d();   // owns box vs. artwork-cladding visibility
   if(activeStyle().structure === 'flexible') fold.jumpClosed();
   else fold.startFold();
   drawDims();   // refresh the callout numbers now; the frame loop reprojects them
@@ -1105,6 +1174,7 @@ function setView(v){
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
   el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
+  updateArtPanel();
   // the title block is a drawing-sheet overlay — the Build view is a table,
   // not a sheet, so hide it there (it would float over the candidate table).
   // The view toolbar STAYS (it holds the tabs — the only way back out of Build).
@@ -1153,13 +1223,13 @@ function setView(v){
       showPallet(false);
       apply3dMode();
     }else if(v === 'shelf'){
-      fold.showBox(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
+      fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
       fold.stopFold();
       fold.setOrbit(SHELF_ORBIT.rotX, SHELF_ORBIT.rotY, SHELF_ORBIT.span);
       el('orbithint').textContent = 'drag to orbit · scroll to zoom · front panels face you';
       refreshShelf();
     }else{
-      fold.showBox(false); showNest(false); showProduct(false); hier.show(false);
+      fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
       // frame the loaded pallet with margin on entry (like the hierarchy view
       // resets its camera) so it fits the pane AND leaves room for the Dims
@@ -1327,6 +1397,34 @@ el('btnSpec').addEventListener('click', () => {
   navigator.clipboard.writeText(filmSpecText(g, inputs.getUnit()));
   el('btnSpec').textContent = 'Copied ✓';
   setTimeout(() => el('btnSpec').textContent = 'Copy film spec', 1200);
+});
+
+/* ---------- artwork panel wiring ---------- */
+el('btnArtTplSvg').addEventListener('click', () => { const g = activeGeometry(); if(g) downloadArtwork(g, inputs.getUnit()); });
+el('btnArtTplPng').addEventListener('click', () => { const g = activeGeometry(); if(g) downloadArtworkPNG(g, inputs.getUnit()); });
+el('btnArtUpload').addEventListener('click', () => el('artFileInput').click());
+el('artFileInput').addEventListener('change', async () => {
+  const file = el('artFileInput').files && el('artFileInput').files[0];
+  el('artFileInput').value = '';                      // allow re-selecting the same file
+  if(!file) return;
+  const btn = el('btnArtUpload'); const label = btn.textContent; btn.textContent = 'Reading…'; btn.disabled = true;
+  try{
+    const rec = await loadArtworkFile(file);
+    build.project.artwork[activeLevel] = {...rec, ...defaultFit()};
+    afterArtChange();
+    showNotice(`Artwork mapped onto the ${LEVELS[activeLevel].label.toLowerCase()} — ${rec.natW}×${rec.natH}px, stored downscaled at ${Math.round(rec.bytes/1024)} KB in the save file.`, false);
+  }catch(e){
+    showNotice(`Couldn't read that image: ${e.message}`, true);
+  }finally{ btn.textContent = label; btn.disabled = false; }
+});
+el('artFit').addEventListener('change', () => editArt({fit: el('artFit').value}));
+el('artDx').addEventListener('input', () => editArt({dx: +el('artDx').value || 0}));
+el('artDy').addEventListener('input', () => editArt({dy: +el('artDy').value || 0}));
+el('artScale').addEventListener('input', () => editArt({scale: Math.max(1, +el('artScale').value || 100)/100}));
+el('btnArtRemove').addEventListener('click', () => {
+  delete build.project.artwork[activeLevel];
+  clearWrapArt();
+  afterArtChange();
 });
 
 // PNG snapshots — one-shot client-side actions (GitHub Pages, no server), NOT
@@ -1542,6 +1640,7 @@ notify.onRefresh('palletize', refreshPal);
 // every project change too (refreshShelf no-ops unless the Shelf view is up).
 notify.onRefresh('shelf', refreshShelf);
 notify.onRefresh('exportButtons', updateExportButtonsState);
+notify.onRefresh('artworkPanel', updateArtPanel);
 notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
 
 // Build view: candidate table only (build.js owns it). initBuild's own

@@ -152,6 +152,10 @@ function fillProjectDefaults(loadedProject){
   out.links = mergeLinks(loadedProject.links, base.links, report);
   // top-level scalars (printText, …): defaulted if absent, preserved if present
   if(loadedProject.printText === undefined){ report.push('printText'); out.printText = base.printText; }
+  // artwork map: absent → empty (older files), present → preserved verbatim
+  // (the downscaled data URLs ride through untouched, an unknown-field-style
+  // passthrough but made explicit since it's a first-class model field now)
+  if(loadedProject.artwork === undefined){ out.artwork = clone(base.artwork); }
   return {project: out, defaulted: report};
 }
 
