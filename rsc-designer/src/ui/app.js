@@ -807,8 +807,9 @@ function mountActiveLevel(){
       onInput: () => projectChanged()
     });
   }else if(lvl.kind === 'product'){
-    // the product 2 x 2 (content mode + piece shape) and its grouping counts
-    // are ALWAYS visible — never gated on the chain (that hid On Edge)
+    // the product 2 x 2 (orientation + piece shape) and its grouping counts
+    // are ALWAYS visible — never gated on the chain (that hid On Edge).
+    // Product is always the base: no disable, no content-type selector.
     inputs.mountProduct(proj.primary, {onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current

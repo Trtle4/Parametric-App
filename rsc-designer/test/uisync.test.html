@@ -877,6 +877,10 @@ await (async () => {
       if(!row) throw new Error('no resolved row');
       if(!row.arr.pieces) throw new Error('product pieces not retained — innermost view would blank');
       if(wrapOn && !row.geo.wrap) throw new Error('wrap enabled but no wrap geometry');
+      // wrap OFF: product feeds the carton directly — no film geometry, the
+      // pieces themselves ARE the carton's contents (the carton->case render
+      // bug this matrix guards against was exactly a missing-wrap deref).
+      if(!wrapOn && row.geo.wrap) throw new Error('wrap disabled but wrap geometry present — product should feed the carton directly');
       if(cartonOn && !row.geo.carton) throw new Error('carton enabled but no carton geometry');
       if(caseOn && !row.geo.case) throw new Error('case enabled but no case geometry');
     });

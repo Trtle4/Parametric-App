@@ -132,20 +132,23 @@ export function refreshDims(effectiveDims){
 }
 
 /**
- * Mount the PRODUCT (content) level as a clean 2 x 2, with EVERY control
- * always visible — these are properties of the product, upstream of wrap/
- * carton/case, and conditionally hiding them is exactly what hid On Edge:
- *   - Content mode (segmented): Pile Pack | On Edge
- *   - Piece shape  (segmented): Round | Rectangular
+ * Mount the PRODUCT level as a clean 2 x 2, with EVERY control always
+ * visible — these are properties of the product, upstream of wrap/carton/
+ * case, and conditionally hiding them is exactly what hid On Edge. Product
+ * is ALWAYS the base of the chain: it is never disabled or bypassed, and its
+ * only shape choice is Cylinder vs Box — there is no content-type / "plain
+ * box" selector (that was removed; a single Box piece 1x1x1 IS the simple box
+ * envelope it used to provide).
+ *   - Orientation (segmented): Pile Pack | On Edge
+ *   - Piece shape (segmented): Cylinder | Box
  * plus the grouping counts (pieces per stack, stacks across/deep) and gaps.
  * Both toggles are independent; all four combinations are valid. Every field
  * writes straight into project.primary.collation (mm for lengths).
  *
- * Mode maps to the collation's existing stackAxis + pieceOrientation machinery
- * (the on-edge-sleeve work — no new geometry): Pile Pack = flat, stack up Z;
- * On Edge = on-edge, run along X. Shape maps to the piece kind (cylinder/box).
- * A single Rectangular piece (per stack / across / deep all 1) is the simple
- * box envelope the removed "plain box" type used to provide.
+ * Orientation maps to the collation's existing stackAxis + pieceOrientation
+ * machinery (the on-edge-sleeve work — no new geometry): Pile Pack = flat,
+ * stack up Z; On Edge = on-edge, run along X. Shape maps to the piece kind
+ * (cylinder/box) — the internal seg values stay 'round'/'rect'.
  * @param {Object} prim  project.primary (mutated in place)
  * @param {Object} m     {onInput()}
  */
@@ -179,11 +182,11 @@ export function mountProduct(prim, m){
 
   // LEFT rail: the 2 x 2 (mode + shape) + piece dimensions
   dims.innerHTML =
-    `<div class="field"><label>Content mode <span class="hint">how pieces sit</span></label>
+    `<div class="field"><label>Orientation <span class="hint">how pieces sit</span></label>
       ${seg('cMode', [{v: 'pile', label: 'Pile Pack'}, {v: 'onedge', label: 'On Edge'}], mode)}
       <div class="hint" style="margin-top:5px;line-height:1.35">${modeNote}</div></div>` +
     `<div class="field"><label>Piece shape</label>
-      ${seg('cShape', [{v: 'round', label: 'Round'}, {v: 'rect', label: 'Rectangular'}], isRound ? 'round' : 'rect')}</div>` +
+      ${seg('cShape', [{v: 'round', label: 'Cylinder'}, {v: 'rect', label: 'Box'}], isRound ? 'round' : 'rect')}</div>` +
     (isRound
       ? numF('cD', 'Diameter', 'Ø', c.piece.diameter) + numF('cT', 'Thickness', 'axial', c.piece.thickness)
       : numF('cL', 'Length', 'L', c.piece.L) + numF('cW', 'Width', 'W', c.piece.W) + numF('cH', 'Height', 'H', c.piece.H));
