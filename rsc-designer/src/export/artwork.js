@@ -110,7 +110,11 @@ export function downloadArtworkPNG(geo, unit){
   const m = Math.max(W, H)*0.08 + 20;
   const PX = 2;                                     // 2 px per mm
   const cw = Math.round((W + 2*m)*PX), ch = Math.round((H + 2*m)*PX);
-  const svg = buildArtworkSVG(geo, unit);
+  // buildArtworkSVG carries only a viewBox; an <img> raster with no intrinsic
+  // size renders 0×0 in Chromium (the PNG came out blank / never fired), so
+  // inject explicit px width/height — exactly what the working 2D-PNG path does
+  // (export/png.js). The viewBox is unchanged, so the aspect ratio is preserved.
+  const svg = buildArtworkSVG(geo, unit).replace('<svg ', `<svg width="${cw}" height="${ch}" `);
   const img = new Image();
   img.onload = () => {
     const c = document.createElement('canvas'); c.width = cw; c.height = ch;
@@ -124,6 +128,7 @@ export function downloadArtworkPNG(geo, unit){
       a.click(); URL.revokeObjectURL(a.href);
     }, 'image/png');
   };
+  img.onerror = () => console.error('artwork PNG raster failed to load the template SVG');
   img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
 }
 
