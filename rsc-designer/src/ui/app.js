@@ -37,6 +37,11 @@ import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describe
 let view = '2d';
 let mode3d = 'hier';           // 'fold' | 'hier'
 let hierSel = {};              // opened index per tier {case,carton,wrap}
+// Solid (look AT the pack — graphics) vs Cutaway (look INSIDE — fit) in the
+// hierarchy view. null = follow the smart default (Solid when the pack shown
+// has artwork); true/false = a user override held until artwork or depth
+// changes re-picks the default.
+let solidOverride = null;
 
 // Dims overlay: L×W×H callouts on the active component, off by default. Each
 // view's refresh caches the subject's OUTER dims (mm, centred on the origin —
@@ -241,10 +246,22 @@ function artCanvasFor(level, geo){
   return composeArtCanvas(geo.meta.artMap, a, img, 1024);   // instances are small — 1024 is ample
 }
 
-/** Whether the ACTIVE level (or, at pallet depth, the outermost pack) has
- *  artwork applied — drives the Solid default. */
-function activeLevelHasArt(){
-  return !!artFor(activeLevel, activeGeometry());
+/** The pack shown at a hierarchy depth has artwork? (pallet shows the
+ *  outermost pack — case, or carton once the case is off.) Drives the Solid
+ *  default: you want to look AT a printed pack, INTO a plain one. */
+function depthHasArt(depth, bundle){
+  if(depth === 'carton') return !!(bundle.cartonGeo && artFor('carton', bundle.cartonGeo));
+  if(depth === 'case')   return !!(bundle.caseGeo && artFor('case', bundle.caseGeo));
+  if(depth === 'wrap')   return !!(bundle.wrapGeo && artFor('wrap', bundle.wrapGeo));
+  if(depth === 'pallet') return !!((bundle.caseGeo && artFor('case', bundle.caseGeo)) ||
+                                   (bundle.cartonGeo && artFor('carton', bundle.cartonGeo)));
+  return false;
+}
+
+/** Effective Solid state for a depth: the user override if set, else the smart
+ *  default (art present → Solid). */
+function solidActive(depth, bundle){
+  return solidOverride !== null ? solidOverride : depthHasArt(depth, bundle);
 }
 
 /* ---------- artwork panel (template / upload / fit / remove) ---------- */
@@ -279,6 +296,7 @@ function updateArtPanel(){
  *  view consumer (2D dieline, 3D fold) already re-reads the project's artwork,
  *  and autosave picks up the new bytes. Then resync the panel controls. */
 function afterArtChange(){
+  solidOverride = null;   // adding/removing art re-picks the Solid default
   projectChanged();
   updateArtPanel();
 }
@@ -897,6 +915,7 @@ function updatePngButtonsState(){
 
 function setActiveLevel(level){
   activeLevel = level;
+  solidOverride = null;   // each level/depth re-picks its smart Solid/Cutaway default
   const lvl = LEVELS[level];
   if(lvl.kind === 'style'){
     const style = activeStyle();
@@ -1081,11 +1100,17 @@ function applyHierarchy(resetCam){
   const depth = depthAvailable(bundle, activeLevel) ? activeLevel
     : ['case', 'carton', 'pallet'].find(d => depthAvailable(bundle, d));
   if(resetCam) fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.35);   // oblique 3/4 view: see the cutaway channel + open top
-  const res = hier.buildHierarchy(bundle, depth, hierSel);
+  const solid = solidActive(depth, bundle);
+  el('m3viewmode').style.display = '';                 // shown in hierarchy mode
+  el('m3solid').classList.toggle('on', solid);
+  el('m3cut').classList.toggle('on', !solid);
+  const res = hier.buildHierarchy(bundle, depth, hierSel, solid);
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
   subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT} : res.outer) : null;
   hier.show(true);
-  el('orbithint').textContent = 'drag to orbit · scroll to zoom · click a unit to open it';
+  el('orbithint').textContent = solid
+    ? 'drag to orbit · scroll to zoom · Solid — artwork on every face'
+    : 'drag to orbit · scroll to zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
   renderLegend(bundle, depth);
@@ -1134,6 +1159,7 @@ function applyFoldMode(){
   ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d => el('d_' + d).classList.remove('on'));
   if(view !== '3d') return;
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
+  el('m3viewmode').style.display = 'none';   // Solid/Cutaway is a hierarchy-mode control
   el('orbithint').textContent = 'drag to orbit · scroll to zoom';
   refresh3d();   // owns box vs. artwork-cladding visibility
   if(activeStyle().structure === 'flexible') fold.jumpClosed();
@@ -1354,6 +1380,10 @@ el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el(
 el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
 el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
 el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
+// Solid / Cutaway override (hierarchy mode). Sets a sticky override that holds
+// until the depth/level or the artwork changes (which reset to the smart default).
+el('m3solid').addEventListener('click', () => { solidOverride = true;  if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
+el('m3cut').addEventListener('click',   () => { solidOverride = false; if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
 // Dims: toggle the L×W×H callout overlay (off by default). drawDims runs on
 // the render loop, so flipping the flag is enough; call it once for immediacy.
 el('m3dims').addEventListener('click', () => {

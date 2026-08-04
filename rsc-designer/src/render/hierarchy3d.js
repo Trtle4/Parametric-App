@@ -455,6 +455,19 @@ function artInstances(am, canvas, list, posOf, tierName){
   return out;
 }
 
+/** One CLOSED pack centred at the origin (Solid mode): the textured art body
+ *  when the pack has artwork, else a plain board box at its outer dims. No
+ *  contents, no cutaway — the "what it looks like" render. */
+function soloClosed(geo, artInfo){
+  if(artInfo && artInfo.am && artInfo.canvas){
+    const mats = packArtMaterials(artInfo.canvas, board);
+    artResources.push(mats[0]);
+    return new THREE.Mesh(packArtGeometry(artInfo.am), mats);
+  }
+  const o = geo.outer, rr = Math.min(o.L, o.W, o.H)*0.03;
+  return new THREE.Mesh(roundedBoxGeo(o.L, o.H, o.W, rr, 2), board);
+}
+
 // generic: a container tier holding children, one opened, the rest closed.
 // Both rigid children (cartons, cases) and wrap children instance — one
 // InstancedMesh per PART (body/taperPos/taperNeg/fin) for wraps, since a
@@ -575,7 +588,7 @@ function nearestCameraCorner(children){
 
 const DEPTHS = ['product', 'wrap', 'carton', 'case', 'pallet'];
 
-export function buildHierarchy(bundle, depth, sel){
+export function buildHierarchy(bundle, depth, sel, solid){
   const pivot = getPivot();
   clear();
   group = new THREE.Group();
@@ -647,21 +660,21 @@ export function buildHierarchy(bundle, depth, sel){
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
-    group.add(buildContainer(cartonTier, bundle, S, []));
-    opened = {wrap: S.wrap};
+    if(solid) group.add(soloClosed(bundle.cartonGeo, cartonArt));
+    else { group.add(buildContainer(cartonTier, bundle, S, [])); opened = {wrap: S.wrap}; }
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
-    group.add(buildContainer(caseTier, bundle, S, []));
-    opened = {carton: S.carton, wrap: S.wrap};
+    if(solid) group.add(soloClosed(bundle.caseGeo, caseArt));
+    else { group.add(buildContainer(caseTier, bundle, S, [])); opened = {carton: S.carton, wrap: S.wrap}; }
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'pallet'){
     // the case rides the pallet normally; once it's disabled the carton does
     // (its cutaway tier), so pass whichever tier is actually outermost
-    const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S);
+    const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S, solid);
     span = r.span; outer = r.outer;
-    opened = {case: S.case, carton: S.carton, wrap: S.wrap};
+    if(!solid) opened = {case: S.case, carton: S.carton, wrap: S.wrap};
   }
 
   pivot.add(group);
@@ -683,13 +696,14 @@ export function renderedOuter(){ return lastOuter; }
 // that outermost tier's placements/deck regardless of which tier it is, so
 // the geometry and the tier NAME (for picking/opening) come from outerTier,
 // never a hardcoded 'case' that is null when the case is off.
-function buildPallet(bundle, outerTier, S){
+function buildPallet(bundle, outerTier, S, solid){
   const {cases} = bundle;
   const co = outerTier.geo.outer;
   const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
   const loadH = layers * co.H;
   const deckH = bundle.cases.deck.baseH;
-  const openIdx = S[outerTier.name] ?? nearestCameraCorner(cases.placements);
+  // Solid mode: no case is opened — every case is a closed (textured) unit.
+  const openIdx = solid ? -1 : (S[outerTier.name] ?? nearestCameraCorner(cases.placements));
 
   // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
   // the SAME asset the Palletize view builds, so both pallet views render an
@@ -715,7 +729,7 @@ function buildPallet(bundle, outerTier, S){
       group.add(inst);
     }
   }
-  if(cases.placements[openIdx]){
+  if(!solid && cases.placements[openIdx]){
     const pl = cases.placements[openIdx];
     const cg = buildContainer(outerTier, bundle, S, [openIdx]);
     cg.position.set(pl.x, deckH + pl.z, pl.y);
