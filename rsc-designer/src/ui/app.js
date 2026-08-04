@@ -8,7 +8,7 @@
  */
 import {styles, styleById} from '../core/styles/index.js';
 import {finGainAxis} from '../core/styles/flowwrap.js';
-import {fromMM, fmtLen} from '../core/units.js';
+import {toMM, fromMM, fmtLen, fmtInputValue} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
@@ -480,11 +480,12 @@ function refreshShelf(){
 
   const od = orientDims(geo.outer, frontO);
   const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;
+  const u = inputs.getUnit(), f = v => fmtLen(v, u);   // same unit source as every other readout
   el('shReadout').innerHTML = (maxF && maxD && maxS)
     ? `<b>${total}</b> ${noun}${total === 1 ? '' : 's'} on shelf<br>` +
       `${facings} facings × ${stack} high × ${deep} deep` +
-      `<div class="sp-util">uses ${pct(facings*od.l, shelf.width)}% width · ` +
-      `${pct(stack*od.h, shelf.height)}% height · ${pct(deep*od.w, shelf.depth)}% depth</div>`
+      `<div class="sp-util">occupies ${f(facings*od.l)} × ${f(deep*od.w)} × ${f(stack*od.h)} ${u} ` +
+      `(${pct(facings*od.l, shelf.width)}% width · ${pct(stack*od.h, shelf.height)}% height · ${pct(deep*od.w, shelf.depth)}% depth)</div>`
     : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
 
   buildShelf(od, shelf, placements, true, artInfo);
@@ -1371,6 +1372,7 @@ function onPalletEdited(){
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
   mountActiveLevel();                       // rail fields re-displayed in the new unit (values live in the project)
+  writeShelfFields();                       // the shelf panel reads the same unit source — re-display it too
   build.onUnitsChanged(inputs.getUnit());   // recomputes + notifies every registered consumer
 });
 el('palUnits').addEventListener('change', () => {
@@ -1387,14 +1389,26 @@ el('palRowLabel').addEventListener('click', () => setView('build'));
 
 /* ---------- retail shelf controls: view-local state, live-update the fill --- */
 el('shFront').innerHTML = FRONT_PANELS.map(f => `<option value="${f.v}">${f.label}</option>`).join('');
-(function writeShelfFields(){
-  el('shWidth').value = shelf.width; el('shDepth').value = shelf.depth; el('shHeight').value = shelf.height;
+// shelf dims live in mm (like every project value); they DISPLAY and READ in
+// the app's current unit — the SAME single source (inputs.getUnit + core/units)
+// every other field uses, so a units switch reaches them too. writeShelfFields
+// is re-run on that switch, exactly like the rail's mountActiveLevel.
+function writeShelfFields(){
+  const u = inputs.getUnit();
+  el('shWidth').value  = fmtInputValue(fromMM(shelf.width, u), u);
+  el('shDepth').value  = fmtInputValue(fromMM(shelf.depth, u), u);
+  el('shHeight').value = fmtInputValue(fromMM(shelf.height, u), u);
+  const step = u === 'in' ? '0.25' : '10';
+  ['shWidth', 'shDepth', 'shHeight'].forEach(id => el(id).step = step);
+  el('uShW').textContent = el('uShD').textContent = el('uShH').textContent = u;
   el('shFront').value = shelf.front;
   el('shFacings').value = shelf.facings === 'auto' ? '' : shelf.facings;
   el('shStack').value = shelf.stack === 'auto' ? '' : shelf.stack;
   el('shDeep').value = shelf.deep === 'auto' ? '' : shelf.deep;
-})();
-const shelfDim = (v, fb) => { const n = Math.round(+v); return Number.isFinite(n) && n >= 1 ? n : fb; };
+}
+writeShelfFields();
+// read the field back to mm through the current unit (input is in that unit)
+const shelfDim = (v, fb) => { const n = toMM(+v, inputs.getUnit()); return Number.isFinite(n) && n >= 1 ? n : fb; };
 const shelfCount = raw => raw.trim() === '' ? 'auto' : Math.max(1, Math.round(+raw) || 1);
 el('shWidth').addEventListener('input',  () => { shelf.width  = shelfDim(el('shWidth').value,  shelf.width);  refreshShelf(); });
 el('shDepth').addEventListener('input',  () => { shelf.depth  = shelfDim(el('shDepth').value,  shelf.depth);  refreshShelf(); });
@@ -1599,7 +1613,7 @@ function showNotice(msg, isWarn, actions){
 function applyLoadedState(result){
   if(result.unit && result.unit !== inputs.getUnit()){
     el('units').value = result.unit;
-    if(inputs.switchUnits()) build.onUnitsChanged(inputs.getUnit());
+    if(inputs.switchUnits()){ writeShelfFields(); build.onUnitsChanged(inputs.getUnit()); }
   }
   if(result.palUnit && result.palUnit !== inputs.getPalUnit()){
     el('palUnits').value = result.palUnit;
