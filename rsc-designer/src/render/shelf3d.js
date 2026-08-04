@@ -35,8 +35,9 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
  * @param {{width:number,depth:number,height:number}} shelf
  * @param {{x:number,y:number,z:number}[]} placements  fitInto placements (subset), cavity-centred
  * @param {boolean} visible
+ * @param {*} [art]  reserved for per-pack artwork (deferred — see note in body)
  */
-export function buildShelf(od, shelf, placements, visible){
+export function buildShelf(od, shelf, placements, visible, art){
   const pivot = getPivot();
   if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
   shelfGroup = new THREE.Group();
@@ -54,6 +55,13 @@ export function buildShelf(od, shelf, placements, visible){
 
   const shown = Math.min(placements.length, SHOWN_CAP);
   if(shown > 0){
+    // NOTE: per-pack ARTWORK on the shelf is deferred. The hierarchy/pallet
+    // instance texturing (packArtGeometry + shared texture) is the mechanism;
+    // wiring it here needs the shelf's shopper-face convention reconciled with
+    // the artMap FRONT (+Z) — verified interactively, not in the headless
+    // harness. Until then the shelf keeps the front-panel tint so the facing
+    // face still reads. `art` is accepted so the call site is already in place.
+    void art;
     const pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
     const inst = new THREE.InstancedMesh(pgeo, packMats, shown);
     const M = new THREE.Matrix4();

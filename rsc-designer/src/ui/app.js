@@ -238,11 +238,11 @@ function artFor(level, g){
  *  texture source every rendered instance of that pack shares. `flat` maps
  *  (tray) have no 3D tube, so they never texture the 3D. Re-renders the
  *  hierarchy once the image decodes (composeArtCanvas needs it complete). */
-function artCanvasFor(level, geo){
+function artCanvasFor(level, geo, onDecode){
   if(!geo || !geo.meta.artMap || geo.meta.artMap.flat) return null;
   const a = build.project.artwork && build.project.artwork[level];
   if(!a || !a.src) return null;
-  const img = artImage(a.src, () => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
+  const img = artImage(a.src, onDecode || (() => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); }));
   return composeArtCanvas(geo.meta.artMap, a, img, 1024);   // instances are small — 1024 is ample
 }
 
