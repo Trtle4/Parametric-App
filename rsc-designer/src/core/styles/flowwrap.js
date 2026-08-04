@@ -132,10 +132,12 @@ export function flowwrap(p){
   const filmArea = webWidth*cutLength;                    // mm² per pack (grows with a shallower ramp)
 
   // --- compensation (outside envelope of the WRAPPED pack) ----------------
-  // L grows by 2 × (jawClearance + sealFlatLength) — the CONSERVATIVE MAX (fin
-  // straight out at 90°), so the carton always fits whatever lay the seal
-  // takes. packLengthAtAngle is the current, narrower length; the difference is
-  // the tolerance band the readout reports.
+  // L is the pack length at the CURRENT external angle — the carton follows the
+  // seal's actual lay (a folded-flat seal is short and the carton is sized to
+  // that; a standing seal is longer and the carton grows to match). The angle
+  // IS the design decision, so the carton respects it. packLengthMax (fin at
+  // 90°) is kept in meta.seal as a REFERENCE ("if the seal stands") — it does
+  // NOT drive the carton size.
   //  * W gains nothing: no seal stands on the width axis.
   //  * the seal's OWN axis (finGainAxis(finFace) — bottom/top, both H) gains:
   //      - standing fin: + finHeight   - folded fin: + gauge (µm→mm)   - lap: +0
@@ -163,7 +165,7 @@ export function flowwrap(p){
   const refLines = [];
   for(let i = 1; i < yB.length - 1; i++) refLines.push([border, yB[i], cutLength - border, yB[i]]);
 
-  const outer = {L: packLengthMax, W, H};
+  const outer = {L: packLengthAtAngle, W, H};   // carton follows the current lay; max is a reference
   outer[gainAxis] += gain;
 
   return {

@@ -233,11 +233,11 @@ t('save -> reload -> load reproduces the exact hand-checked chain', () => {
     r.nz === reloaded.selectedCandidate.nz && r.orientation === reloaded.selectedCandidate.orientation);
   if(!after) throw new Error('selected candidate not found after reload');
 
-  eq(after.wrapOuter, {L: 230, W: 50, H: 120.03}, 'wrap outer (hand-checked); default seal angles 45/45 -> jaw 60/end -> L 90+2*(60+10):');
-  eq(after.cartonOuter, {L: 230.914, W: 50.914, H: 122.828}, 'carton outer (hand-checked):');
-  eq(after.cavity, {L: 927, W: 156, H: 123}, 'case cavity (hand-checked):');
-  eq(after.outer, {L: 933, W: 162, H: 135}, 'case outer (hand-checked):');
-  approx(after.boardAreaM2, 0.614079, 'board area (hand-checked):');
+  eq(after.wrapOuter, {L: 224.14213562373095, W: 50, H: 120.03}, 'wrap outer (hand-checked); carton follows current 45° lay: L 90+2*(60+10*sin45):');
+  eq(after.cartonOuter, {L: 225.914, W: 50.914, H: 122.828}, 'carton outer (hand-checked):');
+  eq(after.cavity, {L: 907, W: 156, H: 123}, 'case cavity (hand-checked):');
+  eq(after.outer, {L: 913, W: 162, H: 135}, 'case outer (hand-checked):');
+  approx(after.boardAreaM2, 0.602919, 'board area (hand-checked):');
   eq([after.casesPerLayer, after.caseLayers, after.casesPerPallet], [7, 10, 70], 'pallet fit (hand-checked):');
   eq(after.cartonsPerPallet, 840); eq(after.piecesPerPallet, 5040);
 
@@ -270,9 +270,9 @@ function findSelected(rows, key){
 
 /* full chain: product(round, 47x12 puck, 3x1 stacks of 2) -> wrap -> carton
    (8 wraps, explicit 1x4x2 — the current default) -> case -> pallet.
-   envelope 141x47x24 (H=24 -> jaw 12 at default 45deg), wrap outer 185x47x24.03,
-   carton outer 185.914x188.914x50.828 (1*185 x 4*47 x 2*24.03->50.828), case outer
-   195x387x317 (12 cartons auto 1x2x6), 60 cases/pallet. Regenerated when
+   envelope 141x47x24 (H=24 -> jaw 12); carton follows the current 45deg lay, wrap
+   outer ~179.14x47x24.03, carton outer ~180.914x188.914x50.828 (1*179.14 x 4*47 x
+   2*24.03->50.828), case outer ~190x387x317 (12 cartons auto 1x2x6), 60 cases/pallet. Regenerated when
    the default wrap arrangement changed from 4x2x1 to 1x4x2 — this fixture's
    links[1] matched newProject()'s OLD default exactly, which is exactly the
    inheritance smell to avoid; it's pinned here as its own explicit value,
@@ -299,15 +299,15 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
   eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
-  eq(r.wrapOuter, {L: 185, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
-  eq(r.cartonOuter, {L: 185.914, W: 188.914, H: 50.828}, 'carton outer (hand-checked):');
-  eq(r.outer, {L: 195, W: 387, H: 317}, 'case outer (hand-checked):');
+  eq(r.wrapOuter, {L: 179.14213562373095, W: 47, H: 24.03}, 'wrap outer (hand-checked, current 45° lay):');
+  eq(r.cartonOuter, {L: 180.914, W: 188.914, H: 50.828}, 'carton outer (hand-checked):');
+  eq(r.outer, {L: 190, W: 387, H: 317}, 'case outer (hand-checked):');
   eq(r.casesPerPallet, 60, 'cases per pallet (hand-checked):');
 });
 
 /* no-carton: same product/wrap, carton disabled — the wrap feeds the case
    directly. envelope/wrap outer unchanged; case cavity/outer widen to hold
-   the wrap grid directly (376x100x37 outer), 1110 cases/pallet. */
+   the wrap grid directly (365x100x37 outer), 1184 cases/pallet. */
 await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
   const result = deserializeProject(raw);
@@ -318,14 +318,14 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
   eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
-  eq(r.wrapOuter, {L: 185, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
+  eq(r.wrapOuter, {L: 179.14213562373095, W: 47, H: 24.03}, 'wrap outer (hand-checked, current 45° lay):');
   eq(r.geo.carton, null, 'carton: no carton in a no-carton chain:');
-  eq(r.outer, {L: 376, W: 100, H: 37}, 'case outer (hand-checked):');
-  eq(r.casesPerPallet, 1110, 'cases per pallet (hand-checked):');
+  eq(r.outer, {L: 365, W: 100, H: 37}, 'case outer (hand-checked):');
+  eq(r.casesPerPallet, 1184, 'cases per pallet (hand-checked):');
 });
 
 /* carton-only: same product/wrap, case disabled — the carton itself rides
-   the pallet. carton outer 370.914x47.914x26.828 (2 wraps side by side),
+   the pallet. carton outer 359.914x47.914x26.828 (2 wraps side by side),
    3276 cartons/pallet (no case multiplier, 1:1). */
 await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
@@ -337,9 +337,9 @@ await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces i
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
   eq(r.arr.pieces.envelope, {L: 141, W: 47, H: 24}, 'envelope (hand-checked):');
-  eq(r.wrapOuter, {L: 185, W: 47, H: 24.03}, 'wrap outer (hand-checked):');
+  eq(r.wrapOuter, {L: 179.14213562373095, W: 47, H: 24.03}, 'wrap outer (hand-checked, current 45° lay):');
   eq(r.geo.case, null, 'case: no case in a carton-only chain:');
-  eq(r.outer, {L: 370.914, W: 47.914, H: 26.828}, 'carton outer, riding the pallet directly (hand-checked):');
+  eq(r.outer, {L: 359.914, W: 47.914, H: 26.828}, 'carton outer, riding the pallet directly (hand-checked):');
   eq(r.cartonsPerPallet, 3276, 'cartons per pallet, no case multiplier (hand-checked):');
 });
 

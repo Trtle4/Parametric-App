@@ -88,19 +88,20 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   grows with a shallower ramp). Pack length is now a RANGE:
   `packLengthAtAngle = L + 2·(jawClearance + endSealWidth·sin(external))`
   and `packLengthMax = L + 2·(jawClearance + endSealWidth)` (fin at 90°).
-  `outer.L = packLengthMax` — the carton is sized to the CONSERVATIVE max, so
-  the wrap fits at every lay; the current-angle length is reported (readout +
-  `meta.seal`) as the tolerance band but does NOT drive carton sizing.
-  Single source: `flowwrap.js` computes all of this once into `meta.seal`;
-  `project.js` copies the derived `jawClearance`/`sealFlatLength`/angles onto
-  the render `seals` (never recomputing tan/sin), and `hierarchy3d.js` draws
-  the ramp over the jaw clearance + a crimp tab laid at the external angle
-  (rendered pack length = `packLengthAtAngle`, so it visibly responds to both
-  sliders; `outer.L` is the max it grows toward). The machine-direction-is-L
-  / seals-at-the-L-ends lock is untouched — the angles operate within it.
-  Still deferred: a design-point TOGGLE (size the carton to the current
-  angle instead of the max) — conservative-max is the default and the only
-  mode today.
+  **`outer.L = packLengthAtAngle` — the carton FOLLOWS the current external
+  lay** (corrected from the earlier conservative-max sizing; a folded-flat
+  seal is short and the carton is sized to that, a standing seal grows it).
+  The angle IS the design decision. `packLengthMax` stays in `meta.seal` and
+  the readout as a REFERENCE ("if the seal stands: X") — the tolerance if a
+  folded design ends up standing in production — but it does NOT drive carton
+  size. Single source: `flowwrap.js` computes all of this once into
+  `meta.seal`; `project.js` copies the derived `jawClearance`/`sealFlatLength`/
+  angles onto the render `seals` (never recomputing tan/sin), and
+  `hierarchy3d.js` draws the ramp over the jaw clearance + a crimp tab laid at
+  the external angle (rendered pack length = `packLengthAtAngle`, matching
+  `outer.L`, so both the render and the carton respond to the sliders). The
+  machine-direction-is-L / seals-at-the-L-ends lock is untouched — the angles
+  operate within it.
 - **RESOLVED (case-builder task): clearance is split.** `Clearance` now
   carries optional `bottom` / `top` / `betweenZ`; when omitted they default
   to `wall` / `wall` / `between` (the legacy uniform shape, so the pallet

@@ -34,6 +34,8 @@ const jaw45   = 60 / Math.tan(45*RAD);                 // = 60
 const slant45 = 60 / Math.sin(45*RAD);                 // = 84.85281…
 const border45 = 3 + 10 + slant45;                     // bleed + crimp + ramp slant
 const cut45   = 90 + 2*border45;                       // = 285.70563…
+// outer.L now tracks the CURRENT lay (external 45°): L + 2·(jaw + crimp·sin45)
+const outerL45 = 90 + 2*(jaw45 + 10*Math.sin(45*RAD)); // = 224.14213…
 
 t('flexible contract: outline only, crease EMPTY, structure flagged', () => {
   const g = flowwrap(base);
@@ -51,20 +53,20 @@ t('fin standing: web width, cut length (incl. ramp slant), film area', () => {
   approx(f.packsPerMetre, 1000/cut45);
   approx(f.massPer1000g, (361*cut45/1e6)*30*0.92*1000, 'mass');
 });
-t('compensation, fin standing: L +2×(jawClearance+crimp) [MAX], W +0, H +finHeight', () => {
+t('compensation, fin standing: L +2×(jawClearance + crimp·sin(external)) [CURRENT lay], W +0, H +finHeight', () => {
   const g = flowwrap(base);
-  approx(g.outer.L, 90 + 2*(jaw45 + 10));                     // = 230 (conservative max)
+  approx(g.outer.L, outerL45);                               // ≈224.14 at the default 45° lay (not the max)
   approx(g.outer.W, 50); approx(g.outer.H, 128);
 });
 t('compensation, fin folded: H gains only film gauge (µm→mm)', () => {
   const g = flowwrap({...base, finTreatment: 'folded'});
   approx(g.outer.H, 120.03);
-  approx(g.outer.L, 230);                                     // end-seal L gain independent of the fin face
+  approx(g.outer.L, outerL45);                               // end-seal L gain independent of the fin face
 });
 t('lap seal: allowance = overlap, no envelope gain on W/H; L still gets the end seals', () => {
   const g = flowwrap({...base, sealType: 'lap'}), f = g.meta.film;
   approx(f.finAllowance, 12); approx(f.webWidth, 352);
-  approx(g.outer.L, 230); approx(g.outer.W, 50); approx(g.outer.H, 120);
+  approx(g.outer.L, outerL45); approx(g.outer.W, 50); approx(g.outer.H, 120);
 });
 t('round girth basis: π·d instead of rectangular perimeter', () => {
   const g = flowwrap({...base, W: 50, H: 50, girthBasis: 'round', roundDiameter: 50});
@@ -104,15 +106,22 @@ t('external lay: 0° flat (min length, 0 contribution) … 90° straight out (= 
   const g45 = flowwrap({...base, externalAngle: 45}).meta.seal;
   approx(g45.packLengthAtAngle, 90 + 2*(jc + 10*Math.sin(45*RAD)));           // 224.142…
 });
-t('outer.L (what sizes the carton) is the MAX, independent of external angle', () => {
+t('outer.L (what sizes the carton) TRACKS the current external angle; max is a reference only', () => {
   const L0 = flowwrap({...base, externalAngle: 0}).outer.L;
   const L45 = flowwrap({...base, externalAngle: 45}).outer.L;
   const L90 = flowwrap({...base, externalAngle: 90}).outer.L;
-  approx(L0, 230); approx(L45, 230); approx(L90, 230);
-  // the current length grows with external angle, but the carton size does not
-  if(!(flowwrap({...base, externalAngle: 0}).meta.seal.packLengthAtAngle
-       < flowwrap({...base, externalAngle: 90}).meta.seal.packLengthAtAngle))
-    throw new Error('external 0→90 must lengthen the current pack');
+  approx(L0, 90 + 2*60);            // fin flat → just the jaw clearance (210, the short shipping case)
+  approx(L45, outerL45);            // mid lay (≈224.14)
+  approx(L90, 90 + 2*(60 + 10));    // fin straight out → the max (230)
+  if(!(L0 < L45 && L45 < L90)) throw new Error('folding the external angle must SHRINK the carton');
+  // outer.L equals the CURRENT-angle pack length, never a fixed max
+  for(const ea of [0, 30, 60, 90]){
+    const g = flowwrap({...base, externalAngle: ea});
+    approx(g.outer.L, g.meta.seal.packLengthAtAngle, `outer.L == packLengthAtAngle @${ea}`);
+  }
+  // packLengthMax stays exposed as the reference tolerance, constant across lays
+  approx(flowwrap({...base, externalAngle: 0}).meta.seal.packLengthMax, 230);
+  approx(flowwrap({...base, externalAngle: 90}).meta.seal.packLengthMax, 230);
 });
 t('film area grows with a shallower ramp (more slant)', () => {
   const shallow = flowwrap({...base, internalAngle: 30}).meta.film.filmAreaM2;
@@ -152,7 +161,7 @@ t('compensation: bottom (default) and top both grow H, identically — face chan
   const top = flowwrap({...base, finFace: 'top'});
   const omitted = flowwrap(base);   // no finFace at all — every pre-existing pin's shape
   approx(bottom.outer.H, 128); approx(top.outer.H, 128); approx(omitted.outer.H, 128);
-  approx(bottom.outer.L, 230); approx(top.outer.L, 230);   // L/W never touched by the face
+  approx(bottom.outer.L, outerL45); approx(top.outer.L, outerL45);   // L/W never touched by the face
   approx(bottom.outer.W, 50);  approx(top.outer.W, 50);
   eq(bottom.outer, omitted.outer, 'omitted finFace defaults to bottom, bit-identical:');
 });

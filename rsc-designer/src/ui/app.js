@@ -1181,9 +1181,8 @@ function renderLegend(bundle, depth){
       readout += `<div class="rd">` +
         `End seals — internal ${Math.round(s.internalAngle)}° (film ramp) · external ${Math.round(s.externalAngle)}° (seal lay)<br>` +
         `Jaw clearance ${f(s.jawClearance)} ${u} / end — the flat crimp starts this far off the product (never flush)<br>` +
-        `Pack length: current ${f(s.packLengthAtAngle)} · max ${f(s.packLengthMax)} ${u}` +
-        ` · tolerance ${f(band)} ${u} (seal laid flat → standing straight out)<br>` +
-        `Carton sized to the MAX ${f(s.packLengthMax)} ${u} — conservative, the wrap fits at every lay<br>` +
+        `Pack length ${f(s.packLengthAtAngle)} ${u} at this lay — the carton is sized to THIS<br>` +
+        `If the seal stands (90°): ${f(s.packLengthMax)} ${u} — reference tolerance +${f(band)} ${u}, does not resize the carton<br>` +
         `Film area ${(film.filmAreaM2*1e6).toFixed(0)} mm²/pack (${film.filmAreaM2.toFixed(4)} m²) — grows with a shallower ramp</div>`;
     }
   }
