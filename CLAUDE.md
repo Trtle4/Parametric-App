@@ -110,19 +110,21 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   The template, 2D map and 3D UVs all derive from that one `artMap`, so they
   can't disagree; artwork is persisted downscaled (render/artwork.js
   `MAX_EDGE`) so the save file round-trips the art without bloating.
-- **Artwork clads every instance (hierarchy); the shelf is deferred.**
+- **Artwork clads every instance — hierarchy, pallet AND shelf.**
   Artwork is a property of the pack (its level/style), not of one opened
-  instance. The hierarchy view textures the closed InstancedMesh units too —
-  cartons in a case, cases on a pallet — from ONE shared texture per pack
-  type (`packArtGeometry` + `packArtMaterials`, hierarchy3d.js
-  `artInstances`), so a printed pallet shows the art on every case. Cap
-  `ART_INSTANCE_CAP` (400) backstops pathological counts (a full pallet is
-  ~130); beyond it the overflow is flat board and the HUD says so. The
-  Solid/Cutaway toggle chooses look-AT (closed, printed, `soloClosed`) vs
-  look-INSIDE (cutaway); it defaults to Solid when the pack at the depth has
-  art. The retail-shelf packs still show only the front-panel tint, NOT the
-  full artwork: the shelf's shopper-face convention vs the artMap FRONT (+Z)
-  needs interactive reconciliation the headless harness can't verify
-  (`buildShelf` accepts an `art` arg and no-ops it, so the wiring is ready).
-  Finish it with a live check, mirroring the hierarchy's `packArtGeometry`
-  path. The default carton/case print text is now empty (no "FRAGILE").
+  instance. Every rendered instance carries it from ONE shared texture per
+  pack type (`packArtGeometry` + `packArtMaterials`): the hierarchy textures
+  the closed InstancedMesh units (cartons in a case, cases on a pallet — so a
+  printed pallet shows the art on every case; hierarchy3d.js `artInstances`),
+  and the retail shelf textures every facing pack. Cap `ART_INSTANCE_CAP`
+  (400) backstops pathological counts (a full pallet is ~130); beyond it the
+  overflow is flat board and the HUD says so. The Solid/Cutaway toggle chooses
+  look-AT (closed, printed, `soloClosed`) vs look-INSIDE (cutaway); it defaults
+  to Solid when the pack at the depth has art, and always on the shelf.
+  Orientation gotcha (shelf): the shelf is built with pack fronts at local -Z
+  but the ViewCube's FRONT looks down the opposite axis, so `buildShelf`
+  rotates the whole group 180° about the vertical (and each art pack 180° to
+  match the frontMat -Z convention) — without that the FRONT panel renders on
+  the far side. `fefco201` (the RSC case) gained an `artMap` so case artwork is
+  possible at all. The default carton/case print text is now empty (no
+  "FRAGILE").

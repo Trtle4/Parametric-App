@@ -449,10 +449,19 @@ function refreshShelf(){
     return;
   }
   const cavity = {L: shelf.width, W: shelf.depth, H: shelf.height};
+  // artwork on the sellable pack → every facing pack shows it, printed FRONT to
+  // the shopper. That pins the orientation to the print front ('LWH', the pack's
+  // canonical footprint), overriding the manual front selector so the packed
+  // slot matches the textured geometry.
+  const sellCanvas = artCanvasFor(noun, geo, () => { if(view === 'shelf') refreshShelf(); });
+  const artInfo = sellCanvas ? {am: geo.meta.artMap, canvas: sellCanvas} : null;
+  const frontO = artInfo ? 'LWH' : shelf.front;
+  el('shFront').disabled = !!artInfo;
+  el('shFront').title = artInfo ? 'Front follows the uploaded artwork' : '';
   // fixed to the front-panel orientation — the shopper-facing face is the
   // user's choice, not a solver optimization; 'column' gives a clean aligned
   // grid to subset. x = facings (across), y = depth (back→front), z = stack.
-  const arr = fitInto({outer: geo.outer, allowedOrientations: [shelf.front], styleId: geo.meta.style},
+  const arr = fitInto({outer: geo.outer, allowedOrientations: [frontO], styleId: geo.meta.style},
                       cavity, {wall: 0, between: 0}, 'column');
   const xs = [...new Set(arr.placements.map(p => shelfKey(p.x)))].sort((a, b) => a - b);
   const ys = [...new Set(arr.placements.map(p => shelfKey(p.y)))].sort((a, b) => a - b);
@@ -469,7 +478,7 @@ function refreshShelf(){
     keepX.has(shelfKey(p.x)) && keepZ.has(shelfKey(p.z)) && keepY.has(shelfKey(p.y)));
   const total = facings*stack*deep;
 
-  const od = orientDims(geo.outer, shelf.front);
+  const od = orientDims(geo.outer, frontO);
   const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;
   el('shReadout').innerHTML = (maxF && maxD && maxS)
     ? `<b>${total}</b> ${noun}${total === 1 ? '' : 's'} on shelf<br>` +
@@ -478,7 +487,7 @@ function refreshShelf(){
       `${pct(stack*od.h, shelf.height)}% height · ${pct(deep*od.w, shelf.depth)}% depth</div>`
     : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
 
-  buildShelf(od, shelf, placements, true);
+  buildShelf(od, shelf, placements, true, artInfo);
 }
 
 /* ---------- active-level selection + mounting ---------- */

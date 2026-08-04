@@ -15,8 +15,10 @@
  * world y = up (placement z), world z = depth (placement y). All lengths mm.
  */
 import {getPivot, setCamSpan, kraft} from './fold3d.js';
+import {packArtGeometry, packArtMaterials} from './artwork3d.js';
 
 let shelfGroup = null;
+let shelfArtMat = null;                 // per-build art material+texture, disposed on rebuild
 const SHOWN_CAP = 4000;            // instancing cap for absurd inputs
 const PACK_GAP = 1.5;              // visual seam between packs
 const SURFACE_T = 10;              // shelf / ceiling / wall board thickness, mm
@@ -35,11 +37,15 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
  * @param {{width:number,depth:number,height:number}} shelf
  * @param {{x:number,y:number,z:number}[]} placements  fitInto placements (subset), cavity-centred
  * @param {boolean} visible
- * @param {*} [art]  reserved for per-pack artwork (deferred — see note in body)
+ * @param {{am:object, canvas:HTMLCanvasElement}|null} [art]  the sellable pack's
+ *        artwork: every facing pack shows it, printed FRONT to the shopper. The
+ *        caller packs in the print-front orientation ('LWH') so the pack's
+ *        canonical footprint (L across, W deep, H up) matches od.
  */
 export function buildShelf(od, shelf, placements, visible, art){
   const pivot = getPivot();
   if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
+  if(shelfArtMat){ if(shelfArtMat.map) shelfArtMat.map.dispose(); shelfArtMat.dispose(); shelfArtMat = null; }
   shelfGroup = new THREE.Group();
   const W = shelf.width, D = shelf.depth, H = shelf.height, t = SURFACE_T;
 
@@ -55,19 +61,25 @@ export function buildShelf(od, shelf, placements, visible, art){
 
   const shown = Math.min(placements.length, SHOWN_CAP);
   if(shown > 0){
-    // NOTE: per-pack ARTWORK on the shelf is deferred. The hierarchy/pallet
-    // instance texturing (packArtGeometry + shared texture) is the mechanism;
-    // wiring it here needs the shelf's shopper-face convention reconciled with
-    // the artMap FRONT (+Z) — verified interactively, not in the headless
-    // harness. Until then the shelf keeps the front-panel tint so the facing
-    // face still reads. `art` is accepted so the call site is already in place.
-    void art;
-    const pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
-    const inst = new THREE.InstancedMesh(pgeo, packMats, shown);
-    const M = new THREE.Matrix4();
+    let pgeo, pmat, rot = false;
+    if(art && art.am && art.canvas){
+      // printed pack: the shared closed art body. packArtGeometry's FRONT is
+      // +Z; the shelf's front (frontMat) is local -Z, so rotate each pack 180°
+      // about the vertical to match — then the group's own 180° (below) carries
+      // both to the shopper side. One shared texture across every facing pack.
+      pgeo = packArtGeometry(art.am);
+      const mats = packArtMaterials(art.canvas, kraft);
+      shelfArtMat = mats[0];
+      pmat = mats; rot = true;
+    }else{
+      pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
+      pmat = packMats;
+    }
+    const inst = new THREE.InstancedMesh(pgeo, pmat, shown);
+    const M = new THREE.Matrix4(), R = new THREE.Matrix4().makeRotationY(Math.PI);
     for(let i = 0; i < shown; i++){
       const p = placements[i];
-      M.identity();
+      if(rot) M.copy(R); else M.identity();
       M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
       inst.setMatrixAt(i, M);
     }
@@ -75,6 +87,11 @@ export function buildShelf(od, shelf, placements, visible, art){
   }
 
   shelfGroup.position.y = -H/2;                         // centre vertically for orbit
+  // The shelf was built with the pack fronts at local -Z and the back wall at
+  // +Z, but the ViewCube's FRONT looks down the opposite axis — so a straight
+  // FRONT view showed the pack backs. Rotate the whole assembly 180° about the
+  // vertical so its front IS the world front the ViewCube names.
+  shelfGroup.rotation.y = Math.PI;
   shelfGroup.visible = visible;
   pivot.add(shelfGroup);
   setCamSpan(Math.max(W, D, H)*0.95);
