@@ -35,6 +35,12 @@ import * as notify from './notify.js';
 import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
 
 let view = '2d';
+// FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
+// hidden for now. All the fold code stays intact (refresh3d, applyFoldMode, the
+// notify('fold3d') consumer, the m3fold handler) — flip this to true to bring
+// the button back once the animation is real. The default mode is 'hier', so
+// hiding Fold never affects the 3D view's default.
+const FOLD_VIEW_ENABLED = false;
 let mode3d = 'hier';           // 'fold' | 'hier'
 let hierSel = {};              // opened index per tier {case,carton,wrap}
 // Solid (look AT the pack — graphics) vs Cutaway (look INSIDE — fit) in the
@@ -1423,7 +1429,10 @@ el('shFront').addEventListener('change', () => { shelf.front = el('shFront').val
 el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el('shFacings').value); refreshShelf(); });
 el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
 el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
-el('m3fold').addEventListener('click', () => { mode3d = 'fold'; apply3dMode(); });
+el('m3fold').addEventListener('click', () => { if(!FOLD_VIEW_ENABLED) return; mode3d = 'fold'; apply3dMode(); });
+// hide the Fold toggle while the feature is flagged off (its whole seg row) —
+// the code path stays, only the entry point is removed
+if(!FOLD_VIEW_ENABLED){ const seg = el('m3fold').closest('.seg'); if(seg) seg.style.display = 'none'; }
 // Solid / Cutaway override (hierarchy mode). Sets a sticky override that holds
 // until the depth/level or the artwork changes (which reset to the smart default).
 el('m3solid').addEventListener('click', () => { solidOverride = true;  if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
