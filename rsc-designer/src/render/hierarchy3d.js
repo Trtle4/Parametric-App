@@ -270,7 +270,6 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
   const ea = seals.externalAngle != null ? seals.externalAngle : 90;   // default straight out
   const gaugeMM = Math.max((seals.gauge || 0)/1000, 0.01);
   const finThk = Math.max(gaugeMM*2, 0.15);        // ~2x film gauge, floored only for visibility
-  const finW = crossDim*0.42;                      // pinched tip width — cosmetic, stays inside crossDim
   const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
   const hH = H/2, hCross = crossDim/2;   // body half-dims — every ramp ring stays AT OR INSIDE these, never bulges past them
@@ -279,24 +278,27 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
     ringPoints( lenDim/2, hH, hCross, roundish, false, fillet, axisIsW)
   ]);
 
-  // the RAMP: full cross-section at the pack face -> pinched crimp line, one
-  // straight loft over the jaw clearance. The film descends the whole way, so
-  // a shallower ramp (larger jaw) visibly reaches further from the product.
+  // the RAMP: the film descends in HEIGHT only — full cross-section at the pack
+  // face -> a flat, FULL-WIDTH crimp line the jaw clearance further out. Only
+  // the height collapses (hH -> finThk/2); the width stays hCross the whole way,
+  // so top-down the wrap is a clean full-width rectangle to the crimp, never a
+  // dart. (The internal angle is a side-profile change, constrained to the
+  // vertical plane — it must not touch the width axis.)
   function ramp(sign){
     const shoulder = sign*(lenDim/2), crimp = sign*(lenDim/2 + jaw);
     const rings = [
       ringPoints(shoulder, hH, hCross, roundish, false, fillet, axisIsW),
-      ringPoints(crimp, finThk/2, finW/2, roundish, true, fillet, axisIsW)
+      ringPoints(crimp, finThk/2, hCross, roundish, true, fillet, axisIsW)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
-  // the finished CRIMP TAB: a flat sealed fin (length = the crimp's flat
-  // length) hinged at the crimp line and LAID at the external angle — 90°
-  // straight out along the length axis (adds its full length), 0° folded flat
-  // up against the pack end (adds ~nothing). Built in a canonical length=+X
-  // frame and, only if the machine direction is actually W, remapped X->Z.
+  // the finished CRIMP TAB: a flat sealed fin the FULL pack width (crossDim),
+  // length = the crimp's flat length, hinged at the crimp line and LAID at the
+  // external angle — 90° straight out along the length axis (adds its full
+  // length), 0° folded flat up against the pack end (adds ~nothing). Built in a
+  // canonical length=+X frame and, only if the machine dir is W, remapped X->Z.
   function endTab(sign){
-    const geo = new THREE.BoxGeometry(flat, finThk, finW);   // long axis local X
+    const geo = new THREE.BoxGeometry(flat, finThk, crossDim);   // long axis local X, FULL width
     geo.translate(flat/2, 0, 0);                             // hinge at origin, extends +X
     const lay = (90 - ea)*Math.PI/180;                       // 0 at ea=90 (out); 90° at ea=0 (folded up)
     geo.rotateZ(sign > 0 ? lay : Math.PI - lay);             // +end tilts up/out; -end mirrors
