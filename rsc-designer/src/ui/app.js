@@ -469,13 +469,19 @@ function refreshShelf(){
   const maxF = xs.length, maxD = ys.length, maxS = zs.length;
   const eff = (v, max) => (v === 'auto' || !(v >= 1)) ? max : Math.min(max, Math.round(v));
   const facings = eff(shelf.facings, maxF), stack = eff(shelf.stack, maxS), deep = eff(shelf.deep, maxD);
-  // subset: left-most facings, bottom stack, back-most `deep` rows (largest y —
-  // the back wall sits at +depth), i.e. stocked from the back forward.
-  const keepX = new Set(xs.slice(0, facings));
+  // subset: `facings` columns, bottom stack, back-most `deep` rows (largest y —
+  // the back wall sits at +depth), i.e. stocked from the back forward. The
+  // facings BLOCK is centred on the shelf regardless of count: take the first
+  // `facings` columns then shift every kept pack in x so the block's own centre
+  // sits on the shelf centreline (x=0). One facing → centred; N → symmetric.
+  const keptXs = xs.slice(0, facings);
+  const blockCentre = (keptXs[0] + keptXs[keptXs.length - 1]) / 2;
+  const keepX = new Set(keptXs.map(shelfKey));
   const keepZ = new Set(zs.slice(0, stack));
   const keepY = new Set(ys.slice(ys.length - deep));
-  const placements = arr.placements.filter(p =>
-    keepX.has(shelfKey(p.x)) && keepZ.has(shelfKey(p.z)) && keepY.has(shelfKey(p.y)));
+  const placements = arr.placements
+    .filter(p => keepX.has(shelfKey(p.x)) && keepZ.has(shelfKey(p.z)) && keepY.has(shelfKey(p.y)))
+    .map(p => ({...p, x: p.x - blockCentre}));   // re-centre the facings block on the shelf
   const total = facings*stack*deep;
 
   const od = orientDims(geo.outer, frontO);
