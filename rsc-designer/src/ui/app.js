@@ -229,6 +229,24 @@ function artFor(level, g){
   return (a && a.src) ? a : null;
 }
 
+/** The composed art-on-template CANVAS for a level's geometry (or null) — the
+ *  texture source every rendered instance of that pack shares. `flat` maps
+ *  (tray) have no 3D tube, so they never texture the 3D. Re-renders the
+ *  hierarchy once the image decodes (composeArtCanvas needs it complete). */
+function artCanvasFor(level, geo){
+  if(!geo || !geo.meta.artMap || geo.meta.artMap.flat) return null;
+  const a = build.project.artwork && build.project.artwork[level];
+  if(!a || !a.src) return null;
+  const img = artImage(a.src, () => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
+  return composeArtCanvas(geo.meta.artMap, a, img, 1024);   // instances are small — 1024 is ample
+}
+
+/** Whether the ACTIVE level (or, at pallet depth, the outermost pack) has
+ *  artwork applied — drives the Solid default. */
+function activeLevelHasArt(){
+  return !!artFor(activeLevel, activeGeometry());
+}
+
 /* ---------- artwork panel (template / upload / fit / remove) ---------- */
 
 /** This level can round-trip artwork iff its style publishes a panel map. */
@@ -1034,7 +1052,9 @@ function hudText(bundle, opened, depth){
   if(depth === 'pallet' || depth === 'case') chan.push(`carton ${(opened.carton ?? 0) + 1} of ${c.cartonsPerCase}`);
   if((depth === 'pallet' || depth === 'case' || depth === 'carton') && c.wrapsPerCarton)
     chan.push(`${unit} ${(opened.wrap ?? 0) + 1} of ${c.wrapsPerCarton}`);
-  return parts.join(' · ') + (chan.length ? `. Opened: ${chan.join(', ')}` : '');
+  const capped = hier.artCappedCount ? hier.artCappedCount() : 0;
+  const capNote = capped > 0 ? ` · ${capped} beyond the ${hier.ART_INSTANCE_CAP}-instance art cap render flat` : '';
+  return parts.join(' · ') + (chan.length ? `. Opened: ${chan.join(', ')}` : '') + capNote;
 }
 
 function applyHierarchy(resetCam){
@@ -1045,6 +1065,14 @@ function applyHierarchy(resetCam){
   const bundle = hierarchyBundle();
   LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
+  // per-pack-type art textures: one composed canvas per level, shared across
+  // every instance of that pack by the renderer (art is a pack property, not
+  // an instance property).
+  bundle.art = {
+    carton: artCanvasFor('carton', bundle.cartonGeo),
+    case:   artCanvasFor('case', bundle.caseGeo),
+    wrap:   artCanvasFor('wrap', bundle.wrapGeo)
+  };
   // the active level IS the depth; if it isn't reachable for this config
   // (e.g. the case is the active level but has just been disabled), fall back
   // to the outermost depth that IS available — never a hardcoded 'case', which

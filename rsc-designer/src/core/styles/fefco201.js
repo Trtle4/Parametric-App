@@ -82,7 +82,29 @@ export function fefco201(p){
       vDims: [
         {from: 0, to: F, v: F}, {from: F, to: F + H, v: H}, {from: F + H, to: yt2, v: F}
       ],
-      print: {x0: x1, x1: x2, y0: yb1, y1: yt1}   // first length panel
+      print: {x0: x1, x1: x2, y0: yb1, y1: yt1},   // first length panel
+      // ARTWORK MAP — same upright-tube convention as the cartons (extrude
+      // along H, girth around the four body walls, FRONT at +Z). The RSC panel
+      // run is [glue | front L | side W | back L | side W]; the print panel
+      // (x1..x2) is the FRONT. Height carries v (yb1..yt1, the body band); each
+      // wall's x-range carries u. Top/bottom are flaps — board caps, no art.
+      // Adding this is what lets a printed CASE show on every pallet instance.
+      artMap: {
+        canvas: {w: x5, h: yt2},
+        up: 'v',
+        extrude: 'y', extrudeIsU: false, length: H,
+        section: [
+          [-L/2, -W/2], [L/2, -W/2], [L/2, W/2], [-L/2, W/2], [-L/2, -W/2]
+        ],
+        // section walk is [back(-Z), side(+X), front(+Z), side(-X)]; assign the
+        // panel run so front lands on +Z and the girth stays continuous.
+        faces: [
+          {panel: 'back',  u0: x3, u1: x4, v0: yb1, v1: yt1},
+          {panel: 'side',  u0: x4, u1: x5, v0: yb1, v1: yt1},
+          {panel: 'front', u0: x1, u1: x2, v0: yb1, v1: yt1},
+          {panel: 'side',  u0: x2, u1: x3, v0: yb1, v1: yt1}
+        ]
+      }
     }
   };
 }

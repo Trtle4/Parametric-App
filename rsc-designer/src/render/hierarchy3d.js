@@ -13,8 +13,19 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
+import {packArtGeometry, packArtMaterials} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
+
+// One shared texture per pack type drives a whole InstancedMesh (one draw call
+// for the printed group + one for the caps), so texturing is ~free regardless
+// of instance count. This cap is a backstop for pathological counts only: a
+// full pallet is ~130 cases, well under it. Beyond the cap the overflow renders
+// as flat board and the HUD says so — the same instance-cap discipline the rest
+// of this view uses.
+export const ART_INSTANCE_CAP = 400;
+let artCapped = 0;                       // instances dropped to flat board this build (HUD reads it)
+export function artCappedCount(){ return artCapped; }
 
 const T_FLOOR = 0.6;                    // min rendered wall thickness, mm
 const IDX = {L: 0, W: 1, H: 2};
@@ -45,6 +56,7 @@ const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true,
 let group = null;                       // the whole hierarchy scene
 let cutawayWalls = [];                  // {mesh, n:Vector3 localOutwardNormal} updated per frame
 let pickables = [];                     // {mesh, path} for click-to-open
+let artResources = [];                  // per-build art materials+textures to dispose on clear (avoid leak on every orbit rebuild)
 let disposeFrame = null;
 let hud = null;
 
@@ -407,6 +419,42 @@ function groupByOrientation(placements, skipIdx){
   return m;
 }
 
+/**
+ * Textured closed instances of ONE rigid pack type (carton or case). Artwork is
+ * a property of the pack (its level/style), not of one instance, so EVERY unit
+ * in `list` carries the same art from ONE shared texture — the geometry is the
+ * pack's canonical closed body (packArtGeometry), with orientation baked into
+ * each instance matrix so the UVs never rotate off the print. Returns the
+ * meshes to add (textured InstancedMesh + a flat-board overflow past the cap);
+ * pushes pickables. `posOf(pl) -> {x,y,z}` in the parent's local frame.
+ */
+function artInstances(am, canvas, list, posOf, tierName){
+  const out = [];
+  const geo = packArtGeometry(am);                     // shared by textured + overflow
+  const textured = list.slice(0, ART_INSTANCE_CAP);
+  const overflow = list.slice(ART_INSTANCE_CAP);
+  artCapped += overflow.length;
+  const place = (mat, arr) => {
+    const inst = new THREE.InstancedMesh(geo, mat, arr.length);
+    const M = new THREE.Matrix4();
+    arr.forEach(({pl}, k) => {
+      M.makeRotationFromQuaternion(orientQuat(pl.orientation));
+      const p = posOf(pl); M.setPosition(p.x, p.y, p.z);
+      inst.setMatrixAt(k, M);
+    });
+    inst.userData = {pick: arr.map(x => x.i), tierName};
+    pickables.push({mesh: inst, tier: tierName});
+    out.push(inst);
+  };
+  if(textured.length){
+    const mats = packArtMaterials(canvas, board);      // [new artMat(+texture), shared board]
+    artResources.push(mats[0]);                        // dispose the per-build texture on clear
+    place(mats, textured);
+  }
+  if(overflow.length) place([board, board], overflow); // flat board beyond the cap
+  return out;
+}
+
 // generic: a container tier holding children, one opened, the rest closed.
 // Both rigid children (cartons, cases) and wrap children instance — one
 // InstancedMesh per PART (body/taperPos/taperNeg/fin) for wraps, since a
@@ -469,16 +517,24 @@ function buildContainer(tier, bundle, sel, path){
       }
     }
   }else if(childKind !== 'wrap'){
-    for(const [o, list] of groupByOrientation(children, openIdx)){
-      const od = orient(tier.childOuter, o);
-      const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);
-      const inst = new THREE.InstancedMesh(cg, tier.childMat, list.length);
-      const M = new THREE.Matrix4();
-      list.forEach(({pl}, k) => { M.identity(); M.setPosition(...childPos(pl, parentInnerH).toArray()); inst.setMatrixAt(k, M); });
-      // a closed CHILD is pickable; opening it sets the child tier's selection
-      inst.userData = {pick: list.map(x => x.i), tierName: tier.childKind};
-      pickables.push({mesh: inst, tier: tier.name});
-      g.add(inst);
+    const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
+    const art = tier.childArt;
+    if(art && art.am && art.canvas && closed.length){
+      // textured: every closed child instance carries the pack's art from one
+      // shared texture. Canonical geometry + per-instance orientation.
+      for(const m of artInstances(art.am, art.canvas, closed, pl => childPos(pl, parentInnerH), tier.childKind)) g.add(m);
+    }else{
+      for(const [o, list] of groupByOrientation(children, openIdx)){
+        const od = orient(tier.childOuter, o);
+        const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);
+        const inst = new THREE.InstancedMesh(cg, tier.childMat, list.length);
+        const M = new THREE.Matrix4();
+        list.forEach(({pl}, k) => { M.identity(); M.setPosition(...childPos(pl, parentInnerH).toArray()); inst.setMatrixAt(k, M); });
+        // a closed CHILD is pickable; opening it sets the child tier's selection
+        inst.userData = {pick: list.map(x => x.i), tierName: tier.childKind};
+        pickables.push({mesh: inst, tier: tier.name});
+        g.add(inst);
+      }
     }
   }
 
@@ -524,6 +580,15 @@ export function buildHierarchy(bundle, depth, sel){
   clear();
   group = new THREE.Group();
   sel = sel || {};
+  artCapped = 0;
+
+  // per-pack-type art {am, canvas}, prepared by app.js on the bundle. A tier's
+  // OWN art clads it when it's the instanced unit (cases on the pallet); its
+  // childArt clads the children it contains (cartons in a case).
+  const A = bundle.art || {};
+  const artOf = geo => (geo && geo.meta.artMap && !geo.meta.artMap.flat) ? geo.meta.artMap : null;
+  const cartonArt = {am: artOf(bundle.cartonGeo), canvas: A.carton};
+  const caseArt   = {am: artOf(bundle.caseGeo),   canvas: A.case};
 
   // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
   // cartonTier only exists when the carton level is actually enabled
@@ -534,13 +599,15 @@ export function buildHierarchy(bundle, depth, sel){
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
     children: bundle.wraps ? bundle.wraps.placements : [],
     childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
+    art: cartonArt,               // clads the carton when it rides the pallet (case off)
+    childArt: null,               // wrap children are conforming film, not textured here
     buildChild: (b, s, path) => buildWrapOpened(b)
   } : null;
   const caseTier = {
-    name: 'case', geo: bundle.caseGeo, mat: board,
+    name: 'case', geo: bundle.caseGeo, mat: board, art: caseArt,
     children: bundle.cartons.placements,
     ...(bundle.cartonGeo
-      ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2,
+      ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
          buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
       : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
          buildChild: (b, s, path) => buildWrapOpened(b)})
@@ -629,16 +696,24 @@ function buildPallet(bundle, outerTier, S){
   // identical pallet instead of this view's former bare slab
   group.add(buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W));
 
-  // closed units (instanced per orientation), opened one recursed
-  for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
-    const od = orient(co, o);
-    const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
-    const inst = new THREE.InstancedMesh(cgeo, board, list.length);
-    const M = new THREE.Matrix4();
-    list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
-    inst.userData = {pick: list.map(x => x.i), tierName: outerTier.name};
-    pickables.push({mesh: inst, tier: outerTier.name});
-    group.add(inst);
+  // closed units — textured when the pallet's pack (the outer tier: case, or
+  // carton once the case is off) has artwork, so a printed pallet shows the art
+  // on every case; else bare board, instanced per orientation.
+  const closed = cases.placements.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
+  const art = outerTier.art;
+  if(art && art.am && art.canvas && closed.length){
+    for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), outerTier.name)) group.add(m);
+  }else{
+    for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
+      const od = orient(co, o);
+      const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
+      const inst = new THREE.InstancedMesh(cgeo, board, list.length);
+      const M = new THREE.Matrix4();
+      list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
+      inst.userData = {pick: list.map(x => x.i), tierName: outerTier.name};
+      pickables.push({mesh: inst, tier: outerTier.name});
+      group.add(inst);
+    }
   }
   if(cases.placements[openIdx]){
     const pl = cases.placements[openIdx];
@@ -706,6 +781,12 @@ export function renderedMeshCount(){
 function clear(){
   const pivot = getPivot();
   if(group){ pivot.remove(group); group.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
+  // per-build art materials own a CanvasTexture each — dispose them (the shared
+  // board/film/piece materials are module-level and must NOT be disposed). The
+  // hierarchy rebuilds on every orbit pointerup, so leaking here would grow the
+  // GPU texture pool unbounded.
+  artResources.forEach(m => { if(m.map) m.map.dispose(); m.dispose(); });
+  artResources = [];
   group = null; cutawayWalls = []; pickables = [];
 }
 
