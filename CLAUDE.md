@@ -77,6 +77,30 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
 
 ## Known simplifications to revisit
 
+- **RESOLVED (seal-angles task): the flow-wrap end seal is angled, not
+  flush.** `flowwrap.js` takes two independent machine settings —
+  `internalAngle` (the film RAMP) and `externalAngle` (the finished seal
+  LAY) — with the shared physical band in the exported `SEAL_ANGLES`
+  (internal 15–75°, external 0–90°; the UI sliders read that same band). The
+  internal angle derives a per-end **jaw clearance** = `(H/2)/tan(θ)` (the
+  crimp never starts flush at the product face) and a **ramp slant** =
+  `(H/2)/sin(θ)` that lengthens the film blank (`cutLength`, so `filmArea`
+  grows with a shallower ramp). Pack length is now a RANGE:
+  `packLengthAtAngle = L + 2·(jawClearance + endSealWidth·sin(external))`
+  and `packLengthMax = L + 2·(jawClearance + endSealWidth)` (fin at 90°).
+  `outer.L = packLengthMax` — the carton is sized to the CONSERVATIVE max, so
+  the wrap fits at every lay; the current-angle length is reported (readout +
+  `meta.seal`) as the tolerance band but does NOT drive carton sizing.
+  Single source: `flowwrap.js` computes all of this once into `meta.seal`;
+  `project.js` copies the derived `jawClearance`/`sealFlatLength`/angles onto
+  the render `seals` (never recomputing tan/sin), and `hierarchy3d.js` draws
+  the ramp over the jaw clearance + a crimp tab laid at the external angle
+  (rendered pack length = `packLengthAtAngle`, so it visibly responds to both
+  sliders; `outer.L` is the max it grows toward). The machine-direction-is-L
+  / seals-at-the-L-ends lock is untouched — the angles operate within it.
+  Still deferred: a design-point TOGGLE (size the carton to the current
+  angle instead of the max) — conservative-max is the default and the only
+  mode today.
 - **RESOLVED (case-builder task): clearance is split.** `Clearance` now
   carries optional `bottom` / `top` / `betweenZ`; when omitted they default
   to `wall` / `wall` / `between` (the legacy uniform shape, so the pallet

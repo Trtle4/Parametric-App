@@ -103,13 +103,17 @@ function cutawayBox(outer, inner, mat){
   return g;
 }
 
-/* ---------- flow-wrap geometry: conforming pillow body + tapered, crimped
-   ends. Dimensional truth: the overall bounding box of body+tapers always
-   equals the wrap style's own outer L×W×H (flowwrap.js's L+2*endSealWidth
-   compensation; H+finHeight is added separately by the unchanged fin mesh,
-   exactly as before). The pillow rounding, the taper, and the fin's
-   serration are cosmetic geometry INSIDE that envelope — nothing here
-   invents or alters a dimension. ---------------------------------------- */
+/* ---------- flow-wrap geometry: conforming pillow body + angled end seals.
+   Each end is a RAMP (film descending from the pack face to the flat crimp
+   line, over the jaw clearance) plus a flexible CRIMP TAB laid at the external
+   angle. Dimensional truth: the rendered pack length is the CURRENT-angle
+   length (flowwrap.js's packLengthAtAngle) — it responds to both sliders, the
+   whole point of the feature, so dragging the external slider visibly lengthens
+   the pack toward outer.L (the 90°/straight-out max that sizes the carton) and
+   dragging the internal slider moves the ramp reach. The jaw clearance and the
+   fin's flat length come straight from flowwrap.js's meta.seal (read, never
+   recomputed here). The pillow rounding and the crimp serration are cosmetic
+   geometry INSIDE that length — nothing here invents a dimension. ---------- */
 
 const WRAP_N = 20;           // profile sample count per loft ring
 const WRAP_SERR = 9;         // serration cycles around the crimped fin tip
@@ -256,36 +260,51 @@ function loftGeometry(rings){
 function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
   const axisIsW = wrapAxis === 'W';
   const H = envelope.H;
-  const lenDim = axisIsW ? envelope.W : envelope.L;      // machine direction — where the seals/fin go
+  const lenDim = axisIsW ? envelope.W : envelope.L;      // machine direction — where the seals go
   const crossDim = axisIsW ? envelope.L : envelope.W;    // the OTHER horizontal axis
-  const esw = Math.max(seals.endSealWidth || 0, 0.01);
+  // jaw clearance (ramp reach) and the crimp's flat length come from
+  // flowwrap.js's meta.seal; fall back to the flush endSealWidth so a flexible
+  // style that publishes no seal metadata still renders (older/other styles).
+  const jaw  = Math.max(seals.jawClearance   != null ? seals.jawClearance   : (seals.endSealWidth || 0), 0.01);
+  const flat = Math.max(seals.sealFlatLength != null ? seals.sealFlatLength : (seals.endSealWidth || 0), 0.01);
+  const ea = seals.externalAngle != null ? seals.externalAngle : 90;   // default straight out
   const gaugeMM = Math.max((seals.gauge || 0)/1000, 0.01);
   const finThk = Math.max(gaugeMM*2, 0.15);        // ~2x film gauge, floored only for visibility
   const finW = crossDim*0.42;                      // pinched tip width — cosmetic, stays inside crossDim
   const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
-  const hH = H/2, hCross = crossDim/2;   // body half-dims — every taper ring stays AT OR INSIDE these, never bulges past them
+  const hH = H/2, hCross = crossDim/2;   // body half-dims — every ramp ring stays AT OR INSIDE these, never bulges past them
   const bodyGeo = loftGeometry([
     ringPoints(-lenDim/2, hH, hCross, roundish, false, fillet, axisIsW),
     ringPoints( lenDim/2, hH, hCross, roundish, false, fillet, axisIsW)
   ]);
 
-  function taper(sign){
-    // shoulder -> neck: the actual taper, over a SHORT run (35% of esw) so
-    // it reads as a pinch, not a cone stretched over the full seal width.
-    // neck -> tip: constant cross-section (finThk/finW at BOTH rings) — a
-    // genuinely flat tab, not a further narrowing wedge. Serration only at
-    // the cut tip, so the flat run shows a crimped edge, not a smooth cone.
-    const shoulder = sign*(lenDim/2), tip = sign*(lenDim/2 + esw);
-    const neck = shoulder + (tip - shoulder)*0.35;
+  // the RAMP: full cross-section at the pack face -> pinched crimp line, one
+  // straight loft over the jaw clearance. The film descends the whole way, so
+  // a shallower ramp (larger jaw) visibly reaches further from the product.
+  function ramp(sign){
+    const shoulder = sign*(lenDim/2), crimp = sign*(lenDim/2 + jaw);
     const rings = [
       ringPoints(shoulder, hH, hCross, roundish, false, fillet, axisIsW),
-      ringPoints(neck, finThk/2, finW/2, roundish, false, fillet, axisIsW),
-      ringPoints(tip, finThk/2, finW/2, roundish, true, fillet, axisIsW)
+      ringPoints(crimp, finThk/2, finW/2, roundish, true, fillet, axisIsW)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
-  return {bodyGeo, taperPos: taper(1), taperNeg: taper(-1)};
+  // the finished CRIMP TAB: a flat sealed fin (length = the crimp's flat
+  // length) hinged at the crimp line and LAID at the external angle — 90°
+  // straight out along the length axis (adds its full length), 0° folded flat
+  // up against the pack end (adds ~nothing). Built in a canonical length=+X
+  // frame and, only if the machine direction is actually W, remapped X->Z.
+  function endTab(sign){
+    const geo = new THREE.BoxGeometry(flat, finThk, finW);   // long axis local X
+    geo.translate(flat/2, 0, 0);                             // hinge at origin, extends +X
+    const lay = (90 - ea)*Math.PI/180;                       // 0 at ea=90 (out); 90° at ea=0 (folded up)
+    geo.rotateZ(sign > 0 ? lay : Math.PI - lay);             // +end tilts up/out; -end mirrors
+    geo.translate(sign*(lenDim/2 + jaw), 0, 0);              // hinge onto the crimp line
+    if(axisIsW) geo.rotateY(-Math.PI/2);                     // machine dir = W: canonical +X -> +Z
+    return geo;
+  }
+  return {bodyGeo, taperPos: ramp(1), taperNeg: ramp(-1), endTabPos: endTab(1), endTabNeg: endTab(-1)};
 }
 
 /** The fin seal: a solid tab lying FLUSH against the chosen face — bottom
@@ -356,6 +375,8 @@ function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened)
   g.add(new THREE.Mesh(parts.bodyGeo, opened ? filmMat : filmClosedMat));
   g.add(new THREE.Mesh(parts.taperPos, sealMat));
   g.add(new THREE.Mesh(parts.taperNeg, sealMat));
+  g.add(new THREE.Mesh(parts.endTabPos, sealMat));
+  g.add(new THREE.Mesh(parts.endTabNeg, sealMat));
   if(finGeo) g.add(new THREE.Mesh(finGeo, sealMat));
   return g;
 }
@@ -496,7 +517,9 @@ function buildContainer(tier, bundle, sel, path){
       const partDefs = [
         {geo: parts.bodyGeo, mat: filmClosedMat},
         {geo: parts.taperPos, mat: sealMat},
-        {geo: parts.taperNeg, mat: sealMat}
+        {geo: parts.taperNeg, mat: sealMat},
+        {geo: parts.endTabPos, mat: sealMat},
+        {geo: parts.endTabNeg, mat: sealMat}
       ];
       if(finGeo) partDefs.push({geo: finGeo, mat: sealMat});
       for(const pd of partDefs){

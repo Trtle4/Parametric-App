@@ -190,7 +190,7 @@ function defaultBoxCollation(){
 }
 
 t('wrap seal compensation propagates into carton sizing', () => {
-  // pinned collation env 90×50×120; end seals 10 -> wrap L 110
+  // pinned collation env 90×50×120; default end-seal angles 45/45 -> jaw 60/end -> wrap L 90+2*(60+10)=230
   const p = newProject();
   p.primary.collation = defaultBoxCollation();
   p.primary.allowedOrientations = ['LWH'];   // H up, no rotation: deterministic axes
@@ -198,7 +198,7 @@ t('wrap seal compensation propagates into carton sizing', () => {
   p.links[1].count = 1; p.links[1].arrangement = 'auto';
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   let r = candidateCases(p, '1mm')[0];
-  eq(r.cartonParams.L, 110, 'L gains 2×endSeal:');
+  eq(r.cartonParams.L, 230, 'L gains 2×(jawClearance+endSeal); default 45° -> jaw 60:');
   eq(r.cartonParams.H, 121, 'folded fin: +gauge only (120.03 -> 121 rounded):');
   p.primary.wrap.params.finTreatment = 'standing';
   r = candidateCases(p, '1mm')[0];
@@ -230,9 +230,9 @@ t('solved carton + wrap: stored cartons arrangement is non-zero and correct', ()
 /* ---- Bug 1: multiple wraps per carton (links[1], the wrap->carton link) —
    previously ALWAYS 1 (cartonVariants never read link.arrangement). Same
    collation/wrap as the "wrap seal compensation" case above (env 90x50x120,
-   fin folded, ends 10 -> wrap outer 110x50x120.03), now 8 wraps explicit
-   4x2x1, zero primary clearance:
-     cavity L = 4*110 = 440, W = 2*50 = 100, H = 120.03 -> 121 (1mm up)
+   fin folded, default angles 45/45 -> jaw 60 -> wrap outer 230x50x120.03),
+   now 8 wraps explicit 4x2x1, zero primary clearance:
+     cavity L = 4*230 = 920, W = 2*50 = 100, H = 120.03 -> 121 (1mm up)
      piecesPerCarton = 6/wrap * 8 wraps = 48                                */
 function multiWrapProject(){
   const p = newProject();
@@ -248,7 +248,7 @@ t('multiple wraps per carton: explicit 4×2×1 sizes the carton around 8 wraps',
   const rows = candidateCases(multiWrapProject(), '1mm');
   const r = rows.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
   if(!r) throw new Error('2×2×1 case row missing');
-  eq(r.cartonParams.L, 440, 'carton L = 4 wraps × 110:');
+  eq(r.cartonParams.L, 920, 'carton L = 4 wraps × 230:');
   eq(r.cartonParams.W, 100, 'carton W = 2 wraps × 50:');
   eq(r.cartonParams.H, 121, 'carton H = 120.03 rounded up 1mm:');
   eq(r.piecesPerCarton, 48, '8 wraps × 6 pieces/wrap:');
@@ -263,7 +263,7 @@ t('multiple wraps per carton: the 8 wraps sit centred inside the carton, none ov
   const xs = [...new Set(placements.map(p => p.x))].sort((a, b) => a - b);
   const ys = [...new Set(placements.map(p => p.y))].sort((a, b) => a - b);
   eq(xs.length, 4, 'four distinct X columns:'); eq(ys.length, 2, 'two distinct Y rows:');
-  approx(xs[1] - xs[0], 110, 'column pitch = wrap outer L:');
+  approx(xs[1] - xs[0], 230, 'column pitch = wrap outer L:');
   approx(ys[1] - ys[0], 50, 'row pitch = wrap outer W:');
 });
 
@@ -279,14 +279,14 @@ t('multiple wraps per carton: the 8 wraps sit centred inside the carton, none ov
    they'd show a stale cartonParams even though the model, the SVG dieline,
    and every other readout had already moved on. Fixed by inputs.refreshDims,
    called from onProjectEdited. This test guards the MODEL side: a non-cube
-   wrap (110x50x120.03, no axis equal) explicit 4x2x1 must size the carton
+   wrap (230x50x120.03, no axis equal) explicit 4x2x1 must size the carton
    differently for H-up vs L-up. */
 t('explicit arrangement respects orientation: H-up vs L-up give different, hand-checked cavities', () => {
   const pH = multiWrapProject();
   pH.primary.allowedOrientations = ['LWH'];
   const rH = candidateCases(pH, '1mm').find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
   if(!rH) throw new Error('H-up 2x2x1 case row missing');
-  eq(rH.cartonParams.L, 440, 'H-up carton L = 4 × wrap outer L (110):');
+  eq(rH.cartonParams.L, 920, 'H-up carton L = 4 × wrap outer L (230):');
   eq(rH.cartonParams.W, 100, 'H-up carton W = 2 × wrap outer W (50):');
   eq(rH.cartonParams.H, 121, 'H-up carton H = wrap outer H 120.03, 1 layer, rounded up:');
 
@@ -295,12 +295,12 @@ t('explicit arrangement respects orientation: H-up vs L-up give different, hand-
   const rowsL = candidateCases(pL, '1mm');
   const rL = rowsL.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1);
   if(!rL) throw new Error('L-up 2x2x1 case row missing');
-  // 'WHL' permutes the wrap's outer {L:110,W:50,H:120.03} into the cavity's
+  // 'WHL' permutes the wrap's outer {L:230,W:50,H:120.03} into the cavity's
   // own L/W/H axes: cavity-L <- wrap W (50), cavity-W <- wrap H (120.03),
-  // cavity-H <- wrap L (110) — the vertical axis genuinely changes.
+  // cavity-H <- wrap L (230) — the vertical axis genuinely changes.
   eq(rL.cartonParams.L, 200, 'L-up carton L = 4 × wrap W (50):');
   eq(rL.cartonParams.W, 241, 'L-up carton W = 2 × wrap H (120.03), rounded up:');
-  eq(rL.cartonParams.H, 110, 'L-up carton H = wrap L (110), the new vertical axis:');
+  eq(rL.cartonParams.H, 230, 'L-up carton H = wrap L (230), the new vertical axis:');
 
   if(rH.cartonParams.L === rL.cartonParams.L && rH.cartonParams.W === rL.cartonParams.W && rH.cartonParams.H === rL.cartonParams.H)
     throw new Error('explicit arrangement ignored orientation: H-up and L-up produced identical cartons');
@@ -376,7 +376,7 @@ t("auto minimizes material area, not volume: a genuine volume/board-area diverge
    envelope L. The collation orientation is what varies the pack shape upstream
    (it decides what envelope L is), NOT the seal placement. So a W-dominant
    collation (envelope W > L) still wraps along L: the seal gain lands on L,
-   W is untouched. Envelope 90x150x20 -> wrap outer L 90+2*10=110, W 150, H
+   W is untouched. Envelope 90x150x20 (H=20) -> jaw (20/2)/tan45=10 -> wrap outer L 90+2*(10+10)=130, W 150, H
    +gauge 20.03. Matches golden.json's wrap_axis_L_fixed pin exactly. */
 function wDominantProject(){
   const p = newProject();
@@ -393,8 +393,8 @@ t('machine direction fixed at L: even a W-dominant collation wraps along L, seal
   const r = rows.find(x => x.nx === 1 && x.ny === 1 && x.nz === 1 && x.orientation === 'LWH');
   if(!r) throw new Error('1×1×1 case row missing');
   eq(r.arr.pieces.wrapAxis, 'L', 'wrap axis is always L, never resolved per-envelope:');
-  eq(r.wrapOuter, {L: 110, W: 150, H: 20.03}, 'seal gain lands on L (90->110), the longer W(150) is untouched:');
-  eq(r.cartonParams.L, 110, 'carton L = wrap outer L (gained the seal):');
+  eq(r.wrapOuter, {L: 130, W: 150, H: 20.03}, 'seal gain lands on L (90->130), the longer W(150) is untouched:');
+  eq(r.cartonParams.L, 130, 'carton L = wrap outer L (gained the seal):');
   eq(r.cartonParams.W, 150, 'carton W = wrap outer W, unchanged:');
   eq(r.cartonParams.H, 21, 'carton H = 20.03 rounded up 1mm:');
   eq(r.piecesPerCarton, 3, '3 pieces (1x3 stacks) x 1 wrap:');
@@ -658,8 +658,10 @@ t('the chain resolves round girth with diameter d for an on-edge sleeve (not a r
   p.links[1].count = 1; p.links[1].arrangement = 'auto';
   p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
   const rRound = candidateCases(p, '1mm')[0];
-  // round girth = π·d (d=50); web = π·50 + (2·8+5); cut = 60 + 2·(10+3)
-  const expected = (Math.PI*50 + 2*8 + 5)*(60 + 2*(10 + 3))/1e6;
+  // round girth = π·d (d=50); web = π·50 + (2·8+5); cut = 60 + 2·(rampSlant+10+3),
+  // rampSlant = (H/2)/sin45, H = 50 (the sleeve diameter is the pack height)
+  const rampSlant = (50/2)/Math.sin(45*Math.PI/180);
+  const expected = (Math.PI*50 + 2*8 + 5)*(60 + 2*(rampSlant + 10 + 3))/1e6;
   approx(rRound.filmAreaM2, expected, 'film area uses round girth π·d, d=50:');
   // same sleeve on the rectangular basis uses 2(W+H)=200 > π·50 -> more film,
   // proving the round path actually fired rather than silently falling back

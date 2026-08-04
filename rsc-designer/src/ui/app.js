@@ -1158,6 +1158,21 @@ function renderLegend(bundle, depth){
       `Seal add: L ${add(inr.L, out.L, noteFor('L'))} · ` +
       `W ${add(inr.W, out.W, noteFor('W'))} · H ${add(inr.H, out.H, noteFor('H'))}<br>` +
       `Wrap outer ${f(out.L)} × ${f(out.W)} × ${f(out.H)} ${u} — grows the carton</div>`;
+    // end-seal ANGLE readout — jaw clearance, the pack-length RANGE, and film
+    // area, all read from the wrap style's meta.seal / meta.film. This whole
+    // function re-runs on every recompute (the hier3d refresher), so the
+    // numbers update live as the two angle sliders drag.
+    const s = bundle.wrapGeo.meta.seal, film = bundle.wrapGeo.meta.film;
+    if(s){
+      const band = s.packLengthMax - s.packLengthAtAngle;
+      readout += `<div class="rd">` +
+        `End seals — internal ${Math.round(s.internalAngle)}° (film ramp) · external ${Math.round(s.externalAngle)}° (seal lay)<br>` +
+        `Jaw clearance ${f(s.jawClearance)} ${u} / end — the flat crimp starts this far off the product (never flush)<br>` +
+        `Pack length: current ${f(s.packLengthAtAngle)} · max ${f(s.packLengthMax)} ${u}` +
+        ` · tolerance ${f(band)} ${u} (seal laid flat → standing straight out)<br>` +
+        `Carton sized to the MAX ${f(s.packLengthMax)} ${u} — conservative, the wrap fits at every lay<br>` +
+        `Film area ${(film.filmAreaM2*1e6).toFixed(0)} mm²/pack (${film.filmAreaM2.toFixed(4)} m²) — grows with a shallower ramp</div>`;
+    }
   }
   el('hierLegend').innerHTML = swatches + readout;
   el('hierLegend').style.display = 'flex';

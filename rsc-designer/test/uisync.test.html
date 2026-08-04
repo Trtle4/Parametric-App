@@ -778,9 +778,9 @@ await (async () => {
     eq(num('tbPallet'), num('palTot'), 'tbPallet vs palTot:');
     eq(num('msPallet'), num('palTot'), 'msPallet vs palTot:');
   });
-  t('cases/pallet: default project pins to 72 filled cases, 12 layers (not the old 132 / 22)', () => {
-    eq(num('palTot'), 72, 'default cases/pallet:');
-    eq(el('palCnt').textContent.replace(/\s/g, ''), '6×12', 'per-layer × layers:');
+  t('cases/pallet: default project pins to 60 filled cases, 12 layers (end-seal angles grew the default wrap from the old 72)', () => {
+    eq(num('palTot'), 60, 'default cases/pallet:');
+    eq(el('palCnt').textContent.replace(/\s/g, ''), '5×12', 'per-layer × layers:');
   });
   t('cases/pallet: the Build table shows that same count for the resolved row', () => {
     el('tabBuild').click();

@@ -581,6 +581,17 @@ export function levelGeometry(project, level, rounding = '1mm', selectedKey = nu
  *  `outerFits` defaults true: candidateCases only ever enumerates candidates
  *  that already fit, so there's nothing to misreport; a locked outermost
  *  tier (checkLockedCase) passes its own real check instead. */
+/** The derived end-seal fields the renderer needs, lifted from the wrap
+ *  style's own meta.seal (flowwrap.js owns the computation). Returns {} for a
+ *  flexible style that publishes no meta.seal, so the renderer just falls back
+ *  to its flush defaults rather than crashing. */
+function sealDerived(wrapGeo){
+  const s = wrapGeo && wrapGeo.meta && wrapGeo.meta.seal;
+  if(!s) return {};
+  return {internalAngle: s.internalAngle, externalAngle: s.externalAngle,
+          jawClearance: s.jawClearance, sealFlatLength: s.sealFlatLength};
+}
+
 function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit, outerFits = true){
   const {primaryResult, secondaryVariant, content} = below;
   const cartonGeo = outerKey === 'secondary' ? outerGeo : (secondaryVariant ? secondaryVariant.geo : null);
@@ -648,7 +659,11 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
            ? {sealType: primaryResult.wp.sealType, finTreatment: primaryResult.wp.finTreatment,
               finHeight: primaryResult.wp.finHeight, finSealBand: primaryResult.wp.finSealBand,
               endSealWidth: primaryResult.wp.endSealWidth, finFace: primaryResult.wp.finFace || 'bottom',
-              gauge: primaryResult.wp.gauge} : null} : null
+              gauge: primaryResult.wp.gauge,
+              // DERIVED end-seal geometry read straight from the wrap style's
+              // own meta.seal — the renderer must not recompute jaw clearance /
+              // ramp (single source; flowwrap.js owns the tan()/sin()).
+              ...sealDerived(primaryResult.geo)} : null} : null
   };
   return row;
 }

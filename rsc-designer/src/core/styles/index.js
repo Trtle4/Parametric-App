@@ -6,12 +6,13 @@
  * Param descriptor: { key, label, hint, group: 'dims'|'material',
  *                     min, step, default }           // numeric length, mm
  *              or   { key, label, hint, group, type:'select', choices, default }
+ *              or   { key, label, hint, group, type:'range', min, max, step, default }  // slider °
  * Option descriptor (style-specific view options, not dimensions):
  *                   { key, label, hint, choices: [{value,label}], default }
  */
 import {fefco201} from './fefco201.js';
 import {a6120} from './a6120.js';
-import {flowwrap} from './flowwrap.js';
+import {flowwrap, SEAL_ANGLES} from './flowwrap.js';
 import {trayGeometry} from './tray.js';
 import {sealend} from './sealend.js';
 
@@ -105,8 +106,14 @@ export const styles = [
       {key: 'finFace', label: 'Fin face', hint: 'closure', group: 'material', type: 'select', default: 'bottom',
        choices: [{value: 'bottom', label: 'Bottom (standard)'}, {value: 'top', label: 'Top'}]},
       {key: 'lapOverlap',   label: 'Lap overlap',   hint: 'lap only', group: 'material', min: 0, step: 0.5, default: 12},
-      {key: 'endSealWidth', label: 'End seal width', hint: 'per end', group: 'material', min: 0, step: 0.5, default: 10},
+      {key: 'endSealWidth', label: 'End seal width', hint: 'crimp flat, per end', group: 'material', min: 0, step: 0.5, default: 10},
       {key: 'endSealBleed', label: 'End seal bleed', hint: 'print',   group: 'material', min: 0, step: 0.5, default: 3},
+      // end-seal ANGLES — sliders (live), band from flowwrap's SEAL_ANGLES so
+      // the UI range can never drift from the geometry's physical limits.
+      {key: 'internalAngle', label: 'Internal angle', hint: 'film ramp → jaw clearance', group: 'material',
+        type: 'range', min: SEAL_ANGLES.internal.min, max: SEAL_ANGLES.internal.max, step: 1, default: SEAL_ANGLES.internal.default},
+      {key: 'externalAngle', label: 'External angle', hint: 'seal lay · 0 flat … 90 out', group: 'material',
+        type: 'range', min: SEAL_ANGLES.external.min, max: SEAL_ANGLES.external.max, step: 1, default: SEAL_ANGLES.external.default},
       {key: 'girthBasis', label: 'Girth basis', hint: '', group: 'material', type: 'select', default: 'rectangular',
        choices: [{value: 'rectangular', label: 'Rectangular 2(W+H)'}, {value: 'round', label: 'Round π·d'}]},
       {key: 'roundDiameter', label: 'Round Ø', hint: 'round basis', group: 'material', min: 0, step: 0.5, default: 50},

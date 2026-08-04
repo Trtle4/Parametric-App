@@ -72,6 +72,40 @@ function lengthField(d, params, m){
   return wrap;
 }
 
+/** A slider + a synced editable number, both LIVE (fire on every `input`, so
+ *  the 3D render responds as the user drags). The number is there for when
+ *  someone has an actual spec; the slider is for the "watch the geometry
+ *  respond" workflow. Both write the same param — one writer — and clamp to
+ *  the field's [min,max] band. Angles are dimensionless degrees: no unit
+ *  conversion (like fixedUnit fields), the stored value IS the degree value. */
+function rangeField(d, params, m){
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  const val = params[d.key] != null ? params[d.key] : d.default;
+  params[d.key] = val;                                    // mirror the default into the project
+  const chip = d.chip || '°';
+  wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}</span></label>
+    <div class="inp rangeinp">
+      <input id="p_${d.key}" type="range" min="${d.min}" max="${d.max}" step="${d.step}" value="${val}">
+      <input id="pn_${d.key}" class="rangenum" type="number" min="${d.min}" max="${d.max}" step="${d.step}" value="${val}"><span class="unit">${chip}</span>
+    </div>`;
+  const slider = wrap.querySelector('#p_' + d.key);
+  const num = wrap.querySelector('#pn_' + d.key);
+  const clamp = v => Math.min(d.max, Math.max(d.min, v));
+  // `from` names the control the user touched, so the OTHER control resyncs
+  // but the one being typed/dragged is never rewritten under the user's hand.
+  const commit = (raw, from) => {
+    const c = clamp(+raw || 0);
+    params[d.key] = c;
+    if(from !== 'slider') slider.value = c;
+    if(from !== 'num') num.value = c;
+    m.onInput({key: d.key, group: d.group});
+  };
+  slider.addEventListener('input', () => commit(slider.value, 'slider'));   // live during drag
+  num.addEventListener('input', () => commit(num.value, 'num'));
+  return wrap;
+}
+
 /** A select field, backed by `obj` (the level's params for a param select,
  *  its options for an option select). */
 function selectField(d, obj, group){
@@ -103,7 +137,10 @@ export function mountLevel(style, params, options, m){
   dims.innerHTML = ''; mat.innerHTML = ''; opt.innerHTML = '';
   for(const d of style.params){
     const target = d.group === 'dims' ? dims : mat;
-    target.appendChild(d.type === 'select' ? selectField(d, params, d.group) : lengthField(d, params, mounted));
+    const field = d.type === 'select' ? selectField(d, params, d.group)
+      : d.type === 'range' ? rangeField(d, params, mounted)
+      : lengthField(d, params, mounted);
+    target.appendChild(field);
   }
   for(const d of style.options || [])
     opt.appendChild(selectField(d, options, 'option'));

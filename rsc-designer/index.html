@@ -221,6 +221,14 @@
     padding:0 10px;border-left:1px solid var(--line-2);align-self:stretch;
     display:flex;align-items:center;
   }
+  /* slider + synced number (end-seal angles): the range grows, the number is
+     a fixed narrow box for a typed spec, the unit chip stays at the end */
+  .field .inp.rangeinp{gap:8px;padding-left:10px}
+  .field .inp.rangeinp input[type=range]{
+    flex:1;min-width:40px;padding:0;height:22px;background:transparent;
+    accent-color:var(--accent);cursor:pointer;
+  }
+  .field .inp.rangeinp input.rangenum{flex:0 0 46px;width:46px;text-align:right;padding:8px 4px}
   /* a field whose .inp holds a button (lock / enable toggle) is not a data
      field — let the button own its own look instead of the field frame */
   .field .inp:has(button){border:none;background:transparent;box-shadow:none;overflow:visible}

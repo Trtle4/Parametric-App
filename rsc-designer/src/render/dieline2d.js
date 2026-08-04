@@ -55,7 +55,7 @@ export function draw2d(svg, g, unit, printText, art){
   // different pictures of the same annotation data. `ends`/`fin` span the
   // full opposite axis (a seal band runs edge-to-edge); `bleeds` likewise.
   const sz = g.meta.sealZones || {};
-  const ZONE_LABEL = {ends: 'END SEAL', bleeds: 'BLEED', fin: 'FIN SEAL'};
+  const ZONE_LABEL = {ends: 'END SEAL', bleeds: 'BLEED', fin: 'FIN SEAL', ramps: 'RAMP'};
   let zones = '', zoneLabels = '';
   const zoneFS = strokeW*8;
   // `ends`/`bleeds` zones are narrow COLUMNS (endSealBleed/endSealWidth are
@@ -76,6 +76,14 @@ export function draw2d(svg, g, unit, printText, art){
     const x = fx(e.x0), y = fy(h), rw = e.x1 - e.x0;
     zones += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${rw.toFixed(2)}" height="${h.toFixed(2)}" fill="#e5484d22" stroke="#e5484d" stroke-width="${strokeW*0.7}"/>`;
     zoneLabels += zoneLabelV(x + rw/2, fy(h/2), ZONE_LABEL.ends);
+  }
+  // the ramped-film region between the flat crimp and the product panel — the
+  // film that descends to the crimp line (its slant), a distinct zone from the
+  // flat crimp so the 2D blank matches the 3D ramp.
+  for(const r of sz.ramps || []){
+    const x = fx(r.x0), y = fy(h), rw = r.x1 - r.x0;
+    zones += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${rw.toFixed(2)}" height="${h.toFixed(2)}" fill="#e5484d11" stroke="#e5484d" stroke-width="${strokeW*0.5}" stroke-dasharray="${strokeW*2} ${strokeW*2}"/>`;
+    zoneLabels += zoneLabelV(x + rw/2, fy(h/2), ZONE_LABEL.ramps);
   }
   for(const f of sz.fin || []){
     const x = fx(0), y = fy(f.y1), rh = f.y1 - f.y0;

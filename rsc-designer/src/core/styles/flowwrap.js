@@ -6,7 +6,9 @@
  * seal-based, not caliper-based.
  *
  * Blank layout (film flat, before wrapping):
- *   x (horizontal) = the REPEAT: cutLength = L + 2*(endSealWidth + endSealBleed)
+ *   x (horizontal) = the REPEAT: cutLength = L + 2·(rampSlant + endSealWidth +
+ *                    endSealBleed) — the product panel plus, per end, the
+ *                    ramped film (its slant), the flat crimp and the print bleed
  *   y (vertical)   = the GIRTH path: webWidth = girth + finAllowance
  *   bands bottom→top: fin allowance/2 | BACK half | SIDE | FRONT | SIDE | BACK half | fin allowance/2
  *   (the two half-BACK panels meet at the rear and form the longitudinal seal)
@@ -37,6 +39,24 @@ export function finGainAxis(finFace){
 const FIN_GAIN_AXIS = {bottom: 'H', top: 'H'};
 
 /**
+ * The two end-seal angles and their physical bands — ONE definition shared by
+ * this math and the UI sliders (styles/index.js imports it), so the slider
+ * range can never drift from what the geometry actually allows.
+ *
+ *  - internal (the film RAMP, measured from the pack face plane): the film can
+ *    neither leave the product face flat (→0°, infinite jaw clearance) nor drop
+ *    vertically to the crimp (→90°, zero clearance). It lives strictly inside
+ *    (0,90); 15–75° is the sane machine band.
+ *  - external (the finished seal LAY): 0° = folded flat against the pack end
+ *    (minimum length), 90° = standing straight out (maximum length). The full
+ *    0–90 is physically real.
+ */
+export const SEAL_ANGLES = {
+  internal: {min: 15, max: 75, default: 45},
+  external: {min: 0,  max: 90, default: 45}
+};
+
+/**
  * @param {Object} p
  *   L, W, H            content envelope: L = pack length (repeat direction),
  *                      W = front/back panel width, H = pack thickness (sides)
@@ -48,8 +68,10 @@ const FIN_GAIN_AXIS = {bottom: 'H', top: 'H'};
  *                      closes on; the compensation axis (finGainAxis) and
  *                      the renderer both key off this SAME field
  *   lapOverlap         used only when sealType === 'lap'
- *   endSealWidth       crimp jaw width, per end
+ *   endSealWidth       the crimped fin's OWN flat length, per end
  *   endSealBleed       print bleed beyond the seal zone, per end
+ *   internalAngle      film ramp angle (deg) — derives the jaw clearance
+ *   externalAngle      finished seal lay angle (deg) — 0 flat … 90 straight out
  *   girthBasis         'rectangular' | 'round'
  *   roundDiameter      circumscribing diameter (round basis only)
  *   gauge              film thickness, MICRONS
@@ -60,26 +82,64 @@ export function flowwrap(p){
   const {L, W, H} = p;
   const fin = p.sealType !== 'lap';
 
+  // --- end-seal ANGLE geometry (two independent machine settings) ---------
+  // A real horizontal flow-wrap end seal is neither flush nor rigid: two
+  // angles govern it, and BOTH change the wrap's true outer length (which then
+  // sizes the carton). Clamp into the shared physical band; a legacy project
+  // saved before this feature (no angles) gets the defaults.
+  const RAD = Math.PI/180;
+  const clampA = (v, b) => Math.min(b.max, Math.max(b.min, v == null ? b.default : v));
+  const internalAngle = clampA(p.internalAngle, SEAL_ANGLES.internal);
+  const externalAngle = clampA(p.externalAngle, SEAL_ANGLES.external);
+
+  // Internal ramp: the film descends from each pack face (±H/2 off the seal
+  // centreline) to the flat crimp line. Its HORIZONTAL run is the jaw
+  // clearance — the gap the crimp jaws need, so the flat seal can never begin
+  // at the product face.  tan(internalAngle) = (H/2) / jawClearance:
+  //   shallow ramp (small angle) → long clearance;  steep → short.
+  // The film draped over that ramp is the SLANT (hypotenuse) — longer than the
+  // clearance — so a shallower ramp also spends more film.
+  const halfH = H/2;
+  const jawClearance = halfH/Math.tan(internalAngle*RAD);   // horizontal run — feeds pack length
+  const rampSlant    = halfH/Math.sin(internalAngle*RAD);   // hypotenuse — feeds film area
+
+  // External lay: the crimped fin's own flat length is the end-seal width; how
+  // much of it adds to pack length depends on how far the flexible tab stands.
+  //   0°  laid flat against the pack end → 0 projection (min length)
+  //   90° standing straight out          → full endSealWidth projection (max)
+  // projection onto the length axis = sealFlatLength · sin(externalAngle).
+  const sealFlatLength = p.endSealWidth;
+  const externalContribution = sealFlatLength*Math.sin(externalAngle*RAD);
+
+  // Pack length is a RANGE, not a constant: the CURRENT length at the set lay,
+  // and the MAX at 90° (fin straight out) — the tolerance the carton must
+  // accommodate. Each end contributes jawClearance + the fin's projection.
+  const packLengthAtAngle = L + 2*(jawClearance + externalContribution);
+  const packLengthMax     = L + 2*(jawClearance + sealFlatLength);
+
   // film usage
   const girth = p.girthBasis === 'round' ? Math.PI*p.roundDiameter : 2*(W + H);
   const finAllowance = fin ? 2*p.finHeight + p.finSealBand : (p.lapOverlap || 0);
   const webWidth = girth + finAllowance;
-  const border = p.endSealWidth + p.endSealBleed;
+  // end allowance on the flat blank, outer→in per end: print bleed | the flat
+  // crimp (endSealWidth) | the ramped film (its slant). The product panel
+  // (width L) sits between the two borders.
+  const bleed = p.endSealBleed;
+  const crimp = p.endSealWidth;
+  const sealEnd = bleed + crimp;                          // x where the crimp ends / the ramp begins
+  const border = sealEnd + rampSlant;                    // x where the product panel begins
   const cutLength = L + 2*border;
-  const filmArea = webWidth*cutLength;                    // mm² per pack
+  const filmArea = webWidth*cutLength;                    // mm² per pack (grows with a shallower ramp)
 
   // --- compensation (outside envelope of the WRAPPED pack) ----------------
-  // Seal geometry is the compensation; consumers never derive it:
-  //  * L gains 2 × endSealWidth: the flattened crimp tabs stand proud of the
-  //    product at each end by the jaw width. Bleed is print-only and adds
-  //    NOTHING physical.                              << check vs sample >>
+  // L grows by 2 × (jawClearance + sealFlatLength) — the CONSERVATIVE MAX (fin
+  // straight out at 90°), so the carton always fits whatever lay the seal
+  // takes. packLengthAtAngle is the current, narrower length; the difference is
+  // the tolerance band the readout reports.
   //  * W gains nothing: no seal stands on the width axis.
-  //  * The seal's OWN axis (finGainAxis(p.finFace) — bottom/top, both H)
-  //    gains:
-  //      - standing fin: + finHeight — the fin stands proud of that face
-  //      - folded fin:   + gauge (µm -> mm) — film laid against the pack,
-  //        negligible but honest
-  //      - lap seal:     + 0 — the overlap lies within the wrap
+  //  * the seal's OWN axis (finGainAxis(finFace) — bottom/top, both H) gains:
+  //      - standing fin: + finHeight   - folded fin: + gauge (µm→mm)   - lap: +0
+  //    This is the LONGITUDINAL back-seal fin, unchanged by the end-seal angles.
   const gaugeMM = (p.gauge || 0)/1000;
   const finFace = p.finFace || 'bottom';
   const gainAxis = finGainAxis(finFace);
@@ -103,7 +163,7 @@ export function flowwrap(p){
   const refLines = [];
   for(let i = 1; i < yB.length - 1; i++) refLines.push([border, yB[i], cutLength - border, yB[i]]);
 
-  const outer = {L: L + 2*p.endSealWidth, W, H};
+  const outer = {L: packLengthMax, W, H};
   outer[gainAxis] += gain;
 
   return {
@@ -116,16 +176,27 @@ export function flowwrap(p){
     meta: {
       style: 'flowwrap',
       refLines,                                           // fold references, NOT creases
+      // The DERIVED end-seal geometry — computed here and ONLY here. The
+      // renderer (hierarchy3d.js) and the wrap-depth readout (app.js) READ
+      // these; neither recomputes tan()/sin(), so the ramp you see, the length
+      // that sizes the carton and the number in the readout can never diverge.
+      seal: {
+        internalAngle, externalAngle,
+        jawClearance, rampSlant, sealFlatLength,
+        externalContribution, packLengthAtAngle, packLengthMax,
+        productLength: L
+      },
       film: {
         girth, finAllowance, webWidth, cutLength,
         filmAreaM2: filmArea/1e6,
         packsPerMetre: cutLength > 0 ? 1000/cutLength : 0,
         massPer1000g: (filmArea/1e6)*(p.gauge || 0)*(p.density || 0)*1000  // m²·µm·g/cm³ = g
       },
-      sealZones: {                                        // for the artwork exporter
-        ends: [{x0: p.endSealBleed, x1: border}, {x0: cutLength - border, x1: cutLength - p.endSealBleed}],
-        bleeds: [{x0: 0, x1: p.endSealBleed}, {x0: cutLength - p.endSealBleed, x1: cutLength}],
-        fin: [{y0: 0, y1: fa2}, {y0: webWidth - fa2, y1: webWidth}]
+      sealZones: {                                        // for the artwork exporter + 2D dieline
+        ends:   [{x0: bleed, x1: sealEnd}, {x0: cutLength - sealEnd, x1: cutLength - bleed}],   // flat crimp
+        ramps:  [{x0: sealEnd, x1: border}, {x0: cutLength - border, x1: cutLength - sealEnd}], // film ramp
+        bleeds: [{x0: 0, x1: bleed}, {x0: cutLength - bleed, x1: cutLength}],
+        fin:    [{y0: 0, y1: fa2}, {y0: webWidth - fa2, y1: webWidth}]
       },
       labels: [
         {x: cx, y: bandMid(1), text: 'BACK ½'}, {x: cx, y: bandMid(2), text: 'SIDE'},
@@ -133,8 +204,9 @@ export function flowwrap(p){
         {x: cx, y: bandMid(5), text: 'BACK ½'}
       ],
       hDims: [
-        ...(p.endSealBleed > 0 ? [{from: 0, to: p.endSealBleed, v: p.endSealBleed}] : []),
-        ...(p.endSealWidth > 0 ? [{from: p.endSealBleed, to: border, v: p.endSealWidth}] : []),
+        ...(bleed > 0 ? [{from: 0, to: bleed, v: bleed}] : []),
+        ...(crimp > 0 ? [{from: bleed, to: sealEnd, v: crimp}] : []),
+        ...(rampSlant > 0 ? [{from: sealEnd, to: border, v: rampSlant}] : []),
         {from: border, to: cutLength - border, v: L}
       ],
       vDims: [
@@ -150,9 +222,11 @@ export function flowwrap(p){
       // border, so those three consumers can never disagree with the 2D view or
       // the template about where a panel is. Coordinates are template-canvas mm:
       // u = repeat (0..cutLength, x), v = girth (0..webWidth, y, 0 = bottom).
+      // The product panel is always exactly L wide (cutLength − 2·border = L),
+      // so the printed faces are unaffected by the ramp/crimp end allowance.
       artMap: (() => {
         const fw = bands[2], sh = bands[1];                     // front/back & side face widths
-        const p0 = border, p1 = cutLength - border;            // the L run (u), seals excluded
+        const p0 = border, p1 = cutLength - border;            // the L run (u), end allowance excluded
         return {
           canvas: {w: cutLength, h: webWidth},
           product: {x0: p0, x1: p1},                            // used by the template running-direction arrow
@@ -172,9 +246,9 @@ export function flowwrap(p){
             {panel: 'side',  u0: p0, u1: p1, v0: yB[4], v1: yB[5]},
             {panel: 'back',  u0: p0, u1: p1, v0: yB[5], v1: yB[6]}
           ],
-          ends: [                                               // crimped end-seal columns
-            {u0: p.endSealBleed, u1: border},
-            {u0: cutLength - border, u1: cutLength - p.endSealBleed}
+          ends: [                                               // crimped end-seal columns (the flat crimp)
+            {u0: bleed, u1: sealEnd},
+            {u0: cutLength - sealEnd, u1: cutLength - bleed}
           ]
         };
       })()

@@ -4,10 +4,20 @@
 <pre id="out">running…</pre>
 <script type="module">
 /* Unit tests for core/styles/flowwrap.js — hand-checked derivations.
-   Content L=90 W=50 H=120, end seal 10, bleed 3 -> border 13, cutLength 116.
-   Rect girth = 2(50+120) = 340. */
-import {flowwrap, finGainAxis} from '../src/core/styles/flowwrap.js';
+   Content L=90 W=50 H=120, end seal (crimp flat) 10, bleed 3.
+   End-seal ANGLES default to internal 45° (film ramp) and external 45° (lay).
+   Rect girth = 2(50+120) = 340.
 
+   End-seal angle geometry (per end), hand-derived from the physical defs:
+     jawClearance = (H/2)/tan(internal)   ramp horizontal run  → feeds pack length
+     rampSlant    = (H/2)/sin(internal)   ramp film hypotenuse → feeds film area
+     externalContribution = endSealWidth·sin(external)   fin projection onto L
+     packLengthAtAngle = L + 2·(jawClearance + externalContribution)   (current)
+     packLengthMax     = L + 2·(jawClearance + endSealWidth)           (fin at 90°)
+   At the defaults (45°/45°): tan45=1 so jawClearance = H/2 = 60. */
+import {flowwrap, finGainAxis, SEAL_ANGLES} from '../src/core/styles/flowwrap.js';
+
+const RAD = Math.PI/180;
 const results = [];
 function t(name, fn){
   try{ fn(); results.push(`PASS  ${name}`); }
@@ -19,6 +29,12 @@ const base = {L: 90, W: 50, H: 120, sealType: 'fin', finHeight: 8, finSealBand: 
               finTreatment: 'standing', lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
               girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92};
 
+// hand-derived end-seal geometry at the defaults (45°/45°)
+const jaw45   = 60 / Math.tan(45*RAD);                 // = 60
+const slant45 = 60 / Math.sin(45*RAD);                 // = 84.85281…
+const border45 = 3 + 10 + slant45;                     // bleed + crimp + ramp slant
+const cut45   = 90 + 2*border45;                       // = 285.70563…
+
 t('flexible contract: outline only, crease EMPTY, structure flagged', () => {
   const g = flowwrap(base);
   if(g.structure !== 'flexible') throw new Error('structure');
@@ -26,26 +42,29 @@ t('flexible contract: outline only, crease EMPTY, structure flagged', () => {
   if(g.cut.length !== 4) throw new Error('blank outline only');
   if(!(g.meta.refLines.length > 0)) throw new Error('fold references belong in meta');
 });
-t('fin standing: web width, cut length, film area', () => {
+t('fin standing: web width, cut length (incl. ramp slant), film area', () => {
   const g = flowwrap(base), f = g.meta.film;
   approx(f.girth, 340); approx(f.finAllowance, 21);          // 2*8 + 5
-  approx(f.webWidth, 361); approx(f.cutLength, 116);         // 90 + 2*13
-  approx(f.filmAreaM2, 41876/1e6, 'area');
-  approx(f.packsPerMetre, 1000/116);
-  approx(f.massPer1000g, (41876/1e6)*30*0.92*1000, 'mass');  // ≈ 1155.8 g
+  approx(f.webWidth, 361);                                    // 340 + 21
+  approx(f.cutLength, cut45, 'cutLength');                    // 90 + 2*(3+10+slant)
+  approx(f.filmAreaM2, 361*cut45/1e6, 'area');
+  approx(f.packsPerMetre, 1000/cut45);
+  approx(f.massPer1000g, (361*cut45/1e6)*30*0.92*1000, 'mass');
 });
-t('compensation, fin standing: L +2×endSeal, W +0, H +finHeight', () => {
+t('compensation, fin standing: L +2×(jawClearance+crimp) [MAX], W +0, H +finHeight', () => {
   const g = flowwrap(base);
-  approx(g.outer.L, 110); approx(g.outer.W, 50); approx(g.outer.H, 128);
+  approx(g.outer.L, 90 + 2*(jaw45 + 10));                     // = 230 (conservative max)
+  approx(g.outer.W, 50); approx(g.outer.H, 128);
 });
 t('compensation, fin folded: H gains only film gauge (µm→mm)', () => {
   const g = flowwrap({...base, finTreatment: 'folded'});
   approx(g.outer.H, 120.03);
+  approx(g.outer.L, 230);                                     // end-seal L gain independent of the fin face
 });
-t('lap seal: allowance = overlap, no envelope gain', () => {
+t('lap seal: allowance = overlap, no envelope gain on W/H; L still gets the end seals', () => {
   const g = flowwrap({...base, sealType: 'lap'}), f = g.meta.film;
   approx(f.finAllowance, 12); approx(f.webWidth, 352);
-  approx(g.outer.L, 110); approx(g.outer.W, 50); approx(g.outer.H, 120);
+  approx(g.outer.L, 230); approx(g.outer.W, 50); approx(g.outer.H, 120);
 });
 t('round girth basis: π·d instead of rectangular perimeter', () => {
   const g = flowwrap({...base, W: 50, H: 50, girthBasis: 'round', roundDiameter: 50});
@@ -55,10 +74,68 @@ t('round girth basis: π·d instead of rectangular perimeter', () => {
   const v = g.meta.vDims.reduce((s, d) => s + d.v, 0) + g.meta.film.finAllowance/2;
   approx(v, g.meta.film.webWidth, 'bands + fa/2 sum');
 });
-t('bleed and seal are modeled separately', () => {
+t('bleed, flat crimp and ramp are modeled as separate blank zones', () => {
   const g = flowwrap(base), z = g.meta.sealZones;
   approx(z.bleeds[0].x1, 3, 'bleed outermost');
-  approx(z.ends[0].x0, 3); approx(z.ends[0].x1, 13, 'seal inside the bleed');
+  approx(z.ends[0].x0, 3); approx(z.ends[0].x1, 13, 'flat crimp inside the bleed');   // 3 + 10
+  approx(z.ramps[0].x0, 13, 'ramp begins where the crimp ends');
+  approx(z.ramps[0].x1, border45, 'ramp ends at the product panel (border)');
+});
+
+/* ---- end-seal ANGLES: the new feature -------------------------------- */
+t('jaw clearance is derived from internal angle & pack height: (H/2)/tan(θ)', () => {
+  approx(flowwrap({...base, internalAngle: 45}).meta.seal.jawClearance, 60/Math.tan(45*RAD));
+  approx(flowwrap({...base, internalAngle: 30}).meta.seal.jawClearance, 60/Math.tan(30*RAD));  // shallower → longer
+  approx(flowwrap({...base, internalAngle: 60}).meta.seal.jawClearance, 60/Math.tan(60*RAD));  // steeper → shorter
+  // shallower ramp ⇒ strictly longer clearance
+  const shallow = flowwrap({...base, internalAngle: 30}).meta.seal.jawClearance;
+  const steep = flowwrap({...base, internalAngle: 60}).meta.seal.jawClearance;
+  if(!(shallow > steep)) throw new Error('shallow ramp must give a longer jaw clearance');
+});
+t('external lay: 0° flat (min length, 0 contribution) … 90° straight out (= max)', () => {
+  const jc = 60;                                                // jaw clearance at internal 45
+  const g0 = flowwrap({...base, externalAngle: 0}).meta.seal;
+  approx(g0.externalContribution, 0, 'fin flat → 0');
+  approx(g0.packLengthAtAngle, 90 + 2*jc, 'flat: just the jaw clearance');   // 210
+  const g90 = flowwrap({...base, externalAngle: 90}).meta.seal;
+  approx(g90.externalContribution, 10, 'straight out → full crimp flat');
+  approx(g90.packLengthAtAngle, g90.packLengthMax, 'straight out = the max');
+  approx(g90.packLengthAtAngle, 230);
+  const g45 = flowwrap({...base, externalAngle: 45}).meta.seal;
+  approx(g45.packLengthAtAngle, 90 + 2*(jc + 10*Math.sin(45*RAD)));           // 224.142…
+});
+t('outer.L (what sizes the carton) is the MAX, independent of external angle', () => {
+  const L0 = flowwrap({...base, externalAngle: 0}).outer.L;
+  const L45 = flowwrap({...base, externalAngle: 45}).outer.L;
+  const L90 = flowwrap({...base, externalAngle: 90}).outer.L;
+  approx(L0, 230); approx(L45, 230); approx(L90, 230);
+  // the current length grows with external angle, but the carton size does not
+  if(!(flowwrap({...base, externalAngle: 0}).meta.seal.packLengthAtAngle
+       < flowwrap({...base, externalAngle: 90}).meta.seal.packLengthAtAngle))
+    throw new Error('external 0→90 must lengthen the current pack');
+});
+t('film area grows with a shallower ramp (more slant)', () => {
+  const shallow = flowwrap({...base, internalAngle: 30}).meta.film.filmAreaM2;
+  const steep = flowwrap({...base, internalAngle: 60}).meta.film.filmAreaM2;
+  if(!(shallow > steep)) throw new Error('shallower ramp must spend more film');
+});
+t('angles clamp to the shared physical band (SEAL_ANGLES)', () => {
+  approx(flowwrap({...base, internalAngle: 5}).meta.seal.internalAngle, SEAL_ANGLES.internal.min);   // →15
+  approx(flowwrap({...base, internalAngle: 90}).meta.seal.internalAngle, SEAL_ANGLES.internal.max);  // →75
+  approx(flowwrap({...base, externalAngle: -10}).meta.seal.externalAngle, SEAL_ANGLES.external.min); // →0
+  approx(flowwrap({...base, externalAngle: 120}).meta.seal.externalAngle, SEAL_ANGLES.external.max); // →90
+  // omitted angles fall back to the defaults
+  const g = flowwrap(base).meta.seal;
+  approx(g.internalAngle, SEAL_ANGLES.internal.default);
+  approx(g.externalAngle, SEAL_ANGLES.external.default);
+});
+t('meta.seal publishes the derived geometry for the renderer & readout', () => {
+  const s = flowwrap(base).meta.seal;
+  for(const k of ['internalAngle', 'externalAngle', 'jawClearance', 'rampSlant',
+                  'sealFlatLength', 'externalContribution', 'packLengthAtAngle', 'packLengthMax', 'productLength'])
+    if(s[k] == null) throw new Error(`meta.seal missing ${k}`);
+  approx(s.sealFlatLength, 10, 'sealFlatLength = endSealWidth');
+  approx(s.productLength, 90);
 });
 
 /* ---- Prompt 20, Part A: the compensation axis follows finFace, not a
@@ -75,7 +152,7 @@ t('compensation: bottom (default) and top both grow H, identically — face chan
   const top = flowwrap({...base, finFace: 'top'});
   const omitted = flowwrap(base);   // no finFace at all — every pre-existing pin's shape
   approx(bottom.outer.H, 128); approx(top.outer.H, 128); approx(omitted.outer.H, 128);
-  approx(bottom.outer.L, 110); approx(top.outer.L, 110);   // L/W never touched by the face
+  approx(bottom.outer.L, 230); approx(top.outer.L, 230);   // L/W never touched by the face
   approx(bottom.outer.W, 50);  approx(top.outer.W, 50);
   eq(bottom.outer, omitted.outer, 'omitted finFace defaults to bottom, bit-identical:');
 });

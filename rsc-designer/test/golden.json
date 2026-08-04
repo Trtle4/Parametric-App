@@ -1,8 +1,8 @@
 {
   "_meta": {
     "capturedFrom": "pre-refactor single-file app (commit faa1ef9); mm_100x60x150_thin captured post-MIN_CALIPER-fix (raw caliper feeds compensation); in_8x6x5 re-baselined 2026-07-11 per engineering ruling: 15mm chamfer cap and raw caliper are the correct semantics, old inch-mode values (0.75in chamfer, 0.6in caliper floor) preserved in git history at commit 41d66bc",
-    "note": "cut/crease/F/bbox are in the DISPLAY unit of each case (mm for cases 1-2 and the thin case, inches for case 3), exactly as the original geometry() produced them. Pallet: 48x40 in deck, 60 in max load height, all three stack patterns.",
-    "date": "2026-07-11"
+    "note": "cut/crease/F/bbox are in the DISPLAY unit of each case (mm for cases 1-2 and the thin case, inches for case 3), exactly as the original geometry() produced them. Pallet: 48x40 in deck, 60 in max load height, all three stack patterns. flow-wrap chains re-baselined 2026-08-04 for END-SEAL ANGLES (feature/seal-angles): the end seal is no longer flush — internalAngle (film ramp, default 45) derives a jaw clearance per end and externalAngle (seal lay, default 45) sets how far the flexible fin stands; wrapOuter.L now = productL + 2*(jawClearance + endSealWidth) at the conservative 90deg max, growing every downstream carton/case/pallet metric. New pins wrap_seal_internal_steep (75deg) and wrap_seal_internal_mid (60deg) exercise the internalAngle->jawClearance cascade at the band. wrap_multi_per_carton_4x2 no longer palletizes at the default seals (case exceeds the GMA pallet) and now records 0 for the pallet metrics by design.",
+    "date": "2026-08-04"
   },
   "cases": {
     "mm_200x150x120": {
@@ -89,7 +89,7 @@
   },
   "chains": {
     "wrap_fin_standing": {
-      "note": "box collation 90x50x20 x6 Z (env 90x50x120), fin seal STANDING 8/5, ends 10+3, rect girth, gauge 30 density 0.92; carton a6120 0.457; case 12 @ 4x3x1 wall 1.5; GMA pallet optimal",
+      "note": "box collation 90x50x20 x6 Z (env 90x50x120), fin seal STANDING 8/5, crimp 10 + bleed 3, rect girth, gauge 30 density 0.92; carton a6120 0.457; case 12 @ 4x3x1 wall 1.5; GMA pallet optimal. END-SEAL ANGLES at defaults internal 45 / external 45: jaw clearance (120/2)/tan45 = 60/end, so wrapOuter.L = 90 + 2*(60 + 10) = 230 (conservative MAX, fin straight out). Film cut length grows with the ramp slant.",
       "config": {
         "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
         "primaryOrientations": ["LWH"],
@@ -103,13 +103,20 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 110, "W": 50, "H": 128},
-        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 129.828},
-        "cavity": {"L": 447, "W": 156, "H": 130}, "outer": {"L": 453, "W": 162, "H": 142},
-        "boardAreaM2": 0.354926, "casesPerLayer": 14, "caseLayers": 9,
-        "casesPerPallet": 126, "cartonsPerPallet": 1512, "piecesPerPallet": 9072,
-        "coveragePct": 83, "cubeUtilPct": 70,
-        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.748
+        "wrapOuter": {"L": 230, "W": 50, "H": 128},
+        "cartonOuter": {"L": 230.914, "W": 50.914, "H": 129.828},
+        "cavity": {"L": 927, "W": 156, "H": 130},
+        "outer": {"L": 933, "W": 162, "H": 142},
+        "boardAreaM2": 0.629486,
+        "casesPerLayer": 7,
+        "caseLayers": 9,
+        "casesPerPallet": 63,
+        "cartonsPerPallet": 756,
+        "piecesPerPallet": 4536,
+        "coveragePct": 85,
+        "cubeUtilPct": 73,
+        "filmAreaM2": 0.10314,
+        "filmKgPerPallet": 2.152
       }
     },
     "wrap_fin_folded": {
@@ -127,17 +134,24 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 110, "W": 50, "H": 120.03},
-        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 122.828},
-        "cavity": {"L": 447, "W": 156, "H": 123}, "outer": {"L": 453, "W": 162, "H": 135},
-        "boardAreaM2": 0.346239, "casesPerLayer": 14, "caseLayers": 10,
-        "casesPerPallet": 140, "cartonsPerPallet": 1680, "piecesPerPallet": 10080,
-        "coveragePct": 83, "cubeUtilPct": 70,
-        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.942
+        "wrapOuter": {"L": 230, "W": 50, "H": 120.03},
+        "cartonOuter": {"L": 230.914, "W": 50.914, "H": 122.828},
+        "cavity": {"L": 927, "W": 156, "H": 123},
+        "outer": {"L": 933, "W": 162, "H": 135},
+        "boardAreaM2": 0.614079,
+        "casesPerLayer": 7,
+        "caseLayers": 10,
+        "casesPerPallet": 70,
+        "cartonsPerPallet": 840,
+        "piecesPerPallet": 5040,
+        "coveragePct": 85,
+        "cubeUtilPct": 73,
+        "filmAreaM2": 0.10314,
+        "filmKgPerPallet": 2.391
       }
     },
     "wrap_lap": {
-      "note": "same collation, LAP seal overlap 12: no envelope gain, narrower web",
+      "note": "same collation, LAP seal overlap 12: no W/H envelope gain, narrower web. L still gets the end seals (default angles 45/45, jaw clearance 60/end): wrapOuter.L = 230.",
       "config": {
         "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
         "primaryOrientations": ["LWH"],
@@ -151,13 +165,20 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 110, "W": 50, "H": 120},
-        "cartonOuter": {"L": 110.914, "W": 50.914, "H": 121.828},
-        "cavity": {"L": 447, "W": 156, "H": 122}, "outer": {"L": 453, "W": 162, "H": 134},
-        "boardAreaM2": 0.344998, "casesPerLayer": 14, "caseLayers": 10,
-        "casesPerPallet": 140, "cartonsPerPallet": 1680, "piecesPerPallet": 10080,
-        "coveragePct": 83, "cubeUtilPct": 70,
-        "filmAreaM2": 0.040832, "filmKgPerPallet": 1.893
+        "wrapOuter": {"L": 230, "W": 50, "H": 120},
+        "cartonOuter": {"L": 230.914, "W": 50.914, "H": 121.828},
+        "cavity": {"L": 927, "W": 156, "H": 122},
+        "outer": {"L": 933, "W": 162, "H": 134},
+        "boardAreaM2": 0.611878,
+        "casesPerLayer": 7,
+        "caseLayers": 10,
+        "casesPerPallet": 70,
+        "cartonsPerPallet": 840,
+        "piecesPerPallet": 5040,
+        "coveragePct": 85,
+        "cubeUtilPct": 72,
+        "filmAreaM2": 0.100568,
+        "filmKgPerPallet": 2.332
       }
     },
     "wrap_round_slug": {
@@ -175,17 +196,24 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 80, "W": 50, "H": 58},
-        "cartonOuter": {"L": 80.914, "W": 50.914, "H": 59.828},
-        "cavity": {"L": 327, "W": 156, "H": 60}, "outer": {"L": 333, "W": 162, "H": 72},
-        "boardAreaM2": 0.216216, "casesPerLayer": 21, "caseLayers": 19,
-        "casesPerPallet": 399, "cartonsPerPallet": 4788, "piecesPerPallet": 47880,
-        "coveragePct": 91, "cubeUtilPct": 70,
-        "filmAreaM2": 0.015315, "filmKgPerPallet": 2.024
+        "wrapOuter": {"L": 130, "W": 50, "H": 58},
+        "cartonOuter": {"L": 130.914, "W": 50.914, "H": 59.828},
+        "cavity": {"L": 527, "W": 156, "H": 60},
+        "outer": {"L": 533, "W": 162, "H": 72},
+        "boardAreaM2": 0.302616,
+        "casesPerLayer": 12,
+        "caseLayers": 19,
+        "casesPerPallet": 228,
+        "cartonsPerPallet": 2736,
+        "piecesPerPallet": 27360,
+        "coveragePct": 84,
+        "cubeUtilPct": 64,
+        "filmAreaM2": 0.027907,
+        "filmKgPerPallet": 2.107
       }
     },
     "wrap_multi_per_carton_4x2": {
-      "note": "Bug 1 regression: MULTIPLE WRAPS PER CARTON, not previously covered. Same box collation/wrap as wrap_fin_folded (env 90x50x120, fin folded, ends 10), but the carton now holds 8 wraps explicit 4x2x1 (wraps-per-carton link, links[1]) instead of the implicit single wrap every other wrap_* pin uses. Carton solves to 440x100x121 (4*110 x 2*50 x 120.03->121), carton a6120 @0.457 -> outer 440.914x100.914x122.828 (H unchanged from wrap_fin_folded since nz=1 in both). Case: 4 cartons @ 2x2x1, wall 1.5. GMA pallet, optimal pattern.",
+      "note": "Bug 1 regression: MULTIPLE WRAPS PER CARTON (wraps-per-carton link, links[1]). Same box collation/wrap as wrap_fin_folded (env 90x50x120, fin folded, crimp 10, bleed 3), now with default end-seal angles internal 45 / external 45: jaw clearance 60/end so wrapOuter.L = 90 + 2*(60 + 10) = 230. The carton holds 8 wraps explicit 4x2x1 -> 4*230 x 2*50 = 920x100 (a6120 @0.457 -> outer 920.914x100.914x122.828, H unchanged since nz=1). Case 4 cartons @ 2x2x1 wall 1.5 -> outer 1851x211x135, which EXCEEDS the 1219x1016 GMA pallet: at these default seals the pallet metrics are 0, so this pin now guards the multi-wrap CARTON solve (wrapOuter/cartonOuter/piecesPerCarton = the actual Bug 1 regression) and records that the arrangement no longer palletizes once the angled seals grow the pack.",
       "config": {
         "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
         "primaryOrientations": ["LWH"],
@@ -199,18 +227,25 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 110, "W": 50, "H": 120.03},
-        "cartonOuter": {"L": 440.914, "W": 100.914, "H": 122.828},
+        "wrapOuter": {"L": 230, "W": 50, "H": 120.03},
+        "cartonOuter": {"L": 920.914, "W": 100.914, "H": 122.828},
         "piecesPerCarton": 48,
-        "cavity": {"L": 885, "W": 205, "H": 123}, "outer": {"L": 891, "W": 211, "H": 135},
-        "boardAreaM2": 0.72652, "casesPerLayer": 5, "caseLayers": 10,
-        "casesPerPallet": 50, "cartonsPerPallet": 200, "piecesPerPallet": 9600,
-        "coveragePct": 76, "cubeUtilPct": 65,
-        "filmAreaM2": 0.041876, "filmKgPerPallet": 1.849
+        "cavity": {"L": 1845, "W": 205, "H": 123},
+        "outer": {"L": 1851, "W": 211, "H": 135},
+        "boardAreaM2": 1.35628,
+        "casesPerLayer": 0,
+        "caseLayers": 0,
+        "casesPerPallet": 0,
+        "cartonsPerPallet": 0,
+        "piecesPerPallet": 0,
+        "coveragePct": 0,
+        "cubeUtilPct": 0,
+        "filmAreaM2": 0.10314,
+        "filmKgPerPallet": 0
       }
     },
     "wrap_axis_L_fixed": {
-      "note": "Machine direction is FIXED at envelope L (no wrapAxis choice). A W-DOMINANT collation (box 90x50x20, perStack 1 stackAxis Z, 1x3 stacks -> envelope 90x150x20, W(150) > L(90)) still wraps along L: the seal gain lands on L, the longer W is untouched. Fin folded 8/5, ends 10+3, rect girth, gauge 30 density 0.92. Wrap outer L 90+2*10=110, W 150, H +gauge 20.03 -> carton cavity 110x150x21 (H 1mm up), carton a6120 @0.457 -> outer 110.914x150.914x22.828. Single carton in a single case (count 1, 1x1x1, wall 1.5); case cavity 114x154x23, outer 120x160x35 (fefco201 caliper 3/glue 35/slot 6). Blank 2*(114+154)+35=571 x (23+154)=177 -> 0.101067 m2. Film: L machine dir 90, girth 2*(150+20)=340, web 340+21, cut 90+26=116 -> 0.041876 m2. GMA pallet, optimal pattern.",
+      "note": "Machine direction is FIXED at envelope L (no wrapAxis choice). A W-DOMINANT collation (box 90x50x20, perStack 1 stackAxis Z, 1x3 stacks -> envelope 90x150x20, W(150) > L(90)) still wraps along L: the seal gain lands on L, the longer W is untouched. Fin folded 8/5, crimp 10 + bleed 3, rect girth, gauge 30 density 0.92. Default end-seal angles internal 45 / external 45: jaw clearance (H/2)/tan45 = 10 (H=20) so wrapOuter.L = 90 + 2*(10 + 10) = 130, W 150 (untouched), H +gauge 20.03 -> carton a6120 @0.457 outer 130.914x150.914x22.828. Single carton in a single case (count 1, 1x1x1, wall 1.5) -> case outer 140x160x35 (fefco201 caliper 3/glue 35/slot 6). GMA pallet, optimal pattern.",
       "config": {
         "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 1, "stackAxis": "Z", "nx": 1, "ny": 3, "stackGap": 0, "pieceGap": 0},
         "primaryOrientations": ["LWH"],
@@ -224,14 +259,83 @@
         "rounding": "1mm"
       },
       "expected": {
-        "wrapOuter": {"L": 110, "W": 150, "H": 20.03},
-        "cartonOuter": {"L": 110.914, "W": 150.914, "H": 22.828},
+        "wrapOuter": {"L": 130, "W": 150, "H": 20.03},
+        "cartonOuter": {"L": 130.914, "W": 150.914, "H": 22.828},
         "piecesPerCarton": 3,
-        "cavity": {"L": 114, "W": 154, "H": 23}, "outer": {"L": 120, "W": 160, "H": 35},
-        "boardAreaM2": 0.101067, "casesPerLayer": 61, "caseLayers": 39,
-        "casesPerPallet": 2379, "cartonsPerPallet": 2379, "piecesPerPallet": 7137,
-        "coveragePct": 95, "cubeUtilPct": 54,
-        "filmAreaM2": 0.041876, "filmKgPerPallet": 2.75
+        "cavity": {"L": 134, "W": 154, "H": 23},
+        "outer": {"L": 140, "W": 160, "H": 35},
+        "boardAreaM2": 0.108147,
+        "casesPerLayer": 52,
+        "caseLayers": 39,
+        "casesPerPallet": 2028,
+        "cartonsPerPallet": 2028,
+        "piecesPerPallet": 6084,
+        "coveragePct": 94,
+        "cubeUtilPct": 54,
+        "filmAreaM2": 0.052087,
+        "filmKgPerPallet": 2.915
+      }
+    },
+    "wrap_seal_internal_steep": {
+      "note": "END-SEAL ANGLES pin: STEEP internal ramp 75 deg (min jaw clearance ~16.1 mm/end) + external 90 deg (fin straight out, so packLengthAtAngle = the max). Same collation/carton/case as wrap_fin_standing (box 90x50x20 x6, a6120 0.457, 12 cartons 4x3x1, wall 1.5, GMA optimal). Pins the internalAngle -> jawClearance -> wrapOuter.L -> carton -> pallet cascade at the steep band end (short pack, case still fits the pallet).",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "internalAngle": 75, "externalAngle": 90, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 1, "wrapArrangement": "auto",
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 142.15390309173472, "W": 50, "H": 128},
+        "cartonOuter": {"L": 143.914, "W": 50.914, "H": 129.828},
+        "cavity": {"L": 579, "W": 156, "H": 130},
+        "outer": {"L": 585, "W": 162, "H": 142},
+        "boardAreaM2": 0.43043,
+        "casesPerLayer": 12,
+        "caseLayers": 9,
+        "casesPerPallet": 108,
+        "cartonsPerPallet": 1296,
+        "piecesPerPallet": 7776,
+        "coveragePct": 92,
+        "cubeUtilPct": 78,
+        "filmAreaM2": 0.086724,
+        "filmKgPerPallet": 3.102
+      }
+    },
+    "wrap_seal_internal_mid": {
+      "note": "END-SEAL ANGLES pin: MID internal ramp 60 deg (jaw clearance ~34.6 mm/end) + external 45 deg (lay). Same chain as wrap_fin_standing otherwise. Pins the cascade at a second internal angle; wrapOuter.L sits between the 45 deg default (230) and the 75 deg steep pin, confirming outer.L tracks jawClearance.",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 90, "W": 50, "H": 20}, "perStack": 6, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "internalAngle": 60, "externalAngle": 45, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 1, "wrapArrangement": "auto",
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 179.2820323027551, "W": 50, "H": 128},
+        "cartonOuter": {"L": 180.914, "W": 50.914, "H": 129.828},
+        "cavity": {"L": 727, "W": 156, "H": 130},
+        "outer": {"L": 733, "W": 162, "H": 142},
+        "boardAreaM2": 0.515086,
+        "casesPerLayer": 9,
+        "caseLayers": 9,
+        "casesPerPallet": 81,
+        "cartonsPerPallet": 972,
+        "piecesPerPallet": 5832,
+        "coveragePct": 86,
+        "cubeUtilPct": 73,
+        "filmAreaM2": 0.091898,
+        "filmKgPerPallet": 2.465
       }
     },
     "carton12_4x3x1_upright": {
