@@ -152,10 +152,11 @@ export function newProject(){
       // contents, which the app can't know); target: required safety factor;
       // doubleStack: two unit loads high in the warehouse (doubles the column).
       stacking: {ect: 32, unitWeightLb: 20, target: 3.0, doubleStack: false}},
-    // free print text on the package's print panel — lives in the model (and
-    // the save file) even though its input control is hidden from the UI, so
-    // it is never an orphaned, unsaveable Path-A value again.
-    printText: 'FRAGILE',
+    // free print text on the package's print panel — the capability stays
+    // wired in the model + save file, but the DEFAULT is empty: with real
+    // uploaded artwork a placeholder string would clutter clean output and
+    // bleed through the art. Nothing renders unless the user sets it.
+    printText: '',
     // the three settable counts (cases/pallet is solved, never a default):
     // product/wrap is the collation above (3 stacks of 2 = 6, unchanged),
     // wraps/carton = 8 (explicit 1x4x2 — its own product IS 8), cartons/
