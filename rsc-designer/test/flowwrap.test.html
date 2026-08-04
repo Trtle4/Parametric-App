@@ -166,6 +166,25 @@ t('compensation: bottom (default) and top both grow H, identically — face chan
   eq(bottom.outer, omitted.outer, 'omitted finFace defaults to bottom, bit-identical:');
 });
 
+/* ---- artwork mapping: the wrap CAN be textured -----------------------
+   The renderer clads the wrap from meta.artMap (a horizontal tube, extrude
+   along L). This guards the DATA the 3D map-back needs — the wrap art bug was
+   the renderer never reading this, so at minimum the map must exist and carry
+   the panel decomposition (front/sides/back-halves) + the end-seal columns. */
+t('artMap exists and describes the tube (front/sides/back panels + end fins)', () => {
+  const am = flowwrap(base).meta.artMap;
+  if(!am) throw new Error('flow wrap has no artMap — the 3D mesh cannot be textured');
+  if(am.flat) throw new Error('wrap artMap must not be flat (it is a real tube)');
+  if(am.extrude !== 'x' || am.extrudeIsU !== true) throw new Error('wrap extrudes along the film run (x), u along it');
+  approx(am.length, 90, 'tube length = pack length L');
+  if(!(am.section && am.section.length === 6)) throw new Error('section polyline (Y-Z) with the 5 girth bands + close');
+  const panels = (am.faces || []).map(f => f.panel);
+  eq(panels, ['back', 'side', 'front', 'side', 'back'], 'the girth panel walk:');
+  if(!(am.ends && am.ends.length === 2)) throw new Error('two crimped end-seal columns for the end fins');
+  // every printed face maps to a real (non-empty) template rect
+  for(const f of am.faces) if(!(f.u1 > f.u0 && f.v1 > f.v0)) throw new Error(`degenerate face rect: ${JSON.stringify(f)}`);
+});
+
 const fails = results.filter(r => r.startsWith('FAIL')).length;
 document.getElementById('out').textContent =
   `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');

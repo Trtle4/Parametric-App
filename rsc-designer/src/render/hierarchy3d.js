@@ -404,8 +404,8 @@ function pieceGeo(piece, stackAxis, o){
 
 // tiers, outer→inner. Each returns a Group representing ONE unit.
 // `sel` holds the opened child index per tier; `depthTiers` is the visible chain.
-function buildWrapOpened(bundle){
-  // an opened wrap: translucent conforming film + all pieces inside
+function buildWrapOpened(bundle, wrapArt){
+  // an opened wrap: conforming film + all pieces inside
   const g = new THREE.Group();
   // no wrap/piece data on the row means the film tier is disabled (or the
   // content never collates into a wrap): there is nothing to open — return
@@ -416,8 +416,19 @@ function buildWrapOpened(bundle){
   const o = 'LWH';                                         // pieces already in envelope frame
   // the film is drawn only when a wrap is actually in the chain (seals present);
   // a wrapless pack shows the bare collation pieces alone (no conforming film).
-  if(bundle.wraps.seals)
-    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
+  if(bundle.wraps.seals){
+    if(wrapArt && wrapArt.am && wrapArt.canvas){
+      // printed film in Cutaway: the SAME textured tube (packArtGeometry), but
+      // translucent so the visible faces carry the art while the contents show
+      // through it. One shared texture, disposed on the next clear().
+      const mats = packArtMaterials(wrapArt.canvas, board);
+      mats[0].transparent = true; mats[0].opacity = 0.62; mats[0].depthWrite = false;
+      artResources.push(mats[0]);
+      g.add(new THREE.Mesh(packArtGeometry(wrapArt.am), mats));
+    }else{
+      g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
+    }
+  }
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -627,6 +638,10 @@ export function buildHierarchy(bundle, depth, sel, solid){
   const artOf = geo => (geo && geo.meta.artMap && !geo.meta.artMap.flat) ? geo.meta.artMap : null;
   const cartonArt = {am: artOf(bundle.cartonGeo), canvas: A.carton};
   const caseArt   = {am: artOf(bundle.caseGeo),   canvas: A.case};
+  // the wrap clads too: its artMap is a horizontal tube (extrude along L),
+  // textured by the SAME packArtGeometry the cartons/cases use — the wrap panel
+  // decomposition (front/sides/back-halves) the template and 2D view share.
+  const wrapArt   = {am: artOf(bundle.wrapGeo),   canvas: A.wrap};
 
   // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
   // cartonTier only exists when the carton level is actually enabled
@@ -681,7 +696,11 @@ export function buildHierarchy(bundle, depth, sel, solid){
     const s = (rot ? geo.boundingBox.clone().applyMatrix4(rot) : geo.boundingBox).getSize(new THREE.Vector3());
     outer = {L: s.x, W: s.z, H: s.y};
   }else if(depth === 'wrap'){
-    group.add(buildWrapOpened(bundle));
+    // Solid + art → the closed printed tube (art on every face); otherwise the
+    // opened film (Cutaway carries the art on the translucent film, contents
+    // showing through). No art → the plain pillow, both modes.
+    if(solid && wrapArt.am && wrapArt.canvas) group.add(soloClosed(bundle.wrapGeo, wrapArt));
+    else group.add(buildWrapOpened(bundle, wrapArt));
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
