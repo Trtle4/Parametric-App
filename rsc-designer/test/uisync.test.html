@@ -89,12 +89,13 @@
 <div id="hierHud" style="display:none"></div>
 <div id="hierLegend" style="display:none"></div>
 <div id="orbithint"></div>
-<!-- Retail shelf-fill panel the real app wires at boot -->
+<!-- Retail shelf-fill panel the real app wires at boot. The unit-label spans
+     (uShW/uShD/uShH) must exist or app.js's writeShelfFields() throws at boot. -->
 <div id="shelfPanel" style="display:none">
   <select id="shFront"></select>
-  <input id="shWidth" type="number" value="1000">
-  <input id="shDepth" type="number" value="500">
-  <input id="shHeight" type="number" value="300">
+  <div class="sp-num"><input id="shWidth" type="number" value="1000"><span id="uShW">mm</span></div>
+  <div class="sp-num"><input id="shDepth" type="number" value="500"><span id="uShD">mm</span></div>
+  <div class="sp-num"><input id="shHeight" type="number" value="300"><span id="uShH">mm</span></div>
   <input id="shFacings" type="text">
   <input id="shStack" type="text">
   <input id="shDeep" type="text">
@@ -153,6 +154,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
+import {getPivot} from '../src/render/fold3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {toMM} from '../src/core/units.js';
 
@@ -766,6 +768,10 @@ await (async () => {
    to the default project's 72.
    ================================================================== */
 await (async () => {
+  // reset to a PRISTINE default so this genuinely pins the default project,
+  // not whatever state earlier tests left behind (which drifts as the model
+  // changes — e.g. the seal-angle carton link shifted an accumulated state).
+  build.loadProject({project: newProject(), selectedCandidate: null}); await settle();
   setLevel('case'); el('tab2d').click(); await settle();
   const num = id => { const m = el(id).textContent.match(/(\d+)/); return m ? +m[1] : null; };
   // the resolved row (what every view renders when nothing is picked) is the
@@ -954,6 +960,44 @@ await (async () => {
   });
   // restore a clean default state
   setLevel('product'); await settle(); setSeg('cMode', 'pile'); await settle();
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   Retail shelf: units reach the shelf readouts (single source), and the
+   facings block stays centred on the shelf at every count (bugfix pass).
+   ================================================================== */
+await (async () => {
+  const shelfInstX = () => {   // distinct world-x of the shelf's facing packs
+    const THREE = window.THREE, box = getPivot(), xs = new Set();
+    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    box.traverse(o => { if(o.isInstancedMesh){ for(let i = 0; i < o.count; i++){ o.getMatrixAt(i, m); v.setFromMatrixPosition(m).applyMatrix4(o.matrixWorld); xs.add(+v.x.toFixed(1)); } } });
+    return [...xs].sort((a, b) => a - b);
+  };
+  el('units').value = 'mm'; el('units').dispatchEvent(new Event('change')); await settle();
+  el('tabShelf').click(); await settle();
+
+  t('shelf units: switching to inches converts the shelf fields + labels (one unit source)', () => {
+    const mmVal = el('shWidth').value, mmUnit = el('uShW').textContent;
+    el('units').value = 'in'; el('units').dispatchEvent(new Event('change'));
+    const inVal = el('shWidth').value, inUnit = el('uShW').textContent;
+    if(mmUnit !== 'mm' || inUnit !== 'in') throw new Error(`unit label did not switch: ${mmUnit}->${inUnit}`);
+    if(!(Math.abs(+inVal - +mmVal/25.4) < 0.01)) throw new Error(`shelf width did not convert: ${mmVal}mm -> ${inVal}in`);
+    el('units').value = 'mm'; el('units').dispatchEvent(new Event('change'));   // restore
+  });
+
+  await settle();
+  t('shelf facings: the block is centred on the shelf at 1, 2, 3 and an even count', () => {
+    el('shFront').value = 'LWH'; el('shFront').dispatchEvent(new Event('change'));
+    for(const f of [1, 2, 3, 4]){
+      el('shFacings').value = String(f); el('shFacings').dispatchEvent(new Event('input'));
+      const xs = shelfInstX();
+      if(!xs.length) throw new Error(`no facings rendered at count ${f}`);
+      const centre = (xs[0] + xs[xs.length - 1]) / 2;
+      if(Math.abs(centre) > 1.0) throw new Error(`facings not centred at ${f}: block centre x=${centre}, xs=${JSON.stringify(xs)}`);
+    }
+    el('shFacings').value = ''; el('shFacings').dispatchEvent(new Event('input'));   // back to auto
+  });
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 
