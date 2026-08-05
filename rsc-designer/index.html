@@ -177,12 +177,27 @@
     border:1px solid rgba(178,58,46,.4);border-radius:var(--r-sm);padding:8px 10px;margin:2px 0 4px;
   }
 
-  /* ---------- main layout ---------- */
-  main{flex:1;display:grid;grid-template-columns:250px minmax(0,1fr) 250px;gap:0;min-height:0}
+  /* ---------- main layout ----------
+     Two balanced control columns FLANK the render; the render owns its own
+     column and is never covered by a control panel (only the canvas-anchored
+     ViewCube + view/mode toggles overlay it). Reflows to a single column with
+     the render pinned on top at the mobile breakpoint. */
+  main{flex:1;display:grid;grid-template-columns:270px minmax(0,1fr) 300px;gap:0;min-height:0}
   .rail{
     padding:18px 18px 40px;display:flex;flex-direction:column;gap:14px;background:var(--panel);
     overflow:auto;
   }
+  /* panels relocated from the canvas into the rails: neutralise their old
+     position:absolute float and let them be in-flow rail cards. Same elements,
+     ids and app.js display toggles — only position changes. High enough
+     specificity to beat .hud.hier / .hud.hierlegend positioning. */
+  .rail .shelfpanel, .rail .artpanel, .rail .titleblock,
+  .rail .hud, .rail .hud.hier, .rail .hud.hierlegend, .rail .orbithint{
+    position:static;left:auto;right:auto;top:auto;bottom:auto;
+    transform:none;width:auto;max-width:none;max-height:none;box-shadow:none;z-index:auto;
+  }
+  .rail .hud{flex-wrap:wrap;gap:10px 14px}          /* the 2D CUT/CREASE legend wraps in a narrow rail */
+  .rail .orbithint{align-self:flex-start;font-size:10.5px;padding:5px 10px}
   .rail.left{border-right:1px solid var(--line)}
   .rail.right{border-left:1px solid var(--line)}
   .rail h2{
@@ -476,11 +491,18 @@
     }
     .brand .sub{display:none}          /* redundant on a narrow header */
     .brand .name{white-space:normal}
-    .rail.left{order:1;border-right:0;border-bottom:1px solid var(--line)}
-    .rail.right{order:2;border-left:0;border-bottom:1px solid var(--line)}
-    .stage{order:3;min-height:52vh}
-    .rail{max-height:none}
-    .titleblock{display:none}          /* no floating overlay on narrow screens */
+    /* single column, RENDER PINNED on top with its own space; the control
+       columns flow beneath it and the PAGE scrolls — nothing floats over the
+       canvas. The rails must NOT shrink+internal-scroll (they do at flex
+       default, since they're overflow:auto), or the page can't grow: pin their
+       flex and let them size to content so the document scrolls as one. */
+    main{min-height:0}
+    .stage{order:1;position:sticky;top:0;z-index:6;height:46vh;min-height:300px;flex:none;
+      border-bottom:1px solid var(--line);box-shadow:0 6px 14px rgba(20,30,40,.10)}
+    .rail.left{order:2;border-right:0;border-bottom:1px solid var(--line)}
+    .rail.right{order:3;border-left:0;border-bottom:1px solid var(--line)}
+    .rail{max-height:none;overflow:visible;flex:none}
+    .titleblock{display:none}          /* the mobile-spec card below carries this summary instead */
     .mobile-spec{
       order:4;display:block;background:var(--panel);border-top:1px solid var(--line);
       padding:12px 16px 16px;
@@ -552,6 +574,72 @@
       <div class="inp"><input id="txt" type="text" value="" maxlength="40" autocomplete="off"></div>
     </div>
     <div id="optFields" style="display:contents"></div>
+
+    <!-- artwork round-trip controls (contextual: style level, 2D/3D) — in the
+         control column now, never floating over the render -->
+    <div class="shelfpanel artpanel railpanel" id="artPanel" style="display:none">
+      <div class="sp-head">Artwork · <span id="artLevelName">wrap</span></div>
+      <div class="art-row">
+        <span class="art-lab">Template</span>
+        <button class="btn sm" id="btnArtTplSvg" title="Download the artwork template as SVG">SVG</button>
+        <button class="btn sm" id="btnArtTplPng" title="Download the artwork template as a PNG at real size">PNG</button>
+      </div>
+      <div class="art-row">
+        <button class="btn sm" id="btnArtUpload" style="flex:1">Upload artwork…</button>
+        <input type="file" id="artFileInput" accept="image/png,image/jpeg,image/webp" style="display:none">
+      </div>
+      <div id="artControls" style="display:none">
+        <div class="sp-grid">
+          <label>Fit <span class="sp-hint">upload sizing</span></label>
+          <select id="artFit">
+            <option value="stretch">Stretch 1:1</option>
+            <option value="fit">Fit (contain)</option>
+            <option value="fill">Fill (cover)</option>
+          </select>
+          <label>Nudge X</label>
+          <div class="sp-num"><input id="artDx" type="number" step="1" value="0"><span>mm</span></div>
+          <label>Nudge Y</label>
+          <div class="sp-num"><input id="artDy" type="number" step="1" value="0"><span>mm</span></div>
+          <label>Scale</label>
+          <div class="sp-num"><input id="artScale" type="number" step="1" min="1" value="100"><span>%</span></div>
+        </div>
+        <div class="sp-readout" id="artInfo">—</div>
+        <button class="btn sm danger" id="btnArtRemove">Remove artwork</button>
+      </div>
+      <div class="sp-readout" id="artHint">Export the template, paint inside it, reupload — it maps 1:1.</div>
+    </div>
+
+    <!-- retail shelf controls + readout (contextual: Shelf view) -->
+    <div class="shelfpanel railpanel" id="shelfPanel" style="display:none">
+      <div class="sp-head">Retail shelf · <span id="spUnit">packs</span></div>
+      <div class="sp-grid">
+        <label>Front panel</label>
+        <select id="shFront"></select>
+        <label>Shelf width</label>
+        <div class="sp-num"><input id="shWidth" type="number" min="1" step="10"><span id="uShW">mm</span></div>
+        <label>Shelf depth</label>
+        <div class="sp-num"><input id="shDepth" type="number" min="1" step="10"><span id="uShD">mm</span></div>
+        <label>Shelf height <span class="sp-hint">to shelf above</span></label>
+        <div class="sp-num"><input id="shHeight" type="number" min="1" step="10"><span id="uShH">mm</span></div>
+        <label>Facings <span class="sp-hint">across</span></label>
+        <input id="shFacings" type="number" min="1" step="1" placeholder="auto">
+        <label>Stack <span class="sp-hint">high</span></label>
+        <input id="shStack" type="number" min="1" step="1" placeholder="auto">
+        <label>Rows <span class="sp-hint">deep, back→front</span></label>
+        <input id="shDeep" type="number" min="1" step="1" placeholder="auto">
+      </div>
+      <div class="sp-readout" id="shReadout">—</div>
+    </div>
+
+    <!-- 3D info (envelope/seal/counts) + legends — in the column, not over the
+         render. Each is display-toggled by app.js exactly as before. -->
+    <div class="hud hier railpanel" id="hierHud" style="display:none"></div>
+    <div class="hud hierlegend railpanel" id="hierLegend" style="display:none"></div>
+    <div class="hud railpanel" id="hud">
+      <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
+      <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>
+      <span class="k">scroll zoom &middot; drag pan &middot; dblclick reset</span>
+    </div>
 
     <div id="palletFields" style="display:contents">
       <h2 style="margin-top:6px">Pallet</h2>
@@ -629,70 +717,6 @@
       <div class="seg"><button id="m3dims" title="Overlay L × W × H on the component">Dims</button></div>
     </div>
 
-    <div class="hud" id="hud">
-      <span class="k"><span class="swatch" style="border-top-color:var(--cut)"></span>Cut</span>
-      <span class="k"><span class="swatch" style="border-top-color:var(--crease);border-top-style:dashed"></span>Crease</span>
-      <span class="k">scroll zoom &middot; drag pan &middot; dblclick reset</span>
-    </div>
-    <div class="hud hier" id="hierHud" style="display:none"></div>
-    <div class="hud hierlegend" id="hierLegend" style="display:none"></div>
-    <div class="orbithint" id="orbithint">drag to orbit &middot; scroll to zoom</div>
-
-    <!-- retail shelf controls + readout (shown only in the Shelf view) -->
-    <div class="shelfpanel" id="shelfPanel" style="display:none">
-      <div class="sp-head">Retail shelf · <span id="spUnit">packs</span></div>
-      <div class="sp-grid">
-        <label>Front panel</label>
-        <select id="shFront"></select>
-        <label>Shelf width</label>
-        <div class="sp-num"><input id="shWidth" type="number" min="1" step="10"><span id="uShW">mm</span></div>
-        <label>Shelf depth</label>
-        <div class="sp-num"><input id="shDepth" type="number" min="1" step="10"><span id="uShD">mm</span></div>
-        <label>Shelf height <span class="sp-hint">to shelf above</span></label>
-        <div class="sp-num"><input id="shHeight" type="number" min="1" step="10"><span id="uShH">mm</span></div>
-        <label>Facings <span class="sp-hint">across</span></label>
-        <input id="shFacings" type="number" min="1" step="1" placeholder="auto">
-        <label>Stack <span class="sp-hint">high</span></label>
-        <input id="shStack" type="number" min="1" step="1" placeholder="auto">
-        <label>Rows <span class="sp-hint">deep, back→front</span></label>
-        <input id="shDeep" type="number" min="1" step="1" placeholder="auto">
-      </div>
-      <div class="sp-readout" id="shReadout">—</div>
-    </div>
-
-    <!-- artwork round-trip controls (shown on a style level in the 2D/3D views) -->
-    <div class="shelfpanel artpanel" id="artPanel" style="display:none">
-      <div class="sp-head">Artwork · <span id="artLevelName">wrap</span></div>
-      <div class="art-row">
-        <span class="art-lab">Template</span>
-        <button class="btn sm" id="btnArtTplSvg" title="Download the artwork template as SVG">SVG</button>
-        <button class="btn sm" id="btnArtTplPng" title="Download the artwork template as a PNG at real size">PNG</button>
-      </div>
-      <div class="art-row">
-        <button class="btn sm" id="btnArtUpload" style="flex:1">Upload artwork…</button>
-        <input type="file" id="artFileInput" accept="image/png,image/jpeg,image/webp" style="display:none">
-      </div>
-      <div id="artControls" style="display:none">
-        <div class="sp-grid">
-          <label>Fit <span class="sp-hint">upload sizing</span></label>
-          <select id="artFit">
-            <option value="stretch">Stretch 1:1</option>
-            <option value="fit">Fit (contain)</option>
-            <option value="fill">Fill (cover)</option>
-          </select>
-          <label>Nudge X</label>
-          <div class="sp-num"><input id="artDx" type="number" step="1" value="0"><span>mm</span></div>
-          <label>Nudge Y</label>
-          <div class="sp-num"><input id="artDy" type="number" step="1" value="0"><span>mm</span></div>
-          <label>Scale</label>
-          <div class="sp-num"><input id="artScale" type="number" step="1" min="1" value="100"><span>%</span></div>
-        </div>
-        <div class="sp-readout" id="artInfo">—</div>
-        <button class="btn sm danger" id="btnArtRemove">Remove artwork</button>
-      </div>
-      <div class="sp-readout" id="artHint">Export the template, paint inside it, reupload — it maps 1:1.</div>
-    </div>
-
     <div class="viewcube" id="viewCubeWrap" style="display:none">
       <div class="vc-stage" id="viewCubeStage"></div>
       <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
@@ -700,15 +724,6 @@
       <button class="vc-arrow left" id="viewCubeLeft" title="Rotate left 15°">&#9664;</button>
       <button class="vc-arrow right" id="viewCubeRight" title="Rotate right 15°">&#9654;</button>
       <button id="viewCubeHome" title="Home view (three-quarter isometric)">&#8962;</button>
-    </div>
-
-    <!-- engineering title block (signature): active-level summary readouts -->
-    <div class="titleblock" id="titleBlock">
-      <div class="tbhead"><span id="tbPart">FEFCO 201</span><span id="tbLevel">CARTON</span></div>
-      <div class="tbrow"><div class="k">Blank</div><div class="v" id="tbBlank">—</div></div>
-      <div class="tbrow"><div class="k">Outer</div><div class="v" id="tbOuter">—</div></div>
-      <div class="tbrow"><div class="k">Board area</div><div class="v" id="tbArea">—</div></div>
-      <div class="tbrow"><div class="k">On pallet</div><div class="v" id="tbPallet">—</div></div>
     </div>
   </section>
 
@@ -747,6 +762,17 @@
         <div id="bctHowBody"></div>
       </details>
     </div>
+
+    <!-- engineering title block (signature): active-level summary readouts —
+         in the column now (the only place Outer dims are shown) -->
+    <div class="titleblock railpanel" id="titleBlock">
+      <div class="tbhead"><span id="tbPart">FEFCO 201</span><span id="tbLevel">CARTON</span></div>
+      <div class="tbrow"><div class="k">Blank</div><div class="v" id="tbBlank">—</div></div>
+      <div class="tbrow"><div class="k">Outer</div><div class="v" id="tbOuter">—</div></div>
+      <div class="tbrow"><div class="k">Board area</div><div class="v" id="tbArea">—</div></div>
+      <div class="tbrow"><div class="k">On pallet</div><div class="v" id="tbPallet">—</div></div>
+    </div>
+    <div class="orbithint railpanel" id="orbithint">drag to orbit &middot; scroll to zoom</div>
   </aside>
 
   <!-- mobile-only: the title-block summary drops below the canvas -->
