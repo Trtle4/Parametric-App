@@ -41,8 +41,14 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
  *        artwork: every facing pack shows it, printed FRONT to the shopper. The
  *        caller packs in the print-front orientation ('LWH') so the pack's
  *        canonical footprint (L across, W deep, H up) matches od.
+ * @param {number} [rotDeg]  in-plan rotation about the vertical (0/90/180/270).
+ *        `od` is always the pack's TRUE front-facing dims; the box is built from
+ *        them and each pack is spun by rotDeg so the chosen face points at the
+ *        shopper. The caller lays the placement grid on the ROTATED footprint,
+ *        so a spun box lands exactly in its cell. Rigid rotation → artwork can
+ *        never flip or mirror, only turn.
  */
-export function buildShelf(od, shelf, placements, visible, art){
+export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
   const pivot = getPivot();
   if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
   if(shelfArtMat){ if(shelfArtMat.map) shelfArtMat.map.dispose(); shelfArtMat.dispose(); shelfArtMat = null; }
@@ -76,10 +82,15 @@ export function buildShelf(od, shelf, placements, visible, art){
       pmat = packMats;
     }
     const inst = new THREE.InstancedMesh(pgeo, pmat, shown);
-    const M = new THREE.Matrix4(), R = new THREE.Matrix4().makeRotationY(Math.PI);
+    // one spin about the vertical carries BOTH the art-front alignment (art
+    // packs print FRONT at +Z, the shelf front is -Z → +π) and the user's in-plan
+    // rotation; they share the Y axis, so they simply add. rotDeg=0 with no art
+    // reduces to the identity (bit-identical to the pre-rotation shelf).
+    const baseY = (rot ? Math.PI : 0) + rotDeg*Math.PI/180;
+    const M = new THREE.Matrix4();
     for(let i = 0; i < shown; i++){
       const p = placements[i];
-      if(rot) M.copy(R); else M.identity();
+      M.makeRotationY(baseY);
       M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
       inst.setMatrixAt(i, M);
     }

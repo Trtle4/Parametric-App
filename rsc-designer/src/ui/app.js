@@ -61,7 +61,11 @@ const subjectDims = {fold: null, nest: null, pal: null};
 // number or 'auto' (fill to the shelf). `front` is which face points at the
 // shopper, as an orientation string consumed by fitInto/orientDims (see
 // FRONT_PANELS): o[0]=across, o[1]=depth (back-to-front), o[2]=up.
-const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH'};
+// `rot` spins the pack about the vertical by 0/90/180/270° WITHIN the chosen
+// front face — face selection picks which face the shopper sees, rot turns the
+// pack in plan. 90°/270° swap which horizontal dimension runs across the shelf
+// width vs its depth, so the fill (facings/count/occupied width) recomputes.
+const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH', rot: 0};
 // the shelf's natural angle IS the shopper's: mostly front-on (looking at the
 // front panels), tilted down slightly and turned a touch to read the depth of
 // the fill. One source for both entry and the ViewCube Home reset.
@@ -464,10 +468,17 @@ function refreshShelf(){
   const frontO = artInfo ? 'LWH' : shelf.front;
   el('shFront').disabled = !!artInfo;
   el('shFront').title = artInfo ? 'Front follows the uploaded artwork' : '';
+  // rotate 90°/270° about the vertical turns the pack in plan: which HORIZONTAL
+  // dimension runs across the shelf (vs into its depth) swaps. The vertical axis
+  // never changes, so this is exactly the in-plan transpose of the front
+  // orientation (swap o[0]/o[1]); the geometry keeps its true front dims and the
+  // renderer spins each pack by shelf.rot to point the right face at the shopper.
+  const spun = (shelf.rot % 180) !== 0;
+  const fillO = spun ? frontO[1] + frontO[0] + frontO[2] : frontO;
   // fixed to the front-panel orientation — the shopper-facing face is the
   // user's choice, not a solver optimization; 'column' gives a clean aligned
   // grid to subset. x = facings (across), y = depth (back→front), z = stack.
-  const arr = fitInto({outer: geo.outer, allowedOrientations: [frontO], styleId: geo.meta.style},
+  const arr = fitInto({outer: geo.outer, allowedOrientations: [fillO], styleId: geo.meta.style},
                       cavity, {wall: 0, between: 0}, 'column');
   const xs = [...new Set(arr.placements.map(p => shelfKey(p.x)))].sort((a, b) => a - b);
   const ys = [...new Set(arr.placements.map(p => shelfKey(p.y)))].sort((a, b) => a - b);
@@ -490,17 +501,24 @@ function refreshShelf(){
     .map(p => ({...p, x: p.x - blockCentre}));   // re-centre the facings block on the shelf
   const total = facings*stack*deep;
 
-  const od = orientDims(geo.outer, frontO);
+  // odFoot = the footprint AFTER rotation (across = odFoot.l, deep = odFoot.w) —
+  // drives the readout and matches the grid fitInto just laid on fillO. odGeo =
+  // the pack's TRUE front-facing dims (front = odGeo.l × odGeo.h); buildShelf
+  // builds the box from these and spins it by shelf.rot, so the printed/label
+  // front lands on the right face at every angle. The vertical (h) is identical
+  // in both — an in-plan turn never changes which axis stands up.
+  const odFoot = orientDims(geo.outer, fillO);
+  const odGeo = orientDims(geo.outer, frontO);
   const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;
   const u = inputs.getUnit(), f = v => fmtLen(v, u);   // same unit source as every other readout
   el('shReadout').innerHTML = (maxF && maxD && maxS)
     ? `<b>${total}</b> ${noun}${total === 1 ? '' : 's'} on shelf<br>` +
       `${facings} facings × ${stack} high × ${deep} deep` +
-      `<div class="sp-util">occupies ${f(facings*od.l)} × ${f(deep*od.w)} × ${f(stack*od.h)} ${u} ` +
-      `(${pct(facings*od.l, shelf.width)}% width · ${pct(stack*od.h, shelf.height)}% height · ${pct(deep*od.w, shelf.depth)}% depth)</div>`
+      `<div class="sp-util">occupies ${f(facings*odFoot.l)} × ${f(deep*odFoot.w)} × ${f(stack*odFoot.h)} ${u} ` +
+      `(${pct(facings*odFoot.l, shelf.width)}% width · ${pct(stack*odFoot.h, shelf.height)}% height · ${pct(deep*odFoot.w, shelf.depth)}% depth)</div>`
     : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
 
-  buildShelf(od, shelf, placements, true, artInfo);
+  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot);
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -1413,6 +1431,7 @@ function writeShelfFields(){
   ['shWidth', 'shDepth', 'shHeight'].forEach(id => el(id).step = step);
   el('uShW').textContent = el('uShD').textContent = el('uShH').textContent = u;
   el('shFront').value = shelf.front;
+  el('shRotVal').textContent = shelf.rot + '°';
   el('shFacings').value = shelf.facings === 'auto' ? '' : shelf.facings;
   el('shStack').value = shelf.stack === 'auto' ? '' : shelf.stack;
   el('shDeep').value = shelf.deep === 'auto' ? '' : shelf.deep;
@@ -1425,6 +1444,9 @@ el('shWidth').addEventListener('input',  () => { shelf.width  = shelfDim(el('shW
 el('shDepth').addEventListener('input',  () => { shelf.depth  = shelfDim(el('shDepth').value,  shelf.depth);  refreshShelf(); });
 el('shHeight').addEventListener('input', () => { shelf.height = shelfDim(el('shHeight').value, shelf.height); refreshShelf(); });
 el('shFront').addEventListener('change', () => { shelf.front = el('shFront').value; refreshShelf(); });
+// each click turns the pack 90° in plan: 0→90→180→270→0. Shelf-local only —
+// it never touches the upstream carton/case design, just how the pack sits here.
+el('shRotate').addEventListener('click', () => { shelf.rot = (shelf.rot + 90) % 360; el('shRotVal').textContent = shelf.rot + '°'; refreshShelf(); });
 el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el('shFacings').value); refreshShelf(); });
 el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
 el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
