@@ -253,6 +253,17 @@
     display:flex;align-items:center;gap:8px;justify-content:flex-start;
   }
   .field.bchk input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px}
+  /* vertical-axis multi-select: three chip-style checkboxes, one per axis */
+  .field .vaxes{display:flex;gap:6px}
+  .field .vaxes .vax{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+    padding:7px 4px;border:1px solid var(--line);border-radius:var(--r-sm);
+    background:var(--panel);cursor:pointer;font-family:var(--mono);font-size:12.5px;
+    color:var(--ink-2);user-select:none;transition:.12s;
+  }
+  .field .vaxes .vax:has(input:checked){border-color:var(--accent);background:var(--accent-soft);color:var(--ink)}
+  .field .vaxes .vax.vaxdis{opacity:.4;cursor:not-allowed}
+  .field .vaxes .vax input{accent-color:var(--accent);width:14px;height:14px;margin:0;cursor:inherit}
   .bnote{font-size:12px;color:var(--ink-3)}
 
   /* ---------- viewport (the hero) ---------- */

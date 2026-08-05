@@ -182,6 +182,20 @@ async function settle(){ await new Promise(r => setTimeout(r, 0)); }
 
 function setLevel(level){ el('style').value = level; fire(el('style'), 'change'); }
 
+/** Drive the vertical-axis MULTI-SELECT to a SINGLE axis (the old select's
+ *  behaviour): check the target first (so the "never zero axes" guard never
+ *  fires mid-toggle), then clear the others. Mirrors how a user narrows the
+ *  comparison back to one standing orientation. */
+function setVertAxis(idp, axis){
+  const tgt = el(idp + 'Ax' + axis);
+  if(tgt && !tgt.checked){ tgt.checked = true; fire(tgt, 'change'); }
+  for(const a of ['H', 'L', 'W']){
+    if(a === axis) continue;
+    const b = el(idp + 'Ax' + a);
+    if(b && b.checked){ b.checked = false; fire(b, 'change'); }
+  }
+}
+
 /** Read the currently-mounted dims boxes (mm), only for keys actually
  *  present as <input id="p_KEY"> — mirrors what a user looking at the
  *  rail would see. */
@@ -204,9 +218,7 @@ function shownDims(){
 await (async () => {
   setLevel('carton'); await settle();
   const before = shownDims();
-  const axisSel = el('pInAxis');
-  axisSel.value = 'L';
-  fire(axisSel, 'change'); await settle();
+  setVertAxis('pIn', 'L'); await settle();
   const after = shownDims();
 
   t('vertical axis: carton dims box changes (not frozen) after a sibling control edit', () => {
@@ -223,7 +235,7 @@ await (async () => {
     if(build.getRows().length === 0) throw new Error('rows empty after a rail edit — the exact staleness this all fixes');
   });
   // reset for the next block
-  axisSel.value = 'H'; fire(axisSel, 'change'); await settle();
+  setVertAxis('pIn', 'H'); await settle();
 })();
 
 /* ==================================================================
@@ -263,21 +275,40 @@ for(const lc of LEVEL_CASES){
     });
   }
 
-  if(el('pInAxis')){
-    t(`${lc.level}: vertical axis select reflects project.allowedOrientations after edit`, () => {
-      const before = el('pInAxis').value === 'H' ? 'L' : 'H';
-      el('pInAxis').value = before; fire(el('pInAxis'), 'change');
+  if(el('pInAxH')){
+    t(`${lc.level}: vertical axis checkboxes reflect project.allowedOrientations after edit`, () => {
+      setVertAxis('pIn', 'L');
       const lvl = lc.vertLevel(build.project);
-      const shown = el('pInAxis').value;
-      // orientationsToVertical is the inverse the control itself uses —
-      // re-derive independently here via a fresh read of allowedOrientations
-      const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
-      const axis = Object.keys(pairs).find(a => pairs[a].includes(lvl.allowedOrientations[0]));
-      eq(shown, axis, 'displayed axis vs project:');
-      el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+      // every allowed orientation must stand L up (o[2] === 'L'), and the L
+      // checkbox is the only one lit — the control and the project agree.
+      if(!lvl.allowedOrientations.every(o => o[2] === 'L')) throw new Error(`project not all L-up: ${lvl.allowedOrientations}`);
+      eq(el('pInAxL').checked, true, 'L checkbox on:');
+      eq(el('pInAxH').checked, false, 'H checkbox off:');
+      setVertAxis('pIn', 'H');   // reset
+    });
+
+    t(`${lc.level}: multi-select adds a second vertical axis (H + L both enumerated)`, () => {
+      try{
+        setVertAxis('pIn', 'H');
+        el('pInAxL').checked = true; fire(el('pInAxL'), 'change');   // ADD L alongside H
+        const lvl = lc.vertLevel(build.project);
+        const axes = new Set(lvl.allowedOrientations.map(o => o[2]));
+        if(!(axes.has('H') && axes.has('L'))) throw new Error(`expected both H and L up: ${lvl.allowedOrientations}`);
+        // When pIn IS the outermost tier's child control (case level, cartons in
+        // case), the extra axis must reach the Build candidate rows. For the
+        // carton level pIn governs the INNER primary tier, so it changes carton
+        // dims (asserted elsewhere) but not the case candidate's own o[2].
+        if(lc.level === 'case'){
+          const rowAxes = new Set(build.getRows().map(r => (r.orientation || '')[2]));
+          if(!(rowAxes.has('H') && rowAxes.has('L'))) throw new Error(`Build rows missing an axis: ${[...rowAxes]}`);
+        }
+      }finally{
+        setVertAxis('pIn', 'H');   // always reset to single axis, even on failure
+      }
     });
 
     t(`${lc.level}: may-rotate checkbox reflects project.allowedOrientations after edit`, () => {
+      setVertAxis('pIn', 'H');                                       // known single-axis state first
       el('pInRot').checked = false; fire(el('pInRot'), 'change');
       const lvl = lc.vertLevel(build.project);
       eq(lvl.allowedOrientations.length, 1, 'project has exactly one allowed orientation:');
@@ -438,30 +469,30 @@ await (async () => {
 
   t('Build table: row count and content reflect the live project after an edit made on another view', () => {
     el('tab2d').click();
-    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    setVertAxis('pIn', 'L');
     el('tabBuild').click();
     const rowTexts = Array.from(document.querySelectorAll('#bTable tbody tr')).map(r => r.textContent);
     if(!rowTexts.some(t => /WHL|HWL/.test(t))) throw new Error('Build table rows do not reflect the L-up orientation');
-    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+    setVertAxis('pIn', 'H');   // reset
   });
 
   t('2D dieline: blank size changes when the vertical axis changes', () => {
     el('tab2d').click();
     const before = el('blank').textContent;
-    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    setVertAxis('pIn', 'L');
     const after = el('blank').textContent;
     if(after === before) throw new Error(`blank size did not change: still "${before}"`);
-    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+    setVertAxis('pIn', 'H');   // reset
   });
 
   t('3D hierarchy: getRows()-derived best row changes when the vertical axis changes', () => {
     el('tab3d').click();
     const bestOf = () => build.getRows().reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
     const before = bestOf().cartonOuter;
-    el('pInAxis').value = 'L'; fire(el('pInAxis'), 'change');
+    setVertAxis('pIn', 'L');
     const after = bestOf().cartonOuter;
     if(JSON.stringify(after) === JSON.stringify(before)) throw new Error('3D hierarchy data source (build.getRows()) did not change');
-    el('pInAxis').value = 'H'; fire(el('pInAxis'), 'change');   // reset
+    setVertAxis('pIn', 'H');   // reset
   });
 })();
 

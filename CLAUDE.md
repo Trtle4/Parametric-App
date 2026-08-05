@@ -111,6 +111,30 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.
+- **Vertical axis is a COMPARISON variable (multi-select), not one fixed
+  choice.** The "Vertical axis" control (`mountVertControl`, inputs.js) is
+  L/W/H checkboxes: each checked axis contributes its orientation(s) to the
+  level's `allowedOrientations`, and `parentCandidates` already loops that
+  list, so the Build table gets one candidate-row set per axis — ranked
+  across BOTH arrangement AND standing orientation, with a "Vertical" column
+  (o[2] → H/L/W-up). No mixing within a parent: each candidate still carries
+  exactly one orientation; multi-axis only enumerates more single-orientation
+  candidates. The core (containment.js/collation.js) was already axis-
+  agnostic — this is UI only. DEFAULT stays single-axis (whatever the level
+  carries), so golden pins and the default-selected candidate are unchanged
+  until the user opts axes in. `orientationsToAxes` is the multi inverse;
+  `orientationsToVertical` stays for single-axis reasoning. The pallet
+  (`pOut`) control keeps L/W disabled (a pallet stands H up).
+- **Shelf rotate 90° is view-local, in-plan.** `shelf.rot` (app.js, shelf
+  view state — never on the project) turns the pack 0/90/180/270° about the
+  vertical. Face selection (`shelf.front`) picks which face the shopper
+  sees; rotate spins the pack within that. 90°/270° is exactly the in-plan
+  transpose of the front orientation (swap o[0]/o[1]) fed to `fitInto`, so
+  the footprint (and facings/count/occupied width) recomputes; the vertical
+  axis never changes. `buildShelf` keeps the pack's true front dims and spins
+  each instance by `rotDeg` — one Y-rotation that also carries the art-front
+  (+Z→−Z) alignment, so rot=0 with no art is bit-identical to the pre-rotate
+  shelf. Rigid Y-rotation → artwork can only turn, never flip/mirror.
 - **`openTop` is wired for the outermost tier only.** A `Level.openTop`
   (containment.js: `fitInto`/`parentCandidates` `opts.openTop`/`fixedH`/
   `wantCount`) makes that level's own H an independent input instead of

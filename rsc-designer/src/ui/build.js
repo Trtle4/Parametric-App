@@ -73,6 +73,11 @@ function columns(){
   const {outerKey} = outerLink();
   return [
     {key: 'arrangementLabel', label: `${outerCap} fill`, txt: r => r.arrangementLabel},
+    // which of the child's axes stands vertical in this candidate (o[2]). The
+    // vertical axis is a comparison variable now (L/W/H multi-select), so the
+    // table ranks across BOTH arrangement AND standing orientation — this column
+    // names the axis so rows from different axes are told apart at a glance.
+    {key: 'verticalAxis', label: 'Vertical', txt: r => ({H: 'H-up', L: 'L-up', W: 'W-up'}[(r.orientation || '')[2]] || '—'), val: r => (r.orientation || '')[2]},
     {key: 'primaryLabel', label: `Stacks in ${childNoun}`, txt: r => r.primaryLabel ? `${r.primaryLabel} (${r.primaryOrientation})` : '—'},
     {key: 'outerL', label: `${outerCap} outer L×W×H`, txt: r => `${fmtLen(r.outer.L, unit)} × ${fmtLen(r.outer.W, unit)} × ${fmtLen(r.outer.H, unit)}`, val: r => r.outer.L*r.outer.W*r.outer.H},
     {key: 'boardAreaM2', label: `Board m²/${outerNoun}`, txt: r => r.boardAreaM2.toFixed(3)},

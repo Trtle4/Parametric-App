@@ -275,7 +275,9 @@ export function mountProduct(prim, m){
 
 /** Inverse of verticalToOrientations: recover {axis, mayRotate} from an
  *  allowedOrientations list, so a control mounted from ANY project state
- *  (loaded from a file, a slot, an autosave) shows what's actually there. */
+ *  (loaded from a file, a slot, an autosave) shows what's actually there.
+ *  Single-axis view — kept for callers/tests that reason about one axis;
+ *  the vertical control itself uses orientationsToAxes (multi). */
 export function orientationsToVertical(list){
   const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
   for(const axis of ['H', 'L', 'W']){
@@ -288,6 +290,26 @@ export function orientationsToVertical(list){
   return {axis: 'H', mayRotate: true};
 }
 
+/** Multi-axis inverse: which vertical axes an allowedOrientations list stands
+ *  the child up on, and whether in-plan rotation is allowed. The vertical axis
+ *  is now a COMPARISON variable (the user checks any of L/W/H to evaluate),
+ *  so the list may span several axes at once — one candidate set per axis flows
+ *  straight through parentCandidates into the Build table. mayRotate is on when
+ *  any axis carries its transposed pair (the writer keeps every checked axis in
+ *  the same rotate state, so the flag is consistent across them). */
+export function orientationsToAxes(list){
+  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
+  const axes = []; let mayRotate = false;
+  for(const axis of ['H', 'L', 'W']){
+    const [a, b] = pairs[axis];
+    if((list || []).includes(a) || (list || []).includes(b)){
+      axes.push(axis);
+      if(list.includes(a) && list.includes(b)) mayRotate = true;
+    }
+  }
+  return axes.length ? {axes, mayRotate} : {axes: ['H'], mayRotate: true};
+}
+
 /** Vertical axis (hard constraint) + in-plan rotation (the solver's only
  *  freedom), bound to `level.allowedOrientations`.
  * @param {HTMLElement} host
@@ -298,20 +320,34 @@ export function orientationsToVertical(list){
  */
 export function mountVertControl(host, idp, level, opts, onInput){
   const {disabledAxes = [], disabledReason = ''} = opts || {};
-  const vert = orientationsToVertical(level.allowedOrientations);
+  // MULTI-SELECT: check any of L/W/H to EVALUATE that vertical axis. Each checked
+  // axis contributes its orientation(s) to allowedOrientations, so the Build
+  // table gains a candidate row set per axis — the vertical axis becomes a
+  // comparison variable, not a single fixed choice. Defaults to whatever the
+  // level already carries (a fresh level = one axis), so nothing changes until
+  // the user opts additional axes in.
+  const state = orientationsToAxes(level.allowedOrientations);
   host.innerHTML =
-    `<div class="field"><label>Vertical axis</label>
-      <div class="inp"><select id="${idp}Axis">${VERTICAL_CHOICES.map(c => {
-        const dis = disabledAxes.includes(c.axis);
-        return `<option value="${c.axis}"${c.axis === vert.axis ? ' selected' : ''}${dis ? ` disabled title="${disabledReason}"` : ''}>${c.label} &middot; ${c.codes}</option>`;
-      }).join('')}</select></div></div>
-    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${vert.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label>
+    `<div class="field"><label>Vertical axis <span class="hint">compare · pick any</span></label>
+      <div class="vaxes" id="${idp}Axes">${VERTICAL_CHOICES.map(c => {
+        const dis = disabledAxes.includes(c.axis), on = state.axes.includes(c.axis);
+        return `<label class="vax${dis ? ' vaxdis' : ''}" title="${dis ? disabledReason : c.label + ' · ' + c.codes}"><input type="checkbox" value="${c.axis}" id="${idp}Ax${c.axis}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}>${c.axis}-up</label>`;
+      }).join('')}</div></div>
+    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${state.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label>
       <div class="rotinert" id="${idp}RotHint" style="display:none">No effect with a manual grid — the grid already fixes the layout.</div></div>`;
+  const boxes = () => VERTICAL_CHOICES.map(c => el(idp + 'Ax' + c.axis)).filter(Boolean);
   const apply = () => {
-    level.allowedOrientations = verticalToOrientations(el(idp + 'Axis').value, el(idp + 'Rot').checked);
+    let axes = boxes().filter(b => b.checked && !b.disabled).map(b => b.value);
+    if(!axes.length){                       // a level must stand SOME way up — never leave zero
+      const first = boxes().find(b => !b.disabled);
+      if(first){ first.checked = true; axes = [first.value]; }
+    }
+    const rot = el(idp + 'Rot').checked, set = [];
+    axes.forEach(a => verticalToOrientations(a, rot).forEach(o => { if(!set.includes(o)) set.push(o); }));
+    level.allowedOrientations = set;
     onInput();
   };
-  el(idp + 'Axis').addEventListener('change', apply);
+  boxes().forEach(b => b.addEventListener('change', apply));
   el(idp + 'Rot').addEventListener('change', apply);
 }
 
@@ -323,12 +359,15 @@ export function mountVertControl(host, idp, level, opts, onInput){
  *  project state is a registered consumer regardless of whether a second
  *  writer exists YET, so one appearing later can never go unnoticed here. */
 export function refreshVertControl(idp, level){
-  const axisSel = el(idp + 'Axis');
-  if(!axisSel) return;
-  const vert = orientationsToVertical(level.allowedOrientations);
-  if(!isFocused(axisSel) && axisSel.value !== vert.axis) axisSel.value = vert.axis;
+  const probe = el(idp + 'AxH') || el(idp + 'AxL') || el(idp + 'AxW');
+  if(!probe) return;
+  const state = orientationsToAxes(level.allowedOrientations);
+  for(const axis of ['H', 'L', 'W']){
+    const b = el(idp + 'Ax' + axis);
+    if(b && !isFocused(b)) b.checked = state.axes.includes(axis);
+  }
   const rotChk = el(idp + 'Rot');
-  if(!isFocused(rotChk)) rotChk.checked = vert.mayRotate;
+  if(rotChk && !isFocused(rotChk)) rotChk.checked = state.mayRotate;
 }
 
 /** Wall/between/headspace, bound to `clearance` (mutated in place). Skips
