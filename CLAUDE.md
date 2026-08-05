@@ -121,20 +121,36 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   case, solved via `solveSecondaryInner`) still constrains height as if
   closed — that path never reads `openTop`. Extend `solveSecondaryInner` if
   that case ever arises.
-- **Artwork 3D is a tube; the tray is opted out.** The artwork round-trip
+- **Artwork 3D: cartons/cases/shelf use a tube; the flow wrap textures its
+  real pillow body; the tray is opted out.** The artwork round-trip
   (template -> upload -> map) is one system fed by each style's
-  `meta.artMap` (render/artwork.js, render/artwork3d.js). The 3D cladding
-  models a pack as a cross-section extruded along one axis (a tube): correct
-  for the flow wrap (extrude along L) and the closed cartons a6120/sealend
-  (extrude upright along H, girth around the four walls). The FEFCO 0300
-  tray is an OPEN cross-blank — a base with four walls that each run a
-  different way in the flat — so a single tube UV would rotate two walls.
-  Its `artMap` sets `flat: true`, which opts it into the shared template +
-  2D overlay + upload/remove and OUT of the 3D tube (app.js refresh3d skips
-  the tube for `flat` maps). A per-wall tray UV builder is the follow-up.
-  The template, 2D map and 3D UVs all derive from that one `artMap`, so they
-  can't disagree; artwork is persisted downscaled (render/artwork.js
-  `MAX_EDGE`) so the save file round-trips the art without bloating.
+  `meta.artMap` (render/artwork.js, render/artwork3d.js). For the closed
+  cartons a6120/sealend, the retail shelf, and the closed hierarchy
+  instances, the 3D cladding is `packArtGeometry` — a cross-section extruded
+  along one axis (a tube), extruded upright along H with the girth around
+  the four walls. The FLOW WRAP is the exception: its wrap-depth view is NOT
+  the tube (the tube was hollow — no caps over the crimped ends — and
+  axis-transposed vs the pillow, so with graphics it read see-through and
+  misaligned). Instead the SAME pillow body the cutaway builds
+  (`wrapPartsGeometry` loft) carries the art directly: `bodyRingUVs`
+  (hierarchy3d.js) assigns per-ring [u,v] so the artMap's girth bands wrap
+  the real body — u along the product length (−L end reads u1 so the print
+  is unmirrored), v around the girth measured by cumulative perimeter (the
+  bands sum to the physical perimeter) from the bottom-centre seam (the
+  w=0 crossing of the bottom edge, interpolated — NOT snapped to a vertex,
+  which lands ~W/2 off-centre and shifts every band). Result: front panel
+  centred/upright on the top face, opaque, solid, sharing the pillow's
+  frame so it can never be hollow or misaligned. Solid = the printed pillow
+  (no contents); Cutaway = the translucent film + pieces (never overlaid
+  with the art, so it always aligns). The FEFCO 0300 tray is an OPEN
+  cross-blank — a base with four walls that each run a different way in the
+  flat — so a single tube UV would rotate two walls. Its `artMap` sets
+  `flat: true`, which opts it into the shared template + 2D overlay +
+  upload/remove and OUT of the 3D tube (app.js refresh3d skips the tube for
+  `flat` maps). A per-wall tray UV builder is the follow-up. The template,
+  2D map and 3D UVs all derive from that one `artMap`, so they can't
+  disagree; artwork is persisted downscaled (render/artwork.js `MAX_EDGE`)
+  so the save file round-trips the art without bloating.
 - **Artwork clads every instance — hierarchy, pallet AND shelf.**
   Artwork is a property of the pack (its level/style), not of one opened
   instance. Every rendered instance carries it from ONE shared texture per
@@ -144,7 +160,8 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   and the retail shelf textures every facing pack. Cap `ART_INSTANCE_CAP`
   (400) backstops pathological counts (a full pallet is ~130); beyond it the
   overflow is flat board and the HUD says so. The Solid/Cutaway toggle chooses
-  look-AT (closed, printed, `soloClosed`) vs look-INSIDE (cutaway); it defaults
+  look-AT (closed, printed — `soloClosed` for the tube packs, the printed
+  pillow body for the flow wrap) vs look-INSIDE (cutaway); it defaults
   to Solid when the pack at the depth has art, and always on the shelf.
   Orientation gotcha (shelf): the shelf is built with pack fronts at local -Z
   but the ViewCube's FRONT looks down the opposite axis, so `buildShelf`

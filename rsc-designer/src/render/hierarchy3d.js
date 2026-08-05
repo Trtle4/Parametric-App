@@ -13,7 +13,7 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
-import {packArtGeometry, packArtMaterials} from './artwork3d.js';
+import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
 
@@ -112,12 +112,10 @@ function cutawayBox(outer, inner, mat){
    the pack toward outer.L (the 90°/straight-out max that sizes the carton) and
    dragging the internal slider moves the ramp reach. The jaw clearance and the
    fin's flat length come straight from flowwrap.js's meta.seal (read, never
-   recomputed here). The pillow rounding and the crimp serration are cosmetic
+   recomputed here). The pillow rounding and the crimp taper are cosmetic
    geometry INSIDE that length — nothing here invents a dimension. ---------- */
 
 const WRAP_N = 20;           // profile sample count per loft ring
-const WRAP_SERR = 9;         // serration cycles around the crimped fin tip
-const WRAP_SERR_AMT = 0.16;  // serration amplitude, fraction of the tip's own half-size
 const PIECE_SHRINK = 0.03;   // conservative render-only clearance every piece gets (pieceGeo's smaller margin)
 
 /**
@@ -183,19 +181,13 @@ function safeFillet(envelope, stackAxis, nx, ny, layers, axisIsW){
  * whichever true axis is actually the machine direction, in every
  * containment orientation.
  */
-function ringPoints(pos, hH, hCross, roundish, serrate, fillet, axisIsW){
+function ringPoints(pos, hH, hCross, roundish, fillet, axisIsW){
   const pts = [];
-  const wobble = (h, w, a) => {
-    if(!serrate) return [h, w];
-    const m = 1 + WRAP_SERR_AMT*Math.sin(a*WRAP_SERR);
-    return [h*m, w*m];
-  };
   const place = (h, w) => axisIsW ? new THREE.Vector3(w, h, pos) : new THREE.Vector3(pos, h, w);
   if(roundish){
     for(let k = 0; k < WRAP_N; k++){
       const a = k/WRAP_N*Math.PI*2;
-      const [h, w] = wobble(Math.cos(a)*hH, Math.sin(a)*hCross, a);
-      pts.push(place(h, w));
+      pts.push(place(Math.cos(a)*hH, Math.sin(a)*hCross));
     }
     return pts;
   }
@@ -206,8 +198,7 @@ function ringPoints(pos, hH, hCross, roundish, serrate, fillet, axisIsW){
     const [cx, cy] = centers[ci];
     for(let i = 0; i < segs; i++){
       const a = ci*(Math.PI/2) + i/segs*(Math.PI/2);
-      const [h, w] = wobble(cx + r*Math.cos(a), cy + r*Math.sin(a), a);
-      pts.push(place(h, w));
+      pts.push(place(cx + r*Math.cos(a), cy + r*Math.sin(a)));
     }
   }
   return pts;
@@ -216,10 +207,14 @@ function ringPoints(pos, hH, hCross, roundish, serrate, fillet, axisIsW){
 // hand-built loft: N-point rings connected by quads, capped at both ends.
 // Every material in this file is DoubleSide, so winding direction only
 // affects computeVertexNormals()'s lighting side, never visibility.
-function loftGeometry(rings){
+// Optional `ringUVs` (parallel to `rings`, one [u,v] per point) adds a uv
+// attribute so a textured material can wrap the loft — the printed-wrap body
+// uses it to map the artwork's girth panels; a cap vertex takes its ring's
+// average uv (caps are hidden by the ramps, so their uv is immaterial).
+function loftGeometry(rings, ringUVs){
   const N = rings[0].length;
-  const pos = [];
-  rings.forEach(r => r.forEach(p => pos.push(p.x, p.y, p.z)));
+  const pos = [], uv = [];
+  rings.forEach((r, ri) => r.forEach((p, k) => { pos.push(p.x, p.y, p.z); if(ringUVs) uv.push(ringUVs[ri][k][0], ringUVs[ri][k][1]); }));
   const idx = (ri, k) => ri*N + (k % N);
   const indices = [];
   for(let r = 0; r < rings.length - 1; r++)
@@ -233,6 +228,7 @@ function loftGeometry(rings){
     rings[ri].forEach(p => { cx += p.x; cy += p.y; cz += p.z; });
     cx /= N; cy /= N; cz /= N;
     pos.push(cx, cy, cz);
+    if(ringUVs){ let cu = 0, cv = 0; ringUVs[ri].forEach(t => { cu += t[0]; cv += t[1]; }); uv.push(cu/N, cv/N); }
     for(let k = 0; k < N; k++){
       const a = ri*N + k, b = ri*N + ((k + 1) % N);
       indices.push(base, flip ? b : a, flip ? a : b);
@@ -242,8 +238,55 @@ function loftGeometry(rings){
   const geo = new THREE.BufferGeometry();
   geo.setIndex(indices);
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  if(ringUVs) geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.computeVertexNormals();
   return geo;
+}
+
+/** Per-point [u,v] for the two body rings so the artwork's girth panels wrap
+ *  the real pillow body. u runs across the product span (the L panel run);
+ *  v runs around the girth (back½ → side → front → side → back½), measured by
+ *  CUMULATIVE PERIMETER (proportional to the artMap's bands, which sum to the
+ *  physical perimeter) and started at the SEAM — the bottom-face centre, where
+ *  the fin lands and the two back halves meet. The seam is not snapped to a
+ *  vertex (the ring has no vertex at the bottom-edge midpoint; snapping to the
+ *  nearest one lands ~W/2 off-centre and shifts every band by one back-half).
+ *  Instead it's the interpolated w=0 crossing of the bottom segment, so the
+ *  front (widest band) lands centred on the top face, upright and unmirrored.
+ *  Ring order runs forward from the seam toward −w first, matching the artMap
+ *  girth direction, so the panels register without mirroring. */
+function bodyRingUVs(rings, am, axisIsW, hH){
+  const CW = am.canvas.w, CH = am.canvas.h;
+  const us = [am.faces[0].u1/CW, am.faces[0].u0/CW];                 // product region along length (−L end reads u1 so the print is unmirrored)
+  const vLo = am.faces[0].v0/CH, vHi = am.faces[am.faces.length - 1].v1/CH;   // girth band region
+  return rings.map((ring, ri) => {
+    const n = ring.length;
+    const cross = ring.map(p => axisIsW ? [p.y, p.x] : [p.y, p.z]);  // [h(height), w(cross)]
+    const cum = [0];
+    for(let k = 0; k < n; k++){ const a = cross[k], b = cross[(k + 1) % n]; cum.push(cum[k] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+    const total = cum[n] || 1;
+    // seam arc-length = where the bottom edge (h<0) crosses w=0. Find the segment
+    // whose two endpoints straddle w=0 while both sit on the lower half, and
+    // interpolate the crossing; fall back to the nearest vertex if none does.
+    let sP = null;
+    for(let k = 0; k < n; k++){
+      const a = cross[k], b = cross[(k + 1) % n];
+      if(a[0] < 0 && b[0] < 0 && ((a[1] <= 0 && b[1] >= 0) || (a[1] >= 0 && b[1] <= 0)) && a[1] !== b[1]){
+        const t = a[1]/(a[1] - b[1]);                                // fraction to w=0
+        sP = cum[k] + t*(cum[k + 1] - cum[k]); break;
+      }
+    }
+    if(sP == null){ let best = Infinity; for(let k = 0; k < n; k++){ const d = Math.hypot(cross[k][0] + hH, cross[k][1]); if(d < best){ best = d; sP = cum[k]; } } }
+    return ring.map((p, k) => [us[ri], vLo + ((((cum[k] - sP) % total) + total) % total) / total * (vHi - vLo)]);
+  });
+}
+
+/** Opaque printed-wrap body material (the pillow surface carrying the girth
+ *  art). Tracked in artResources so the texture is disposed on clear(). */
+function wrapArtMat(canvas){
+  const m = new THREE.MeshStandardMaterial({map: makeArtTexture(canvas), roughness: 0.55, metalness: 0, side: THREE.DoubleSide});
+  artResources.push(m);
+  return m;
 }
 
 /** Body (constant cross-section over the product span, along whichever true
@@ -254,10 +297,10 @@ function loftGeometry(rings){
  *  axis). envelope = the TRUE collation/product envelope (never permuted —
  *  the permutation lives in project.js, on the way into flowwrap.js only);
  *  wrapAxis ('L'|'W') says which of envelope.L/W is that machine direction,
- *  never H. The pillow rounding, the taper, and the fin's serration are
+ *  never H. The pillow rounding, the taper, and the crimp fin are
  *  cosmetic geometry INSIDE that envelope — nothing here invents or alters
  *  a dimension. */
-function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
+function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo){
   const axisIsW = wrapAxis === 'W';
   const H = envelope.H;
   const lenDim = axisIsW ? envelope.W : envelope.L;      // machine direction — where the seals go
@@ -273,22 +316,27 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis){
   const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
   const hH = H/2, hCross = crossDim/2;   // body half-dims — every ramp ring stays AT OR INSIDE these, never bulges past them
-  const bodyGeo = loftGeometry([
-    ringPoints(-lenDim/2, hH, hCross, roundish, false, fillet, axisIsW),
-    ringPoints( lenDim/2, hH, hCross, roundish, false, fillet, axisIsW)
-  ]);
+  const r0 = ringPoints(-lenDim/2, hH, hCross, roundish, fillet, axisIsW);
+  const r1 = ringPoints( lenDim/2, hH, hCross, roundish, fillet, axisIsW);
+  // printed wrap: map the artwork's girth panels onto the REAL pillow body
+  // (solid + aligned with the pieces — unlike the old separate art tube, which
+  // was hollow and axis-transposed). UVs only when artInfo is present.
+  const bodyUVs = (artInfo && artInfo.am) ? bodyRingUVs([r0, r1], artInfo.am, axisIsW, hH) : null;
+  const bodyGeo = loftGeometry([r0, r1], bodyUVs);
 
   // the RAMP: the film descends in HEIGHT only — full cross-section at the pack
   // face -> a flat, FULL-WIDTH crimp line the jaw clearance further out. Only
   // the height collapses (hH -> finThk/2); the width stays hCross the whole way,
   // so top-down the wrap is a clean full-width rectangle to the crimp, never a
   // dart. (The internal angle is a side-profile change, constrained to the
-  // vertical plane — it must not touch the width axis.)
+  // vertical plane — it must not touch the width axis.) The crimp edge is a
+  // clean full-width line, flush with the endTab fin — an earlier serrated tip
+  // scalloped the width past the body and read as a glitch, so it was dropped.
   function ramp(sign){
     const shoulder = sign*(lenDim/2), crimp = sign*(lenDim/2 + jaw);
     const rings = [
-      ringPoints(shoulder, hH, hCross, roundish, false, fillet, axisIsW),
-      ringPoints(crimp, finThk/2, hCross, roundish, true, fillet, axisIsW)
+      ringPoints(shoulder, hH, hCross, roundish, fillet, axisIsW),
+      ringPoints(crimp, finThk/2, hCross, roundish, fillet, axisIsW)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
   }
@@ -370,11 +418,15 @@ function stackInfoOf(w){
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
-function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened){
-  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis);
+function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened, artInfo){
+  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo);
   const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
   const g = new THREE.Group();
-  g.add(new THREE.Mesh(parts.bodyGeo, opened ? filmMat : filmClosedMat));
+  // printed pack: the body carries the girth artwork (OPAQUE — a solid printed
+  // pack, never see-through); the ramps + crimp fins stay seal-coloured. Else
+  // the conforming film (translucent when opened, closed board otherwise).
+  const bodyMat = artInfo ? wrapArtMat(artInfo.canvas) : (opened ? filmMat : filmClosedMat);
+  g.add(new THREE.Mesh(parts.bodyGeo, bodyMat));
   g.add(new THREE.Mesh(parts.taperPos, sealMat));
   g.add(new THREE.Mesh(parts.taperNeg, sealMat));
   g.add(new THREE.Mesh(parts.endTabPos, sealMat));
@@ -404,8 +456,11 @@ function pieceGeo(piece, stackAxis, o){
 
 // tiers, outer→inner. Each returns a Group representing ONE unit.
 // `sel` holds the opened child index per tier; `depthTiers` is the visible chain.
-function buildWrapOpened(bundle, wrapArt){
-  // an opened wrap: conforming film + all pieces inside
+function buildWrapOpened(bundle, artInfo){
+  // The wrap at wrap depth. PRINTED (Solid + artwork): the real pillow body
+  // textured with the girth art, OPAQUE and solid, no contents — a closed
+  // printed pack. Otherwise CUTAWAY: the translucent conforming film + all
+  // pieces inside (never overlaid with the art, so it always aligns).
   const g = new THREE.Group();
   // no wrap/piece data on the row means the film tier is disabled (or the
   // content never collates into a wrap): there is nothing to open — return
@@ -414,21 +469,12 @@ function buildWrapOpened(bundle, wrapArt){
   if(!bundle.wraps) return g;
   const {envelope, pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
+  const printed = !!(artInfo && artInfo.am && artInfo.canvas);
   // the film is drawn only when a wrap is actually in the chain (seals present);
   // a wrapless pack shows the bare collation pieces alone (no conforming film).
-  if(bundle.wraps.seals){
-    if(wrapArt && wrapArt.am && wrapArt.canvas){
-      // printed film in Cutaway: the SAME textured tube (packArtGeometry), but
-      // translucent so the visible faces carry the art while the contents show
-      // through it. One shared texture, disposed on the next clear().
-      const mats = packArtMaterials(wrapArt.canvas, board);
-      mats[0].transparent = true; mats[0].opacity = 0.62; mats[0].depthWrite = false;
-      artResources.push(mats[0]);
-      g.add(new THREE.Mesh(packArtGeometry(wrapArt.am), mats));
-    }else{
-      g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, true));
-    }
-  }
+  if(bundle.wraps.seals)
+    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !printed, printed ? artInfo : null));
+  if(printed) return g;                                    // solid printed pack: no contents shown
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -638,9 +684,11 @@ export function buildHierarchy(bundle, depth, sel, solid){
   const artOf = geo => (geo && geo.meta.artMap && !geo.meta.artMap.flat) ? geo.meta.artMap : null;
   const cartonArt = {am: artOf(bundle.cartonGeo), canvas: A.carton};
   const caseArt   = {am: artOf(bundle.caseGeo),   canvas: A.case};
-  // the wrap clads too: its artMap is a horizontal tube (extrude along L),
-  // textured by the SAME packArtGeometry the cartons/cases use — the wrap panel
-  // decomposition (front/sides/back-halves) the template and 2D view share.
+  // the wrap clads too, at wrap depth: unlike the cartons/cases (which use the
+  // packArtGeometry tube via soloClosed), the wrap textures its REAL pillow body
+  // directly (buildWrapOpened → wrapArtMat + bodyRingUVs), reading the SAME
+  // wrap-panel decomposition (front/sides/back-halves) the template and 2D view
+  // share — so the print is solid and aligned with the pillow, never a tube.
   const wrapArt   = {am: artOf(bundle.wrapGeo),   canvas: A.wrap};
 
   // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
@@ -696,11 +744,11 @@ export function buildHierarchy(bundle, depth, sel, solid){
     const s = (rot ? geo.boundingBox.clone().applyMatrix4(rot) : geo.boundingBox).getSize(new THREE.Vector3());
     outer = {L: s.x, W: s.z, H: s.y};
   }else if(depth === 'wrap'){
-    // Solid + art → the closed printed tube (art on every face); otherwise the
-    // opened film (Cutaway carries the art on the translucent film, contents
-    // showing through). No art → the plain pillow, both modes.
-    if(solid && wrapArt.am && wrapArt.canvas) group.add(soloClosed(bundle.wrapGeo, wrapArt));
-    else group.add(buildWrapOpened(bundle, wrapArt));
+    // Solid + art → the printed pillow (girth artwork on the real body, solid);
+    // otherwise the cutaway film + pieces. The art rides the same aligned pillow
+    // geometry the cutaway uses, so it can never be hollow or misaligned.
+    const printed = solid && wrapArt.am && wrapArt.canvas;
+    group.add(buildWrapOpened(bundle, printed ? wrapArt : null));
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
