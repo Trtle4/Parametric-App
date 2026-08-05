@@ -190,11 +190,17 @@
   /* panels relocated from the canvas into the rails: neutralise their old
      position:absolute float and let them be in-flow rail cards. Same elements,
      ids and app.js display toggles — only position changes. High enough
-     specificity to beat .hud.hier / .hud.hierlegend positioning. */
+     specificity to beat .hud.hier / .hud.hierlegend positioning. They SIZE TO
+     CONTENT and never scroll within themselves: flex:none stops the rail's
+     flex column from shrinking them (which, with their carried-over
+     overflow:auto, trapped their controls in a tiny inner scroll window), and
+     overflow:visible drops that inner scrollbar entirely. The rail's own
+     overflow:auto is the one and only scroll for the whole column. */
   .rail .shelfpanel, .rail .artpanel, .rail .titleblock,
   .rail .hud, .rail .hud.hier, .rail .hud.hierlegend, .rail .orbithint{
     position:static;left:auto;right:auto;top:auto;bottom:auto;
     transform:none;width:auto;max-width:none;max-height:none;box-shadow:none;z-index:auto;
+    overflow:visible;flex:none;
   }
   .rail .hud{flex-wrap:wrap;gap:10px 14px}          /* the 2D CUT/CREASE legend wraps in a narrow rail */
   .rail .orbithint{align-self:flex-start;font-size:10.5px;padding:5px 10px}
