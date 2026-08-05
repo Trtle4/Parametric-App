@@ -125,16 +125,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   until the user opts axes in. `orientationsToAxes` is the multi inverse;
   `orientationsToVertical` stays for single-axis reasoning. The pallet
   (`pOut`) control keeps L/W disabled (a pallet stands H up).
-- **Shelf rotate 90° is view-local, in-plan.** `shelf.rot` (app.js, shelf
-  view state — never on the project) turns the pack 0/90/180/270° about the
-  vertical. Face selection (`shelf.front`) picks which face the shopper
-  sees; rotate spins the pack within that. 90°/270° is exactly the in-plan
-  transpose of the front orientation (swap o[0]/o[1]) fed to `fitInto`, so
-  the footprint (and facings/count/occupied width) recomputes; the vertical
-  axis never changes. `buildShelf` keeps the pack's true front dims and spins
-  each instance by `rotDeg` — one Y-rotation that also carries the art-front
-  (+Z→−Z) alignment, so rot=0 with no art is bit-identical to the pre-rotate
-  shelf. Rigid Y-rotation → artwork can only turn, never flip/mirror.
+- **Shelf rotate 90° spins the FORWARD FACE in its own plane (about the
+  DEPTH axis) — not the vertical.** `shelf.rot` (app.js, shelf view state —
+  never on the project) turns the pack 0/90/180/270°, clockwise to the
+  shopper, like turning a framed picture on the wall: the SAME face stays
+  forward (never a side or the back). That's orthogonal to face selection
+  (`shelf.front`), which picks WHICH face is forward. Because the spin is
+  in-plane, the face's own two dims swap — across (o[0]) ↔ up (o[2]);
+  depth (o[1]) unchanged — so `fillO = frontO[2]+frontO[1]+frontO[0]` at
+  90°/270° feeds `fitInto` a different width×height and the fill
+  (facings/stack/count/occupied) recomputes (a non-square face gives a
+  different count at 90° than at 0°). `buildShelf` builds the box from the
+  true front dims (`odGeo`) and spins each instance about the DEPTH axis
+  (`makeRotationZ(+rotDeg)`, clockwise), kept separate from the art-front
+  `makeRotationY(π)` alignment; rot=0 collapses the spin to identity, so the
+  default is bit-identical to the pre-rotate shelf. Rigid Z-rotation (det
+  +1) → artwork turns with the face, never flips/mirrors. (Earlier this
+  rotated about the vertical — a lazy-Susan that wrongly showed the sides
+  and back; corrected to the depth axis.)
 - **`openTop` is wired for the outermost tier only.** A `Level.openTop`
   (containment.js: `fitInto`/`parentCandidates` `opts.openTop`/`fixedH`/
   `wantCount`) makes that level's own H an independent input instead of

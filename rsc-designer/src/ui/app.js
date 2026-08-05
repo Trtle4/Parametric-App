@@ -61,10 +61,12 @@ const subjectDims = {fold: null, nest: null, pal: null};
 // number or 'auto' (fill to the shelf). `front` is which face points at the
 // shopper, as an orientation string consumed by fitInto/orientDims (see
 // FRONT_PANELS): o[0]=across, o[1]=depth (back-to-front), o[2]=up.
-// `rot` spins the pack about the vertical by 0/90/180/270° WITHIN the chosen
-// front face — face selection picks which face the shopper sees, rot turns the
-// pack in plan. 90°/270° swap which horizontal dimension runs across the shelf
-// width vs its depth, so the fill (facings/count/occupied width) recomputes.
+// `rot` spins the FORWARD FACE in its own plane (about the depth axis) by
+// 0/90/180/270°, clockwise to the shopper — like turning a framed picture on
+// the wall. Face selection picks WHICH face the shopper sees; rot spins whatever
+// face is forward, and the same face stays forward (never a side/back). 90°/270°
+// swap the face's two dims (across ↔ up; depth unchanged), so its width×height
+// on the shelf changes and the fill (facings/stack/count/occupied) recomputes.
 const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH', rot: 0};
 // the shelf's natural angle IS the shopper's: mostly front-on (looking at the
 // front panels), tilted down slightly and turned a touch to read the depth of
@@ -468,13 +470,16 @@ function refreshShelf(){
   const frontO = artInfo ? 'LWH' : shelf.front;
   el('shFront').disabled = !!artInfo;
   el('shFront').title = artInfo ? 'Front follows the uploaded artwork' : '';
-  // rotate 90°/270° about the vertical turns the pack in plan: which HORIZONTAL
-  // dimension runs across the shelf (vs into its depth) swaps. The vertical axis
-  // never changes, so this is exactly the in-plan transpose of the front
-  // orientation (swap o[0]/o[1]); the geometry keeps its true front dims and the
-  // renderer spins each pack by shelf.rot to point the right face at the shopper.
+  // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
+  // axis, like turning a framed picture on the wall) — the same face stays
+  // toward the shopper, never a side or the back. So the two dims OF THAT FACE
+  // swap: across (o[0]) ↔ up (o[2]); depth (o[1]) is unchanged. A non-square
+  // face therefore lands a different width×height on the shelf at 90°/270°, so
+  // the fill recomputes. The renderer spins each pack about the depth axis to
+  // match. (This is NOT the vertical/lazy-Susan turn, which would swap
+  // across/depth and rotate a side face into view.)
   const spun = (shelf.rot % 180) !== 0;
-  const fillO = spun ? frontO[1] + frontO[0] + frontO[2] : frontO;
+  const fillO = spun ? frontO[2] + frontO[1] + frontO[0] : frontO;
   // fixed to the front-panel orientation — the shopper-facing face is the
   // user's choice, not a solver optimization; 'column' gives a clean aligned
   // grid to subset. x = facings (across), y = depth (back→front), z = stack.
@@ -501,12 +506,13 @@ function refreshShelf(){
     .map(p => ({...p, x: p.x - blockCentre}));   // re-centre the facings block on the shelf
   const total = facings*stack*deep;
 
-  // odFoot = the footprint AFTER rotation (across = odFoot.l, deep = odFoot.w) —
-  // drives the readout and matches the grid fitInto just laid on fillO. odGeo =
-  // the pack's TRUE front-facing dims (front = odGeo.l × odGeo.h); buildShelf
-  // builds the box from these and spins it by shelf.rot, so the printed/label
-  // front lands on the right face at every angle. The vertical (h) is identical
-  // in both — an in-plan turn never changes which axis stands up.
+  // odFoot = the shelf footprint AFTER the in-plane spin (across = odFoot.l, up =
+  // odFoot.h, depth = odFoot.w) — drives the readout and matches the grid fitInto
+  // just laid on fillO. At 90°/270° across and up have swapped, so odFoot.l/h are
+  // the transposed pair (odFoot.w/depth stays). odGeo = the pack's TRUE
+  // front-facing dims (front face = odGeo.l × odGeo.h); buildShelf builds the box
+  // from these and spins it about the depth axis by shelf.rot, so the same face
+  // stays forward and its width×height on the shelf matches odFoot.
   const odFoot = orientDims(geo.outer, fillO);
   const odGeo = orientDims(geo.outer, frontO);
   const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;

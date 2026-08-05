@@ -41,12 +41,14 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
  *        artwork: every facing pack shows it, printed FRONT to the shopper. The
  *        caller packs in the print-front orientation ('LWH') so the pack's
  *        canonical footprint (L across, W deep, H up) matches od.
- * @param {number} [rotDeg]  in-plan rotation about the vertical (0/90/180/270).
- *        `od` is always the pack's TRUE front-facing dims; the box is built from
- *        them and each pack is spun by rotDeg so the chosen face points at the
- *        shopper. The caller lays the placement grid on the ROTATED footprint,
- *        so a spun box lands exactly in its cell. Rigid rotation → artwork can
- *        never flip or mirror, only turn.
+ * @param {number} [rotDeg]  in-plane spin of the forward face about the DEPTH
+ *        axis (0/90/180/270), clockwise to the shopper. The SAME face stays
+ *        forward — a side/back is never shown; picking the forward face is the
+ *        caller's `front` selector, orthogonal to this. `od` is always the
+ *        pack's TRUE front-facing dims; the box is built from them and spun, and
+ *        the caller lays the placement grid on the ROTATED footprint (across↔up
+ *        swapped at 90°/270°) so the spun box lands exactly in its cell. Rigid
+ *        rotation → artwork turns with the face, never flips or mirrors.
  */
 export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
   const pivot = getPivot();
@@ -82,15 +84,26 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
       pmat = packMats;
     }
     const inst = new THREE.InstancedMesh(pgeo, pmat, shown);
-    // one spin about the vertical carries BOTH the art-front alignment (art
-    // packs print FRONT at +Z, the shelf front is -Z → +π) and the user's in-plan
-    // rotation; they share the Y axis, so they simply add. rotDeg=0 with no art
-    // reduces to the identity (bit-identical to the pre-rotation shelf).
-    const baseY = (rot ? Math.PI : 0) + rotDeg*Math.PI/180;
+    // TWO rotations about DIFFERENT axes, kept separate:
+    //  • A — art-front alignment (art packs only): packArtGeometry prints FRONT
+    //    at +Z, the shelf front is local -Z, so turn the body 180° about the
+    //    VERTICAL to face the shopper (the group's own 180° below carries it on).
+    //  • S — the user's Rotate 90°: spin the forward face IN ITS OWN PLANE, about
+    //    the DEPTH axis (local Z, the shopper→back axis). The same face stays
+    //    forward — only its content turns — so a side/back face is never shown.
+    //    +rotDeg reads CLOCKWISE to the shopper (verified from the ViewCube
+    //    FRONT: the → arrow goes right→bottom→left→top over the cycle). Because
+    //    S is about Z and the front normal IS the Z axis, S never disturbs which
+    //    face points forward.
+    // rotDeg=0 → S is identity, so the matrix is exactly the pre-rotation one
+    // (bit-identical default: identity for board packs, A for art packs).
+    const A = new THREE.Matrix4().makeRotationY(Math.PI);
+    const S = new THREE.Matrix4().makeRotationZ(rotDeg*Math.PI/180);
     const M = new THREE.Matrix4();
     for(let i = 0; i < shown; i++){
       const p = placements[i];
-      M.makeRotationY(baseY);
+      if(rot) M.copy(A); else M.identity();
+      M.premultiply(S);                                // spin in-plane about the depth axis
       M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
       inst.setMatrixAt(i, M);
     }
