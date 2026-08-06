@@ -125,6 +125,23 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   until the user opts axes in. `orientationsToAxes` is the multi inverse;
   `orientationsToVertical` stays for single-axis reasoning. The pallet
   (`pOut`) control keeps L/W disabled (a pallet stands H up).
+- **3D candidate cycle arrows are a SECOND control onto the ONE selection
+  state — never a parallel list.** At case AND pallet 3D depth, prev/next
+  (`#candCycle`, app.js) step through `build.sortedRows()` — the exact
+  ordered list the Build table renders — and each step COMMITS via the same
+  path a row click uses (`build.stepCandidate` → `selected` → `refreshAll`).
+  One index into one sorted list drives the arrows' "N of M", the table's
+  highlighted row, the pallet readout's "row N of M", and the committed
+  project candidate together; re-sorting the table re-orders the arrows too
+  and keeps the SAME build selected (its number just moves). `getCycleState`
+  reports the ON-SCREEN candidate's place — `selected` or, before any pick,
+  the shared `defaultCandidate(rows)` that `resolveActiveRow` also renders,
+  so the position is right from the first frame. `setCycleListener` fires the
+  arrows' UI update on every `renderTable` (re-sort included, which never
+  runs `refreshAll`). Clamps at both ends, no wrap. The pallet readout was
+  fixed at the same time: it had computed "row N of M" from the RAW
+  enumeration order (`rows.findIndex`), disagreeing with the sorted table —
+  now it reads `getCycleState`, so all three positions are one source.
 - **Shelf rotate 90° spins the FORWARD FACE in its own plane (about the
   DEPTH axis) — not the vertical.** `shelf.rot` (app.js, shelf view state —
   never on the project) turns the pack 0/90/180/270°, clockwise to the

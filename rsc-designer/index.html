@@ -319,6 +319,16 @@
   }
   .mode3d .seg button.on{background:var(--accent-soft);color:var(--accent-2);box-shadow:none}
   .depthsel button{letter-spacing:.02em}
+  /* Build-candidate cycle arrows: prev / "N of M" + identity / next */
+  .cyclesel{align-items:stretch}
+  .cyclesel button{padding:6px 10px;font-size:13px;line-height:1;display:flex;align-items:center}
+  .cyclesel button:disabled{opacity:.3;cursor:default}
+  .cyclepos{
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+    padding:0 9px;min-width:96px;line-height:1.25;font-variant-numeric:tabular-nums;
+  }
+  .cyclepos #candPos{font-family:var(--mono);font-size:12px;color:var(--ink);font-weight:600}
+  .cyclepos .cyclekey{font-family:var(--mono);font-size:10px;color:var(--ink-3);white-space:nowrap}
 
   /* HUD chips over the canvas */
   .hud{
@@ -736,6 +746,14 @@
         <button id="d_product">Product</button><button id="d_wrap">Wrap</button
         ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
         ><button id="d_pallet">Pallet</button>
+      </div>
+      <!-- cycle the Build table's candidate list in place (case + pallet depth
+           only). Same ordered list + row-select the table uses — each step
+           commits, the table highlight and this readout move together. -->
+      <div class="seg cyclesel" id="candCycle" style="display:none">
+        <button id="candPrev" title="Previous build candidate (current sort)">&#9664;</button
+        ><span class="cyclepos" title="Position in the Build table's current sort"><span id="candPos">— of —</span><span id="candKey" class="cyclekey"></span></span
+        ><button id="candNext" title="Next build candidate (current sort)">&#9654;</button>
       </div>
       <!-- look INSIDE (fit) vs look AT (graphics). Defaults smartly: Solid when
            the pack shown has artwork, Cutaway otherwise. Hierarchy mode only. -->

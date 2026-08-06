@@ -12,7 +12,7 @@
  * things: the rounding setting, and which candidate is currently selected.
  */
 import {newProject, candidateCases, checkLockedCase, resolveChainShape, describeChain,
-        linkFor, ROUNDING} from '../core/project.js';
+        linkFor, defaultCandidate, ROUNDING} from '../core/project.js';
 import {fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
 import {refreshAll} from './notify.js';
@@ -22,6 +22,7 @@ let unit = 'mm';
 let rounding = '1mm';
 let rows = [];
 let selected = null;          // a row object, user-picked
+let cycleListener = null;     // 3D arrows' UI updater (set by app.js), called on every renderTable
 // default sort: pieces per pallet, descending. Cases per pallet counts
 // boxes on the deck; pieces per pallet counts product that actually ships.
 // A case holding fewer cartons can pack MORE cases on a deck, so
@@ -185,9 +186,12 @@ export function recompute(preserveKey){
   refreshAll();
 }
 
-function renderTable(){
+/** THE ordered candidate list — `rows` sorted by the table's LIVE sort key and
+ *  direction. The one source both the Build table AND the 3D cycle arrows read,
+ *  so the arrows step in exactly the order the table shows; re-sorting the table
+ *  re-orders the arrows too, with no parallel rank order to drift. */
+function sortedRows(){
   const cols = columns();
-  const tbl = el('bTable');
   // pieces/pallet is meaningless (always null) for the legacy carton-driven
   // chain (no content/primary stage at all) — fall back to cartonsPerPallet
   // for THIS render rather than sorting by a column that's all em-dashes.
@@ -195,15 +199,21 @@ function renderTable(){
   // still gets the pieces-based default.
   const noPieces = rows.length > 0 && rows.every(r => r.piecesPerPallet == null);
   const effectiveSortKey = (sortKey === 'piecesPerPallet' && noPieces) ? 'cartonsPerPallet' : sortKey;
+  const col = cols.find(c => c.key === effectiveSortKey);
+  return {effectiveSortKey, sorted: [...rows].sort((a, b) => {
+    const va = col && col.val ? col.val(a) : a[effectiveSortKey], vb = col && col.val ? col.val(b) : b[effectiveSortKey];
+    return (va < vb ? -1 : va > vb ? 1 : 0)*sortDir;
+  })};
+}
+
+function renderTable(){
+  const cols = columns();
+  const tbl = el('bTable');
+  const {effectiveSortKey, sorted} = sortedRows();
   // per-objective winners (Prompt 19, Part C): when one row wins everything
   // that should be obvious; when four different rows win, that's the
   // tradeoff the table exists to surface, not a single number to hand over.
   const best = bestRows(rows);
-  const sorted = [...rows].sort((a, b) => {
-    const col = cols.find(c => c.key === effectiveSortKey);
-    const va = col && col.val ? col.val(a) : a[effectiveSortKey], vb = col && col.val ? col.val(b) : b[effectiveSortKey];
-    return (va < vb ? -1 : va > vb ? 1 : 0)*sortDir;
-  });
   tbl.innerHTML =
     `<thead><tr>${cols.map(c =>
       `<th data-k="${c.key}">${c.label}${c.key === effectiveSortKey ? (sortDir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>` +
@@ -228,6 +238,52 @@ function renderTable(){
     // still needs to hear about it
     refreshAll();
   }));
+  // the 3D cycle arrows' "N of M" + enable state track the table's live order
+  // and selection — renderTable() is the one choke point for both (recompute,
+  // re-sort, row-click, reselect, step all end here), so one call keeps them in
+  // lockstep, re-sort included (which never runs refreshAll).
+  if(cycleListener) cycleListener();
+}
+
+/* ---- 3D candidate cycling: a SECOND control onto the selection state ------
+ * The prev/next arrows in the 3D view step through the SAME sortedRows() the
+ * table shows, and committing is identical to a row click — one index into one
+ * ordered list drives the table highlight, the "N of M" readout, and the
+ * project's active candidate together. No new packing, no parallel list. */
+
+/** Register the 3D arrows' UI updater; build.js calls it on every renderTable
+ *  (so it fires on re-sort too, which doesn't go through refreshAll). */
+export function setCycleListener(fn){ cycleListener = fn; }
+
+/** The candidate currently ON SCREEN: the user's pick, or — before any pick —
+ *  the same default resolveActiveRow() renders, so the arrows' position matches
+ *  what's shown from the first frame. */
+function shownRow(){ return selected || (rows.length ? defaultCandidate(rows) : null); }
+
+/** {pos, total, label} for the arrows: pos is the 1-based place of the shown
+ *  candidate in the current sort (0 when there are none), total the count,
+ *  label its identity ("L-up · 4×3×2"). */
+export function getCycleState(){
+  const {sorted} = sortedRows();
+  const cur = shownRow();
+  const i = cur ? sorted.indexOf(cur) : -1;
+  return {pos: i < 0 ? 0 : i + 1, total: sorted.length,
+          label: cur ? `${({H: 'H', L: 'L', W: 'W'}[(cur.orientation || '')[2]] || '?')}-up · ${cur.nx}×${cur.ny}×${cur.nz}` : ''};
+}
+
+/** Move the selection `delta` places along the current sort and COMMIT it,
+ *  exactly as clicking that row would. Clamps at the ends (no wrap). */
+export function stepCandidate(delta){
+  const {sorted} = sortedRows();
+  if(!sorted.length) return;
+  const cur = shownRow();
+  const base = cur ? sorted.indexOf(cur) : -1;
+  const next = Math.max(0, Math.min(sorted.length - 1, base + delta));
+  if(sorted[next] === selected) return;           // already there (e.g. clamped at an end)
+  selected = sorted[next];
+  if(el('bUse')) el('bUse').disabled = false;
+  renderTable();                                   // moves the table highlight + updates the arrows
+  refreshAll();                                    // commits: 3D/2D/pallet/readouts/DXF follow
 }
 
 export const getSelected = () => selected;

@@ -357,14 +357,17 @@ function refreshPal(){
   // which candidate row every view (2D/3D/DXF/readout) is reflecting (UAT #B2):
   // resolveActiveRow re-derives a fresh row, so locate it in the Build rows by
   // its candidate key rather than by identity.
-  const rows = build.getRows();
   const sel = build.getSelectedCandidateKey();
   const sameKey = (a, b) => a && b && a.nx === b.nx && a.ny === b.ny && a.nz === b.nz && a.orientation === b.orientation;
-  const idx = rows.findIndex(r => sameKey(r, row));
+  // position in the Build table's CURRENT sort — the SAME ordered list the table
+  // and the 3D cycle arrows read (build.getCycleState), never a raw-enumeration
+  // index, so this readout, the highlighted table row and the arrows can never
+  // report different positions for the one candidate on screen.
+  const cyc = build.getCycleState();
   const rl = el('palRowLabel');
-  if(idx >= 0){
+  if(cyc.pos >= 1){
     const basis = sameKey(sel, row) ? 'selected candidate' : 'best cartons/pallet';
-    rl.innerHTML = `<span class="rl-eyebrow">showing</span>${basis} · row ${idx + 1} of ${rows.length}` +
+    rl.innerHTML = `<span class="rl-eyebrow">showing</span>${basis} · row ${cyc.pos} of ${cyc.total}` +
       ` &middot; <span class="rl-link">open Build</span>`;
     rl.style.display = 'flex';
   }else{
@@ -1229,7 +1232,27 @@ function applyFoldMode(){
 
 // product/pallet have no fold — they only exist in the nest cascade, so a
 // fold request on those levels falls through to the hierarchy
-function apply3dMode(){ if(mode3d === 'fold' && isStyleLevel()) applyFoldMode(); else applyHierarchy(true); }
+function apply3dMode(){ if(mode3d === 'fold' && isStyleLevel()) applyFoldMode(); else applyHierarchy(true); updateCandidateCycle(); }
+
+/** The 3D build-candidate cycle arrows. Visible only at case/pallet hierarchy
+ *  depth (where a case-candidate list exists); hidden elsewhere. Shows the
+ *  ON-SCREEN candidate's place in the Build table's CURRENT sort ("N of M") plus
+ *  its identity, and disables an arrow at each end (no wrap). build.getCycleState
+ *  and build.stepCandidate read/step the SAME sortedRows() the table renders, so
+ *  arrows, table highlight and committed build never disagree. Registered as
+ *  build's cycle listener (fires on every table render — recompute, re-sort,
+ *  row-click, step) AND called here on view/depth change. */
+function updateCandidateCycle(){
+  const seg = el('candCycle');
+  const show = view === '3d' && mode3d === 'hier' && (activeLevel === 'case' || activeLevel === 'pallet');
+  const {pos, total, label} = build.getCycleState();
+  if(!show || total < 1){ seg.style.display = 'none'; return; }
+  seg.style.display = 'flex';
+  el('candPos').textContent = `${pos} of ${total}`;
+  el('candKey').textContent = label;
+  el('candPrev').disabled = pos <= 1;
+  el('candNext').disabled = pos >= total;
+}
 
 /* ---------- Dims overlay: L×W×H callouts on the active component ---------- */
 
@@ -1781,6 +1804,15 @@ notify.onRefresh('shelf', refreshShelf);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('artworkPanel', updateArtPanel);
 notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
+
+// 3D candidate-cycle arrows: a second control onto build.js's selection state.
+// The listener keeps "N of M"/enable in step with the table's live sort (fires
+// on re-sort too, which never runs refreshAll); the buttons step + commit,
+// exactly like clicking a row. Wired BEFORE initBuild so its first renderTable
+// already updates the readout.
+build.setCycleListener(updateCandidateCycle);
+el('candPrev').addEventListener('click', () => build.stepCandidate(-1));
+el('candNext').addEventListener('click', () => build.stepCandidate(1));
 
 // Build view: candidate table only (build.js owns it). initBuild's own
 // recompute() populates rows/selected and runs the registration above once

@@ -541,6 +541,15 @@ export function checkLockedCase(project, rounding = '1mm'){
  * geometry for the same level (the Path-A bug).
  * @returns {Object|null} a decorated candidate row, or null if nothing fits
  */
+/** The candidate shown when the engineer hasn't explicitly picked a row:
+ *  the most-per-pallet arrangement. ONE definition, shared by resolveActiveRow
+ *  (what every view renders) and the Build cycle arrows (build.js), so the
+ *  arrows' "N of M" position can never disagree with the build actually on
+ *  screen before a manual pick. */
+export function defaultCandidate(rows){
+  return rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+}
+
 export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
   const outerKey = project.primary ? resolveChainShape(project).outermost : 'tertiary';
   const outerLink = linkFor(project, outerKey);
@@ -552,7 +561,7 @@ export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
       r.nz === selectedKey.nz && r.orientation === selectedKey.orientation);
     if(m) return m;
   }
-  return rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+  return defaultCandidate(rows);
 }
 
 /**

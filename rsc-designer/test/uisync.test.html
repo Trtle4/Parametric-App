@@ -82,6 +82,7 @@
   <button id="d_product">Product</button><button id="d_wrap">Wrap</button
   ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
   ><button id="d_pallet">Pallet</button>
+  <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
   <button id="m3dims">Dims</button>
 </div>
@@ -879,6 +880,58 @@ await (async () => {
   t('which-row label: shown on the pallet readout, names row N of M', () => {
     if(el('palRowLabel').style.display === 'none') throw new Error('row label hidden while a valid pallet result exists');
     if(!/row \d+ of \d+/.test(el('palRowLabel').textContent)) throw new Error(`row label malformed: "${el('palRowLabel').textContent}"`);
+  });
+})();
+
+/* ==================================================================
+   3D candidate cycle arrows — a SECOND control onto the same sorted
+   candidate list + row-select. Stepping commits; the arrows, the table
+   highlight and the pallet readout all read ONE ordered list.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  el('tab3d').click(); await settle();
+  el('d_case').click(); await settle();                       // hierarchy, case depth
+
+  t('cycle arrows: visible at case depth, "N of M" well-formed', () => {
+    if(getComputedStyle(el('candCycle')).display === 'none') throw new Error('cycle arrows hidden at case depth');
+    if(!/^\d+ of \d+$/.test(el('candPos').textContent)) throw new Error(`pos malformed: "${el('candPos').textContent}"`);
+  });
+
+  t('cycle arrows: next commits the next candidate; prev clamps at position 1', () => {
+    const total = build.getCycleState().total;
+    if(total < 2) return;                                      // single-candidate chain: nothing to step
+    for(let i = 0; i < total && !el('candPrev').disabled; i++) el('candPrev').click();   // to the top
+    eq(build.getCycleState().pos, 1, 'reset to position 1:');
+    if(!el('candPrev').disabled) throw new Error('prev must be disabled at position 1 (no wrap)');
+    el('candNext').click();
+    eq(build.getCycleState().pos, 2, 'next advanced to position 2:');
+    if(!build.getSelectedCandidateKey()) throw new Error('next did not COMMIT a selection (cycling = selecting)');
+  });
+
+  t('cycle arrows: arrow position == the highlighted table row position (one order)', () => {
+    el('tabBuild').click();
+    const cyc = build.getCycleState();
+    const trs = [...document.querySelectorAll('#bTable tbody tr')];
+    const selIdx = trs.findIndex(tr => tr.classList.contains('bsel'));
+    if(selIdx < 0) throw new Error('no highlighted row in the Build table');
+    eq(selIdx + 1, cyc.pos, 'table highlight place == arrow "N":');
+    el('tab3d').click();
+  });
+
+  t('cycle arrows: re-sorting keeps the SAME build selected, only its position moves', () => {
+    if(build.getCycleState().total < 2) return;
+    const keyBefore = JSON.stringify(build.getSelectedCandidateKey());
+    const th = [...document.querySelectorAll('#bTable thead th')].find(t => t.dataset.k === 'boardAreaM2');
+    th.click();                                                // re-sort by a different column
+    eq(JSON.stringify(build.getSelectedCandidateKey()), keyBefore, 'same candidate stays selected:');
+    [...document.querySelectorAll('#bTable thead th')].find(t => t.dataset.k === 'piecesPerPallet').click();  // restore default sort
+  });
+
+  t('cycle arrows: hidden at carton depth (no case-candidate list there)', () => {
+    el('d_carton').click();
+    if(getComputedStyle(el('candCycle')).display !== 'none') throw new Error('cycle arrows should hide at carton depth');
+    el('d_case').click();
   });
 })();
 
