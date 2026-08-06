@@ -142,6 +142,25 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   fixed at the same time: it had computed "row N of M" from the RAW
   enumeration order (`rows.findIndex`), disagreeing with the sorted table —
   now it reads `getCycleState`, so all three positions are one source.
+- **Cartons-per-case is a RANGE — one more dimension on the ONE candidate
+  list.** The tertiary link carries an optional `countMax` (min = `count`);
+  `countMax` absent or ≤ `count` is single-count, bit-identical to before.
+  `candidateCases` loops `count..countMax` (auto mode only — an explicit grid
+  pins the count to its product) × arrangements × checked axes into the same
+  ranked list. The count is part of a candidate's IDENTITY (`cartonsPerCase`
+  on the row + the selection key): the same irreducible grid serves several
+  counts (a 2×2×3 case holds 10, 11 or 12), so nx·ny·nz no longer determines
+  the count. `candidateCases` caches the pallet solve per unique case SHAPE
+  (grid+orientation) and re-emits per count — only the ×count multiplier
+  differs — so a wide range stays fast (5–20 ≈ 650 candidates in ~25 ms; no
+  computing-state needed). The DISPLAY caps at `CANDIDATE_CAP` (build.js, =50)
+  by cartons/pallet AFTER complete evaluation, and ONLY when exceeded, so the
+  best is always shown and single-count sets are untouched; no remainder is
+  reported (narrow/widen the range to reshape the set). The range UI is
+  `mountCountArrangement`'s `rangeMode` (case level only this pass; wraps/carton
+  gets it later — leave the "Wraps/carton" column slot). A "Cartons/case"
+  column shows each row's count. Ranking is by cartons/pallet (∝ pieces/pallet,
+  the default sort — same order).
 - **Shelf rotate 90° spins the FORWARD FACE in its own plane (about the
   DEPTH axis) — not the vertical.** `shelf.rot` (app.js, shelf view state —
   never on the project) turns the pack 0/90/180/270°, clockwise to the

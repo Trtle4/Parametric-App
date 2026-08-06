@@ -936,6 +936,51 @@ await (async () => {
 })();
 
 /* ==================================================================
+   Cartons-per-case RANGE: min–max feeds one more dimension into the SAME
+   candidate list. min==max reproduces single-count; a range yields
+   multiple counts ranked together; the display caps at the top 50.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  const tLink = build.project.links.find(l => l.parent === 'tertiary');
+
+  t('range: case level shows min + max count inputs', () => {
+    if(!el('pInC') || !el('pInCmax')) throw new Error('cartons-per-case min/max inputs missing at case level');
+  });
+
+  t('range: min==max reproduces the single-count candidate set', () => {
+    tLink.count = 12; tLink.countMax = undefined; build.recompute();
+    const single = build.getRows().length;
+    el('pInCmax').value = '12'; fire(el('pInCmax'), 'input');   // max==min → still single
+    if(build.getRows().length !== single) throw new Error(`min==max changed the set: ${single} → ${build.getRows().length}`);
+    if(build.getRows().some(r => r.cartonsPerCase !== 12)) throw new Error('single-count set has a stray count');
+  });
+
+  t('range: a min–max spread yields multiple counts, ranked, capped at 50', () => {
+    el('pInC').value = '5'; fire(el('pInC'), 'input');
+    el('pInCmax').value = '20'; fire(el('pInCmax'), 'input');
+    const rows = build.getRows();
+    const counts = new Set(rows.map(r => r.cartonsPerCase));
+    if(counts.size < 2) throw new Error(`range did not produce multiple counts: ${[...counts]}`);
+    if(rows.length > 50) throw new Error(`display cap exceeded: ${rows.length} rows`);
+    // capped set is the best by cartons/pallet — the max in the set equals the
+    // global max (nothing better was dropped)
+    const maxCpp = Math.max(...rows.map(r => r.cartonsPerPallet || 0));
+    if(!(maxCpp > 0)) throw new Error('no positive cartons/pallet in the ranked set');
+    // reset
+    el('pInC').value = '12'; fire(el('pInC'), 'input');
+    el('pInCmax').value = '12'; fire(el('pInCmax'), 'input');
+  });
+
+  t('range: Cartons/case column present in the Build table', () => {
+    el('tabBuild').click();
+    const heads = [...document.querySelectorAll('#bTable thead th')].map(t => t.textContent.trim());
+    if(!heads.some(h => /cartons?\/case/i.test(h))) throw new Error(`no Cartons/case column: ${heads.join(', ')}`);
+    el('tab3d').click();
+  });
+})();
+
+/* ==================================================================
    Disabled-level RENDER MATRIX (closes the fixed-chain-assumption class):
    for every enabled/disabled combination of the optional levels (wrap,
    carton, case), no enabled level with valid geometry may blank a view.

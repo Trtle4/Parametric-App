@@ -418,7 +418,7 @@ function clampCount(raw, fallback){
  *  an explicit arrangement silently ignore whatever the count field showed);
  *  an explicit arrangement shows its OWN grid, never a placeholder default,
  *  so re-rendering from a loaded project is faithful to what was loaded. */
-export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, childNoun, onInput){
+export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, childNoun, onInput, rangeMode = false){
   function render(){
     const explicit = link.arrangement !== 'auto';
     const nx = explicit ? link.arrangement.nx : defNx;
@@ -427,10 +427,19 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
     // AUTO (solver chose) vs MANUAL (user grid) badge — so "the solver is
     // arranging within my grid" is never confused with "the app overrode me".
     const badge = `<span class="arrbadge${explicit ? ' manual' : ''}"><span class="dot"></span>${explicit ? 'MANUAL' : 'AUTO'}</span>`;
+    // RANGE (min–max) only makes sense in auto mode — an explicit grid pins the
+    // count to its own product. `countMax` absent or ≤ count means single-count
+    // (min==max), identical to the pre-range behaviour. Not capped: any max.
+    const rangeUI = rangeMode && !explicit;
+    const cmax = link.countMax > link.count ? link.countMax : link.count;
+    const countField = rangeUI
+      ? `<div class="field"><label>${childNoun}s <span class="hint">per case · range, ranked by ${childNoun.toLowerCase()}s/pallet</span></label>
+          <div class="inp inprange"><input id="${idp}C" type="number" min="1" step="1" value="${link.count}"><span class="rangedash">to</span><input id="${idp}Cmax" type="number" min="1" step="1" value="${cmax}"></div></div>`
+      : `<div class="field"><label>${childNoun}s <span class="hint">count</span></label>
+          <div class="inp"><input id="${idp}C" type="number" min="1" step="1" value="${link.count}"></div></div>`;
     host.innerHTML =
-      `<div class="field"><label>${childNoun}s <span class="hint">count</span></label>
-        <div class="inp"><input id="${idp}C" type="number" min="1" step="1" value="${link.count}"></div></div>
-      <div class="field"><label>Arrangement ${badge}</label>
+      countField +
+      `<div class="field"><label>Arrangement ${badge}</label>
         <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
       (explicit ? `<div class="field"><label>Grid</label>
         <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%;padding-right:10px"> &times;
@@ -467,7 +476,15 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
     el(idp + 'C').addEventListener('input', () => {
       const n = clampCount(el(idp + 'C').value, link.count);
       if(link.arrangement !== 'auto'){ showCountAdvisory(n); return; }   // no silent grid loss
-      link.count = n;
+      link.count = n;                                    // count is the range MIN
+      if(rangeUI && link.countMax != null && link.countMax < n) link.countMax = n;   // keep max ≥ min
+      onInput();
+    });
+    if(rangeUI) el(idp + 'Cmax').addEventListener('input', () => {
+      // max is stored only when it exceeds the min — max == min collapses to a
+      // single count (countMax cleared so the state reads as plain single-count).
+      const m = clampCount(el(idp + 'Cmax').value, cmax);
+      link.countMax = m > link.count ? m : undefined;
       onInput();
     });
     el(idp + 'Arr').addEventListener('change', () => {
@@ -499,6 +516,8 @@ export function refreshCountArrangement(idp, link){
   const cInput = el(idp + 'C');
   if(!cInput) return;
   if(!isFocused(cInput)) cInput.value = link.count;
+  const cmaxEl = el(idp + 'Cmax');
+  if(cmaxEl && !isFocused(cmaxEl)) cmaxEl.value = (link.countMax > link.count ? link.countMax : link.count);
   if(link.arrangement !== 'auto'){
     const nxEl = el(idp + 'Nx');
     if(nxEl){

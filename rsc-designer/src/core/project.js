@@ -478,23 +478,48 @@ export function candidateCases(project, rounding = '1mm'){
   const openTop = !!outerLevel.openTop;
   const openTopOpts = openTop ? {openTop: true, fixedH: outerLevel.params.H} : {};
 
-  let cands;
+  // cartons-per-case is a RANGE when the outer link carries countMax > count
+  // (auto mode only — an explicit grid pins the count to its own product). Every
+  // count in [count..countMax] is enumerated against every arrangement AND, via
+  // child.allowedOrientations, every checked vertical axis, and all go into the
+  // ONE ranked list. countMax absent or == count reproduces the single-count
+  // path exactly (bit-identical). Each candidate is tagged with `.count` — its
+  // own cartons-per-case — since the same irreducible grid can serve several
+  // counts (e.g. a 2×2×3 case holds 10, 11 or 12), so the count is part of a
+  // candidate's identity, not derivable from nx·ny·nz alone.
+  const countMin = outerLink.count;
+  const countMax = (outerLink.arrangement === 'auto' && outerLink.countMax > countMin) ? outerLink.countMax : countMin;
+
+  const cands = [];
   if(outerLink.arrangement === 'auto'){
-    cands = parentCandidates(child, outerLink.count, child.clearance, openTopOpts).filter(c => irreducible(c, outerLink.count));
+    for(let k = countMin; k <= countMax; k++)
+      for(const c of parentCandidates(child, k, child.clearance, openTopOpts))
+        if(irreducible(c, k)){ c.count = k; cands.push(c); }
   }else{
     const {nx, ny, nz} = outerLink.arrangement;
-    cands = parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz, ...openTopOpts})
-      .filter(c => c.nx === nx && c.ny === ny);
+    for(const c of parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz, ...openTopOpts}))
+      if(c.nx === nx && c.ny === ny){ c.count = nx*ny*nz; cands.push(c); }
   }
 
+  // Pallet solve for a case shape (cavity → geometry → fitInto) is INVARIANT
+  // across counts — only the per-pallet multiplier (count) differs — so cache
+  // the solved row per unique case shape and re-emit it per count, avoiding a
+  // redundant pallet solve for every count that reuses the same grid.
   const rows = [];
+  const shapeCache = new Map();   // grid+orientation key -> {cavity, outerGeo, childFit}
   for(const c of cands){
-    const cavity = roundCavityUp(c.cavity, step);
-    const outerParams = {...outerLevel.params, L: cavity.L, W: cavity.W, H: cavity.H};
-    const outerGeo = styleById(outerLevel.styleId).geometry(outerParams);
-    const row = chainMetrics(project, outerKey, c, cavity, outerParams, outerGeo, childVol, outerLink.count, child);
-    const childFit = fitChildInOuter(child, cavity, c.o, openTop ? {openTop: true, wantCount: c.nx*c.ny*c.layers} : {});
-    rows.push(decorateRow(row, project, below, outerKey, outerGeo, row.casesFit, childFit));
+    const shapeKey = `${c.nx}x${c.ny}x${c.layers}:${c.o}`;
+    let shape = shapeCache.get(shapeKey);
+    if(!shape){
+      const cavity = roundCavityUp(c.cavity, step);
+      const outerParams = {...outerLevel.params, L: cavity.L, W: cavity.W, H: cavity.H};
+      const outerGeo = styleById(outerLevel.styleId).geometry(outerParams);
+      const childFit = fitChildInOuter(child, cavity, c.o, openTop ? {openTop: true, wantCount: c.nx*c.ny*c.layers} : {});
+      shape = {cavity, outerParams, outerGeo, childFit};
+      shapeCache.set(shapeKey, shape);
+    }
+    const row = chainMetrics(project, outerKey, c, shape.cavity, shape.outerParams, shape.outerGeo, childVol, c.count, child);
+    rows.push(decorateRow(row, project, below, outerKey, shape.outerGeo, row.casesFit, shape.childFit));
   }
   return rows;
 }
@@ -558,7 +583,10 @@ export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
   if(rows.length === 0) return null;
   if(selectedKey){
     const m = rows.find(r => r.nx === selectedKey.nx && r.ny === selectedKey.ny &&
-      r.nz === selectedKey.nz && r.orientation === selectedKey.orientation);
+      r.nz === selectedKey.nz && r.orientation === selectedKey.orientation &&
+      // cartonsPerCase distinguishes same-grid rows at different counts; older
+      // saved keys (pre-range) omit it — match on the rest when it's absent.
+      (selectedKey.cartonsPerCase === undefined || r.cartonsPerCase === selectedKey.cartonsPerCase));
     if(m) return m;
   }
   return defaultCandidate(rows);
@@ -714,8 +742,9 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
   const outerVol = outerGeo.outer.L*outerGeo.outer.W*outerGeo.outer.H;
   const unitVol = outerKey === 'tertiary' ? childVol : outerVol;
   return {
-    // identity
-    nx: cand.nx, ny: cand.ny, nz: cand.layers, orientation: cand.o,
+    // identity — cartonsPerCase (this candidate's own count) is part of it: the
+    // same grid can appear at several counts, so it distinguishes those rows.
+    nx: cand.nx, ny: cand.ny, nz: cand.layers, orientation: cand.o, cartonsPerCase: count,
     arrangementLabel: `${cand.nx} × ${cand.ny} × ${cand.layers} ${cand.o}`,
     // the outermost tier
     cavity, caseParams: outerParams,

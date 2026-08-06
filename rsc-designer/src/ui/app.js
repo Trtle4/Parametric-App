@@ -807,7 +807,7 @@ function mountPlacement(){
        <div id="plOutClear" style="display:contents"></div>`;
     inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, projectChanged);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged, true);
     syncRotInert('pIn', linkFor(proj, 'tertiary'));
     inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
       {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},

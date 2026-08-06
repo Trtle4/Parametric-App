@@ -30,6 +30,15 @@ let cycleListener = null;     // 3D arrows' UI updater (set by app.js), called o
 // product, not corrugated. Falls back to cartonsPerPallet in renderTable()
 // when the chain has no piece concept at all (legacy carton-driven chain).
 let sortKey = 'piecesPerPallet', sortDir = -1;
+// DISPLAY cap: with a cartons-per-case range the evaluated set can be large, so
+// show only the top N candidates by cartons/pallet (the ranking priority).
+// Applied AFTER complete evaluation and only when exceeded, so the best
+// candidate is always present and nothing viable is ever silently dropped from
+// the analysis — the cap only trims the tail of the DISPLAY. No remainder is
+// shown (no "N of M total", no page 2): narrow/widen the range to reshape the
+// set. Bump this one constant to change the cap. Single-count chains produce
+// far fewer than this, so the default path is untouched (order preserved).
+const CANDIDATE_CAP = 50;
 
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -79,6 +88,10 @@ function columns(){
     // table ranks across BOTH arrangement AND standing orientation — this column
     // names the axis so rows from different axes are told apart at a glance.
     {key: 'verticalAxis', label: 'Vertical', txt: r => ({H: 'H-up', L: 'L-up', W: 'W-up'}[(r.orientation || '')[2]] || '—'), val: r => (r.orientation || '')[2]},
+    // the candidate's own cartons-per-case count — varies row to row once the
+    // count is a range, so it's shown explicitly. (Wraps-per-carton gets the
+    // same treatment in a later pass; a "Wraps/carton" column slots in here.)
+    {key: 'cartonsPerCase', label: `${childCap}s/${outerNoun}`, txt: r => r.cartonsPerCase != null ? r.cartonsPerCase : '—', val: r => r.cartonsPerCase},
     {key: 'primaryLabel', label: `Stacks in ${childNoun}`, txt: r => r.primaryLabel ? `${r.primaryLabel} (${r.primaryOrientation})` : '—'},
     {key: 'outerL', label: `${outerCap} outer L×W×H`, txt: r => `${fmtLen(r.outer.L, unit)} × ${fmtLen(r.outer.W, unit)} × ${fmtLen(r.outer.H, unit)}`, val: r => r.outer.L*r.outer.W*r.outer.H},
     {key: 'boardAreaM2', label: `Board m²/${outerNoun}`, txt: r => r.boardAreaM2.toFixed(3)},
@@ -154,24 +167,29 @@ export function recompute(preserveKey){
       status.className = row.fits ? 'bnote' : 'bnote bbad';
     }else{
       rows = candidateCases(project, rounding);
+      // The evaluation is complete (every count × arrangement × axis solved);
+      // the DISPLAY is capped to the top CANDIDATE_CAP by cartons/pallet — the
+      // ranking priority — so the best is always shown and no viable option is
+      // dropped from the analysis, only from the list's tail. No remainder is
+      // reported (see CANDIDATE_CAP). Single-count chains produce fewer than the
+      // cap, so `rows` is untouched then (same order as before this feature).
+      const capped = rows.length > CANDIDATE_CAP;
+      if(capped)
+        rows = [...rows].sort((a, b) => (b.cartonsPerPallet || 0) - (a.cartonsPerPallet || 0)).slice(0, CANDIDATE_CAP);
       const bad = rows.filter(r => !r.primaryFits).length;
-      // cases/pallet counts boxes on the deck; pieces/pallet counts product
-      // that actually ships. Checked here in case a future change decouples
-      // them, but today this can NEVER fire within one enumeration: every
-      // row here holds the SAME cartons-per-case count (link.count) and the
-      // same piecesPerCarton (fixed per project, not per candidate shape) —
-      // only the CASE's shape varies row to row — so piecesPerPallet is an
-      // exact constant multiple of casesPerPallet for every fitting row
-      // (verified: the ratio locks at one value across every non-zero row).
-      // The trade the prompt describes — a case holding fewer cartons but
-      // fitting more of them on the deck — is real, but it's a comparison
-      // across DIFFERENT cartons-per-case settings, which isn't what a
-      // single candidateCases() call enumerates; it holds that count fixed
-      // and varies the shape. Surfacing THAT trade would mean comparing
-      // across count settings, not rows of one table — flagged, not built.
+      // cases/pallet counts boxes on the deck; pieces/pallet counts product that
+      // ships. With a cartons-per-case RANGE these genuinely diverge — a case
+      // holding fewer cartons can fit more cases on the deck yet ship less
+      // product — so the note below is now a real comparison across counts, not
+      // a can't-happen guard. (pieces/pallet is a fixed multiple of
+      // cartons/pallet, so ranking by either is the same order.)
       const best = bestRows(rows);
       const disagree = best.piecesPerPallet && best.casesPerPallet && best.piecesPerPallet !== best.casesPerPallet;
-      status.textContent = `${rows.length} candidate arrangements for ${link.count} ${childNoun}s — click a row to select` +
+      const ranged = link.arrangement === 'auto' && link.countMax > link.count;
+      const countLabel = ranged ? `${link.count}–${link.countMax}` : `${link.count}`;
+      status.textContent =
+        `${rows.length} candidate${rows.length === 1 ? '' : 's'} for ${countLabel} ${childNoun}s/${outerNoun}` +
+        (ranged ? ` — ${capped ? `top ${CANDIDATE_CAP}, ` : ''}ranked by ${childNoun}s/pallet · click a row to select` : ' — click a row to select') +
         (bad ? ` · ${bad} rows: ${childNoun} does NOT fit as configured` : '') +
         (disagree ? ` · Note: the pieces/pallet leader is NOT the ${outerNoun}s/pallet leader — maximizing ${outerNoun}s here would ship less product` : '');
       status.className = bad ? 'bnote bbad' : 'bnote';
@@ -262,13 +280,16 @@ function shownRow(){ return selected || (rows.length ? defaultCandidate(rows) : 
 
 /** {pos, total, label} for the arrows: pos is the 1-based place of the shown
  *  candidate in the current sort (0 when there are none), total the count,
- *  label its identity ("L-up · 4×3×2"). */
+ *  label its identity ("12 in 2×2×3 · L-up"). The count leads because it can
+ *  vary between adjacent candidates that share a grid — so cycling across counts
+ *  is visibly distinct even when the arrangement looks the same. */
 export function getCycleState(){
   const {sorted} = sortedRows();
   const cur = shownRow();
   const i = cur ? sorted.indexOf(cur) : -1;
+  const axis = cur ? ({H: 'H', L: 'L', W: 'W'}[(cur.orientation || '')[2]] || '?') : '';
   return {pos: i < 0 ? 0 : i + 1, total: sorted.length,
-          label: cur ? `${({H: 'H', L: 'L', W: 'W'}[(cur.orientation || '')[2]] || '?')}-up · ${cur.nx}×${cur.ny}×${cur.nz}` : ''};
+          label: cur ? `${cur.cartonsPerCase} in ${cur.nx}×${cur.ny}×${cur.nz} · ${axis}-up` : ''};
 }
 
 /** Move the selection `delta` places along the current sort and COMMIT it,
@@ -295,7 +316,8 @@ export const getRounding = () => rounding;
  *  derived geometry/placements that the save document must not contain. */
 export function getSelectedCandidateKey(){
   if(!selected) return null;
-  return {nx: selected.nx, ny: selected.ny, nz: selected.nz, orientation: selected.orientation};
+  return {nx: selected.nx, ny: selected.ny, nz: selected.nz, orientation: selected.orientation,
+          cartonsPerCase: selected.cartonsPerCase};
 }
 
 /** Load a project wholesale: replace the live model's fields (project is a
@@ -317,7 +339,8 @@ export function loadProject({project: loadedProject, rounding: loadedRounding, s
 function reselectByKey(key){
   if(!key || !rows.length) return;
   const match = rows.length === 1 ? rows[0] : rows.find(r =>
-    r.nx === key.nx && r.ny === key.ny && r.nz === key.nz && r.orientation === key.orientation);
+    r.nx === key.nx && r.ny === key.ny && r.nz === key.nz && r.orientation === key.orientation &&
+    (key.cartonsPerCase === undefined || r.cartonsPerCase === key.cartonsPerCase));
   if(match){
     selected = match;
     el('bUse').disabled = false;

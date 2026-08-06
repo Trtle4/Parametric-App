@@ -250,6 +250,14 @@
     accent-color:var(--accent);cursor:pointer;
   }
   .field .inp.rangeinp input.rangenum{flex:0 0 46px;width:46px;text-align:right;padding:8px 4px}
+  /* cartons-per-case min–max: two count inputs with a "to" between them */
+  .field .inp.inprange{gap:0}
+  .field .inp.inprange input{flex:1;min-width:0;text-align:center}
+  .field .inp.inprange .rangedash{
+    flex:0 0 auto;padding:0 8px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    border-left:1px solid var(--line-2);border-right:1px solid var(--line-2);align-self:stretch;
+    display:flex;align-items:center;
+  }
   /* a field whose .inp holds a button (lock / enable toggle) is not a data
      field — let the button own its own look instead of the field frame */
   .field .inp:has(button){border:none;background:transparent;box-shadow:none;overflow:visible}
