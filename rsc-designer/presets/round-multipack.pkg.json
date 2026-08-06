@@ -110,7 +110,7 @@
       "baseH": 127,
       "pattern": "optimal"
     },
-    "printText": "FRAGILE",
+    "printText": "",
     "links": [
       {
         "parent": "tertiary",
