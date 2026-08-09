@@ -14,11 +14,14 @@
  * Coordinate mapping mirrors the pallet render: world x = across (placement x),
  * world y = up (placement z), world z = depth (placement y). All lengths mm.
  */
-import {getPivot, setCamSpan, kraft} from './fold3d.js';
+import {getPivot, setCamSpan, kraft, onFrame} from './fold3d.js';
 import {packArtGeometry, packArtMaterials} from './artwork3d.js';
+import {buildSellableCutaway, orientQuat} from './hierarchy3d.js';
 
 let shelfGroup = null;
 let shelfArtMat = null;                 // per-build art material+texture, disposed on rebuild
+let shelfCutWalls = [];                 // {mesh, n} of the ONE opened front pack — near walls hidden per frame
+let shelfFrameOff = null;               // the shelf's own frame loop, registered once
 const SHOWN_CAP = 4000;            // instancing cap for absurd inputs
 const PACK_GAP = 1.5;              // visual seam between packs
 const SURFACE_T = 10;              // shelf / ceiling / wall board thickness, mm
@@ -50,10 +53,18 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
  *        swapped at 90°/270°) so the spun box lands exactly in its cell. Rigid
  *        rotation → artwork turns with the face, never flips or mirrors.
  */
-export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
+/**
+ * @param {object} [opts]  {cutaway, bundle, noun, frontO} — when cutaway is true
+ *        and a bundle is given, the ONE shopper-facing pack (front row, centred,
+ *        bottom) is drawn opened (translucent shell + real contents) while every
+ *        other facing stays a solid printed/board pack. `noun` is the sellable
+ *        tier ('carton'|'case'); `frontO` is the pack's front-panel orientation.
+ */
+export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts = {}){
   const pivot = getPivot();
   if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
   if(shelfArtMat){ if(shelfArtMat.map) shelfArtMat.map.dispose(); shelfArtMat.dispose(); shelfArtMat = null; }
+  shelfCutWalls = [];                             // reset the opened-pack cutaway state each build
   shelfGroup = new THREE.Group();
   const W = shelf.width, D = shelf.depth, H = shelf.height, t = SURFACE_T;
 
@@ -67,8 +78,16 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
   ceil.position.set(0, H + t/2, 0);                     // the shelf above (empty ceiling)
   shelfGroup.add(ceil);
 
+  // Cutaway mode: the single shopper-facing pack (front row, centred across,
+  // bottom) opens; all others stay solid. -1 when solid mode, no bundle, or no
+  // packs — then nothing is skipped and the instanced fill is bit-identical.
+  const cut = !!(opts.cutaway && opts.bundle && placements.length);
+  const openIdx = cut ? frontCenterIndex(placements) : -1;
+
   const shown = Math.min(placements.length, SHOWN_CAP);
   if(shown > 0){
+    // the opened pack (if any) is drawn separately below; skip it in the fill
+    const solidPl = openIdx < 0 ? placements : placements.filter((_, i) => i !== openIdx);
     let pgeo, pmat, rot = false;
     if(art && art.am && art.canvas){
       // printed pack: the shared closed art body. packArtGeometry's FRONT is
@@ -83,7 +102,7 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
       pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
       pmat = packMats;
     }
-    const inst = new THREE.InstancedMesh(pgeo, pmat, shown);
+    const inst = new THREE.InstancedMesh(pgeo, pmat, solidPl.length);
     // TWO rotations about DIFFERENT axes, kept separate:
     //  • A — art-front alignment (art packs only): packArtGeometry prints FRONT
     //    at +Z, the shelf front is local -Z, so turn the body 180° about the
@@ -100,14 +119,30 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
     const A = new THREE.Matrix4().makeRotationY(Math.PI);
     const S = new THREE.Matrix4().makeRotationZ(rotDeg*Math.PI/180);
     const M = new THREE.Matrix4();
-    for(let i = 0; i < shown; i++){
-      const p = placements[i];
+    for(let i = 0; i < solidPl.length; i++){
+      const p = solidPl[i];
       if(rot) M.copy(A); else M.identity();
       M.premultiply(S);                                // spin in-plane about the depth axis
       M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
       inst.setMatrixAt(i, M);
     }
     shelfGroup.add(inst);
+  }
+
+  // the ONE opened front pack: canonical-frame cutaway (shell + real contents),
+  // oriented to the front panel (orientQuat) then spun in-plane about the depth
+  // axis to match the solid packs, positioned in the same (across, up, depth)
+  // frame. Its near walls are hidden per-frame by the shelf's own loop below.
+  if(cut && openIdx >= 0){
+    const p = placements[openIdx];
+    const {group: packG, walls} = buildSellableCutaway(opts.bundle, opts.noun);
+    const openG = new THREE.Group();
+    openG.add(packG);
+    openG.quaternion.copy(orientQuat(opts.frontO || 'LWH'));
+    openG.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rotDeg*Math.PI/180));
+    openG.position.set(p.x, p.z, p.y);
+    shelfGroup.add(openG);
+    shelfCutWalls = walls;
   }
 
   shelfGroup.position.y = -H/2;                         // centre vertically for orbit
@@ -119,6 +154,40 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0){
   shelfGroup.visible = visible;
   pivot.add(shelfGroup);
   setCamSpan(Math.max(W, D, H)*0.95);
+  ensureCutFrame();
+}
+
+// The shopper-facing pack: front row (smallest depth y), then centred across
+// (smallest |x|), then bottom (smallest up z). This is the pack a shopper reaches
+// for, so it's the one the cutaway opens.
+function frontCenterIndex(placements){
+  let best = -1, by = 0, bx = 0, bz = 0;
+  placements.forEach((p, i) => {
+    if(best < 0 || p.y < by - 1e-6 ||
+       (Math.abs(p.y - by) < 1e-6 && (Math.abs(p.x) < bx - 1e-6 ||
+       (Math.abs(Math.abs(p.x) - bx) < 1e-6 && p.z < bz - 1e-6)))){
+      best = i; by = p.y; bx = Math.abs(p.x); bz = p.z;
+    }
+  });
+  return best;
+}
+
+// One persistent frame loop hides the opened front pack's near walls as the
+// camera orbits — the same rule the hierarchy cutaway uses (a wall whose outward
+// normal points toward the camera is hidden). Reads module state, so it is inert
+// (empty wall list, or shelf hidden) in every other view and when solid.
+const _wp = new THREE.Vector3(), _wn = new THREE.Vector3(), _q = new THREE.Quaternion(), _toCam = new THREE.Vector3();
+function ensureCutFrame(){
+  if(shelfFrameOff) return;
+  shelfFrameOff = onFrame(cam => {
+    if(!shelfGroup || !shelfGroup.visible || !shelfCutWalls.length) return;
+    for(const {mesh, n} of shelfCutWalls){
+      mesh.getWorldPosition(_wp); mesh.getWorldQuaternion(_q);
+      _wn.copy(n).applyQuaternion(_q);
+      _toCam.copy(cam.position).sub(_wp);
+      mesh.visible = _wn.dot(_toCam) <= 0;              // hide walls facing the camera
+    }
+  });
 }
 
 export function showShelf(v){ if(shelfGroup) shelfGroup.visible = v; }

@@ -14,6 +14,15 @@ let renderer, scene, camera, pivot, boxGroup, raf, folding = false, foldT = 0;
 let dragging = false, lastX = 0, lastY = 0, rotX = -0.5, rotY = 0.7, dist = 1;
 let camSpan = 250;
 let cvWrap = null;
+// Pan (CAD-standard): the point the camera looks AT, slid in the screen plane
+// by a right-drag (desktop) or two-finger drag (touch). Orbit stays about this
+// point; Home / view changes reset it (setOrbit). One Vector3, one writer.
+let panTarget = null;                       // THREE.Vector3, lazily created in init3d
+// Multi-input gesture state: every active pointer, the mouse drag mode, and the
+// last two-finger centroid/spread so touch can pan+pinch simultaneously.
+const pointers = new Map();                 // pointerId -> {x, y}
+let dragMode = null;                        // 'orbit' | 'pan' (mouse only)
+let lastCentroid = null, pinchDist = 0;     // two-finger pan centroid + pinch spread
 
 /** The one "default three-quarter isometric" orbit — app.js's own
  *  resetCam (applyHierarchy) and the ViewCube's Home button both read this
@@ -35,6 +44,7 @@ export const onFrame = cb => { frameCbs.add(cb); return () => frameCbs.delete(cb
 
 export function init3d(container){
   cvWrap = container;
+  panTarget = new THREE.Vector3(0, 0, 0);
   // preserveDrawingBuffer keeps the colour buffer readable AFTER the frame so
   // capturePNG's toDataURL isn't blank — WebGL clears the buffer on present by
   // default (the same cleared-buffer trap the ViewCube diagnosis hit).
@@ -50,13 +60,60 @@ export function init3d(container){
 
   const c = renderer.domElement;
   c.style.cursor = 'grab';
-  c.addEventListener('pointerdown', e => {dragging = true; lastX = e.clientX; lastY = e.clientY; c.setPointerCapture(e.pointerId); c.style.cursor = 'grabbing';});
-  c.addEventListener('pointerup',   () => {dragging = false; c.style.cursor = 'grab';});
-  c.addEventListener('pointermove', e => {
-    if(!dragging) return;
-    rotY -= (e.clientX - lastX)*0.008; rotX += (e.clientY - lastY)*0.008; // horizontal inverted per user preference
-    rotX = Math.max(-1.35, Math.min(1.35, rotX)); lastX = e.clientX; lastY = e.clientY;
+  c.style.touchAction = 'none';                       // we own pan/zoom/orbit; stop browser scroll/pinch
+  c.addEventListener('contextmenu', e => e.preventDefault());  // right-drag pans; never pop the menu
+
+  c.addEventListener('pointerdown', e => {
+    c.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    lastX = e.clientX; lastY = e.clientY;
+    if(e.pointerType === 'touch'){
+      if(pointers.size === 2){ pinchDist = touchSpread(); lastCentroid = touchCentroid(); } // enter two-finger pan/pinch
+    } else {
+      dragMode = (e.button === 0) ? 'orbit' : 'pan';  // left orbit, right/middle pan (CAD)
+      c.style.cursor = dragMode === 'pan' ? 'move' : 'grabbing';
+    }
   });
+
+  c.addEventListener('pointermove', e => {
+    const p = pointers.get(e.pointerId);
+    if(!p) return;
+    const px = e.clientX, py = e.clientY;
+    if(e.pointerType === 'touch'){
+      p.x = px; p.y = py;
+      if(pointers.size >= 2){                          // two-finger: pan by centroid, zoom by spread
+        const cen = touchCentroid();
+        if(lastCentroid) panBy(cen.x - lastCentroid.x, cen.y - lastCentroid.y);
+        lastCentroid = cen;
+        const d = touchSpread();
+        if(pinchDist && d) { dist *= pinchDist/d; dist = Math.max(0.55, Math.min(3, dist)); }
+        pinchDist = d;
+      } else {                                         // one-finger orbit
+        rotY -= (px - lastX)*0.008; rotX += (py - lastY)*0.008;
+        rotX = Math.max(-1.35, Math.min(1.35, rotX)); lastX = px; lastY = py;
+      }
+    } else {
+      const dx = px - lastX, dy = py - lastY;
+      if(dragMode === 'pan') panBy(dx, dy);
+      else if(dragMode === 'orbit'){                   // horizontal inverted per user preference
+        rotY -= dx*0.008; rotX += dy*0.008; rotX = Math.max(-1.35, Math.min(1.35, rotX));
+      }
+      lastX = px; lastY = py;
+    }
+  });
+
+  const endPointer = e => {
+    pointers.delete(e.pointerId);
+    if(e.pointerType === 'touch'){
+      lastCentroid = null; pinchDist = 0;
+      if(pointers.size === 1){ const r = [...pointers.values()][0]; lastX = r.x; lastY = r.y; } // resume orbit without a jump
+    } else {
+      dragMode = null; c.style.cursor = 'grab';
+    }
+  };
+  c.addEventListener('pointerup', endPointer);
+  c.addEventListener('pointercancel', endPointer);
+
   c.addEventListener('wheel', e => {e.preventDefault(); dist *= (1 + Math.sign(e.deltaY)*0.08); dist = Math.max(0.55, Math.min(3, dist));}, {passive:false});
   new ResizeObserver(resize3d).observe(container);
 }
@@ -205,8 +262,32 @@ export function startFold(){
   applyFold(foldT);
 }
 export function stopFold(){ folding = false; }
-/** Set the orbit camera (elevated 3/4 view for the hierarchy cutaway). */
-export function setOrbit(rx, ry, d){ rotX = rx; rotY = ry; dist = d; }
+// two-finger touch helpers — centroid (for pan) and spread (for pinch zoom)
+function touchCentroid(){ const p = [...pointers.values()]; return {x: (p[0].x + p[1].x)/2, y: (p[0].y + p[1].y)/2}; }
+function touchSpread(){ const p = [...pointers.values()]; return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y); }
+
+/** Slide the look-at point in the camera's screen plane by a pixel delta.
+ *  Content follows the drag (CAD): dragging right moves the scene right. The
+ *  scale converts screen pixels to world units at the target's depth, so pan
+ *  tracks the cursor 1:1 regardless of zoom/span. Reads the camera's world
+ *  right/up axes (matrixWorld cols 0/1), kept current by frameCamera. */
+function panBy(dxPx, dyPx){
+  if(!panTarget) return;
+  const span = camSpan || 100, r = span*2.4*dist;
+  const h = (cvWrap && cvWrap.clientHeight) || 1;
+  const worldPerPx = 2*Math.tan((camera.fov*Math.PI/180)/2)*r / h;
+  const m = camera.matrixWorld.elements;
+  const right = new THREE.Vector3(m[0], m[1], m[2]);
+  const up    = new THREE.Vector3(m[4], m[5], m[6]);
+  panTarget.addScaledVector(right, -dxPx*worldPerPx);
+  panTarget.addScaledVector(up,     dyPx*worldPerPx);
+}
+/** Recentre the view (undo any pan). The ViewCube Home button calls this. */
+export function resetPan(){ if(panTarget) panTarget.set(0, 0, 0); }
+
+/** Set the orbit camera (elevated 3/4 view for the hierarchy cutaway). Also
+ *  recentres the pan — a view change/reset always returns to the framed model. */
+export function setOrbit(rx, ry, d){ rotX = rx; rotY = ry; dist = d; resetPan(); }
 /** Current orbit angles — the single source the ViewCube slaves its own
  *  camera to every frame. Read-only: nothing outside this module writes
  *  rotX/rotY directly, so there is exactly one orbit state, never a second
@@ -242,8 +323,13 @@ export function showBox(v){ if(boxGroup) boxGroup.visible = v; }
 function frameCamera(){
   const span = camSpan || 100; // set by buildBox / buildPallet for the active scene
   const r = span*2.4*dist;
-  camera.position.set(Math.sin(rotY)*Math.cos(rotX)*r, Math.sin(rotX)*r, Math.cos(rotY)*Math.cos(rotX)*r);
-  camera.lookAt(0, 0, 0);
+  const t = panTarget || {x: 0, y: 0, z: 0};   // orbit about the (possibly panned) look-at point
+  camera.position.set(
+    t.x + Math.sin(rotY)*Math.cos(rotX)*r,
+    t.y + Math.sin(rotX)*r,
+    t.z + Math.cos(rotY)*Math.cos(rotX)*r
+  );
+  camera.lookAt(t.x, t.y, t.z);
   camera.far = r*10; camera.updateProjectionMatrix();
 }
 

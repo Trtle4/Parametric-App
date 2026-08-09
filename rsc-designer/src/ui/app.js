@@ -67,7 +67,7 @@ const subjectDims = {fold: null, nest: null, pal: null};
 // face is forward, and the same face stays forward (never a side/back). 90°/270°
 // swap the face's two dims (across ↔ up; depth unchanged), so its width×height
 // on the shelf changes and the fill (facings/stack/count/occupied) recomputes.
-const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH', rot: 0};
+const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH', rot: 0, cutaway: false};
 // the shelf's natural angle IS the shopper's: mostly front-on (looking at the
 // front panels), tilted down slightly and turned a touch to read the depth of
 // the fill. One source for both entry and the ViewCube Home reset.
@@ -527,7 +527,12 @@ function refreshShelf(){
       `(${pct(facings*odFoot.l, shelf.width)}% width · ${pct(stack*odFoot.h, shelf.height)}% height · ${pct(deep*odFoot.w, shelf.depth)}% depth)</div>`
     : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
 
-  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot);
+  // Cutaway: open ONLY the shopper-facing pack (its real contents), the rest
+  // stay solid printed packs. The bundle carries the pieces/wraps to drill; it
+  // resolves the SAME selected candidate as the sellable geo above, so the open
+  // pack matches the facings around it.
+  const cutOpts = shelf.cutaway ? {cutaway: true, bundle: hierarchyBundle(), noun, frontO} : {};
+  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot, cutOpts);
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -1109,15 +1114,18 @@ function hudText(bundle, opened, depth){
   // the immediate child unit inside a carton/case is a "wrap" only when a wrap
   // is in the chain; without one it's the bare product pack.
   const unit = bundle.wrapGeo ? 'wrap' : 'pack';
+  const hasCase = !!bundle.caseGeo;                     // pallet's outer unit is a case, else a carton
   const parts = [];
-  if(depth === 'pallet') parts.push(`Pallet: ${c.cases} cases`);
+  if(depth === 'pallet') parts.push(`Pallet: ${c.cases} ${hasCase ? 'cases' : 'cartons'}`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
   else if(depth === 'carton') parts.push(`Carton: ${c.wrapsPerCarton} ${unit}${c.wrapsPerCarton === 1 ? '' : 's'}`);
   else if(depth === 'wrap') parts.push(`Wrap: ${c.piecesPerWrap} pieces`);
   else parts.push('Product: 1 piece');
   const chan = [];
-  if(depth === 'pallet') chan.push(`case ${(opened.case ?? 0) + 1} of ${c.cases}`);
-  if(depth === 'pallet' || depth === 'case') chan.push(`carton ${(opened.carton ?? 0) + 1} of ${c.cartonsPerCase}`);
+  // pallet channel: which OUTER unit is opened (case if present, else carton),
+  // read from the distinct 'pallet' selection key.
+  if(depth === 'pallet') chan.push(`${hasCase ? 'case' : 'carton'} ${(opened.pallet ?? 0) + 1} of ${c.cases}`);
+  if(hasCase && (depth === 'pallet' || depth === 'case')) chan.push(`carton ${(opened.carton ?? 0) + 1} of ${c.cartonsPerCase}`);
   if((depth === 'pallet' || depth === 'case' || depth === 'carton') && c.wrapsPerCarton)
     chan.push(`${unit} ${(opened.wrap ?? 0) + 1} of ${c.wrapsPerCarton}`);
   const capped = hier.artCappedCount ? hier.artCappedCount() : 0;
@@ -1158,8 +1166,8 @@ function applyHierarchy(resetCam){
   subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT} : res.outer) : null;
   hier.show(true);
   el('orbithint').textContent = solid
-    ? 'drag to orbit · scroll to zoom · Solid — artwork on every face'
-    : 'drag to orbit · scroll to zoom · click a unit to open it';
+    ? 'drag orbit · right-drag pan · scroll zoom · Solid — artwork on every face'
+    : 'drag orbit · right-drag pan · scroll zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
   renderLegend(bundle, depth);
@@ -1223,7 +1231,7 @@ function applyFoldMode(){
   if(view !== '3d') return;
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('m3viewmode').style.display = 'none';   // Solid/Cutaway is a hierarchy-mode control
-  el('orbithint').textContent = 'drag to orbit · scroll to zoom';
+  el('orbithint').textContent = 'drag orbit · right-drag pan · scroll zoom';
   refresh3d();   // owns box vs. artwork-cladding visibility
   if(activeStyle().structure === 'flexible') fold.jumpClosed();
   else fold.startFold();
@@ -1311,6 +1319,7 @@ function setView(v){
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
+  el('modeShelf').style.display = v === 'shelf' ? 'flex' : 'none';
   el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
   updateArtPanel();
   // the title block is a drawing-sheet overlay — the Build view is a table,
@@ -1345,6 +1354,7 @@ function setView(v){
       el('viewCubeHome').addEventListener('click', () => {
         const home = (view === 'shelf') ? SHELF_ORBIT : fold.HOME_ORBIT;
         fold.tweenOrbit(home.rotX, home.rotY);
+        fold.resetPan();                          // Home recentres the pan too
       });
       // the 4 orbit arrows are fixed DOM buttons around the cube (never
       // rotate with it, Prompt 21 #1) — each nudges 15° via viewcube's
@@ -1364,7 +1374,7 @@ function setView(v){
       fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
       fold.stopFold();
       fold.setOrbit(SHELF_ORBIT.rotX, SHELF_ORBIT.rotY, SHELF_ORBIT.span);
-      el('orbithint').textContent = 'drag to orbit · scroll to zoom · front panels face you';
+      el('orbithint').textContent = 'drag orbit · right-drag pan · scroll zoom · front panels face you';
       refreshShelf();
     }else{
       fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false);
@@ -1479,6 +1489,11 @@ el('shRotate').addEventListener('click', () => { shelf.rot = (shelf.rot + 90) % 
 el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el('shFacings').value); refreshShelf(); });
 el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
 el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
+// Shelf Solid / Cutaway — mirrors the hierarchy toggle. Cutaway opens ONLY the
+// shopper-facing pack (its real contents); every other facing stays solid.
+const setShelfCut = on => { shelf.cutaway = on; el('shSolid').classList.toggle('on', !on); el('shCut').classList.toggle('on', on); if(view === 'shelf') refreshShelf(); };
+el('shSolid').addEventListener('click', () => setShelfCut(false));
+el('shCut').addEventListener('click',   () => setShelfCut(true));
 el('m3fold').addEventListener('click', () => { if(!FOLD_VIEW_ENABLED) return; mode3d = 'fold'; apply3dMode(); });
 // hide the Fold toggle while the feature is flagged off (its whole seg row) —
 // the code path stays, only the entry point is removed
@@ -1531,8 +1546,10 @@ LEVEL_ORDER.forEach(d =>
     const ny = -((e.clientY - r.top) / r.height) * 2 + 1;
     const hit = hier.pick(nx, ny);
     if(!hit) return;
-    // set the picked tier and clear deeper tiers so they default under it
-    const order = ['case', 'carton', 'wrap'];
+    // set the picked tier and clear deeper tiers so they default under it.
+    // 'pallet' is the outermost selection (which case/carton is opened ON the
+    // pallet) — distinct from the inner 'carton' key so the two never collide.
+    const order = ['pallet', 'case', 'carton', 'wrap'];
     const at = order.indexOf(hit.tier);
     hierSel[hit.tier] = hit.index;
     for(let i = at + 1; i < order.length; i++) delete hierSel[order[i]];

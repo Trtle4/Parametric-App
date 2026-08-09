@@ -86,6 +86,11 @@
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
   <button id="m3dims">Dims</button>
 </div>
+<!-- shelf Solid/Cutaway toolbar the real app wires at boot (shSolid/shCut) —
+     must exist or app.js's module-level listener wiring throws at import. -->
+<div id="modeShelf" style="display:none">
+  <div id="shViewmode"><button id="shSolid" class="on">Solid</button><button id="shCut">Cutaway</button></div>
+</div>
 <div id="hud"></div>
 <div id="hierHud" style="display:none"></div>
 <div id="hierLegend" style="display:none"></div>

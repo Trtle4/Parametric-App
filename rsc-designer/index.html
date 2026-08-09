@@ -769,6 +769,12 @@
       <div class="seg"><button id="m3dims" title="Overlay L × W × H on the component">Dims</button></div>
     </div>
 
+    <!-- shelf view controls: Solid (printed packs) vs Cutaway (open the one
+         shopper-facing pack to reveal its contents). Shelf view only. -->
+    <div class="mode3d" id="modeShelf" style="display:none">
+      <div class="seg" id="shViewmode"><button id="shSolid" class="on" title="Closed printed packs — see the artwork on every facing">Solid</button><button id="shCut" title="Open the shopper-facing pack — see its contents">Cutaway</button></div>
+    </div>
+
     <div class="viewcube" id="viewCubeWrap" style="display:none">
       <div class="vc-stage" id="viewCubeStage"></div>
       <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
@@ -824,7 +830,7 @@
       <div class="tbrow"><div class="k">Board area</div><div class="v" id="tbArea">—</div></div>
       <div class="tbrow"><div class="k">On pallet</div><div class="v" id="tbPallet">—</div></div>
     </div>
-    <div class="orbithint railpanel" id="orbithint">drag to orbit &middot; scroll to zoom</div>
+    <div class="orbithint railpanel" id="orbithint">drag orbit &middot; right-drag pan &middot; scroll zoom</div>
   </aside>
 
   <!-- mobile-only: the title-block summary drops below the canvas -->

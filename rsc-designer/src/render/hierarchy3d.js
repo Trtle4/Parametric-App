@@ -55,6 +55,11 @@ const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true,
 
 let group = null;                       // the whole hierarchy scene
 let cutawayWalls = [];                  // {mesh, n:Vector3 localOutwardNormal} updated per frame
+// When set (by buildSellableCutaway for the shelf), cutawayBox pushes its walls
+// here instead of the hierarchy's own list, so the shelf can hide its own near
+// walls with its own frame loop without touching the hierarchy scene.
+let wallSink = null;
+function pushWall(w){ (wallSink || cutawayWalls).push(w); }
 let pickables = [];                     // {mesh, path} for click-to-open
 let artResources = [];                  // per-build art materials+textures to dispose on clear (avoid leak on every orbit rebuild)
 let disposeFrame = null;
@@ -68,7 +73,7 @@ function orient(outer, o){ return {l: outer[o[0]], w: outer[o[1]], h: outer[o[2]
 // world rotation that stands a child (local x=L, y=H, z=W) into orientation o.
 // orientBasis guarantees a PROPER rotation (det +1) for all six orientations,
 // never a reflection — a reflected body is a mirrored dieline.
-function orientQuat(o){
+export function orientQuat(o){
   const [cx, cy, cz] = orientBasis(o);
   const m = new THREE.Matrix4().makeBasis(
     new THREE.Vector3(...cx), new THREE.Vector3(...cy), new THREE.Vector3(...cz));
@@ -97,7 +102,7 @@ function cutawayBox(outer, inner, mat){
     const m = new THREE.Mesh(new THREE.BoxGeometry(...w.geo), mat);
     m.position.set(...w.pos);
     g.add(m);
-    cutawayWalls.push({mesh: m, n: new THREE.Vector3(...w.n)});
+    pushWall({mesh: m, n: new THREE.Vector3(...w.n)});
   }
   g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L, H, W)), edgeMat));
   return g;
@@ -488,6 +493,31 @@ function buildWrapOpened(bundle, artInfo){
   return g;
 }
 
+// The real product pieces of many collations at once — each piece placed by
+// (collation orientation × collation position in the carton) composed with the
+// piece's own offset inside its collation, exactly the layout buildWrapOpened
+// uses for one opened collation. One InstancedMesh sharing pieceMat, used ONLY
+// for the wrapless opened carton so it shows its true contents (cans/boxes).
+// `list` is [{pl, i}] closed-collation placements (never the opened one).
+function collationPieces(bundle, list, parentInnerH){
+  const {envelope, pieces, piece, stackAxis} = bundle.wraps;
+  const {geo, rot} = pieceGeo(piece, stackAxis, 'LWH');
+  const inst = new THREE.InstancedMesh(geo, pieceMat, list.length * pieces.length);
+  const M = new THREE.Matrix4(), C = new THREE.Matrix4(), P = new THREE.Matrix4();
+  let k = 0;
+  for(const {pl} of list){
+    const c = childPos(pl, parentInnerH);
+    C.makeRotationFromQuaternion(orientQuat(pl.orientation));
+    C.setPosition(c.x, c.y, c.z);
+    for(const p of pieces){
+      if(rot) P.copy(rot); else P.identity();
+      P.setPosition(p.x, -envelope.H/2 + p.z, p.y);
+      inst.setMatrixAt(k++, M.multiplyMatrices(C, P));
+    }
+  }
+  return inst;
+}
+
 // group placements by orientation string
 function groupByOrientation(placements, skipIdx){
   const m = new Map();
@@ -597,19 +627,13 @@ function buildContainer(tier, bundle, sel, path){
         g.add(inst);
       }
     }else if(!w.seals && closed.length){
-      // wrapless pack (no film): render each closed content unit as the bare
-      // collation envelope, a translucent box oriented per its placement —
-      // pickable to open into the pieces, same as a filmed wrap.
-      for(const [o, list] of groupByOrientation(children, openIdx)){
-        const od = orient(w.envelope, o);
-        const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);
-        const inst = new THREE.InstancedMesh(cg, filmClosedMat, list.length);
-        const M = new THREE.Matrix4();
-        list.forEach(({pl}, k) => { M.identity(); M.setPosition(...childPos(pl, parentInnerH).toArray()); inst.setMatrixAt(k, M); });
-        inst.userData = {pick: list.map(x => x.i), tierName: 'wrap'};
-        pickables.push({mesh: inst, tier: tier.name});
-        g.add(inst);
-      }
+      // wrapless pack (no film): the carton holds the bare product directly, so
+      // render the REAL pieces (cylinders/boxes) of every closed collation — the
+      // opened one is drawn by the recursion below — so this single opened carton
+      // reads as its true contents (e.g. cans), not placeholder envelope boxes.
+      // Only ever runs for the one opened carton; closed cartons elsewhere stay
+      // solid board, and a filmed wrap (w.seals) never reaches this branch.
+      g.add(collationPieces(bundle, closed, parentInnerH));
     }
   }else if(childKind !== 'wrap'){
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
@@ -670,6 +694,54 @@ function nearestCameraCorner(children){
 
 const DEPTHS = ['product', 'wrap', 'carton', 'case', 'pallet'];
 
+// Tier descriptors (inner→outer wiring), shared by the hierarchy cascade AND
+// the shelf's single-pack cutaway so both drill a pack the same way — one
+// source for "what a carton/case contains and how it opens". childOuter is the
+// child's OUTER dims. cartonTier only exists when the carton level is enabled;
+// disabled, the case's children ARE the wraps and the carton tier collapses out.
+function makeTiers(bundle, cartonArt, caseArt){
+  const cartonTier = bundle.cartonGeo ? {
+    name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
+    children: bundle.wraps ? bundle.wraps.placements : [],
+    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
+    art: cartonArt,               // clads the carton when it rides the pallet (case off)
+    childArt: null,               // wrap children are conforming film, not textured here
+    buildChild: (b, s, path) => buildWrapOpened(b)
+  } : null;
+  const caseTier = {
+    name: 'case', geo: bundle.caseGeo, mat: board, art: caseArt,
+    children: bundle.cartons.placements,
+    ...(bundle.cartonGeo
+      ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
+         buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
+      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
+         buildChild: (b, s, path) => buildWrapOpened(b)})
+  };
+  return {cartonTier, caseTier};
+}
+
+/**
+ * ONE sellable pack, opened as a cutaway (translucent-board shell with its near
+ * walls hideable per-frame, plus the real contents drilled the same way the
+ * hierarchy does). Built in the pack's canonical frame (x=L, y=H, z=W, centred,
+ * floor at −H/2); the shelf caller orients/positions the returned group. Returns
+ * {group, walls} — `walls` is [{mesh, n}] for the caller's own near-wall loop,
+ * kept out of the hierarchy's own list. No art on the opened pack (board/film,
+ * matching the hierarchy's Cutaway look); the solid facing packs keep their art.
+ * @param {string} noun  'carton' or 'case' — which tier is the sellable pack
+ */
+export function buildSellableCutaway(bundle, noun){
+  const {cartonTier, caseTier} = makeTiers(bundle, {am: null}, {am: null});
+  const tier = noun === 'carton' ? cartonTier : caseTier;
+  if(!tier || !tier.geo) return {group: new THREE.Group(), walls: []};
+  const walls = [], savedSink = wallSink, savedPick = pickables;
+  wallSink = walls; pickables = [];                 // capture walls; don't touch hierarchy pickables
+  let g;
+  try { g = buildContainer(tier, bundle, {}, []); }
+  finally { wallSink = savedSink; pickables = savedPick; }
+  return {group: g, walls};
+}
+
 export function buildHierarchy(bundle, depth, sel, solid){
   const pivot = getPivot();
   clear();
@@ -691,33 +763,20 @@ export function buildHierarchy(bundle, depth, sel, solid){
   // share — so the print is solid and aligned with the pillow, never a tube.
   const wrapArt   = {am: artOf(bundle.wrapGeo),   canvas: A.wrap};
 
-  // tier descriptors (inner→outer wiring). childOuter is the child's OUTER dims.
-  // cartonTier only exists when the carton level is actually enabled
-  // (bundle.cartonGeo non-null). When it's disabled, the case's own
-  // children ARE the wraps (or whatever the case's real child is) — the
-  // carton tier collapses out of the cascade rather than leaving a gap.
-  const cartonTier = bundle.cartonGeo ? {
-    name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
-    children: bundle.wraps ? bundle.wraps.placements : [],
-    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
-    art: cartonArt,               // clads the carton when it rides the pallet (case off)
-    childArt: null,               // wrap children are conforming film, not textured here
-    buildChild: (b, s, path) => buildWrapOpened(b)
-  } : null;
-  const caseTier = {
-    name: 'case', geo: bundle.caseGeo, mat: board, art: caseArt,
-    children: bundle.cartons.placements,
-    ...(bundle.cartonGeo
-      ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
-         buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
-      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
-         buildChild: (b, s, path) => buildWrapOpened(b)})
-  };
+  const {cartonTier, caseTier} = makeTiers(bundle, cartonArt, caseArt);
 
   // default openings: outer-corner unit nearest the camera, per level, where
   // the user hasn't clicked an override. Recomputed each build (app rebuilds
   // on pointerup after an orbit, so the channel tracks the near corner).
+  // `pallet` is a DISTINCT selection: which OUTER unit (case, or carton once the
+  // case is off) is opened ON the pallet — indexed into the pallet layout
+  // (bundle.cases.placements), NOT the inner-tier arrays. It must be its own key
+  // because when the carton is the pallet's outer tier, S.carton already means
+  // "which pack is opened INSIDE a carton" (bundle.cartons.placements); reusing
+  // that here opened the wrong index (often out of range → no carton opened, the
+  // bug this fixes).
   const S = {
+    pallet: sel.pallet ?? nearestCameraCorner(bundle.cases.placements),
     case:   sel.case   ?? nearestCameraCorner(bundle.cases.placements),
     carton: sel.carton ?? nearestCameraCorner(bundle.cartons.placements),
     wrap:   sel.wrap   ?? (bundle.wraps ? nearestCameraCorner(bundle.wraps.placements) : 0)
@@ -794,8 +853,10 @@ function buildPallet(bundle, outerTier, S, solid){
   const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
   const loadH = layers * co.H;
   const deckH = bundle.cases.deck.baseH;
-  // Solid mode: no case is opened — every case is a closed (textured) unit.
-  const openIdx = solid ? -1 : (S[outerTier.name] ?? nearestCameraCorner(cases.placements));
+  // Solid mode: no outer unit is opened — every one is a closed (textured) unit.
+  // Otherwise open the pallet's own selected unit (S.pallet), indexed into the
+  // pallet layout regardless of whether that outer tier is the case or carton.
+  const openIdx = solid ? -1 : (S.pallet ?? nearestCameraCorner(cases.placements));
 
   // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
   // the SAME asset the Palletize view builds, so both pallet views render an
@@ -807,8 +868,11 @@ function buildPallet(bundle, outerTier, S, solid){
   // on every case; else bare board, instanced per orientation.
   const closed = cases.placements.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
   const art = outerTier.art;
+  // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
+  // name — clicking a carton on the pallet must set the pallet's own selection,
+  // not the "which pack inside a carton" one that shares the 'carton' key.
   if(art && art.am && art.canvas && closed.length){
-    for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), outerTier.name)) group.add(m);
+    for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
   }else{
     for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
       const od = orient(co, o);
@@ -816,8 +880,8 @@ function buildPallet(bundle, outerTier, S, solid){
       const inst = new THREE.InstancedMesh(cgeo, board, list.length);
       const M = new THREE.Matrix4();
       list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
-      inst.userData = {pick: list.map(x => x.i), tierName: outerTier.name};
-      pickables.push({mesh: inst, tier: outerTier.name});
+      inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
+      pickables.push({mesh: inst, tier: 'pallet'});
       group.add(inst);
     }
   }
