@@ -10,7 +10,7 @@
    never silently drift from the legacy single-layout solves. */
 import {palletPatternList, emptyArrangement} from '../src/core/palletpatterns.js';
 import {fitInto} from '../src/core/containment.js';
-import {newProject, candidateCases, applyPatternSelection} from '../src/core/project.js';
+import {newProject, candidateCases, checkLockedCase, applyPatternSelection} from '../src/core/project.js';
 
 const results = [];
 function t(name, fn){
@@ -157,6 +157,111 @@ t('build() arrangement is fitInto-shape-compatible + consistent', () => {
   ok(arr.placements.every(p => 'x' in p && 'y' in p && 'z' in p && typeof p.orientation === 'string'), 'placement shape');
   ok(arr.envelope.L <= DECK.L + 1e-9 && arr.envelope.W <= DECK.W + 1e-9, 'envelope exceeds the deck');
   eq(emptyArrangement().total, 0, 'emptyArrangement is the zero fit');
+});
+
+/* ---------- deck validity: NO OVERHANG, EVER (the standing invariant) ----------
+   Every generated arrangement must sit fully within the deck, and every
+   arrangement is centred on it. These are the guards that keep both true as
+   patterns are added later — a new construction that overhangs, or that
+   forgets to centre, fails here rather than reaching the ranked list.
+   NOTE: the shipped constructions are all floor-fitted and self-centred, so
+   the rejection is currently non-binding — that is the point of a guard. */
+
+/** The real CHILD footprint of an arrangement (cells carry `between`, the
+ *  child does not), measured off the built placements. */
+function footprint(cand, L, W){
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for(const p of cand.build().placements){
+    const l = p.orientation[0] === 'L' ? L : W, w = p.orientation[1] === 'L' ? L : W;
+    minX = Math.min(minX, p.x - l/2); maxX = Math.max(maxX, p.x + l/2);
+    minY = Math.min(minY, p.y - w/2); maxY = Math.max(maxY, p.y + w/2);
+  }
+  return {minX, maxX, minY, maxY, L: maxX - minX, W: maxY - minY,
+          cx: (minX + maxX)/2, cy: (minY + maxY)/2};
+}
+
+t('INVARIANT: no arrangement extends past the deck (sweep, all families)', () => {
+  const EPS = 1e-6;
+  let n = 0, fams = new Set();
+  for(let L = 200; L <= 760; L += 70) for(let W = 160; W <= 620; W += 65){
+    for(const cl of [{wall: 0, between: 0}, {wall: 25, between: 10}]){
+      for(const fam of ['optimal', 'column', 'interlock']){
+        for(const c of palletPatternList(box(L, W, 220), DECK, cl, fam)){
+          const f = footprint(c, L, W);
+          fams.add(c.family); n++;
+          if(f.minX < -DECK.L/2 - EPS || f.maxX > DECK.L/2 + EPS ||
+             f.minY < -DECK.W/2 - EPS || f.maxY > DECK.W/2 + EPS)
+            throw new Error(`overhang: ${L}×${W} ${fam} "${c.label}" footprint ${f.L.toFixed(1)}×${f.W.toFixed(1)} on deck ${DECK.L}×${DECK.W}`);
+        }
+      }
+    }
+  }
+  ok(n > 500, `sweep too thin (${n} arrangements)`);
+  eq([...fams].sort(), ['aligned', 'mixed', 'pinwheel'], 'all three families exercised:');
+});
+
+t('INVARIANT: every arrangement is centred on the deck (even margins)', () => {
+  const EPS = 1e-6;
+  for(let L = 200; L <= 760; L += 70) for(let W = 160; W <= 620; W += 65)
+    for(const fam of ['optimal', 'column', 'interlock'])
+      for(const c of palletPatternList(box(L, W, 220), DECK, Z, fam)){
+        const f = footprint(c, L, W);
+        if(Math.abs(f.cx) > EPS || Math.abs(f.cy) > EPS)
+          throw new Error(`off-centre: ${L}×${W} ${fam} "${c.label}" centre (${f.cx.toFixed(3)}, ${f.cy.toFixed(3)}) — slack must split evenly`);
+      }
+});
+
+t('INVARIANT holds through the real chain (row.patternList)', () => {
+  const EPS = 1e-6;
+  const p = newProject();
+  let n = 0;
+  for(const r of candidateCases(p, '1mm'))
+    for(const c of r.patternList){
+      const f = footprint(c, r.outer.L, r.outer.W);
+      n++;
+      if(f.minX < -p.pallet.L/2 - EPS || f.maxX > p.pallet.L/2 + EPS ||
+         f.minY < -p.pallet.W/2 - EPS || f.maxY > p.pallet.W/2 + EPS)
+        throw new Error(`chain overhang: ${r.arrangementLabel} "${c.label}"`);
+      if(Math.abs(f.cx) > EPS || Math.abs(f.cy) > EPS)
+        throw new Error(`chain off-centre: ${r.arrangementLabel} "${c.label}"`);
+    }
+  ok(n > 0, 'no chain arrangements checked');
+});
+
+t('a case larger than the deck yields NO layout (honest "does not fit")', () => {
+  for(const [L, W] of [[1500, 1200], [1300, 900], [1219.3, 1015]]){
+    for(const fam of ['optimal', 'column', 'interlock']){
+      const l = palletPatternList(box(L, W, 200), DECK, Z, fam);
+      eq(l.length, 0, `${L}×${W} (${fam}) must produce no arrangement, not an overhanging one:`);
+    }
+  }
+  // ...and it must be REJECTION, not a crash or a clamped/truncated layout
+  const one = palletPatternList(box(900, 1100, 200), DECK, Z, 'optimal');
+  eq(one.length, 1, 'a case that fits only when turned still yields its one layout:');
+  const f = footprint(one[0], 900, 1100);
+  ok(f.L <= DECK.L + 1e-6 && f.W <= DECK.W + 1e-6, 'the surviving layout is within the deck');
+});
+
+t('oversized case reaches the chain as a zero-count "does not fit" row', () => {
+  const p = newProject();
+  p.links.find(x => x.parent === 'tertiary').locked = true;
+  Object.assign(p.tertiary.params, {L: 1400, W: 1100, H: 300});
+  const row = checkLockedCase(p, '1mm');
+  eq(row.patternList.length, 0, 'no pattern candidates:');
+  eq(row.casesPerLayer, 0, 'casesPerLayer:');
+  eq(row.casesPerPallet, 0, 'casesPerPallet:');
+  eq(row.cartonsPerPallet, 0, 'cartonsPerPallet:');
+  // the row still resolves (no crash) so the UI can render "does not fit"
+  ok(row.outer && row.geo, 'row must still carry geometry for the readout');
+});
+
+t('allowOverhang opt-in threads through without changing today\'s output', () => {
+  const strict = palletPatternList(CASE, DECK, Z, 'optimal');
+  const lax = palletPatternList(CASE, DECK, Z, 'optimal', {allowOverhang: true});
+  // the shipped constructions are all floor-fitted, so the flag is a no-op
+  // today — it exists so the future opt-in needs no generator rework
+  eq(lax.map(c => `${c.total}|${c.label}`), strict.map(c => `${c.total}|${c.label}`),
+     'flag must not alter the valid set:');
 });
 
 /* ---------- chain integration: the ONE list on the row + the selection ---------- */

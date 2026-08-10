@@ -26,6 +26,15 @@
  * interlocked). Equal-count arrangements are all kept — six layouts that
  * each fit 60 cases are six physically different pallets; only GEOMETRIC
  * duplicates (identical placements) collapse.
+ *
+ * TWO PLACEMENT INVARIANTS, both enforced and both pinned by tests:
+ *   1. CENTRED — every arrangement's footprint is centred on the deck, so
+ *      the unused slack splits evenly on all four sides. Each construction
+ *      is built centred (grids and strips on their own extent, pinwheels on
+ *      the deck, whose bounds they meet by construction); nothing is placed
+ *      from a corner origin.
+ *   2. NO OVERHANG — see the deck-validity block below. A hard constraint,
+ *      not a preference: invalid arrangements are rejected at generation.
  */
 import {stack} from './pack.js';
 
@@ -145,6 +154,55 @@ const sig = positions => positions
 const sym180 = positions =>
   sig(positions) === sig(positions.map(p => ({x: -p.x, y: -p.y, rot: p.rot})));
 
+/* ---------------- deck validity: NO OVERHANG, EVER ----------------
+ * A hard constraint on the generator, not a preference. Overhang removes
+ * corner support and materially weakens the bottom box — and the app's own
+ * BCT readout already lists pallet overhang among the deratings it warns
+ * about, so emitting an overhanging layout while reporting a BCT that does
+ * not account for it would be internally contradictory. The simplest
+ * correct behaviour is to never generate one.
+ *
+ * Every construction is validated against the deck rectangle BEFORE it can
+ * enter the ranked list. An arrangement that leaves the deck in either
+ * dimension is REJECTED — never clamped, never truncated, never emitted as
+ * a fallback. If that rejects everything, the list comes back empty and the
+ * chain reports an honest "does not fit" (total 0), exactly as a
+ * carton-doesn't-fit-the-case is surfaced today.
+ *
+ * The check measures the real CHILD footprint (positions are cell-centred;
+ * cells carry `between`, the child does not) against the centred deck
+ * [-L/2, L/2] × [-W/2, W/2] — the true physical condition, not a proxy for
+ * it, so it stays correct for a construction that isn't self-centred.
+ *
+ * FUTURE OPT-IN: overhang may one day become a deliberate choice, with the
+ * BCT overhang derating applied so the strength number stays honest. That
+ * needs no rework here — `opts.allowOverhang` already threads through
+ * (memo key included); flipping it skips the rejection and nothing else.
+ */
+
+/** mm slack for FP residue (cell math accumulates ~1e-12 at pallet scale). */
+const DECK_EPS = 1e-6;
+
+/**
+ * The child footprint this layer occupies, or null if any case leaves the
+ * deck. `l`/`w` are the child's in-plane dims for the un-rotated case.
+ * @returns {{minX,maxX,minY,maxY}|null}
+ */
+function deckFootprint(positions, l, w, deckL, deckW, allowOverhang){
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for(const p of positions){
+    const fx = p.rot ? w : l, fy = p.rot ? l : w;
+    if(p.x - fx/2 < minX) minX = p.x - fx/2;
+    if(p.x + fx/2 > maxX) maxX = p.x + fx/2;
+    if(p.y - fy/2 < minY) minY = p.y - fy/2;
+    if(p.y + fy/2 > maxY) maxY = p.y + fy/2;
+  }
+  if(!allowOverhang && (minX < -deckL/2 - DECK_EPS || maxX > deckL/2 + DECK_EPS ||
+                        minY < -deckW/2 - DECK_EPS || maxY > deckW/2 + DECK_EPS))
+    return null;                       // overhangs — reject, do not clamp
+  return {minX, maxX, minY, maxY};
+}
+
 /* ---------------- the ranked list ---------------- */
 
 const FAMILY_RANK = {aligned: 0, mixed: 1, pinwheel: 2};
@@ -166,16 +224,23 @@ const memo = new Map();
  *              (the flip is an identity on a symmetric layer — the same
  *              stacking instruction today's app honours — so the filter is
  *              never artificially empty)
+ * @param {Object} [opts]
+ * @param {boolean} [opts.allowOverhang=false]  RESERVED for a future opt-in.
+ *   Left false, no generated arrangement may extend past the deck (see the
+ *   deck-validity block above). Set true and the rejection is skipped —
+ *   the caller then owes the BCT an overhang derating.
  * @returns ranked candidates: {family, interlock, orientation, perLayer,
  *   layers, total, label, envelope, density, utilization, build()} —
  *   build() expands the fitInto-compatible Arrangement (placements included)
- *   on demand and caches it.
+ *   on demand and caches it. Empty when nothing fits the deck: an honest
+ *   "does not fit", never an overhanging fallback.
  */
-export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal'){
+export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal', opts = {}){
+  const allowOverhang = !!opts.allowOverhang;
   const key = [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
                cavity.L, cavity.W, cavity.H,
                clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
-               family].join('|');
+               family, allowOverhang ? 'oh' : ''].join('|');
   const hit = memo.get(key);
   if(hit) return hit;
 
@@ -215,19 +280,18 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       if(seen.has(s)) continue;
       seen.add(s);
 
+      // DECK VALIDITY GATE — before anything else this layout could become.
+      // A rejected arrangement never reaches the ranked list at all, so no
+      // consumer can ever read an overhanging layout.
+      const fp = deckFootprint(lay.positions, l, w, cavity.L, cavity.W, allowOverhang);
+      if(!fp) continue;
+
       const st = stack({perLayer, childH: h, parentMaxH: cavity.H, baseH: 0,
                         between: betweenZ, gapBelow: bottom, gapAbove: top});
       if(st.total < 1) continue;
 
-      // occupied envelope (footprint from the positions, height from the stack)
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for(const p of lay.positions){
-        const fx = p.rot ? w : l, fy = p.rot ? l : w;
-        if(p.x - fx/2 < minX) minX = p.x - fx/2;
-        if(p.x + fx/2 > maxX) maxX = p.x + fx/2;
-        if(p.y - fy/2 < minY) minY = p.y - fy/2;
-        if(p.y + fy/2 > maxY) maxY = p.y + fy/2;
-      }
+      // occupied envelope (validated footprint + the stack height)
+      const {minX, maxX, minY, maxY} = fp;
       const envelope = {L: maxX - minX, W: maxY - minY, H: st.layers*h + (st.layers - 1)*betweenZ};
       const envVol = envelope.L*envelope.W*envelope.H;
       const symmetric = sym180(lay.positions);
