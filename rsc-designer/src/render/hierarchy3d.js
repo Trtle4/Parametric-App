@@ -636,14 +636,21 @@ function soloClosed(geo, artInfo){
 // InstancedMesh per PART (body/taperPos/taperNeg/fin) for wraps, since a
 // wrap's shape doesn't vary by orientation the way a box's rendered
 // geometry does; the rotation is baked into each instance's own matrix.
-function buildContainer(tier, bundle, sel, path){
+function buildContainer(tier, bundle, sel, path, opts = {}){
   const g = new THREE.Group();
   const {geo, children, childKind} = tier;
-  // a Shrink Bundle has NO rigid shell (just film over the contents), so it
-  // skips the cutaway box; a shrink-wrapped tray keeps its open tray walls.
-  if(!isShrinkBundle(geo)) g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
+  // Shell: a Shrink Bundle has none (film only). A SOLID open tray shows a
+  // STATIC open box (walls stay put — you view it from outside, its contents
+  // standing proud / seen through the open top), NOT a cutaway. Everything else
+  // (a cutaway open tray, or any closed container being opened) gets the cutaway
+  // box whose near walls hide as the camera orbits.
+  if(isShrinkBundle(geo)){ /* no rigid shell */ }
+  else if(opts.solid && isOpenTop(geo)) g.add(openTrayBox(geo.outer, geo.inner, tier.mat));
+  else g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
 
-  const openIdx = clampIdx(sel[tier.name], children);
+  // Solid mode FILLS the container — every child shown, none drilled to product
+  // (drilling is the cutaway). openIdx -1 excludes nothing and skips the recurse.
+  const openIdx = opts.solid ? -1 : clampIdx(sel[tier.name], children);
   const parentInnerH = geo.inner.H;
 
   // a 'wrap' childKind whose bundle.wraps is null means the film tier is
@@ -870,14 +877,17 @@ export function buildHierarchy(bundle, depth, sel, solid){
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
-    // a shrink pack is always see-through — render contents + skin in BOTH modes
-    if(solid && !isShrink(bundle.cartonGeo)) group.add(soloClosed(bundle.cartonGeo, cartonArt));
-    else { group.add(buildContainer(cartonTier, bundle, S, [])); opened = {wrap: S.wrap}; }
+    // an OPEN tray or a SHRINK pack reveals its contents in BOTH modes (Solid
+    // fills it, Cutaway drills one to product); only a closed box hides them.
+    const showContents = isOpenTop(bundle.cartonGeo) || isShrink(bundle.cartonGeo);
+    if(solid && !showContents) group.add(soloClosed(bundle.cartonGeo, cartonArt));
+    else { group.add(buildContainer(cartonTier, bundle, S, [], {solid})); opened = {wrap: S.wrap}; }
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
-    if(solid && !isShrink(bundle.caseGeo)) group.add(soloClosed(bundle.caseGeo, caseArt));
-    else { group.add(buildContainer(caseTier, bundle, S, [])); opened = {carton: S.carton, wrap: S.wrap}; }
+    const showContents = isOpenTop(bundle.caseGeo) || isShrink(bundle.caseGeo);
+    if(solid && !showContents) group.add(soloClosed(bundle.caseGeo, caseArt));
+    else { group.add(buildContainer(caseTier, bundle, S, [], {solid})); opened = {carton: S.carton, wrap: S.wrap}; }
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'pallet'){
