@@ -704,8 +704,11 @@
       </div>
       <div class="field">
         <label>Stack pattern</label>
+        <!-- FAMILY filter into the ranked pattern list (palletpatterns.js):
+             Optimal generates & ranks every construction; Column/Interlock
+             restrict the list to that family. The 3D arrows cycle within it. -->
         <div class="inp"><select id="palPattern">
-          <option value="optimal">Optimal (mixed)</option>
+          <option value="optimal">Optimal (ranked)</option>
           <option value="column">Column</option>
           <option value="interlock">Interlock</option>
         </select></div>
@@ -754,12 +757,13 @@
         ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
         ><button id="d_pallet">Pallet</button>
       </div>
-      <!-- cycle the Build table's candidate list in place (case + pallet depth
-           only). Same ordered list + row-select the table uses — each step
-           commits, the table highlight and this readout move together. -->
+      <!-- ONE pair of cycle arrows, two ranked lists by depth: case depth
+           steps the Build table's candidate list (same order + row-select the
+           table uses); pallet depth steps the ranked pallet-PATTERN list.
+           Each step commits; every display follows. -->
       <div class="seg cyclesel" id="candCycle" style="display:none">
         <button id="candPrev" title="Previous build candidate (current sort)">&#9664;</button
-        ><span class="cyclepos" title="Position in the Build table's current sort"><span id="candPos">— of —</span><span id="candKey" class="cyclekey"></span></span
+        ><span class="cyclepos" title="Position in the ranked list at this depth"><span id="candPos">— of —</span><span id="candKey" class="cyclekey"></span></span
         ><button id="candNext" title="Next build candidate (current sort)">&#9654;</button>
       </div>
       <!-- look INSIDE (fit) vs look AT (graphics). Defaults smartly: Solid when

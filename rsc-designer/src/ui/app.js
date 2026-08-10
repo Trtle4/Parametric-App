@@ -32,7 +32,7 @@ import {downloadSvgPNG, savePNG} from '../export/png.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection} from '../core/project.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -328,7 +328,6 @@ function editArt(patch){
  *  case (the shipper) normally, or the carton once the case is disabled —
  *  independent of the active level, the pallet result the chain produced. */
 function refreshPal(){
-  const p = build.project.pallet;
   // the pallet carries the OUTERMOST enabled tier — the case normally, or the
   // carton once the case is disabled. outerNoun is 'case' or 'carton'.
   const outerNoun = describeChain(build.project).outerNoun;
@@ -349,8 +348,10 @@ function refreshPal(){
     return;
   }
   const perLayer = row.casesPerLayer, layers = row.caseLayers, total = row.casesPerPallet;
+  // the label is the pattern candidate's own, self-describing (palletpatterns
+  // bakes ' · interlocked' into interlocked variants) — nothing appended here
   const label = row.casesFit ? row.casesFit.label : '';
-  el('palPat').textContent = perLayer > 0 ? label + (p.pattern === 'interlock' ? ' · interlocked' : '') : 'does not fit';
+  el('palPat').textContent = perLayer > 0 ? label : 'does not fit';
   el('palCnt').textContent = perLayer > 0 ? `${perLayer} × ${layers}` : '--';
   el('palTot').textContent = total > 0 ? `${total} ${outerNoun}s` : '0';
   el('palCov').textContent = perLayer > 0 ? `${row.coveragePct}%` : '--';
@@ -1063,7 +1064,10 @@ function hierarchyBundle(){
   // default to the freight-optimal row (max cartons/pallet) so the cascade
   // shows a representative case, not the first enumerated candidate
   const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
-  const row = build.getSelected() || best;
+  // the committed pallet-pattern pick applies here exactly as in
+  // resolveActiveRow (the SAME project.js adjuster) — the rendered pallet
+  // and the readout can never show different arrangements
+  const row = applyPatternSelection(build.getSelected() || best, proj);
   if(!row || !row.arr) return null;
   const {cases, cartons, wraps, pieces} = row.arr;
   // the immediate-child-unit placements: `wraps` (the carton's own inner solve)
@@ -1254,9 +1258,17 @@ function apply3dMode(){ if(mode3d === 'fold' && isStyleLevel()) applyFoldMode();
 function updateCandidateCycle(){
   const seg = el('candCycle');
   const show = view === '3d' && mode3d === 'hier' && (activeLevel === 'case' || activeLevel === 'pallet');
-  const {pos, total, label} = build.getCycleState();
+  // ONE pair of arrows, two ranked lists by depth: case depth cycles the
+  // Build table's case candidates; pallet depth cycles the active row's
+  // pallet-PATTERN candidates (the same list chainMetrics ranked — no
+  // parallel list). Both read/step through build.js, both clamp, no wrap.
+  const pal = activeLevel === 'pallet';
+  const {pos, total, label} = pal ? build.getPatternCycleState() : build.getCycleState();
   if(!show || total < 1){ seg.style.display = 'none'; return; }
   seg.style.display = 'flex';
+  const t = pal ? 'pallet pattern (ranked by cartons/pallet)' : 'build candidate (current sort)';
+  el('candPrev').title = `Previous ${t}`;
+  el('candNext').title = `Next ${t}`;
   el('candPos').textContent = `${pos} of ${total}`;
   el('candKey').textContent = label;
   el('candPrev').disabled = pos <= 1;
@@ -1392,6 +1404,10 @@ levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
 function commitPallet(){
   const {L, W, maxH} = inputs.readPallet();
   build.project.pallet.L = L; build.project.pallet.W = W; build.project.pallet.maxH = maxH;
+  // switching pattern FAMILY re-filters the ranked list, so a held index
+  // would silently point at an unrelated layout — restart at the family's
+  // best. (Deck/height edits keep the index; the clamp absorbs shrinkage.)
+  if(el('palPattern').value !== build.project.pallet.pattern) build.project.pallet.patternIndex = 0;
   build.project.pallet.pattern = el('palPattern').value;
   // stacking (BCT) inputs -> project.pallet.stacking (one writer)
   const st = build.project.pallet.stacking || (build.project.pallet.stacking = {});
@@ -1813,8 +1829,11 @@ notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
 // exactly like clicking a row. Wired BEFORE initBuild so its first renderTable
 // already updates the readout.
 build.setCycleListener(updateCandidateCycle);
-el('candPrev').addEventListener('click', () => build.stepCandidate(-1));
-el('candNext').addEventListener('click', () => build.stepCandidate(1));
+// dispatch by depth: pallet depth steps the pattern selection, case depth the
+// build candidate — same buttons, whichever ranked list the depth shows
+const stepCycle = d => activeLevel === 'pallet' ? build.stepPattern(d) : build.stepCandidate(d);
+el('candPrev').addEventListener('click', () => stepCycle(-1));
+el('candNext').addEventListener('click', () => stepCycle(1));
 
 // Build view: candidate table only (build.js owns it). initBuild's own
 // recompute() populates rows/selected and runs the registration above once

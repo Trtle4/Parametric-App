@@ -311,6 +311,44 @@ export const getSelected = () => selected;
 export const getRows = () => rows;
 export const getRounding = () => rounding;
 
+/* ---- pallet-pattern cycling: the SAME arrows, one depth further out ------
+ * At pallet depth the prev/next arrows step project.pallet.patternIndex
+ * through the ACTIVE row's ranked pattern list (palletpatterns.js via
+ * chainMetrics — the list every consumer reads; no parallel list). The
+ * index is project state (a committed design decision, like the selected
+ * candidate); stepping refreshes every registered display. Clamps at the
+ * ends, no wrap — same contract as stepCandidate. */
+
+/** The active row's ranked pattern list + the clamped current index. */
+function patternState(){
+  const row = shownRow();
+  const list = (row && row.patternList) || [];
+  const raw = project.pallet.patternIndex > 0 ? Math.floor(project.pallet.patternIndex) : 0;
+  return {list, index: Math.max(0, Math.min(list.length - 1, raw))};
+}
+
+/** {pos, total, label} for the arrows at pallet depth: the selected
+ *  pattern's 1-based rank, the family-filtered list size, and its identity
+ *  ("60 · 5 × 2 grid"). Count leads, like the case-cycle label. */
+export function getPatternCycleState(){
+  const {list, index} = patternState();
+  const cand = list[index];
+  return {pos: list.length ? index + 1 : 0, total: list.length,
+          label: cand ? `${cand.total} · ${cand.label}` : ''};
+}
+
+/** Step the pattern selection and COMMIT it — every display registered with
+ *  the ONE notifier follows (readout, BCT, 3D render, dims). */
+export function stepPattern(delta){
+  const {list, index} = patternState();
+  if(!list.length) return;
+  const next = Math.max(0, Math.min(list.length - 1, index + delta));
+  if(next === index && project.pallet.patternIndex === index) return;   // clamped at an end
+  project.pallet.patternIndex = next;
+  if(cycleListener) cycleListener();               // arrows' N-of-M updates even before the refresh lands
+  refreshAll();                                    // commits: readout/BCT/3D/dims follow
+}
+
 /** A stable, re-derivable identifier for the currently-selected candidate
  *  row (nx/ny/nz/orientation) — never the row itself, which carries
  *  derived geometry/placements that the save document must not contain. */

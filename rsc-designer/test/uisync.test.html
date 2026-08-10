@@ -940,6 +940,70 @@ await (async () => {
 })();
 
 /* ==================================================================
+   Pallet-PATTERN candidates: at pallet depth the SAME arrows cycle the
+   ranked pattern list (palletpatterns.js via the row's patternList) —
+   one list feeding the arrows, the readout and the render together.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  el('tab3d').click(); await settle();
+  el('d_pallet').click(); await settle();                     // hierarchy, pallet depth
+
+  t('pattern cycle: arrows visible at pallet depth, reading the PATTERN list', () => {
+    if(getComputedStyle(el('candCycle')).display === 'none') throw new Error('cycle arrows hidden at pallet depth');
+    const st = build.getPatternCycleState();
+    if(st.total < 1) throw new Error('no pattern candidates for the default chain');
+    eq(el('candPos').textContent, `${st.pos} of ${st.total}`, 'pos readout mismatch:');
+  });
+
+  t('pattern cycle: candKey == "<palTot count> · <palPat label>" (one source)', () => {
+    const totN = parseInt(el('palTot').textContent, 10);
+    eq(el('candKey').textContent, `${totN} · ${el('palPat').textContent}`, 'arrow label vs pallet readout:');
+  });
+
+  t('pattern cycle: next steps the pattern; readout + index follow live; prev clamps', async () => {
+    // to the top first (a previous test may have left an index)
+    for(let i = 0; i < 60 && !el('candPrev').disabled; i++) el('candPrev').click();
+    eq(build.getPatternCycleState().pos, 1, 'reset to pattern 1:');
+    if(build.getPatternCycleState().total < 2) return;         // single-pattern chain: nothing to step
+    const before = {pat: el('palPat').textContent, tot: el('palTot').textContent};
+    el('candNext').click();
+    eq(build.project.pallet.patternIndex, 1, 'patternIndex committed:');
+    eq(build.getPatternCycleState().pos, 2, 'advanced to pattern 2:');
+    const totN = parseInt(el('palTot').textContent, 10);
+    eq(el('candKey').textContent, `${totN} · ${el('palPat').textContent}`, 'readout follows the pick:');
+    if(el('palPat').textContent === before.pat && el('palTot').textContent === before.tot)
+      throw new Error('readout did not change after stepping to a different layout');
+    el('candPrev').click();
+    eq(build.getPatternCycleState().pos, 1, 'prev back to 1:');
+    if(!el('candPrev').disabled) throw new Error('prev must be disabled at pattern 1 (no wrap)');
+  });
+
+  t('pattern cycle: family filter re-filters the ONE list and resets the pick', () => {
+    el('candNext').click();                                    // move off index 0 (no-op if single)
+    el('palPattern').value = 'column'; fire(el('palPattern'), 'change');
+    eq(build.project.pallet.patternIndex, 0, 'family change resets the index:');
+    if(!/grid/.test(el('palPat').textContent)) throw new Error(`column family must show a grid, got "${el('palPat').textContent}"`);
+    el('palPattern').value = 'interlock'; fire(el('palPattern'), 'change');
+    if(!/interlocked/.test(el('palPat').textContent)) throw new Error(`interlock family must label interlocked, got "${el('palPat').textContent}"`);
+    el('palPattern').value = 'optimal'; fire(el('palPattern'), 'change');
+  });
+
+  t('pattern cycle: case depth still cycles CASE candidates (same arrows, other list)', () => {
+    el('d_case').click();
+    const st = build.getCycleState();
+    eq(el('candPos').textContent, `${st.pos} of ${st.total}`, 'case-depth pos readout:');
+    el('d_pallet').click();
+    const pt = build.getPatternCycleState();
+    eq(el('candPos').textContent, `${pt.pos} of ${pt.total}`, 'pallet-depth pos readout:');
+  });
+
+  // restore for later blocks
+  build.project.pallet.patternIndex = 0;
+  el('tab2d').click(); await settle();
+})();
+
+/* ==================================================================
    Cartons-per-case RANGE: min–max feeds one more dimension into the SAME
    candidate list. min==max reproduces single-count; a range yields
    multiple counts ranked together; the display caps at the top 50.

@@ -1,0 +1,296 @@
+/**
+ * Pallet pattern repertoire: enumerate every viable case-on-pallet layer
+ * layout as ONE RANKED candidate list — aligned grids (both in-plane
+ * orientations), two-block rotated strips (every viable split, not just the
+ * best), and perimeter pinwheels with a central void — plus interlocked
+ * (odd-layer 180° turn) stacking variants. Path B: the named patterns EMERGE
+ * from enumerating these defined constructions; this is NOT a general
+ * packing solver, and it must never grow into one.
+ *
+ * The list is the single source for the pallet: project.js chainMetrics
+ * bakes list[0] into every candidate row (ranking / default), retains the
+ * list on the row, and applyPatternSelection() re-reads list[patternIndex]
+ * for the committed chain — the readout, the 3D render and the cycle
+ * arrows all read that one selection. No consumer re-packs.
+ *
+ * DOM-free, mm-only. Layer→stack math delegates to core/pack.js stack()
+ * with the same clearance normalization containment.js uses, so a
+ * candidate's layers/total agree exactly with what fitInto reports for the
+ * same layer. containment.js itself is untouched.
+ *
+ * Ranking: cases/pallet DESC (∝ cartons/pallet — the multiplier is the
+ * same case), then packing DENSITY over the arrangement's own occupied
+ * envelope DESC (equal-count layouts order by compactness — the deck-based
+ * cube readout ties for equal counts, the envelope doesn't), then the
+ * simpler construction (aligned < mixed < pinwheel, straight before
+ * interlocked). Equal-count arrangements are all kept — six layouts that
+ * each fit 60 cases are six physically different pallets; only GEOMETRIC
+ * duplicates (identical placements) collapse.
+ */
+import {stack} from './pack.js';
+
+const transpose = o => o[1] + o[0] + o[2];
+
+/** Same normalization containment.js applies (private there): vertical
+ *  clearances default to the legacy uniform shape when omitted. */
+function normClearance(c){
+  const wall = c.wall || 0, between = c.between || 0;
+  return {
+    wall, between,
+    bottom:   c.bottom   !== undefined ? c.bottom   : wall,
+    top:      c.top      !== undefined ? c.top      : wall,
+    betweenZ: c.betweenZ !== undefined ? c.betweenZ : between
+  };
+}
+
+/** Same pairing rule as containment.js: a transposed pair (LWH+WLH) shares a
+ *  vertical axis with in-plane rotation allowed; a lone orientation forbids it. */
+function orientationGroups(allowed){
+  const groups = [], seen = new Set();
+  for(const o of allowed){
+    if(seen.has(o)) continue;
+    seen.add(o);
+    const t = transpose(o);
+    const paired = allowed.includes(t);
+    if(paired) seen.add(t);
+    groups.push({base: o, allowRotate: paired});
+  }
+  return groups;
+}
+
+/* ---------------- layer constructions (deck-centred positions) ----------------
+ * Cell/parent math matches pack.js exactly: effective parent PL/PW, cell
+ * CL/CW, so N*case + (N-1)*between <= deck - 2*wall holds by construction.
+ * positions: {x, y, rot} — rot flags the 90°-turned case, exactly as
+ * packLayer emits, so downstream orientation mapping is identical. */
+
+/** Aligned grid; rot=true lays the case 90° turned (cell CW×CL). */
+function gridLayout(CL, CW, PL, PW, rot, square){
+  const a = rot ? CW : CL, b = rot ? CL : CW;
+  const nx = Math.floor(PL/a), ny = Math.floor(PW/b);
+  if(nx < 1 || ny < 1) return null;
+  const positions = [];
+  for(let i = 0; i < nx; i++) for(let j = 0; j < ny; j++)
+    positions.push({x: (i + 0.5)*a - nx*a/2, y: (j + 0.5)*b - ny*b/2, rot: rot && !square});
+  return {positions, label: `${nx} × ${ny}${rot && !square ? ' rotated' : ''} grid`, family: 'aligned'};
+}
+
+/** Two-block guillotine strips — the same four families pack.js mixed()
+ *  scans, but EMITTING every split with both blocks non-empty instead of
+ *  keeping only the count-best (pure single-block splits are the aligned
+ *  grids, which the aligned family already owns). */
+function stripLayouts(CL, CW, PL, PW){
+  const out = [];
+  const fam = (U, V, a, b, swap) => {
+    const rows = Math.floor(V/b), n2v = Math.floor(V/a);
+    for(let k = 1; k <= Math.floor(U/a); k++){
+      const n2u = Math.floor((U - k*a)/b);
+      const n1 = k*rows, n2 = n2u*n2v;
+      if(n1 <= 0 || n2 <= 0) continue;
+      const maxU = k*a + n2u*b, positions = [];
+      const rotA = a !== CL;                 // block-1 orientation
+      for(let i = 0; i < k; i++) for(let j = 0; j < rows; j++){
+        const u = (i + 0.5)*a - maxU/2, v = (j + 0.5)*b - rows*b/2;
+        positions.push(swap ? {x: v, y: u, rot: !rotA} : {x: u, y: v, rot: rotA});
+      }
+      for(let i = 0; i < n2u; i++) for(let j = 0; j < n2v; j++){
+        const u = k*a + (i + 0.5)*b - maxU/2, v = (j + 0.5)*a - n2v*a/2;
+        positions.push(swap ? {x: v, y: u, rot: rotA} : {x: u, y: v, rot: !rotA});
+      }
+      out.push({positions, label: `${n1}+${n2} mixed`, family: 'mixed'});
+    }
+  };
+  fam(PL, PW, CL, CW, false); fam(PL, PW, CW, CL, false);
+  fam(PW, PL, CL, CW, true);  fam(PW, PL, CW, CL, true);
+  return out;
+}
+
+/** Perimeter pinwheel/windmill — a DEFINED construction, not discovered:
+ *  four i×j blocks around the deck edge, each turned 90° from its
+ *  neighbour, C2-symmetric, with the central void/chimney left visibly
+ *  empty when the footprint doesn't divide out. Non-overlap needs
+ *  a + b <= min(PL, PW) where a = i·CL, b = j·CW (blocks meet corner to
+ *  corner). Only MAXIMAL (i, j) pairs are emitted — a pinwheel whose arm
+ *  could grow is strictly dominated by the grown one and is pure noise in
+ *  the cycle list. */
+function pinwheelLayouts(CL, CW, PL, PW){
+  const out = [], lim = Math.min(PL, PW);
+  for(let i = 1; i*CL + CW <= lim; i++){
+    const j = Math.floor((lim - i*CL)/CW);
+    if(j < 1) continue;
+    if((i + 1)*CL + j*CW <= lim) continue;   // i could grow — dominated
+    const a = i*CL, b = j*CW, positions = [];
+    // corner-anchored in [0,PL]×[0,PW], then deck-centred
+    const cx = PL/2, cy = PW/2;
+    for(let ci = 0; ci < i; ci++) for(let rj = 0; rj < j; rj++){
+      positions.push({x: (ci + 0.5)*CL - cx,            y: (rj + 0.5)*CW - cy,            rot: false}); // bottom-left, in-line
+      positions.push({x: PL - a + (ci + 0.5)*CL - cx,   y: PW - b + (rj + 0.5)*CW - cy,   rot: false}); // top-right (180° twin)
+      positions.push({x: PL - b + (rj + 0.5)*CW - cx,   y: (ci + 0.5)*CL - cy,            rot: true});  // bottom-right, turned
+      positions.push({x: (rj + 0.5)*CW - cx,            y: PW - a + (ci + 0.5)*CL - cy,   rot: true});  // top-left, turned
+    }
+    out.push({positions, label: `pinwheel ${i}×${j}`, family: 'pinwheel'});
+  }
+  return out;
+}
+
+/* ---------------- dedupe + symmetry ---------------- */
+
+// injective numeric key per position: |x|,|y| < 5e6 (0.01mm quanta) keeps the
+// packed value inside 2^53; the y term (< 5e8) can never bleed into the x band
+const sig = positions => positions
+  .map(p => Math.round(p.x*100)*1e9 + Math.round(p.y*100)*10 + (p.rot ? 1 : 0))
+  .sort((a, b) => a - b).join(',');
+
+/** Is the layer its own 180° turn? (Then the interlock flip is a no-op.) */
+const sym180 = positions =>
+  sig(positions) === sig(positions.map(p => ({x: -p.x, y: -p.y, rot: p.rot})));
+
+/* ---------------- the ranked list ---------------- */
+
+const FAMILY_RANK = {aligned: 0, mixed: 1, pinwheel: 2};
+
+/** Guard absurd inputs, like containment's PLACEMENT_CAP. */
+const PER_LAYER_CAP = 20000;
+
+const memo = new Map();
+
+/**
+ * @param {{outer: {L,W,H}, allowedOrientations: string[]}} child  the tier riding the pallet
+ * @param {{L, W, H}} cavity   usable deck L×W and the load height budget (maxH − baseH)
+ * @param {{wall, between, bottom?, top?, betweenZ?}} [clearance]
+ * @param {'optimal'|'column'|'interlock'} [family='optimal']
+ *   optimal  — every construction, straight-stacked, plus interlocked
+ *              variants where the flip is physically distinct
+ *   column   — aligned grids, straight-stacked only
+ *   interlock — every construction stacked with odd layers turned 180°
+ *              (the flip is an identity on a symmetric layer — the same
+ *              stacking instruction today's app honours — so the filter is
+ *              never artificially empty)
+ * @returns ranked candidates: {family, interlock, orientation, perLayer,
+ *   layers, total, label, envelope, density, utilization, build()} —
+ *   build() expands the fitInto-compatible Arrangement (placements included)
+ *   on demand and caches it.
+ */
+export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal'){
+  const key = [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
+               cavity.L, cavity.W, cavity.H,
+               clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
+               family].join('|');
+  const hit = memo.get(key);
+  if(hit) return hit;
+
+  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
+  const PL = cavity.L - 2*wall + between, PW = cavity.W - 2*wall + between;
+  const childVol = child.outer.L*child.outer.W*child.outer.H;
+  const cavityVol = cavity.L*cavity.W*cavity.H;
+
+  const cands = [];
+  for(const grp of orientationGroups(child.allowedOrientations)){
+    const o = grp.base;
+    const l = child.outer[o[0]], w = child.outer[o[1]], h = child.outer[o[2]];
+    const CL = l + between, CW = w + between;
+    const square = CL === CW;
+
+    // the construction set this group is allowed: a lone orientation forbids
+    // in-plane rotation, so only its own aligned grid exists; a square
+    // footprint makes rotation an identity, so the turned constructions
+    // degenerate to the grid and are skipped (pack.js does the same)
+    const layouts = [];
+    const gA = gridLayout(CL, CW, PL, PW, false, square);
+    if(gA) layouts.push(gA);
+    if(grp.allowRotate && !square){
+      const gB = gridLayout(CL, CW, PL, PW, true, square);
+      if(gB) layouts.push(gB);
+      layouts.push(...stripLayouts(CL, CW, PL, PW));
+      layouts.push(...pinwheelLayouts(CL, CW, PL, PW));
+    }
+
+    // geometric dedupe only — equal-COUNT layouts all stay (they are
+    // physically different pallets); identical placements collapse
+    const seen = new Set();
+    for(const lay of layouts){
+      const perLayer = lay.positions.length;
+      if(perLayer < 1 || perLayer > PER_LAYER_CAP) continue;
+      const s = sig(lay.positions);
+      if(seen.has(s)) continue;
+      seen.add(s);
+
+      const st = stack({perLayer, childH: h, parentMaxH: cavity.H, baseH: 0,
+                        between: betweenZ, gapBelow: bottom, gapAbove: top});
+      if(st.total < 1) continue;
+
+      // occupied envelope (footprint from the positions, height from the stack)
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for(const p of lay.positions){
+        const fx = p.rot ? w : l, fy = p.rot ? l : w;
+        if(p.x - fx/2 < minX) minX = p.x - fx/2;
+        if(p.x + fx/2 > maxX) maxX = p.x + fx/2;
+        if(p.y - fy/2 < minY) minY = p.y - fy/2;
+        if(p.y + fy/2 > maxY) maxY = p.y + fy/2;
+      }
+      const envelope = {L: maxX - minX, W: maxY - minY, H: st.layers*h + (st.layers - 1)*betweenZ};
+      const envVol = envelope.L*envelope.W*envelope.H;
+      const symmetric = sym180(lay.positions);
+
+      const mk = interlock => {
+        const cand = {
+          family: lay.family, interlock, orientation: o,
+          perLayer, layers: st.layers, total: st.total,
+          label: lay.label + (interlock ? ' · interlocked' : ''),
+          envelope,
+          density: envVol > 0 ? st.total*childVol/envVol : 0,
+          utilization: cavityVol > 0 ? st.total*childVol/cavityVol : 0,
+          build(){
+            if(this._arr) return this._arr;
+            const placements = [];
+            for(let ly = 0; ly < st.layers; ly++){
+              const flip = interlock && (ly & 1);
+              const z = bottom + h/2 + ly*(h + betweenZ);
+              for(const p of lay.positions)
+                placements.push({x: flip ? -p.x : p.x, y: flip ? -p.y : p.y, z,
+                                 orientation: p.rot ? transpose(o) : o});
+            }
+            return (this._arr = {placements, perLayer, layers: st.layers, total: st.total,
+                                 envelope, utilization: cand.utilization, label: cand.label});
+          }
+        };
+        return cand;
+      };
+
+      // family membership:
+      //   optimal  — straight always; the interlocked twin only when the
+      //              flip is physically distinct (no duplicate pallets)
+      //   column   — straight aligned grids
+      //   interlock — the flipped stacking of EVERY layout (identity flip
+      //              included, matching the legacy interlock behaviour)
+      if(family === 'optimal'){
+        cands.push(mk(false));
+        if(!symmetric) cands.push(mk(true));
+      }else if(family === 'column'){
+        if(lay.family === 'aligned') cands.push(mk(false));
+      }else{ // 'interlock'
+        cands.push(mk(true));
+      }
+    }
+  }
+
+  // rank: count, then compactness, then the simpler construction. Stable
+  // beyond that (generation order) — further ties are physically equivalent
+  // in every ranked metric, so the order is deliberately arbitrary.
+  cands.sort((a, b) =>
+    b.total - a.total ||
+    b.density - a.density ||
+    FAMILY_RANK[a.family] - FAMILY_RANK[b.family] ||
+    (a.interlock ? 1 : 0) - (b.interlock ? 1 : 0));
+
+  if(memo.size > 400) memo.clear();
+  memo.set(key, cands);
+  return cands;
+}
+
+/** The zero arrangement chainMetrics falls back to when nothing fits —
+ *  shape-compatible with fitInto's return. */
+export function emptyArrangement(){
+  return {placements: [], perLayer: 0, layers: 0, total: 0,
+          envelope: {L: 0, W: 0, H: 0}, utilization: 0, label: ''};
+}

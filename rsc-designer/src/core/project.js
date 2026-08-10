@@ -9,6 +9,7 @@
  * passed in via PalletConfig.baseH so this module knows nothing about decks.
  */
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
+import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
@@ -34,7 +35,12 @@ import {collate, orientationLabel, resolvePieceOrientation} from './collation.js
  * @property {number} L @property {number} W      // deck, mm
  * @property {number} maxH                         // total height budget incl. base, mm
  * @property {number} baseH                        // deck assembly height, mm
- * @property {'optimal'|'column'|'interlock'} pattern
+ * @property {'optimal'|'column'|'interlock'} pattern  // FAMILY filter into the
+ *   ranked pattern list (palletpatterns.js): optimal = every construction,
+ *   column = aligned grids, interlock = odd-layer-180° stacking
+ * @property {number} [patternIndex]               // 0-based pick within the
+ *   ACTIVE row's ranked list (the 3D cycle arrows step this); clamped to the
+ *   list on read, 0 (the ranked best) when absent — older saves load as-is
  *
  * @typedef {Object} Link
  * @property {'tertiary'} parent
@@ -146,7 +152,7 @@ export function newProject(){
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
     },
-    pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal',
+    pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal', patternIndex: 0,
       // stacking-strength (BCT) inputs — engineering guidance, not packing math.
       // ect: edge crush lb/in; unitWeightLb: gross weight per box (tare +
       // contents, which the app can't know); target: required safety factor;
@@ -585,7 +591,10 @@ export function defaultCandidate(rows){
 export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
   const outerKey = project.primary ? resolveChainShape(project).outermost : 'tertiary';
   const outerLink = linkFor(project, outerKey);
-  if(outerLink.locked) return checkLockedCase(project, rounding);
+  // the committed chain honours the project's pallet-pattern pick
+  // (pallet.patternIndex into the row's ranked list) — the ONE adjustment
+  // every consumer of this row sees together (readout, BCT, 2D, DXF, dims)
+  if(outerLink.locked) return applyPatternSelection(checkLockedCase(project, rounding), project);
   const rows = candidateCases(project, rounding);
   if(rows.length === 0) return null;
   if(selectedKey){
@@ -594,9 +603,9 @@ export function resolveActiveRow(project, rounding = '1mm', selectedKey = null){
       // cartonsPerCase distinguishes same-grid rows at different counts; older
       // saved keys (pre-range) omit it — match on the rest when it's absent.
       (selectedKey.cartonsPerCase === undefined || r.cartonsPerCase === selectedKey.cartonsPerCase));
-    if(m) return m;
+    if(m) return applyPatternSelection(m, project);
   }
-  return defaultCandidate(rows);
+  return applyPatternSelection(defaultCandidate(rows), project);
 }
 
 /**
@@ -670,11 +679,15 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
     // numbers and fillEfficiency NEVER touch cube utilization.
     const film = primaryResult.geo.meta.film;
     row.filmAreaM2 = film.filmAreaM2;
-    row.filmKgPerPallet = requestedForPieces != null
-      ? (film.massPer1000g/1000)*requestedForPieces*row.cartonsPerPallet/1000 : null;
+    // per-carton film mass retained so a pattern re-selection can rescale
+    // filmKgPerPallet from the new cartonsPerPallet without re-deriving
+    row.filmKgPerCarton = requestedForPieces != null
+      ? (film.massPer1000g/1000)*requestedForPieces/1000 : null;
+    row.filmKgPerPallet = row.filmKgPerCarton != null
+      ? row.filmKgPerCarton*row.cartonsPerPallet : null;
     row.wrapOuter = primaryResult.geo.outer;
   }else{
-    row.filmAreaM2 = null; row.filmKgPerPallet = null; row.wrapOuter = null;
+    row.filmAreaM2 = null; row.filmKgPerCarton = null; row.filmKgPerPallet = null; row.wrapOuter = null;
   }
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
@@ -733,12 +746,18 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
   const childStandingH = child && typeof cand.o === 'string' && cand.o.length === 3
     ? orientDims(child.outer, cand.o).h : (child ? child.outer.H : 0);
   const stackH = openTop && child ? Math.max(outerGeo.outer.H, childStandingH) : outerGeo.outer.H;
-  const fit = fitInto(
+  // THE pallet solve: the ranked pattern list (palletpatterns.js), filtered
+  // to the selected family. list[0] — the ranked best — is what this row's
+  // headline numbers bake in (the Build table ranks candidates by their
+  // best pallet); the list rides on the row so applyPatternSelection can
+  // re-read list[patternIndex] for the committed chain without re-packing.
+  const patternList = palletPatternList(
     {outer: {...outerGeo.outer, H: stackH}, allowedOrientations: outerLevel.allowedOrientations},
     {L: p.L, W: p.W, H: p.maxH - p.baseH},
     outerLevel.clearance,
     p.pattern
   );
+  const fit = patternList.length ? patternList[0].build() : emptyArrangement();
   const loadH = fit.layers*stackH;
   // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
   // AND its proud contents, so its area needs the loaded (proud) height stackH —
@@ -790,7 +809,47 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
     cubeUtilPct: loadH > 0 ? Math.round(unitVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
-    casesFit: fit                            // retained for decorateRow (single source)
+    casesFit: fit,                           // retained for decorateRow (single source)
+    // retained for applyPatternSelection — cycling a pattern recomputes the
+    // per-pallet fields from these without re-deriving outerKey/childVol
+    patternList, perPalletMultiplier, palletUnitVol: unitVol
+  };
+}
+
+/**
+ * Apply the project's pattern selection (pallet.patternIndex) to a decorated
+ * candidate row — the ONE place the committed chain's pallet numbers are
+ * re-derived from a non-default pattern. Pure: returns an adjusted shallow
+ * copy (the row's own list stays untouched, so the Build table keeps each
+ * candidate's ranked-best numbers). Index 0 — the default — returns the row
+ * unchanged, bit-identical to the pre-pattern behaviour, since list[0] is
+ * exactly what chainMetrics baked in. The index is clamped to the list, so
+ * a stale selection (case changed, list shrank) degrades to the nearest
+ * valid pick instead of vanishing.
+ */
+export function applyPatternSelection(row, project){
+  const list = row && row.patternList;
+  if(!list || !list.length) return row;
+  const p = project.pallet;
+  const i = Math.max(0, Math.min(list.length - 1, p.patternIndex > 0 ? Math.floor(p.patternIndex) : 0));
+  if(i === 0) return row;
+  const fit = list[i].build();
+  const stackH = row.unitStackH;
+  const loadH = fit.layers*stackH;
+  const cartonsPerPallet = fit.total*row.perPalletMultiplier;
+  return {
+    ...row,
+    casesPerLayer: fit.perLayer,
+    caseLayers: fit.layers,
+    casesPerPallet: fit.total,
+    cartonsPerPallet,
+    coveragePct: Math.round(fit.perLayer*row.outer.L*row.outer.W/(p.L*p.W)*100),
+    loadH,
+    cubeUtilPct: loadH > 0 ? Math.round(row.palletUnitVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
+    piecesPerPallet: row.piecesPerCarton != null ? row.piecesPerCarton*cartonsPerPallet : row.piecesPerPallet,
+    filmKgPerPallet: row.filmKgPerCarton != null ? row.filmKgPerCarton*cartonsPerPallet : row.filmKgPerPallet,
+    casesFit: fit,
+    arr: {...row.arr, cases: {...row.arr.cases, placements: fit.placements, count: fit.total}}
   };
 }
 

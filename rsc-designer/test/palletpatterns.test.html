@@ -1,0 +1,228 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pallet pattern tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/palletpatterns.js — the ranked pallet-pattern
+   candidate list (aligned / mixed-strip / pinwheel + interlocked variants).
+   DOM-free module; this page is only a runner. Parity assertions pin the
+   list against fitInto (containment.js, untouched) so the enumeration can
+   never silently drift from the legacy single-layout solves. */
+import {palletPatternList, emptyArrangement} from '../src/core/palletpatterns.js';
+import {fitInto} from '../src/core/containment.js';
+import {newProject, candidateCases, applyPatternSelection} from '../src/core/project.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(actual, expected, msg = ''){
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
+}
+const ok = (cond, msg) => { if(!cond) throw new Error(msg); };
+const box = (L, W, H, allowed = ['LWH', 'WLH']) => ({outer: {L, W, H}, allowedOrientations: allowed});
+const Z = {wall: 0, between: 0};
+const stackSig = arr => arr.placements
+  .map(p => [p.x.toFixed(2), p.y.toFixed(2), p.z.toFixed(2), p.orientation].join(','))
+  .sort().join(';');
+
+/* ---------- the GMA-ish reference combo: 400×300×250 case, 48×40in deck ---------- */
+const CASE = box(400, 300, 250);
+const DECK = {L: 1219.2, W: 1016, H: 1397};   // 60in budget − 127 base
+
+t('optimal enumerates multiple arrangements (aligned + mixed present)', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  ok(l.length >= 5, `expected a real repertoire, got ${l.length}`);
+  ok(l.some(c => c.family === 'aligned'), 'no aligned candidates');
+  ok(l.some(c => c.family === 'mixed'), 'no mixed candidates');
+});
+
+t('ranked by cases/pallet desc, then envelope density desc', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  for(let i = 1; i < l.length; i++){
+    ok(l[i].total <= l[i-1].total, `total out of order at ${i}`);
+    if(l[i].total === l[i-1].total)
+      ok(l[i].density <= l[i-1].density + 1e-9, `density tiebreak out of order at ${i}`);
+  }
+});
+
+t('list[0] matches legacy fitInto optimal (golden-pin parity)', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  const old = fitInto(CASE, DECK, Z, 'optimal');
+  eq(l[0].total, old.total, 'total');
+  eq(l[0].perLayer, old.perLayer, 'perLayer');
+  eq(l[0].layers, old.layers, 'layers');
+});
+
+t('column list[0] matches legacy fitInto column; family pure', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'column');
+  const old = fitInto(CASE, DECK, Z, 'column');
+  eq(l[0].total, old.total, 'total');
+  ok(l.every(c => c.family === 'aligned' && !c.interlock), 'non-aligned or interlocked leaked into column');
+});
+
+t('interlock list[0] matches legacy fitInto interlock; all flagged', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'interlock');
+  const old = fitInto(CASE, DECK, Z, 'interlock');
+  eq(l[0].total, old.total, 'total');
+  ok(l.every(c => c.interlock), 'straight variant leaked into interlock');
+});
+
+t('interlocked variant mirrors odd layers 180° (asymmetric layout)', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'interlock');
+  // the top mixed layout is asymmetric — its flip is a real turn
+  const cand = l.find(c => c.family === 'mixed');
+  ok(cand, 'no mixed interlock candidate');
+  const arr = cand.build();
+  const zs = [...new Set(arr.placements.map(p => p.z))].sort((a, b) => a - b);
+  ok(zs.length >= 2, 'needs 2+ layers to interlock');
+  const layer = z => arr.placements.filter(p => p.z === z);
+  const s0 = layer(zs[0]).map(p => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).sort().join(';');
+  const s1 = layer(zs[1]).map(p => `${(-p.x).toFixed(2)},${(-p.y).toFixed(2)}`).sort().join(';');
+  eq(s1, s0, 'odd layer is not the 180° turn of layer 0');
+});
+
+t('equal-count arrangements are all kept (no count dedupe), geometry all distinct', () => {
+  const l = palletPatternList(box(600, 250, 200), {L: 1000, W: 1000, H: 1000}, Z, 'optimal');
+  const at25 = l.filter(c => c.total === 25);
+  ok(at25.length >= 2, `expected several 25-case layouts, got ${at25.length}`);
+  const sigs = l.map(c => stackSig(c.build()));
+  eq(new Set(sigs).size, sigs.length, 'geometric duplicates in the list');
+});
+
+t('a rotated-strip layout outranks the naive aligned grid (the point)', () => {
+  const l = palletPatternList(box(600, 250, 200), {L: 1000, W: 1000, H: 1000}, Z, 'optimal');
+  const bestAligned = Math.max(...l.filter(c => c.family === 'aligned').map(c => c.total));
+  ok(l[0].total > bestAligned, `non-grid should win: best ${l[0].total} (${l[0].label}) vs aligned ${bestAligned}`);
+  ok(l[0].family !== 'aligned', 'winner should not be aligned');
+});
+
+t('pinwheel present with a visible central void', () => {
+  const l = palletPatternList(box(600, 250, 200), {L: 1000, W: 1000, H: 1000}, Z, 'optimal');
+  const pw = l.find(c => c.family === 'pinwheel');
+  ok(pw, 'no pinwheel candidate');
+  eq(pw.perLayer % 4, 0, 'pinwheel is four rotated blocks');
+  const arr = pw.build();
+  const layer0 = arr.placements.filter(p => p.z === arr.placements[0].z);
+  const covered = layer0.some(p => {
+    const rot = p.orientation !== 'LWH';
+    const fx = rot ? 250 : 600, fy = rot ? 600 : 250;
+    return Math.abs(p.x) < fx/2 && Math.abs(p.y) < fy/2;
+  });
+  ok(!covered, 'deck centre is covered — the chimney must stay empty');
+  // and the four arms really are two orientations, alternating around the rim
+  eq([...new Set(layer0.map(p => p.orientation))].sort(), ['LWH', 'WLH'], 'both in-plane orientations');
+});
+
+t('density tiebreak: equal-count layouts order tighter-envelope first', () => {
+  // scan a few combos for a genuine tie and assert the ordering rule held
+  const combos = [
+    [box(600, 250, 200), {L: 1000, W: 1000, H: 1000}],
+    [CASE, DECK],
+    [box(500, 320, 240), {L: 1100, W: 900, H: 1200}]
+  ];
+  let checked = 0;
+  for(const [c, cav] of combos){
+    const l = palletPatternList(c, cav, Z, 'optimal');
+    for(let i = 1; i < l.length; i++)
+      if(l[i].total === l[i-1].total && Math.abs(l[i].density - l[i-1].density) > 1e-9){
+        ok(l[i-1].density > l[i].density, 'looser envelope ranked above tighter at a count tie');
+        checked++;
+      }
+  }
+  ok(checked > 0, 'no discriminating tie found across combos — tiebreak untested');
+});
+
+t('lone orientation (no in-plane rotation) → aligned grid only', () => {
+  const l = palletPatternList(box(400, 300, 250, ['LWH']), DECK, Z, 'optimal');
+  ok(l.length >= 1, 'grid should fit');
+  ok(l.every(c => c.family === 'aligned'), 'rotated constructions need the transposed pair');
+  const old = fitInto(box(400, 300, 250, ['LWH']), DECK, Z, 'optimal');
+  eq(l[0].total, old.total, 'parity with fitInto under the same limits');
+});
+
+t('square footprint degenerates to the one grid', () => {
+  const l = palletPatternList(box(300, 300, 250), DECK, Z, 'optimal');
+  ok(l.every(c => c.family === 'aligned'), 'turned constructions are identities on a square');
+  eq(l.length, 1, 'exactly one distinct layout');
+});
+
+t('build() arrangement is fitInto-shape-compatible + consistent', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  const arr = l[0].build();
+  eq(arr.placements.length, arr.total, 'placement count == total');
+  eq(arr.total, arr.perLayer*arr.layers, 'total == perLayer × layers');
+  ok(arr.placements.every(p => 'x' in p && 'y' in p && 'z' in p && typeof p.orientation === 'string'), 'placement shape');
+  ok(arr.envelope.L <= DECK.L + 1e-9 && arr.envelope.W <= DECK.W + 1e-9, 'envelope exceeds the deck');
+  eq(emptyArrangement().total, 0, 'emptyArrangement is the zero fit');
+});
+
+/* ---------- chain integration: the ONE list on the row + the selection ---------- */
+
+t('candidateCases rows carry the ranked list; row numbers == list[0]', () => {
+  const p = newProject();
+  const rows = candidateCases(p, '1mm');
+  ok(rows.length > 0, 'no rows');
+  ok(rows.every(r => Array.isArray(r.patternList)), 'patternList missing on a row');
+  // a candidate whose case doesn't fit the deck at all carries an EMPTY list
+  // (and zero counts) — assert on a row that actually palletizes
+  const r = rows.find(x => x.casesPerPallet > 0);
+  ok(r, 'no fitting row');
+  ok(r.patternList.length >= 1, 'fitting row with empty patternList');
+  eq(r.casesPerPallet, r.patternList[0].total, 'row headline != ranked best');
+  eq(r.casesFit.label, r.patternList[0].label, 'row label != ranked best');
+});
+
+t('applyPatternSelection: index 0 is a no-op; index N re-derives together', () => {
+  const p = newProject();
+  const rows = candidateCases(p, '1mm');
+  const r = rows.find(x => x.patternList.length >= 2) || rows[0];
+  ok(r.patternList.length >= 2, 'need 2+ patterns to cycle');
+  p.pallet.patternIndex = 0;
+  ok(applyPatternSelection(r, p) === r, 'index 0 must return the row unchanged');
+  p.pallet.patternIndex = 1;
+  const adj = applyPatternSelection(r, p);
+  ok(adj !== r, 'must be a copy');
+  const cand = r.patternList[1];
+  eq(adj.casesPerPallet, cand.total, 'casesPerPallet follows the pick');
+  eq(adj.cartonsPerPallet, cand.total*r.cartonsPerCase, 'cartonsPerPallet re-multiplied');
+  eq(adj.casesFit.label, cand.label, 'label follows');
+  eq(adj.arr.cases.placements.length, cand.total, 'render placements follow');
+  eq(adj.arr.cases.count, cand.total, 'render count follows');
+  ok(adj.piecesPerPallet === (r.piecesPerCarton != null ? r.piecesPerCarton*adj.cartonsPerPallet : r.piecesPerPallet),
+     'piecesPerPallet rescaled');
+  // the source row is untouched (the Build table keeps ranked-best numbers)
+  eq(r.casesPerPallet, r.patternList[0].total, 'source row mutated');
+  p.pallet.patternIndex = 0;
+});
+
+t('applyPatternSelection clamps a stale index', () => {
+  const p = newProject();
+  const rows = candidateCases(p, '1mm');
+  const r = rows.find(x => x.patternList.length >= 1);
+  ok(r, 'no row with patterns');
+  p.pallet.patternIndex = 9999;
+  const adj = applyPatternSelection(r, p);
+  const last = r.patternList[r.patternList.length - 1];
+  eq(adj.casesPerPallet, last.total, 'should clamp to the last candidate');
+  p.pallet.patternIndex = 0;
+});
+
+t('family filter flows through the chain (column strips the mixed layouts)', () => {
+  const p = newProject();
+  p.pallet.pattern = 'column';
+  const rows = candidateCases(p, '1mm');
+  ok(rows[0].patternList.every(c => c.family === 'aligned'), 'non-aligned candidate under column');
+  p.pallet.pattern = 'interlock';
+  const rows2 = candidateCases(p, '1mm');
+  ok(rows2[0].patternList.every(c => c.interlock), 'non-interlocked candidate under interlock');
+});
+
+/* ---------- report ---------- */
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
