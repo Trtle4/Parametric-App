@@ -135,6 +135,28 @@ function openTrayBox(outer, inner, mat){
  *  tray/box render everywhere a closed style would show a full box. */
 function isOpenTop(geo){ return geo && geo.meta && geo.meta.boardLayersTop === 0; }
 
+// Shrink film: either the standalone Shrink Bundle style, or an open tray with
+// the "shrink-wrap this tray" finish on (chain sets meta.shrinkWrapped). Both
+// render their contents through a translucent skin; only the bundle has NO rigid
+// shell (the tray keeps its open walls inside the film).
+function isShrink(geo){ return geo && geo.meta && (geo.meta.style === 'shrinkbundle' || geo.meta.shrinkWrapped); }
+function isShrinkBundle(geo){ return geo && geo.meta && geo.meta.style === 'shrinkbundle'; }
+
+// A translucent shrink skin over a bundle: a thin box at L×H×W (centred, floor
+// at −H/2 like every unit) in the same conforming film look the wraps use, so
+// the contents read clearly THROUGH it. `h` overrides H when the skin must rise
+// to the proud contents of an open tray (meta.shrinkLoadedH); omitted for a
+// bundle whose own outer.H already IS the content height.
+function filmSkin(outer, h){
+  const H = h != null ? h : outer.H;
+  const g = new THREE.Group();
+  const skin = new THREE.Mesh(new THREE.BoxGeometry(outer.L, H, outer.W), filmMat);
+  skin.position.y = -outer.H/2 + H/2;                     // sit the skin base on the unit floor
+  g.add(skin);
+  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(outer.L, H, outer.W)), edgeMat));
+  return g;
+}
+
 /* ---------- flow-wrap geometry: conforming pillow body + angled end seals.
    Each end is a RAMP (film descending from the pack face to the flat crimp
    line, over the jaw clearance) plus a flexible CRIMP TAB laid at the external
@@ -617,7 +639,9 @@ function soloClosed(geo, artInfo){
 function buildContainer(tier, bundle, sel, path){
   const g = new THREE.Group();
   const {geo, children, childKind} = tier;
-  g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
+  // a Shrink Bundle has NO rigid shell (just film over the contents), so it
+  // skips the cutaway box; a shrink-wrapped tray keeps its open tray walls.
+  if(!isShrinkBundle(geo)) g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
 
   const openIdx = clampIdx(sel[tier.name], children);
   const parentInnerH = geo.inner.H;
@@ -696,6 +720,10 @@ function buildContainer(tier, bundle, sel, path){
     childGroup.quaternion.copy(orientQuat(pl.orientation));
     g.add(childGroup);
   }
+  // shrink film LAST, so the translucent skin draws over the visible contents —
+  // a bundle skins to its own height; a shrink-wrapped tray skins up to the
+  // proud loaded height the chain measured (meta.shrinkLoadedH).
+  if(isShrink(geo)) g.add(filmSkin(geo.outer, geo.meta.shrinkLoadedH));
   return g;
 }
 
@@ -842,12 +870,13 @@ export function buildHierarchy(bundle, depth, sel, solid){
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
-    if(solid) group.add(soloClosed(bundle.cartonGeo, cartonArt));
+    // a shrink pack is always see-through — render contents + skin in BOTH modes
+    if(solid && !isShrink(bundle.cartonGeo)) group.add(soloClosed(bundle.cartonGeo, cartonArt));
     else { group.add(buildContainer(cartonTier, bundle, S, [])); opened = {wrap: S.wrap}; }
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
-    if(solid) group.add(soloClosed(bundle.caseGeo, caseArt));
+    if(solid && !isShrink(bundle.caseGeo)) group.add(soloClosed(bundle.caseGeo, caseArt));
     else { group.add(buildContainer(caseTier, bundle, S, [])); opened = {carton: S.carton, wrap: S.wrap}; }
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
@@ -880,29 +909,31 @@ export function renderedOuter(){ return lastOuter; }
 // replicated into every tray. Cartons are ONE InstancedMesh across the whole
 // pallet (tray matrix × carton local matrix); the shell's 5 board parts each
 // instance across the trays. Everything picks as 'pallet'.
-function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH){
+function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opts = {}){
+  const shell = opts.shell !== false;                    // draw the tray walls (a bundle has none)
   const co = trayGeo.outer, t = Math.max((co.L - trayGeo.inner.L) / 2, T_FLOOR);
   const trayM = pl => new THREE.Matrix4().compose(
     new THREE.Vector3(pl.x, deckH + pl.z, pl.y), orientQuat(pl.orientation), new THREE.Vector3(1, 1, 1));
-  // shell parts: floor + 4 upright walls (no top), each instanced across trays
-  const parts = [
-    {g: [co.L, t, co.W], p: [0, -co.H/2 + t/2, 0]},
-    {g: [t, co.H, co.W], p: [ co.L/2 - t/2, 0, 0]}, {g: [t, co.H, co.W], p: [-co.L/2 + t/2, 0, 0]},
-    {g: [co.L, co.H, t], p: [0, 0,  co.W/2 - t/2]}, {g: [co.L, co.H, t], p: [0, 0, -co.W/2 + t/2]}
-  ];
   const local = new THREE.Matrix4(), world = new THREE.Matrix4();
-  for(const pr of parts){
-    const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(...pr.g), board, placements.length);
-    placements.forEach(({pl}, k) => {
-      local.makeTranslation(pr.p[0], pr.p[1], pr.p[2]);
-      inst.setMatrixAt(k, world.multiplyMatrices(trayM(pl), local));
-    });
+  const instanceUnit = (geo, mat, place) => {          // one part instanced across every unit
+    const inst = new THREE.InstancedMesh(geo, mat, placements.length);
+    placements.forEach(({pl}, k) => { place(pl); inst.setMatrixAt(k, world.multiplyMatrices(trayM(pl), local)); });
     inst.userData = {pick: placements.map(x => x.i), tierName: 'pallet'};
     pickables.push({mesh: inst, tier: 'pallet'});
     group.add(inst);
+  };
+  // shell parts: floor + 4 upright walls (no top), each instanced across trays
+  if(shell){
+    const parts = [
+      {g: [co.L, t, co.W], p: [0, -co.H/2 + t/2, 0]},
+      {g: [t, co.H, co.W], p: [ co.L/2 - t/2, 0, 0]}, {g: [t, co.H, co.W], p: [-co.L/2 + t/2, 0, 0]},
+      {g: [co.L, co.H, t], p: [0, 0,  co.W/2 - t/2]}, {g: [co.L, co.H, t], p: [0, 0, -co.W/2 + t/2]}
+    ];
+    for(const pr of parts)
+      instanceUnit(new THREE.BoxGeometry(...pr.g), board, pl => local.makeTranslation(pr.p[0], pr.p[1], pr.p[2]));
   }
-  // proud cartons: canonical carton box, orientation + tray rotation baked per
-  // instance — one draw call for every carton in every non-hero tray.
+  // proud contents: canonical carton box, orientation + tray rotation baked per
+  // instance — one draw call for every carton in every non-hero unit.
   if(cartonGeo && cartonPls.length){
     const o = cartonGeo.outer, rr = Math.min(o.L, o.W, o.H)*0.03;
     const inst = new THREE.InstancedMesh(roundedBoxGeo(o.L, o.H, o.W, rr, 2), board2, placements.length*cartonPls.length);
@@ -916,6 +947,14 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH){
       }
     }
     group.add(inst);
+  }
+  // shrink skin: a translucent film box per unit, rising to opts.skinH (the
+  // proud loaded height for a tray, the bundle's own height otherwise). Base
+  // sits on the unit floor (−co.H/2). Drawn last so contents read through it.
+  if(opts.skin){
+    const skinH = opts.skinH != null ? opts.skinH : co.H;
+    instanceUnit(new THREE.BoxGeometry(co.L, skinH, co.W), filmMat,
+      pl => local.makeTranslation(0, -co.H/2 + skinH/2, 0));
   }
 }
 
@@ -934,6 +973,7 @@ function buildPallet(bundle, outerTier, S, solid){
   // proud carton top, not the tray wall (co.H). For a closed case co.H IS the
   // full height, so the closed path is unchanged (layers*co.H, bit-identical).
   const openOuter = isOpenTop(outerTier.geo);
+  const shrinkOuter = isShrink(outerTier.geo);           // Shrink Bundle, or a shrink-wrapped tray
   const contentTopLocal = (openOuter && bundle.cartonGeo && bundle.cartons.placements.length)
     ? Math.max(co.H/2, ...bundle.cartons.placements.map(pl =>
         childPos(pl, outerTier.geo.inner.H).y + orient(bundle.cartonGeo.outer, pl.orientation).h/2))
@@ -958,11 +998,13 @@ function buildPallet(bundle, outerTier, S, solid){
   // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
   // name — clicking a carton on the pallet must set the pallet's own selection,
   // not the "which pack inside a carton" one that shares the 'carton' key.
-  if(openOuter){
-    // OPEN trays: every non-hero tray is an open shell + its cartons standing
-    // proud (open trays reveal their contents — never a closed box). One draw
-    // pass instances the shells and the cartons across the whole pallet.
-    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH);
+  if(openOuter || shrinkOuter){
+    // Contents-visible units: an OPEN tray (shell + proud cartons), a SHRINK
+    // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
+    // cartons + skin). One draw pass instances the parts across the pallet;
+    // the shrink skin is a translucent box per unit rising to the loaded top.
+    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH,
+      {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
   }else if(art && art.am && art.canvas && closed.length){
     for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
   }else{

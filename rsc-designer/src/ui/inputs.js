@@ -124,6 +124,22 @@ function selectField(d, obj, group){
   return wrap;
 }
 
+/** A checkbox option field, backed by `obj` (the level's options). Used for
+ *  boolean style options like the tray's "Shrink-wrap this tray" finish. */
+function boolField(d, obj){
+  const wrap = document.createElement('div');
+  wrap.className = 'field bchk';
+  const on = obj[d.key] != null ? !!obj[d.key] : !!d.default;
+  wrap.innerHTML = `<label><input type="checkbox" id="p_${d.key}"${on ? ' checked' : ''}> ${d.label}${
+    d.hint ? ` <span class="hint">${d.hint}</span>` : ''}</label>`;
+  const input = wrap.querySelector('input');
+  input.addEventListener('change', () => {
+    obj[d.key] = input.checked;
+    mounted.onInput({key: d.key, group: 'option'});
+  });
+  return wrap;
+}
+
 /**
  * Mount a project level into the rails.
  * @param {Object} style   the level's style descriptor (params/options)
@@ -143,7 +159,7 @@ export function mountLevel(style, params, options, m){
     target.appendChild(field);
   }
   for(const d of style.options || [])
-    opt.appendChild(selectField(d, options, 'option'));
+    opt.appendChild(d.type === 'bool' ? boolField(d, options) : selectField(d, options, 'option'));
 }
 
 /** Resync the mounted level's derived-dimension boxes in place, without

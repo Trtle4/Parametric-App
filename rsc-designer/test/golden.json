@@ -375,6 +375,46 @@
         "coveragePct": 90, "cubeUtilPct": 83
       }
     },
+    "shrink_bundle_cartons_4x3x1": {
+      "note": "SHRINK BUNDLE as the outermost container (feature/shrink-bundle) — 12 cartons (a6120 100x60x150 @0.457, 4x3x1) held by a draw-down film skin, no tray/case. Shrink is a FLEXIBLE film that closes to the packed bundle envelope with negligible thickness, so outer == cavity == the cartons' packed grid (407x186x152) — no board/seal compensation (contrast the tray's +wall/+caliper and flow wrap's seals). Footprint/pallet match the closed-fit carton grid (casesPerLayer 14, 126/pallet, 1512 cartons) because the bundle IS the grid envelope. boardAreaM2 here is the film BLANK bbox (girth x height), not board. bundleFilmM2 = enclosing surface 2(LW+LH+WH) + 10% draw-down = 0.364844 m². Covers 'cartons shrink-bundled, no case'.",
+      "config": {
+        "carton": { "L": 100, "W": 60, "H": 150, "caliper": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+        "case": { "styleId": "shrinkbundle", "params": { "drawdown": 10, "gauge": 50, "density": 0.92 } },
+        "count": 12, "arrangement": { "nx": 4, "ny": 3, "nz": 1 },
+        "orientations": ["LWH", "WLH"],
+        "clearance": { "wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "rounding": "1mm"
+      },
+      "expected": {
+        "cavity": { "L": 407, "W": 186, "H": 152 },
+        "outer": { "L": 407, "W": 186, "H": 152 },
+        "boardAreaM2": 0.400868,
+        "bundleFilmM2": 0.364844,
+        "casesPerLayer": 14, "caseLayers": 9,
+        "casesPerPallet": 126, "cartonsPerPallet": 1512,
+        "coveragePct": 86, "cubeUtilPct": 83
+      }
+    },
+    "shrink_tray_4x3x1": {
+      "note": "SHRINK-WRAPPED TRAY (feature/shrink-bundle) — the same open FEFCO 0300 tray as carton12_4x3x1_tray_case, now with the 'shrink-wrap this tray' finish ON. Shrink is a FINISH, not a container: the tray stays a correct open tray, so cavity/outer/boardArea/pallet are BIT-IDENTICAL to the plain tray pin (407x186x80, 413x192x83, 0.196182, 126/1512). The only addition is shrinkFilmM2 = the film drawn over the tray footprint AND its proud contents (2*L*W + 2*(L+W)*loadedH, +10% draw-down), computed at the chain level because it needs the proud loaded height = 0.376534 m². Covers 'cartons in a shrink-wrapped tray'.",
+      "config": {
+        "carton": { "L": 100, "W": 60, "H": 150, "caliper": 0.457, "glueTab": 15, "dustDepth": 37.5, "tuckDepth": 59.543, "tuckTab": 16 },
+        "case": { "styleId": "tray", "params": { "caliper": 3 }, "options": { "shrink": true } },
+        "count": 12, "arrangement": { "nx": 4, "ny": 3, "nz": 1 },
+        "orientations": ["LWH", "WLH"],
+        "clearance": { "wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0 },
+        "rounding": "1mm"
+      },
+      "expected": {
+        "cavity": { "L": 407, "W": 186, "H": 80 },
+        "outer": { "L": 413, "W": 192, "H": 83 },
+        "boardAreaM2": 0.196182,
+        "shrinkFilmM2": 0.376534,
+        "casesPerLayer": 14, "caseLayers": 9,
+        "casesPerPallet": 126, "cartonsPerPallet": 1512,
+        "coveragePct": 90, "cubeUtilPct": 83
+      }
+    },
     "cylinder40_2x2x10_upright_4x3x1": {
       "note": "cylindrical product through the full chain: d50 x t6 pucks, 'multiple pieces collated' 10/stack Z 2x2 (envelope 100x100x60, 40 pieces, fill pi/4), upright into an a6120 @0.457 with zero allowances, 12 cartons 4x3x1 into a fefco201 @3, GMA pallet, optimal pattern",
       "config": {

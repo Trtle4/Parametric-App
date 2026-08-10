@@ -108,6 +108,8 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     // app does on style change/load. An explicit config.openTop still overrides.
     p.tertiary.openTop = ch.config.case.openTop != null
       ? ch.config.case.openTop : styleOpenTopDefault(ch.config.case.styleId);
+    // style-view options (e.g. the tray's shrink-wrap finish)
+    if(ch.config.case.options) p.tertiary.options = {...p.tertiary.options, ...ch.config.case.options};
   }
   p.links[0].count = ch.config.count;
   p.links[0].arrangement = ch.config.arrangement;
@@ -132,6 +134,11 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
   cmp(name, 'cavity.L', e.cavity.L, r.cavity.L); cmp(name, 'cavity.W', e.cavity.W, r.cavity.W); cmp(name, 'cavity.H', e.cavity.H, r.cavity.H);
   cmp(name, 'outer.L', e.outer.L, r.outer.L); cmp(name, 'outer.W', e.outer.W, r.outer.W); cmp(name, 'outer.H', e.outer.H, r.outer.H);
   cmp(name, 'boardAreaM2', e.boardAreaM2, +r.boardAreaM2.toFixed(6));
+  // shrink film: the standalone Shrink Bundle publishes meta.film.filmAreaM2;
+  // the shrink-wrapped tray gets meta.shrinkFilmM2 (chain-computed over proud
+  // contents). Assert whichever the pin declares.
+  if(e.bundleFilmM2 !== undefined) cmp(name, 'bundleFilmM2', e.bundleFilmM2, +r.geo.case.meta.film.filmAreaM2.toFixed(6));
+  if(e.shrinkFilmM2 !== undefined) cmp(name, 'shrinkFilmM2', e.shrinkFilmM2, +r.geo.case.meta.shrinkFilmM2.toFixed(6));
   cmp(name, 'casesPerLayer', e.casesPerLayer, r.casesPerLayer);
   cmp(name, 'caseLayers', e.caseLayers, r.caseLayers);
   cmp(name, 'casesPerPallet', e.casesPerPallet, r.casesPerPallet);

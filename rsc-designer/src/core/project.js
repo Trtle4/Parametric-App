@@ -740,6 +740,23 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     p.pattern
   );
   const loadH = fit.layers*stackH;
+  // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
+  // AND its proud contents, so its area needs the loaded (proud) height stackH —
+  // known only here, not in the tray geometry (which has no contents). Compute it
+  // once and hang it on the geo's meta so the readout (trayReadouts) and the
+  // render both read ONE number. A 10% draw-down/overlap allowance, matching the
+  // Shrink Bundle style's default. Only when the tray option is on.
+  const shrinkOn = !!(outerLevel.options && outerLevel.options.shrink);
+  if(shrinkOn){
+    const L = outerGeo.outer.L, W = outerGeo.outer.W;
+    const surface = 2*L*W + 2*(L + W)*stackH;              // top + bottom + sides to the proud height
+    outerGeo.meta.shrinkWrapped = true;
+    outerGeo.meta.shrinkFilmM2 = surface*1.10/1e6;         // +10% draw-down allowance
+    outerGeo.meta.shrinkLoadedH = stackH;                  // the render skins to this height
+  }else if(outerGeo.meta.shrinkWrapped){
+    // a cached geo (shapeCache) reused after the option was turned off
+    delete outerGeo.meta.shrinkWrapped; delete outerGeo.meta.shrinkFilmM2; delete outerGeo.meta.shrinkLoadedH;
+  }
   const perPalletMultiplier = outerKey === 'tertiary' ? count : 1;
   const cartonsPerPallet = fit.total*perPalletMultiplier;
   // the "productive volume" cube-util measures is whatever `cartonsPerPallet`

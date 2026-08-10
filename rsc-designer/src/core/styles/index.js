@@ -15,10 +15,16 @@ import {a6120} from './a6120.js';
 import {flowwrap, SEAL_ANGLES} from './flowwrap.js';
 import {trayGeometry} from './tray.js';
 import {sealend} from './sealend.js';
+import {shrinkBundle} from './shrinkbundle.js';
 
 const trayReadouts = geo => [
   {label: 'Board layers, bottom', text: String(geo.meta.boardLayersBottom)},
-  {label: 'Board layers, top', text: String(geo.meta.boardLayersTop)}
+  {label: 'Board layers, top', text: String(geo.meta.boardLayersTop)},
+  // present only when the "Shrink-wrap this tray" finish is on — the chain
+  // computes the film area (it needs the proud loaded height) onto meta.
+  ...(geo.meta.shrinkWrapped
+    ? [{label: 'Shrink film area (tray + contents)', text: `${geo.meta.shrinkFilmM2.toFixed(4)} m²`}]
+    : [])
 ];
 
 export const styles = [
@@ -148,7 +154,15 @@ export const styles = [
       {key: 'caliper', label: 'Board caliper', hint: 't',     group: 'material', min: 0, step: 0.1, default: 3},
       {key: 'cornerGap', label: 'Corner cut gap', hint: 'fold clearance', group: 'material', min: 0, step: 0.5, default: 6}
     ],
-    options: [],
+    // "Shrink-wrap this tray" — a FINISH on the tray (the tray stays an open
+    // tray; film draws down over it AND its proud contents). A boolean, shown
+    // only for the tray style, so a rigid case or a Shrink Bundle never offers
+    // it (their style just doesn't carry the option) — that IS the conditional
+    // display. The film area is computed at the chain level (it needs the proud
+    // content height) and surfaced in the readout; the render draws the skin.
+    options: [
+      {key: 'shrink', label: 'Shrink-wrap this tray', hint: 'film over tray + contents', type: 'bool', default: false}
+    ],
     geometry: trayGeometry,
     readouts: trayReadouts,
     defaultOrientations: ['LWH', 'WLH'],
@@ -188,6 +202,40 @@ export const styles = [
     ],
     defaultOrientations: ['LWH', 'WLH', 'LHW', 'HLW'],
     defaultClearance: {wall: 0.5, between: 0}
+  },
+  {
+    id: 'shrinkbundle',
+    name: 'Shrink Bundle (film)',
+    brand: {code: 'SHRINK', sub: 'Draw-down film bundle'},
+    // tertiary tier: the outermost bundle/container when there is no tray or
+    // case — it holds cartons (cartons shrink-bundled) or, with the carton
+    // level off, the collation directly (cans shrink-bundled). Available at the
+    // wrap/secondary levels too via the dropdown's "override" group.
+    tier: 'tertiary',
+    material: 'film',
+    structure: 'flexible',
+    // the film draws down to the packed bundle envelope — these ARE the outer
+    // dims (thin film, no seal compensation), solved from the contents.
+    dimsLabel: 'Bundle envelope',
+    params: [
+      {key: 'L',        label: 'Length',   hint: 'L', group: 'dims',     min: 1, step: 1,   default: 300},
+      {key: 'W',        label: 'Width',    hint: 'W', group: 'dims',     min: 1, step: 1,   default: 200},
+      {key: 'H',        label: 'Height',   hint: 'H', group: 'dims',     min: 1, step: 1,   default: 150},
+      {key: 'drawdown', label: 'Draw-down allowance', hint: 'overlap + tenting', group: 'material', min: 0, step: 1, default: 10, fixedUnit: '%'},
+      {key: 'gauge',    label: 'Film gauge', hint: '', group: 'material', min: 1,   step: 1,    default: 50,   fixedUnit: 'µm'},
+      {key: 'density',  label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'}
+    ],
+    options: [],
+    geometry: shrinkBundle,
+    readouts: geo => [
+      {label: 'Enclosing surface', text: `${geo.meta.film.surfaceM2.toFixed(4)} m²`},
+      {label: `Film area (+${geo.meta.film.drawdownPct}% draw-down)`, text: `${geo.meta.film.filmAreaM2.toFixed(4)} m²`},
+      {label: 'Film mass / 1000 bundles', text: `${Math.round(geo.meta.film.massPer1000g)} g`}
+    ],
+    // a bundle conforms to the contents' footprint AND height (a full skin), so
+    // it corrals all three axes — never open-top.
+    defaultOrientations: ['LWH', 'WLH'],
+    defaultClearance: {wall: 0, between: 0}
   }
 ];
 
