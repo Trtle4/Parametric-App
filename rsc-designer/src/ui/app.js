@@ -32,7 +32,7 @@ import {downloadSvgPNG, savePNG} from '../export/png.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault} from '../core/project.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -92,6 +92,7 @@ const LEVELS = {
   product:{label: 'Product', kind: 'product'},
   wrap:   {label: 'Wrap',   kind: 'style', tier: 'primary', geoLevel: 'wrap',
            styleIdOf: p => p.primary.wrap.styleId, setStyleId: (p, id) => { p.primary.wrap.styleId = id; },
+           setOpenTop: (p, v) => { p.primary.wrap.openTop = v; },
            paramsOf: p => p.primary.wrap.params, setParams: (p, o) => { p.primary.wrap.params = o; },
            optionsOf: p => p.primary.wrap.options, setOptions: (p, o) => { p.primary.wrap.options = o; },
            lockedOf: p => p.primary.wrap.locked, setLocked: (p, v) => { p.primary.wrap.locked = v; },
@@ -99,6 +100,7 @@ const LEVELS = {
            enabledOf: p => !!p.primary.wrap},
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
+           setOpenTop: (p, v) => { p.secondary.openTop = v; },
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
@@ -107,6 +109,7 @@ const LEVELS = {
            enabledOf: p => p.secondary.enabled !== false},
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
            styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
+           setOpenTop: (p, v) => { p.tertiary.openTop = v; },
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
@@ -858,10 +861,23 @@ function changeLevelStyle(newId){
   const lvl = LEVELS[activeLevel], proj = build.project;
   const old = lvl.paramsOf(proj);
   const nd = styleDefaults(newId);
-  ['L', 'W', 'H'].forEach(k => { if(old[k] != null && nd[k] != null) nd[k] = old[k]; });
+  const openTopNew = styleOpenTopDefault(newId);
+  // carry the footprint the user set (L/W = design intent); carry H too UNLESS
+  // the new style is open-top — a tray's WALL height is its own low design input,
+  // not a closed box's enclosing height, so start it at the tray's own sensible
+  // (low) default and let the user raise it to a full-height tray if they want.
+  (openTopNew ? ['L', 'W'] : ['L', 'W', 'H']).forEach(k => { if(old[k] != null && nd[k] != null) nd[k] = old[k]; });
   lvl.setStyleId(proj, newId);
   lvl.setParams(proj, nd);
   lvl.setOptions(proj, styleOptionDefaults(newId));
+  // openTop is a containment fact carried by the new style (the FEFCO 0300 tray
+  // is open, a case is closed) — re-derive it on a style swap, exactly as the
+  // load path does (persistence.js), so switching TO the tray stops the fit
+  // check gating on height (open tray corrals footprint only) and switching
+  // AWAY restores closed-box height constraint.
+  if(lvl.setOpenTop) lvl.setOpenTop(proj, openTopNew);
+  projectChanged();              // re-enumerate the chain: the Build rows the 3D/pallet read
+                                 // must reflect the NEW style, not the stale old one
   setActiveLevel(activeLevel);   // re-derive brand/exports/rails/views from the new style
   save.scheduleAutosave(gatherSaveState);
 }

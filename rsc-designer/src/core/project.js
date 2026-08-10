@@ -477,6 +477,13 @@ export function candidateCases(project, rounding = '1mm'){
   // child stack, and it stops constraining how many children fit.
   const openTop = !!outerLevel.openTop;
   const openTopOpts = openTop ? {openTop: true, fixedH: outerLevel.params.H} : {};
+  // An OPEN tray holds ONE layer of contents: there is no lid to bear a second
+  // layer WITHIN the tray — multi-layer stacking happens tray-on-tray on the
+  // pallet (chainMetrics' proud-stack height drives that). So the auto enumeration
+  // for an open-top outer tier is a single layer deep; without this the ranker
+  // picks absurd deep-stack grids (e.g. 1×1×12 cartons towering out of one low
+  // tray). Explicit grids the engineer types keep their own nz (their call).
+  const autoOpenTopOpts = openTop ? {...openTopOpts, layers: 1} : {};
 
   // cartons-per-case is a RANGE when the outer link carries countMax > count
   // (auto mode only — an explicit grid pins the count to its own product). Every
@@ -493,7 +500,7 @@ export function candidateCases(project, rounding = '1mm'){
   const cands = [];
   if(outerLink.arrangement === 'auto'){
     for(let k = countMin; k <= countMax; k++)
-      for(const c of parentCandidates(child, k, child.clearance, openTopOpts))
+      for(const c of parentCandidates(child, k, child.clearance, autoOpenTopOpts))
         if(irreducible(c, k)){ c.count = k; cands.push(c); }
   }else{
     const {nx, ny, nz} = outerLink.arrangement;

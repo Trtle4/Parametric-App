@@ -6,7 +6,7 @@
 import {styleById} from '../src/core/styles/index.js';
 import {fitInto} from '../src/core/containment.js';
 import {toMM, fromMM} from '../src/core/units.js';
-import {newProject, candidateCases, styleDefaults} from '../src/core/project.js';
+import {newProject, candidateCases, styleDefaults, styleOpenTopDefault} from '../src/core/project.js';
 
 const golden = await (await fetch('golden.json')).json();
 const report = {pass: 0, fail: 0, mismatches: []};
@@ -103,6 +103,11 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
   if(ch.config.case){
     p.tertiary.styleId = ch.config.case.styleId;
     p.tertiary.params = {...styleDefaults(ch.config.case.styleId), ...ch.config.case.params};
+    // openTop is a containment fact of the style (the FEFCO 0300 tray is open —
+    // corrals footprint only, wall H independent), derived here exactly as the
+    // app does on style change/load. An explicit config.openTop still overrides.
+    p.tertiary.openTop = ch.config.case.openTop != null
+      ? ch.config.case.openTop : styleOpenTopDefault(ch.config.case.styleId);
   }
   p.links[0].count = ch.config.count;
   p.links[0].arrangement = ch.config.arrangement;

@@ -108,6 +108,33 @@ function cutawayBox(outer, inner, mat){
   return g;
 }
 
+/** A SOLID open tray: base + 4 upright walls, NO top face — opaque board, every
+ *  wall shown (not a cutaway). Used wherever a closed style would draw a full
+ *  box but the style is open-top (boardLayersTop === 0, e.g. the FEFCO 0300
+ *  tray): an open tray has no lid, so it never renders one. */
+function openTrayBox(outer, inner, mat){
+  const g = new THREE.Group();
+  const t = Math.max((outer.L - inner.L) / 2, T_FLOOR);
+  const {L, W, H} = outer;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(L, t, W), mat);
+  floor.position.y = -H/2 + t/2; g.add(floor);
+  const walls = [
+    [t, H, W,  L/2 - t/2, 0, 0], [t, H, W, -L/2 + t/2, 0, 0],
+    [L, H, t, 0, 0,  W/2 - t/2], [L, H, t, 0, 0, -W/2 + t/2]
+  ];
+  for(const [wl, wh, wd, px, py, pz] of walls){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(wl, wh, wd), mat);
+    m.position.set(px, py, pz); g.add(m);
+  }
+  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L, H, W)), edgeMat));
+  return g;
+}
+
+/** True when a style is open-top (no lid) — the physical fact carried by the
+ *  geometry (zero top board layer), never a styleId check. Drives the open
+ *  tray/box render everywhere a closed style would show a full box. */
+function isOpenTop(geo){ return geo && geo.meta && geo.meta.boardLayersTop === 0; }
+
 /* ---------- flow-wrap geometry: conforming pillow body + angled end seals.
    Each end is a RAMP (film descending from the pack face to the flat crimp
    line, over the jaw clearance) plus a flexible CRIMP TAB laid at the external
@@ -569,6 +596,10 @@ function artInstances(am, canvas, list, posOf, tierName){
  *  when the pack has artwork, else a plain board box at its outer dims. No
  *  contents, no cutaway — the "what it looks like" render. */
 function soloClosed(geo, artInfo){
+  // open-top style (e.g. the FEFCO 0300 tray): no lid — render base + 4 walls,
+  // never a closed box. Checked first so it holds even if art were present
+  // (the tray's art is flat-mapped, not a 3D tube, so there is no closed body).
+  if(isOpenTop(geo)) return openTrayBox(geo.outer, geo.inner, board);
   if(artInfo && artInfo.am && artInfo.canvas){
     const mats = packArtMaterials(artInfo.canvas, board);
     artResources.push(mats[0]);
@@ -842,6 +873,52 @@ export function buildHierarchy(bundle, depth, sel, solid){
 let lastOuter = null;
 export function renderedOuter(){ return lastOuter; }
 
+// Every OPEN tray on the pallet, instanced: the open shell (base + 4 walls, no
+// top) and — since an open tray reveals its contents — the cartons standing
+// PROUD inside it. `placements` are the tray positions ([{pl, i}]); trayGeo is
+// the open tray; cartonGeo/cartonPls are the child cartons (one tray's childFit),
+// replicated into every tray. Cartons are ONE InstancedMesh across the whole
+// pallet (tray matrix × carton local matrix); the shell's 5 board parts each
+// instance across the trays. Everything picks as 'pallet'.
+function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH){
+  const co = trayGeo.outer, t = Math.max((co.L - trayGeo.inner.L) / 2, T_FLOOR);
+  const trayM = pl => new THREE.Matrix4().compose(
+    new THREE.Vector3(pl.x, deckH + pl.z, pl.y), orientQuat(pl.orientation), new THREE.Vector3(1, 1, 1));
+  // shell parts: floor + 4 upright walls (no top), each instanced across trays
+  const parts = [
+    {g: [co.L, t, co.W], p: [0, -co.H/2 + t/2, 0]},
+    {g: [t, co.H, co.W], p: [ co.L/2 - t/2, 0, 0]}, {g: [t, co.H, co.W], p: [-co.L/2 + t/2, 0, 0]},
+    {g: [co.L, co.H, t], p: [0, 0,  co.W/2 - t/2]}, {g: [co.L, co.H, t], p: [0, 0, -co.W/2 + t/2]}
+  ];
+  const local = new THREE.Matrix4(), world = new THREE.Matrix4();
+  for(const pr of parts){
+    const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(...pr.g), board, placements.length);
+    placements.forEach(({pl}, k) => {
+      local.makeTranslation(pr.p[0], pr.p[1], pr.p[2]);
+      inst.setMatrixAt(k, world.multiplyMatrices(trayM(pl), local));
+    });
+    inst.userData = {pick: placements.map(x => x.i), tierName: 'pallet'};
+    pickables.push({mesh: inst, tier: 'pallet'});
+    group.add(inst);
+  }
+  // proud cartons: canonical carton box, orientation + tray rotation baked per
+  // instance — one draw call for every carton in every non-hero tray.
+  if(cartonGeo && cartonPls.length){
+    const o = cartonGeo.outer, rr = Math.min(o.L, o.W, o.H)*0.03;
+    const inst = new THREE.InstancedMesh(roundedBoxGeo(o.L, o.H, o.W, rr, 2), board2, placements.length*cartonPls.length);
+    let idx = 0;
+    for(const {pl} of placements){
+      const tm = trayM(pl);
+      for(const cpl of cartonPls){
+        const cp = childPos(cpl, trayGeo.inner.H);
+        local.compose(new THREE.Vector3(cp.x, cp.y, cp.z), orientQuat(cpl.orientation), new THREE.Vector3(1, 1, 1));
+        inst.setMatrixAt(idx++, world.multiplyMatrices(tm, local));
+      }
+    }
+    group.add(inst);
+  }
+}
+
 // `outerTier` is whichever tier actually rides the pallet — the case
 // normally, or the carton once the case is disabled. bundle.cases carries
 // that outermost tier's placements/deck regardless of which tier it is, so
@@ -851,8 +928,18 @@ function buildPallet(bundle, outerTier, S, solid){
   const {cases} = bundle;
   const co = outerTier.geo.outer;
   const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
-  const loadH = layers * co.H;
   const deckH = bundle.cases.deck.baseH;
+  // An OPEN tray never hides its contents: every tray on the pallet shows its
+  // cartons standing PROUD of the low walls, so the load height is driven by the
+  // proud carton top, not the tray wall (co.H). For a closed case co.H IS the
+  // full height, so the closed path is unchanged (layers*co.H, bit-identical).
+  const openOuter = isOpenTop(outerTier.geo);
+  const contentTopLocal = (openOuter && bundle.cartonGeo && bundle.cartons.placements.length)
+    ? Math.max(co.H/2, ...bundle.cartons.placements.map(pl =>
+        childPos(pl, outerTier.geo.inner.H).y + orient(bundle.cartonGeo.outer, pl.orientation).h/2))
+    : co.H/2;
+  const maxTrayZ = cases.placements.length ? Math.max(...cases.placements.map(p => p.z)) : 0;
+  const loadH = openOuter ? maxTrayZ + contentTopLocal : layers * co.H;
   // Solid mode: no outer unit is opened — every one is a closed (textured) unit.
   // Otherwise open the pallet's own selected unit (S.pallet), indexed into the
   // pallet layout regardless of whether that outer tier is the case or carton.
@@ -871,7 +958,12 @@ function buildPallet(bundle, outerTier, S, solid){
   // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
   // name — clicking a carton on the pallet must set the pallet's own selection,
   // not the "which pack inside a carton" one that shares the 'carton' key.
-  if(art && art.am && art.canvas && closed.length){
+  if(openOuter){
+    // OPEN trays: every non-hero tray is an open shell + its cartons standing
+    // proud (open trays reveal their contents — never a closed box). One draw
+    // pass instances the shells and the cartons across the whole pallet.
+    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH);
+  }else if(art && art.am && art.canvas && closed.length){
     for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
   }else{
     for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
