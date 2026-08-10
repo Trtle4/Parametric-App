@@ -52,6 +52,16 @@ const filmClosedMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 
   transparent: true, opacity: 0.7, side: THREE.DoubleSide});
 const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, metalness: 0, side: THREE.DoubleSide});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
+// Shrink film skin: CLEAR wrap, not the teal conforming film — a faint cool-white
+// sheen so the contents read cleanly through it. polygonOffset pushes it just in
+// front of the pack faces so it never z-fights the cartons/cans it wraps; a light
+// specular sells the glossy film. depthWrite off so stacked skins layer without
+// hard seams. The skin geometry is inflated a hair (SKIN_MARGIN) past the
+// contents for the same anti-z-fight reason.
+const shrinkMat = new THREE.MeshStandardMaterial({color: 0xEAF3F5, roughness: 0.12, metalness: 0,
+  transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2});
+const SKIN_MARGIN = 2;   // mm the film stands off the bundle it wraps
 
 let group = null;                       // the whole hierarchy scene
 let cutawayWalls = [];                  // {mesh, n:Vector3 localOutwardNormal} updated per frame
@@ -148,13 +158,14 @@ function isShrinkBundle(geo){ return geo && geo.meta && geo.meta.style === 'shri
 // to the proud contents of an open tray (meta.shrinkLoadedH); omitted for a
 // bundle whose own outer.H already IS the content height.
 function filmSkin(outer, h){
-  const H = h != null ? h : outer.H;
-  const g = new THREE.Group();
-  const skin = new THREE.Mesh(new THREE.BoxGeometry(outer.L, H, outer.W), filmMat);
-  skin.position.y = -outer.H/2 + H/2;                     // sit the skin base on the unit floor
-  g.add(skin);
-  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(outer.L, H, outer.W)), edgeMat));
-  return g;
+  const H0 = h != null ? h : outer.H;                     // contents height from the floor
+  // inflate a hair past the contents on every side (SKIN_MARGIN) so the clear
+  // film reads as a skin OVER the pack, never coplanar with it (no z-fighting),
+  // and NO wireframe — the faint translucent faces are the whole skin.
+  const skin = new THREE.Mesh(
+    new THREE.BoxGeometry(outer.L + 2*SKIN_MARGIN, H0 + 2*SKIN_MARGIN, outer.W + 2*SKIN_MARGIN), shrinkMat);
+  skin.position.y = -outer.H/2 + H0/2;                    // floor−margin … content-top+margin
+  return skin;
 }
 
 /* ---------- flow-wrap geometry: conforming pillow body + angled end seals.
@@ -958,13 +969,13 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opt
     }
     group.add(inst);
   }
-  // shrink skin: a translucent film box per unit, rising to opts.skinH (the
-  // proud loaded height for a tray, the bundle's own height otherwise). Base
-  // sits on the unit floor (−co.H/2). Drawn last so contents read through it.
+  // shrink skin: a clear film box per unit, inflated a hair past the contents
+  // (SKIN_MARGIN) and rising to opts.skinH (the proud loaded height for a tray,
+  // the bundle's own height otherwise). Drawn last so contents read through it.
   if(opts.skin){
-    const skinH = opts.skinH != null ? opts.skinH : co.H;
-    instanceUnit(new THREE.BoxGeometry(co.L, skinH, co.W), filmMat,
-      pl => local.makeTranslation(0, -co.H/2 + skinH/2, 0));
+    const H0 = opts.skinH != null ? opts.skinH : co.H;
+    instanceUnit(new THREE.BoxGeometry(co.L + 2*SKIN_MARGIN, H0 + 2*SKIN_MARGIN, co.W + 2*SKIN_MARGIN), shrinkMat,
+      () => local.makeTranslation(0, -co.H/2 + H0/2, 0));
   }
 }
 
@@ -989,7 +1000,15 @@ function buildPallet(bundle, outerTier, S, solid){
         childPos(pl, outerTier.geo.inner.H).y + orient(bundle.cartonGeo.outer, pl.orientation).h/2))
     : co.H/2;
   const maxTrayZ = cases.placements.length ? Math.max(...cases.placements.map(p => p.z)) : 0;
-  const loadH = openOuter ? maxTrayZ + contentTopLocal : layers * co.H;
+  const minTrayZ = cases.placements.length ? Math.min(...cases.placements.map(p => p.z)) : 0;
+  // The pallet solve sizes each slot to the PROUD stack height and centres the
+  // unit in it — so a low open tray with proud contents would FLOAT (its short
+  // shell centred in a tall slot). Rest each unit on its slot floor instead:
+  // the first layer's centre is at minTrayZ (= half the slot), so shifting every
+  // unit by (co.H/2 − minTrayZ) puts that tray's floor on the deck. 0 for a
+  // closed case or non-proud tray (slot already equals co.H). Fixes the float.
+  const restOffset = openOuter ? co.H/2 - minTrayZ : 0;
+  const loadH = openOuter ? maxTrayZ + contentTopLocal + restOffset : layers * co.H;
   // Solid mode: no outer unit is opened — every one is a closed (textured) unit.
   // Otherwise open the pallet's own selected unit (S.pallet), indexed into the
   // pallet layout regardless of whether that outer tier is the case or carton.
@@ -1013,7 +1032,7 @@ function buildPallet(bundle, outerTier, S, solid){
     // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
     // cartons + skin). One draw pass instances the parts across the pallet;
     // the shrink skin is a translucent box per unit rising to the loaded top.
-    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH,
+    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH + restOffset,
       {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
   }else if(art && art.am && art.canvas && closed.length){
     for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
@@ -1032,7 +1051,7 @@ function buildPallet(bundle, outerTier, S, solid){
   if(!solid && cases.placements[openIdx]){
     const pl = cases.placements[openIdx];
     const cg = buildContainer(outerTier, bundle, S, [openIdx]);
-    cg.position.set(pl.x, deckH + pl.z, pl.y);
+    cg.position.set(pl.x, deckH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
     cg.quaternion.copy(orientQuat(pl.orientation));
     group.add(cg);
   }
