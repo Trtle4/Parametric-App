@@ -2,9 +2,9 @@
  * The ONE pallet render asset. A standard GMA 48x40 4-way stringer pallet as a
  * THREE group with its base at y=0 and its top-deck face at y=PALLET_HEIGHT.
  *
- * Both pallet views build the SAME pallet from here — the Palletize view
- * (pallet3d.js) and the 3D-Fold pallet-depth view (hierarchy3d.js). Neither
- * owns its own pallet mesh, so they can never drift into two different pallets.
+ * The 3D-Fold pallet-depth view (hierarchy3d.js) builds its pallet from here,
+ * so the render never owns its own pallet mesh and can't drift into a second
+ * different pallet.
  *
  * RENDER ONLY. The pallet fit math budgets exactly PALLET_HEIGHT for the deck
  * assembly and the deck footprint for the layout; changing the mesh here never

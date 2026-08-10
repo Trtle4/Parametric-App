@@ -1,6 +1,7 @@
 /**
  * 3D fold view: owns the shared three.js renderer/scene/camera/orbit loop
- * (pallet3d renders into the same scene), plus the box fold animation.
+ * (the 3D hierarchy views render into the same scene), plus the box fold
+ * animation.
  * Uses the global THREE from the classic script tag in index.html.
  * All geometry in mm.
  */

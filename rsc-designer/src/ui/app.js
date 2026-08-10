@@ -16,7 +16,7 @@ import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
-import {buildPallet, showPallet, PALLET_HEIGHT} from '../render/pallet3d.js';
+import {PALLET_HEIGHT} from '../render/palletmesh.js';
 import {buildShelf, showShelf} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
@@ -54,7 +54,7 @@ let solidOverride = null;
 // the shared world convention x=L,y=H,z=W); drawDims picks the right one for
 // the current view and reprojects it every frame so the numbers track the orbit.
 let showDims = false;
-const subjectDims = {fold: null, nest: null, pal: null};
+const subjectDims = {fold: null, nest: null};
 
 // Retail shelf view state — a visualization config, not a design parameter,
 // so it lives here (like `view`/`mode3d`), never on the project. Counts are a
@@ -344,7 +344,6 @@ function refreshPal(){
     ['palPat', 'palCnt', 'palTot', 'palCov'].forEach(id => el(id).textContent = '--');
     el('tbPallet').textContent = '—'; el('msPallet').textContent = '—';
     el('palRowLabel').style.display = 'none';
-    subjectDims.pal = null;
     clearBCT();
     drawDims();
     return;
@@ -377,19 +376,6 @@ function refreshPal(){
     rl.style.display = 'none';
   }
   renderBCT(g, {perLayer, layers, total, coveragePct: row.coveragePct});
-  // the loaded-pallet Dims box: deck footprint x (pallet deck + case stack),
-  // doubled when double-stacked — the same totalH pallet3d centres on the origin.
-  // effH is the chain's per-unit stacking pitch (row.unitStackH): for an open
-  // tray with proud contents it is the standing-content height.
-  const effH = row.unitStackH || g.outer.H;
-  const oneLoadH = PALLET_HEIGHT + layers*effH;
-  const nLoads = (p.stacking && p.stacking.doubleStack) ? 2 : 1;
-  // palletMM flags this as a pallet subject so the Dims overlay splits the
-  // height into Pallet (deck) / Load (stack) / Total
-  subjectDims.pal = {L: p.L, W: p.W, H: nLoads*oneLoadH, palletMM: PALLET_HEIGHT};
-  // the 3D Palletize view renders the SAME placements the chain solved (never a
-  // second fitInto), so the boxes on screen match the readout count exactly
-  if(view === 'pal') buildPallet(g, {L: p.L, W: p.W, maxH: p.maxH}, row.arr.cases.placements, layers, effH, true, nLoads === 2);
   drawDims();
 }
 
@@ -1008,7 +994,6 @@ function setActiveLevel(level){
   renderChainString();
   refresh2d();
   updateArtPanel();
-  if(view === 'pal') refreshPal();
   if(view === '3d') apply3dMode();
 }
 
@@ -1153,7 +1138,7 @@ function applyHierarchy(resetCam){
   el('m3fold').classList.remove('on');
   LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && activeLevel === d));
   if(view !== '3d') return;
-  fold.stopFold(); fold.showBox(false); showWrapArt(false); showPallet(false); showNest(false); showProduct(false);
+  fold.stopFold(); fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false);
   const bundle = hierarchyBundle();
   LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
@@ -1285,7 +1270,6 @@ function updateCandidateCycle(){
 // other than the one on screen (fold falls through to the nest for product/
 // pallet, just like the render does).
 function currentDimsBox(){
-  if(view === 'pal') return subjectDims.pal;
   if(view === '3d') return (mode3d === 'fold' && isStyleLevel()) ? subjectDims.fold : subjectDims.nest;
   return null;
 }
@@ -1325,10 +1309,9 @@ function setView(v){
   view = v;
   el('tab2d').classList.toggle('on', v === '2d');
   el('tab3d').classList.toggle('on', v === '3d');
-  el('tabPal').classList.toggle('on', v === 'pal');
   el('tabShelf').classList.toggle('on', v === 'shelf');
   el('tabBuild').classList.toggle('on', v === 'build');
-  const canvas = v === '3d' || v === 'pal' || v === 'shelf';
+  const canvas = v === '3d' || v === 'shelf';
   el('svgWrap').style.display   = v === '2d' ? 'flex' : 'none';
   el('cvWrap').style.display    = canvas ? 'block' : 'none';
   el('buildWrap').style.display = v === 'build' ? 'block' : 'none';
@@ -1342,13 +1325,9 @@ function setView(v){
   // not a sheet, so hide it there (it would float over the candidate table).
   // The view toolbar STAYS (it holds the tabs — the only way back out of Build).
   el('titleBlock').style.display = v === 'build' ? 'none' : '';
-  // the ViewCube mirrors the SAME shared camera the hierarchy/fold views use
-  // (fold3d.js's single orbit) — it works at every depth and in FOLD mode
-  // for free, since none of that is camera-specific. It does NOT extend to
-  // the separate Palletize tab: that view's "pallet" is a different thing
-  // from the hierarchy depth of the same name (a flat case-count render,
-  // not the cutaway cascade), and the prompt's own depth list (product/
-  // wrap/carton/case/pallet) names the hierarchy depths, not that tab.
+  // the ViewCube mirrors the SAME shared camera the hierarchy/fold/shelf views
+  // use (fold3d.js's single orbit) — it works at every 3D depth (product…pallet)
+  // and in FOLD mode for free, since none of that is camera-specific.
   el('viewCubeWrap').style.display = (v === '3d' || v === 'shelf') ? 'block' : 'none';
   // (which rail fields show is driven by the ACTIVE LEVEL now, not the view —
   // see toggleRailSections/mountActiveLevel)
@@ -1384,22 +1363,13 @@ function setView(v){
     }
     showShelf(v === 'shelf');   // the shelf subject is hidden in every other canvas view
     if(v === '3d'){
-      showPallet(false);
       apply3dMode();
-    }else if(v === 'shelf'){
-      fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false); showPallet(false);
+    }else{   // shelf
+      fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
       fold.setOrbit(SHELF_ORBIT.rotX, SHELF_ORBIT.rotY, SHELF_ORBIT.span);
       el('orbithint').textContent = 'drag orbit · right-drag pan · scroll zoom · front panels face you';
       refreshShelf();
-    }else{
-      fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false);
-      fold.stopFold();
-      // frame the loaded pallet with margin on entry (like the hierarchy view
-      // resets its camera) so it fits the pane AND leaves room for the Dims
-      // callouts to stand outboard of the geometry rather than spilling off
-      fold.setOrbit(fold.HOME_ORBIT.rotX, fold.HOME_ORBIT.rotY, 1.7);
-      refreshPal();
     }
     fold.resize3d();
     fold.startLoop();
@@ -1460,12 +1430,11 @@ el('units').addEventListener('change', () => {
   build.onUnitsChanged(inputs.getUnit());   // recomputes + notifies every registered consumer
 });
 el('palUnits').addEventListener('change', () => {
-  if(inputs.switchPalUnits() && view === 'pal') refreshPal();
+  if(inputs.switchPalUnits()) refreshPal();   // pallet dims re-display; keep the readout in sync
 });
 
 el('tab2d').addEventListener('click', () => setView('2d'));
 el('tab3d').addEventListener('click', () => setView('3d'));
-el('tabPal').addEventListener('click', () => setView('pal'));
 el('tabShelf').addEventListener('click', () => setView('shelf'));
 el('tabBuild').addEventListener('click', () => setView('build'));
 // the "which candidate row" label (pallet readout) jumps to the Build table

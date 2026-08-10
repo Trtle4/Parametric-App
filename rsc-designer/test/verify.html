@@ -55,7 +55,7 @@ for(const [name, c] of Object.entries(golden.cases)){
   // pallet: 48x40in deck, 60in max height (as recorded) — through fitInto,
   // the same path the app takes (vertical-axis rotation only, zero clearance)
   const pallet = {L: toMM(48, 'in'), W: toMM(40, 'in'), maxH: toMM(60, 'in')};
-  const PALLET_BASE_H = 16 + 95 + 16; // deck+stringer+bottom, mm (matches pallet3d)
+  const PALLET_BASE_H = 16 + 95 + 16; // deck+stringer+bottom, mm (matches palletmesh)
   for(const pattern of ['column', 'optimal', 'interlock']){
     const arr = fitInto(
       {outer: g.outer, allowedOrientations: ['LWH', 'WLH']},

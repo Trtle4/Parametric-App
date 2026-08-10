@@ -26,7 +26,6 @@
 <select id="style"></select>
 <button id="tab2d" class="on">2D</button>
 <button id="tab3d">3D</button>
-<button id="tabPal">Pal</button>
 <button id="tabShelf">Shelf</button>
 <button id="tabBuild">Build</button>
 <button id="btnDXF">DXF</button>
@@ -1049,8 +1048,8 @@ await (async () => {
       });
     }
 
-    // palletize: the outermost enabled tier is on the pallet, readout populated
-    el('tabPal').click(); await settle();
+    // palletize: the outermost enabled tier is on the pallet, readout populated.
+    // The readout updates on every recompute (no Palletize view to visit).
     t(`matrix [${tag}]: palletize readout populated (outermost tier on the pallet)`, () => {
       if(el('palTot').textContent === '--') throw new Error(`pallet readout blank for ${tag}`);
     });
