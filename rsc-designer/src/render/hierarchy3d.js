@@ -554,6 +554,17 @@ function buildWrapOpened(bundle, artInfo){
   if(bundle.tray){
     const t = buildTray3d(bundle.tray.params, {piece, stackAxis, perCell: bundle.tray.perCell,
                                                pieces: bundle.wraps.cellPieces || pieces});
+    // buildTray3d centres the tray on its OWN rim height (overallH) — right at
+    // tray depth, but here the tray rides INSIDE the film, which is centred on
+    // the taller WRAP ENVELOPE (H = max(rim, floor+proud product)). Left as-is
+    // the tray floats mid-film: the film hangs below the tray underside and the
+    // proud product tops poke through the film top. Seat the tray on the film
+    // floor by dropping it half the envelope-vs-rim difference — the SAME offset
+    // simultaneously lands the underside on the film bottom and the proud tops at
+    // the film top (envelope.H = floor+standingH makes the two coincide). Zero
+    // when nothing stands proud (envelope.H === overallH), so the flush tray is
+    // bit-identical.
+    t.group.position.y -= (envelope.H - bundle.tray.params.overallH)/2;
     g.add(t.group);
     return g;
   }
