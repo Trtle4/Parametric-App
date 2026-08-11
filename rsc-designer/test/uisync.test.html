@@ -169,6 +169,7 @@ import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
+import {collate} from '../src/core/collation.js';
 import {toMM} from '../src/core/units.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
@@ -1124,6 +1125,53 @@ await (async () => {
     if(Math.abs((mxx - mnx) - p.outerL) > 0.01) throw new Error(`STL L ${(mxx-mnx).toFixed(2)} != ${p.outerL}`);
     if(Math.abs((mxz - mnz) - p.outerW) > 0.01) throw new Error(`STL W ${(mxz-mnz).toFixed(2)} != ${p.outerW}`);
     if(Math.abs((mxy - mny) - p.overallH) > 0.01) throw new Error(`STL H ${(mxy-mny).toFixed(2)} != ${p.overallH}`);
+  });
+
+  t('WRAP RENDER: with a tray, the film mesh matches renderedOuter, not the collation', () => {
+    // The regression this pins (fixed in 212e4a9): buildWrapOpened lofted the
+    // pillow around bundle.wraps.envelope — the bare COLLATION — while the
+    // chain had already sized the film around the TRAY. The drawn pack was a
+    // long thin sleeve contradicting its own dims box. Nothing but this test
+    // stops that coming back.
+    el('tab3d').click();
+    el('d_wrap').click();
+    if(el('d_wrap').disabled) throw new Error('wrap depth must be reachable with a wrap in the chain');
+    const shown = hier.renderedOuter();
+    if(!shown) throw new Error('no rendered subject at wrap depth');
+
+    // measure the ACTUAL drawn mesh in world space
+    const pivot = getPivot();
+    const v = new THREE.Vector3();
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    pivot.traverse(o => {
+      if(!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+      o.updateWorldMatrix(true, false);
+      const pos = o.geometry.attributes.position;
+      for(let i = 0; i < pos.count; i++){
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        if(v.x < mnx) mnx = v.x; if(v.x > mxx) mxx = v.x;
+        if(v.y < mny) mny = v.y; if(v.y > mxy) mxy = v.y;
+        if(v.z < mnz) mnz = v.z; if(v.z > mxz) mxz = v.z;
+      }
+    });
+    const drawnL = mxx - mnx, drawnW = mxz - mnz;
+
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const trayW = row.tray.outer.W;
+    const colW = collate(build.project.primary.collation).envelope.W;
+    if(!(trayW > colW + 20))
+      throw new Error(`fixture is not discriminating: tray W ${trayW} must clearly exceed collation W ${colW}`);
+
+    // the film is drawn around what the film was SIZED around
+    if(Math.abs(drawnW - shown.W) > 2)
+      throw new Error(`wrap mesh W ${drawnW.toFixed(1)} != renderedOuter W ${shown.W.toFixed(1)} — ` +
+        `the film is not drawn around the envelope it was cut for`);
+    if(Math.abs(drawnL - shown.L) > 3)
+      throw new Error(`wrap mesh L ${drawnL.toFixed(1)} != renderedOuter L ${shown.L.toFixed(1)}`);
+    // ...and explicitly NOT around the bare collation, the exact old failure
+    if(Math.abs(drawnW - colW) < 2)
+      throw new Error(`wrap mesh W ${drawnW.toFixed(1)} equals the COLLATION width ${colW} — ` +
+        `the tray was skipped in the render (the 212e4a9 regression)`);
   });
 
   t('tray exports: STL only at tray level; DXF stays unavailable (no dieline)', () => {
