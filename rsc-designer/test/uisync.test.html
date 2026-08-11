@@ -1174,6 +1174,63 @@ await (async () => {
         `the tray was skipped in the render (the 212e4a9 regression)`);
   });
 
+  t('TRAY PROPAGATION: wrap, carton, case and pallet ALL solve from the tray envelope', () => {
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const col = collate(build.project.primary.collation).envelope;
+    const tray = row.tray.outer;
+    if(!(tray.W > col.W + 20)) throw new Error('fixture not discriminating: tray must be clearly wider than the collation');
+
+    // wrap: sized around the tray, not the collation
+    if(Math.abs(row.geo.wrap.inner.W - tray.W) > 1)
+      throw new Error(`wrap.inner W ${row.geo.wrap.inner.W} != tray W ${tray.W}`);
+    if(Math.abs(row.geo.wrap.inner.W - col.W) < 1)
+      throw new Error('wrap.inner equals the COLLATION — the tray was skipped');
+
+    // carton: its cavity must be a whole number of tray-sized packs across
+    const packW = row.wrapOuter.W, cavW = row.cartonParams.W;
+    const across = cavW/packW;
+    if(Math.abs(across - Math.round(across)) > 0.02 || Math.round(across) < 1)
+      throw new Error(`carton cavity W ${cavW} is not a whole multiple of the tray-wrapped pack ${packW}`);
+    if(cavW < tray.W - 1)
+      throw new Error(`carton cavity W ${cavW} is smaller than one tray ${tray.W} — solved pre-tray`);
+
+    // case: must hold the tray-derived carton
+    if(row.cavity.W < row.cartonOuter.W - 1)
+      throw new Error(`case cavity W ${row.cavity.W} cannot hold its carton ${row.cartonOuter.W}`);
+    // pallet: counts derive from the tray-sized case
+    if(!(row.casesPerPallet > 0 && row.cartonsPerPallet > 0))
+      throw new Error('pallet did not solve from the tray-derived case');
+    if(row.piecesPerPallet !== row.piecesPerCarton*row.cartonsPerPallet)
+      throw new Error('piece totals inconsistent with the tray-derived chain');
+  });
+
+  t('TRAY PROPAGATION (render): packs drawn INSIDE a case are tray-sized', () => {
+    // the 2nd-order form of the same bug: the chain was right but the packs
+    // drawn inside the case were built from the bare collation (bare sleeves
+    // in a tray-sized carton). Measure the instanced per-unit geometry.
+    el('tab3d').click();
+    el('d_case').click();
+    if(el('d_case').disabled) return;                  // no case in this chain
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const col = collate(build.project.primary.collation).envelope;
+    const trayW = row.tray.outer.W;
+    const sizes = [];
+    getPivot().traverse(o => {
+      if(!o.isInstancedMesh || !o.geometry || !o.geometry.attributes.position) return;
+      o.geometry.computeBoundingBox();
+      const bb = o.geometry.boundingBox;
+      sizes.push({L: bb.max.x - bb.min.x, W: bb.max.z - bb.min.z});
+    });
+    if(!sizes.length) throw new Error('nothing instanced at case depth');
+    // the film body among them must span the TRAY width, never the collation's
+    const film = sizes.filter(s => Math.abs(s.W - trayW) < 2);
+    const bare = sizes.filter(s => Math.abs(s.W - col.W) < 2 && Math.abs(s.L - col.L) < 2);
+    if(!film.length)
+      throw new Error(`no instanced pack spans the tray width ${trayW} — sizes ${JSON.stringify(sizes.map(s => [+s.L.toFixed(0), +s.W.toFixed(0)]))}`);
+    if(bare.length)
+      throw new Error(`a pack is drawn at the bare COLLATION size ${col.L}x${col.W} inside a tray chain — the tray was skipped in the render`);
+  });
+
   t('tray exports: STL only at tray level; DXF stays unavailable (no dieline)', () => {
     setLevel('tray');
     if(el('btnSTL').style.display === 'none') throw new Error('STL must be offered at tray level');

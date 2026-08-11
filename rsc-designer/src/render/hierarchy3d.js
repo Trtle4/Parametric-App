@@ -484,6 +484,12 @@ function stackInfoOf(w){
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
+/** THE envelope any film body is drawn around: the wrap's own inner, which
+ *  the chain solved. With a tray in the chain this is the TRAY, not the bare
+ *  collation — reading `.envelope` directly is the bug this exists to stop
+ *  (it drew bare sleeves inside a case whose cartons were tray-sized). */
+export const filmEnv = w => (w && w.filmEnvelope) || (w && w.envelope);
+
 function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened, artInfo){
   const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo);
   const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
@@ -539,7 +545,7 @@ function buildWrapOpened(bundle, artInfo){
   // one cell's product run), and reading the collation here drew a long thin
   // sleeve that contradicted the pack's own dims box. One source: whatever
   // the film was sized around is what the film is drawn around.
-  const envelope = bundle.wraps.filmEnvelope || bundle.wraps.envelope;
+  const envelope = filmEnv(bundle.wraps);
   const {pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
   const printed = !!(artInfo && artInfo.am && artInfo.canvas);
@@ -583,7 +589,7 @@ function collationPieces(bundle, list, parentInnerH){
   // one cell's product run), and reading the collation here drew a long thin
   // sleeve that contradicted the pack's own dims box. One source: whatever
   // the film was sized around is what the film is drawn around.
-  const envelope = bundle.wraps.filmEnvelope || bundle.wraps.envelope;
+  const envelope = filmEnv(bundle.wraps);
   const {pieces, piece, stackAxis} = bundle.wraps;
   const {geo, rot} = pieceGeo(piece, stackAxis, 'LWH');
   const inst = new THREE.InstancedMesh(geo, pieceMat, list.length * pieces.length);
@@ -698,8 +704,8 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     if(w.seals && closed.length){
       // filmed wrap: instanced conforming-film parts per closed unit
-      const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
-      const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
+      const parts = wrapPartsGeometry(filmEnv(w), w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
+      const finGeo = wrapFinGeometry(filmEnv(w), w.seals, w.wrapAxis);
       const partDefs = [
         {geo: parts.bodyGeo, mat: filmClosedMat},
         {geo: parts.taperPos, mat: sealMat},
@@ -804,7 +810,7 @@ function makeTiers(bundle, cartonArt, caseArt){
   const cartonTier = bundle.cartonGeo ? {
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
     children: bundle.wraps ? bundle.wraps.placements : [],
-    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
+    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? filmEnv(bundle.wraps) : bundle.cartonGeo.outer), childMat: filmClosedMat,
     art: cartonArt,               // clads the carton when it rides the pallet (case off)
     childArt: null,               // wrap children are conforming film, not textured here
     buildChild: (b, s, path) => buildWrapOpened(b)
@@ -815,7 +821,7 @@ function makeTiers(bundle, cartonArt, caseArt){
     ...(bundle.cartonGeo
       ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
          buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
-      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
+      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? filmEnv(bundle.wraps) : bundle.caseGeo.inner), childMat: filmClosedMat,
          buildChild: (b, s, path) => buildWrapOpened(b)})
   };
   return {cartonTier, caseTier};
@@ -919,7 +925,7 @@ export function buildHierarchy(bundle, depth, sel, solid){
     // geometry the cutaway uses, so it can never be hollow or misaligned.
     const printed = solid && wrapArt.am && wrapArt.canvas;
     group.add(buildWrapOpened(bundle, printed ? wrapArt : null));
-    const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
+    const e = filmEnv(bundle.wraps); span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
     // an OPEN tray or a SHRINK pack reveals its contents in BOTH modes (Solid
