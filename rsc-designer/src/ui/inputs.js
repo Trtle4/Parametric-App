@@ -654,6 +654,20 @@ export function mountTray(project, m){
     plainF('nCells', 'Cells', 'across the tray', tr.nCells, 1, 1) +
     `<div class="field"><label>Products per cell <span class="hint">derived — set on the Product level</span></label>
       <div class="inp"><input id="tr_perCell" type="number" value="${m.perCell != null ? m.perCell : ''}" disabled></div></div>` +
+    // TOTAL is still derived (cells x per-cell) — never a third stored value.
+    // Editing it writes to whichever FACTOR `distributeBy` names; the other
+    // stays put. That is Cookie-Tray's own resolution of the ambiguity.
+    `<div class="field"><label>Total quantity <span class="hint">cells × per cell</span></label>
+      <div class="inp"><input id="tr_total" type="number" min="1" step="1" value="${(m.perCell || 0)*tr.nCells}"></div></div>` +
+    `<div class="field"><label>Distribute by <span class="hint">what absorbs a total edit</span></label>
+      ${['cells', 'perCell'].map(v => '').join('')}
+      <div class="seg" id="tr_distBy" role="group">${
+        [{v: 'cells', label: 'Cells'}, {v: 'perCell', label: 'Per-cell'}]
+          .map(o => `<button type="button" data-v="${o.v}"${(tr.distributeBy || 'cells') === o.v ? ' class="on"' : ''}>${o.label}</button>`).join('')}</div>
+      <div class="hint" style="margin-top:5px;line-height:1.35">${
+        (tr.distributeBy || 'cells') === 'cells'
+          ? 'Changing the total adds or removes CELLS; products per cell stays fixed.'
+          : 'Changing the total changes PRODUCTS PER CELL; the cell count stays fixed.'}</div></div>` +
     autoF('cellLen', 'Cell length', 'along the channel', auto.cellLen) +
     autoF('cellWid', 'Cell width', 'across', auto.cellWid) +
     autoF('cellH', 'Cell depth', 'trough', auto.cellH) +
@@ -705,6 +719,15 @@ export function mountTray(project, m){
   el('tr_longAxis').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     ov.longAxis = b.dataset.v; m.onInput(); m.remount && m.remount();
   }));
+
+  // total quantity -> the selected FACTOR (never a stored total)
+  el('tr_distBy').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    tr.distributeBy = b.dataset.v; m.onInput(); m.remount && m.remount();
+  }));
+  el('tr_total').addEventListener('input', () => {
+    const want = Math.max(1, Math.round(+el('tr_total').value || 1));
+    if(m.onTotal) m.onTotal(want, tr.distributeBy || 'cells');
+  });
 
   // ---- Cookie-Tray link round trip (delegated to the host: it owns the
   // solved row the export needs, and the recompute the import triggers) ----

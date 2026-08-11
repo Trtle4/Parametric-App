@@ -533,7 +533,14 @@ function buildWrapOpened(bundle, artInfo){
   // the empty group rather than dereferencing a null bundle.wraps. The
   // parent container's own cutaway box still renders around it.
   if(!bundle.wraps) return g;
-  const {envelope, pieces, piece, stackAxis} = bundle.wraps;
+  // THE film envelope is the wrap's OWN inner envelope, which the chain
+  // already solved — not the bare collation's. With a tray in the chain the
+  // two diverge (the film wraps the TRAY, whose footprint is far wider than
+  // one cell's product run), and reading the collation here drew a long thin
+  // sleeve that contradicted the pack's own dims box. One source: whatever
+  // the film was sized around is what the film is drawn around.
+  const envelope = bundle.wraps.filmEnvelope || bundle.wraps.envelope;
+  const {pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
   const printed = !!(artInfo && artInfo.am && artInfo.canvas);
   // the film is drawn only when a wrap is actually in the chain (seals present);
@@ -541,6 +548,15 @@ function buildWrapOpened(bundle, artInfo){
   if(bundle.wraps.seals)
     g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !printed, printed ? artInfo : null));
   if(printed) return g;                                    // solid printed pack: no contents shown
+  // Contents: with a tray in the chain the film encloses the TRAY (loaded with
+  // its product), not a loose run of pieces — draw that instead, so the
+  // cutaway shows what is physically inside the film.
+  if(bundle.tray){
+    const t = buildTray3d(bundle.tray.params, {piece, stackAxis, perCell: bundle.tray.perCell,
+                                               pieces: bundle.wraps.cellPieces || pieces});
+    g.add(t.group);
+    return g;
+  }
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
@@ -561,7 +577,14 @@ function buildWrapOpened(bundle, artInfo){
 // for the wrapless opened carton so it shows its true contents (cans/boxes).
 // `list` is [{pl, i}] closed-collation placements (never the opened one).
 function collationPieces(bundle, list, parentInnerH){
-  const {envelope, pieces, piece, stackAxis} = bundle.wraps;
+  // THE film envelope is the wrap's OWN inner envelope, which the chain
+  // already solved — not the bare collation's. With a tray in the chain the
+  // two diverge (the film wraps the TRAY, whose footprint is far wider than
+  // one cell's product run), and reading the collation here drew a long thin
+  // sleeve that contradicted the pack's own dims box. One source: whatever
+  // the film was sized around is what the film is drawn around.
+  const envelope = bundle.wraps.filmEnvelope || bundle.wraps.envelope;
+  const {pieces, piece, stackAxis} = bundle.wraps;
   const {geo, rot} = pieceGeo(piece, stackAxis, 'LWH');
   const inst = new THREE.InstancedMesh(geo, pieceMat, list.length * pieces.length);
   const M = new THREE.Matrix4(), C = new THREE.Matrix4(), P = new THREE.Matrix4();
@@ -884,7 +907,10 @@ export function buildHierarchy(bundle, depth, sel, solid){
     // the thermoformed tray: a sibling renderer, drawn from the ported
     // dimensions. `outer` is the PLACED envelope (trayOuter), so the Dims
     // overlay annotates exactly the box the chain hands to the wrap.
-    const r = buildTray3d(bundle.tray.params);
+    const r = buildTray3d(bundle.tray.params, bundle.wraps ? {
+      piece: bundle.wraps.piece, stackAxis: bundle.wraps.stackAxis,
+      perCell: bundle.tray.perCell, pieces: bundle.wraps.cellPieces || bundle.wraps.pieces
+    } : null);
     group.add(r.group);
     span = r.span; outer = r.outer;
   }else if(depth === 'wrap'){

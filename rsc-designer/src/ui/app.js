@@ -991,6 +991,27 @@ function applyTrayLink(text){
   return `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;
 }
 
+/** Apply an edited TOTAL quantity by writing the factor `distributeBy` names.
+ *  Total stays derived — this resolves which of the two STORED factors
+ *  (tray.nCells, or the collation's own per-cell grid) absorbs the change, so
+ *  there is never a third value to fall out of step. */
+function applyTrayTotal(want, mode){
+  const proj = build.project, tr = proj.tray, col = proj.primary.collation;
+  const perCell = Math.max(1, collate(col).count);
+  if(mode === 'perCell'){
+    // hold the cell count, change what goes in each cell. The collation's
+    // grid is the owner, so the run length (perStack) is what moves.
+    const per = Math.max(1, Math.ceil(want/Math.max(1, tr.nCells)));
+    const others = Math.max(1, col.nx*col.ny);
+    col.perStack = Math.max(1, Math.round(per/others));
+  }else{
+    // hold per-cell, change the number of cells
+    tr.nCells = Math.max(1, Math.ceil(want/perCell));
+  }
+  projectChanged();
+  mountActiveLevel();
+}
+
 /** A Cookie-Tray link describing the tray currently on screen. */
 function currentTrayLink(){
   const row = resolveActiveRow(build.project, build.getRounding(), selKey());
@@ -1050,6 +1071,7 @@ function mountActiveLevel(){
     inputs.mountTray(proj, {autoDims: trayAutoDims(), remount: () => mountActiveLevel(),
                             perCell: collate(proj.primary.collation).count,
                             onImportLink: applyTrayLink, onExportLink: currentTrayLink,
+                            onTotal: applyTrayTotal,
                             onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
@@ -1240,6 +1262,14 @@ function hierarchyBundle(){
     cartons: {placements: cartons.placements},
     wraps: (pieces && wrapPlacements) ? {
       placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,
+      // THE envelope the film was actually sized around — the wrap's own
+      // inner, which the chain solved. With a tray in the chain this is the
+      // TRAY, not the bare collation; the renderer must loft the pillow
+      // around the same box the film was cut for.
+      filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : (row.tray ? row.tray.outer : pieces.envelope),
+      // the per-CELL piece run, so the tray can load its cells from the one
+      // collation rather than a second placement source
+      cellPieces: pieces.placements,
       piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
       nx: pieces.nx, ny: pieces.ny,            // collation grid — used to detect a single round slug
       wrapAxis: pieces.wrapAxis                // resolved 'L'|'W' — the renderer's taper/fin axis

@@ -56,6 +56,28 @@ function taperedSlab(topL, topW, botL, botW, h, matIdx){
   return new THREE.Mesh(g, matIdx ? trayMat2 : trayMat);
 }
 
+/** Product tint — distinct from the tray so contents read at a glance. */
+const productMat = new THREE.MeshStandardMaterial({color: 0xC98A3C, roughness: 0.8, metalness: 0});
+
+/** A single product solid + the rotation that lays it the way the collation
+ *  does. Mirrors the shared pieceGeo convention: an ON-EDGE cylinder lies on
+ *  its side with its axis along the cell run (X). */
+function pieceGeo(piece, stackAxis){
+  if(piece.kind === 'cylinder'){
+    const g = new THREE.CylinderGeometry(piece.diameter/2, piece.diameter/2, piece.thickness, 28);
+    // default cylinder axis is Y (standing). On edge -> lay it along X.
+    const rot = stackAxis === 'Z' ? null : new THREE.Matrix4().makeRotationZ(Math.PI/2);
+    return {geo: g, rot};
+  }
+  return {geo: new THREE.BoxGeometry(piece.L, piece.H, piece.W), rot: null};
+}
+
+/** Height of a piece's CENTRE above the surface it bears on. */
+function pieceRise(piece, stackAxis){
+  if(piece.kind === 'cylinder') return stackAxis === 'Z' ? piece.thickness/2 : piece.diameter/2;
+  return piece.H/2;
+}
+
 const box = (l, h, w, mat) => new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat ? trayMat2 : trayMat);
 
 /**
@@ -69,7 +91,7 @@ const box = (l, h, w, mat) => new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat
  *   tray-depth HUD states the envelope alongside, so the difference reads as
  *   information rather than a contradiction.
  */
-export function buildTray3d(p){
+export function buildTray3d(p, contents){
   const group = new THREE.Group();
   const {topL, topW, bottomL, bottomW, outerL, outerW, H, floor, cellLen, cellWid,
          nCells, wall, divider, flangeT, lipH, lipT, overallH} = p;
@@ -144,6 +166,35 @@ export function buildTray3d(p){
   const lip = new THREE.Mesh(ringGeo(outerL, outerW, outerL - 2*lipT, outerW - 2*lipT, lipH), trayMat2);
   lip.position.y = -overallH/2 + H + lipH/2;
   group.add(lip);
+
+  // ---- product sitting IN the cells -------------------------------------
+  // The tray owns the cells; the COLLATION owns what sits in one of them, so
+  // the piece run is replicated per cell rather than re-derived here. Pieces
+  // bear on the trough floor, which is why a tall product visibly stands
+  // proud of the rim — the same fact the envelope's max() encodes.
+  if(contents && contents.piece && contents.perCell > 0){
+    const {geo, rot} = pieceGeo(contents.piece, contents.stackAxis);
+    const per = Math.max(1, Math.round(contents.perCell));
+    const total = per*nCells;
+    if(total > 0 && total <= 4000){
+      const inst = new THREE.InstancedMesh(geo, productMat, total);
+      const M = new THREE.Matrix4();
+      // pitch the run along the cell length, centred, one row per cell
+      const pitch = per > 1 ? Math.min(cellLen/per, cellLen/per) : 0;
+      let k = 0;
+      for(let j = 0; j < nCells; j++){
+        const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
+        for(let i = 0; i < per; i++){
+          const cx = (i + 0.5)*pitch - per*pitch/2;
+          if(rot) M.copy(rot); else M.identity();
+          M.setPosition(cx, -overallH/2 + floor + pieceRise(contents.piece, contents.stackAxis), cz);
+          inst.setMatrixAt(k++, M);
+        }
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      group.add(inst);
+    }
+  }
 
   const outer = p.longAxis === 'Y'
     ? {L: outerW, W: outerL, H: overallH}
