@@ -1141,12 +1141,10 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opt
 function buildPallet(bundle, outerTier, S, solid){
   const {cases} = bundle;
   const co = outerTier.geo.outer;
-  const layers = Math.max(...cases.placements.map(p => Math.round(p.z / co.H))) + 1;
   const deckH = bundle.cases.deck.baseH;
   // An OPEN tray never hides its contents: every tray on the pallet shows its
   // cartons standing PROUD of the low walls, so the load height is driven by the
-  // proud carton top, not the tray wall (co.H). For a closed case co.H IS the
-  // full height, so the closed path is unchanged (layers*co.H, bit-identical).
+  // proud carton top, not the tray wall (co.H).
   const openOuter = isOpenTop(outerTier.geo);
   const shrinkOuter = isShrink(outerTier.geo);           // Shrink Bundle, or a shrink-wrapped tray
   const contentTopLocal = (openOuter && bundle.cartonGeo && bundle.cartons.placements.length)
@@ -1162,7 +1160,22 @@ function buildPallet(bundle, outerTier, S, solid){
   // unit by (co.H/2 − minTrayZ) puts that tray's floor on the deck. 0 for a
   // closed case or non-proud tray (slot already equals co.H). Fixes the float.
   const restOffset = openOuter ? co.H/2 - minTrayZ : 0;
-  const loadH = openOuter ? maxTrayZ + contentTopLocal + restOffset : layers * co.H;
+  // THE load height: the top face of the highest unit, read from the SAME
+  // placements that position the drawn units (each pl.z is that unit's CENTRE,
+  // so its top is half its PLACED height above it — orient(), so a mixed-
+  // orientation layer measures each unit by the dim actually pointing up).
+  // This replaces a `layers * co.H` that recomputed a layer COUNT as
+  // `Math.round(pl.z / co.H) + 1`: with pl.z a centre that reads i + 0.5, and
+  // Math.round breaking ties UPWARD, every layer index came back one too high
+  // and the count one too many — a load height overstated by exactly co.H (the
+  // chain's own row.caseLayers said 12 where this said 13). It inflated the
+  // Dims "Load"/"Total" readout at pallet depth, and once double-stacking
+  // landed it floated the upper pallet a full layer above the load it should
+  // rest on. The extent is also the more robust question: it needs no uniform
+  // layer pitch and no tie-breaking at all.
+  const closedTopLocal = cases.placements.length
+    ? Math.max(...cases.placements.map(pl => pl.z + orient(co, pl.orientation).h/2)) : 0;
+  const loadH = openOuter ? maxTrayZ + contentTopLocal + restOffset : closedTopLocal;
   // Solid mode: no outer unit is opened — every one is a closed (textured) unit.
   // Otherwise open the pallet's own selected unit (S.pallet), indexed into the
   // pallet layout regardless of whether that outer tier is the case or carton.

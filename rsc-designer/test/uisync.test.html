@@ -1338,6 +1338,23 @@ await (async () => {
   const countDecks = () => { let n = 0; getPivot().traverse(o => { if(o.name === 'gmaPallet') n++; }); return n; };
   const closedUnits = () => { let n = 0; getPivot().traverse(o => {
     if(o.isInstancedMesh && o.userData && o.userData.tierName === 'pallet') n += o.count; }); return n; };
+  // world y-extents of the decks (low to high) and of the load units
+  const deckSpans = () => { const out = []; getPivot().updateMatrixWorld(true);
+    getPivot().traverse(o => { if(o.name === 'gmaPallet'){ const b = new THREE.Box3().setFromObject(o);
+      out.push({ymin: b.min.y, ymax: b.max.y}); } });
+    return out.sort((a, b) => a.ymin - b.ymin); };
+  // highest drawn load surface strictly below `y` (instanced units are matrix-
+  // placed, so each instance is transformed by hand — setFromObject sees only
+  // the untransformed prototype)
+  const loadTopBelow = y => { let top = -Infinity; getPivot().updateMatrixWorld(true);
+    getPivot().traverse(o => {
+      if(!(o.isInstancedMesh && o.userData && o.userData.tierName === 'pallet')) return;
+      o.geometry.computeBoundingBox();
+      const gb = o.geometry.boundingBox, M = new THREE.Matrix4(), b = new THREE.Box3();
+      for(let i = 0; i < o.count; i++){ o.getMatrixAt(i, M); M.premultiply(o.matrixWorld); b.union(gb.clone().applyMatrix4(M)); }
+      if(b.min.y < y) top = Math.max(top, b.max.y);
+    });
+    return top; };
 
   let offH, offDecks, offClosed;
   t('double-stack OFF: one deck, one load (the baseline this block doubles)', () => {
@@ -1357,12 +1374,35 @@ await (async () => {
       throw new Error(`total H must be two full unit loads (deck+load, twice): ${hier.renderedOuter().H} != 2*${offH}`);
   });
 
+  t('double-stack: the upper pallet RESTS on the lower load — no floating layer', () => {
+    const d = deckSpans();
+    eq(d.length, 2, 'decks:');
+    const gap = d[1].ymin - loadTopBelow(d[1].ymin);
+    // the ONLY daylight allowed is the 1mm cosmetic case seam (every unit is
+    // drawn 2mm under-size so the stack reads as separate boxes); a whole
+    // layer of float is the regression this catches
+    if(!(gap >= 0 && gap <= 1.5))
+      throw new Error(`upper deck must rest on the lower load: gap ${gap.toFixed(2)}mm (only the 1mm case seam is allowed)`);
+  });
+
   el('bctDouble').checked = false; fire(el('bctDouble'), 'change'); await settle();
 
   t('double-stack off again: the single load restores exactly', () => {
     eq(countDecks(), 1, 'deck count:');
     eq(closedUnits(), offClosed, 'closed units:');
     if(Math.abs(hier.renderedOuter().H - offH) > 1e-9) throw new Error('single-stack height must restore');
+  });
+
+  t('rendered pallet height == deck + the CHAIN\'s layer count x unit height', () => {
+    // the render must not recompute the layer count: a Math.round() on each
+    // unit's CENTRE z read every layer one too high (12 layers -> 13) and
+    // overstated the load by exactly one unit height. Tie the drawn height to
+    // row.caseLayers — the chain's own count, the one the readout shows.
+    const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+    const coH = row.geo.case.outer.H, layers = row.caseLayers, deckH = build.project.pallet.baseH;
+    const expect = deckH + layers*coH;
+    if(Math.abs(hier.renderedOuter().H - expect) > 1e-9)
+      throw new Error(`rendered pallet H ${hier.renderedOuter().H} != deck ${deckH} + ${layers} layers x ${coH} = ${expect}`);
   });
 
   el('tab2d').click(); await settle();
