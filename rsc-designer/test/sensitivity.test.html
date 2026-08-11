@@ -1,0 +1,260 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>dimensional sensitivity tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/sensitivity.js — the read-only "which case dimension
+   is binding on the pallet" analysis. The decisive tests are the END-TO-END
+   ones: a reported breakpoint is re-verified by actually resizing the case
+   and running the whole chain (checkLockedCase -> chainMetrics ->
+   palletPatternList), an independent path from the analysis's own probes. */
+import {analyzeSensitivity, SEARCH_FRACTION} from '../src/core/sensitivity.js';
+import {palletPatternList} from '../src/core/palletpatterns.js';
+import {newProject, checkLockedCase, resolveActiveRow, describeChain} from '../src/core/project.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(actual, expected, msg = ''){
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
+}
+const ok = (cond, msg) => { if(!cond) throw new Error(msg); };
+
+/** A project with the case LOCKED at the given cavity dims, so the test can
+ *  resize it directly and re-run the real chain. */
+function locked(L, W, H){
+  const p = newProject();
+  p.links.find(x => x.parent === 'tertiary').locked = true;
+  Object.assign(p.tertiary.params, {L, W, H});
+  return p;
+}
+const chainCases = (L, W, H) => checkLockedCase(locked(L, W, H), '1mm').casesPerPallet;
+const analyze = (L, W, H) => {
+  const p = locked(L, W, H);
+  return {p, row: checkLockedCase(p, '1mm'), a: analyzeSensitivity(p, checkLockedCase(p, '1mm'))};
+};
+
+/* ---------- shape + invariants ---------- */
+
+t('returns three axes, both directions, with a baseline', () => {
+  const {a} = analyze(580, 240, 200);
+  eq(a.axes.map(x => x.axis), ['L', 'W', 'H'], 'axes:');
+  eq(a.axes.map(x => x.label), ['Length', 'Width', 'Height'], 'labels:');
+  ok(a.baseline.cases > 0 && a.baseline.cartons > 0, 'baseline populated');
+  for(const ax of a.axes){
+    ok('found' in ax.gain && 'found' in ax.headroom, `${ax.axis} missing a direction`);
+    ok(ax.current > 0, `${ax.axis} current dim`);
+  }
+  eq(a.searchFraction, SEARCH_FRACTION, 'search bound reported:');
+});
+
+t('baseline equals the chain\'s own best-on-this-deck count', () => {
+  const {row, a} = analyze(580, 240, 200);
+  eq(a.baseline.cases, row.patternList[0].total, 'baseline cases:');
+  eq(a.baseline.cartons, row.patternList[0].total*row.cartonsPerCase, 'baseline cartons:');
+});
+
+t('cartons delta is the cases delta times the per-pallet multiplier', () => {
+  const {row, a} = analyze(380, 280, 220);
+  for(const ax of a.axes){
+    if(ax.gain.found) eq(ax.gain.cartons, ax.gain.cases*row.cartonsPerCase, `${ax.axis} gain cartons:`);
+    if(ax.headroom.found) eq(ax.headroom.cartons, ax.headroom.cases*row.cartonsPerCase, `${ax.axis} headroom cartons:`);
+  }
+});
+
+t('a gain is always positive and a headroom loss always negative', () => {
+  for(const dims of [[580, 240, 200], [380, 280, 220], [300, 300, 300]]){
+    const {a} = analyze(...dims);
+    for(const ax of a.axes){
+      if(ax.gain.found) ok(ax.gain.cases > 0, `${dims} ${ax.axis}: gain must increase the count`);
+      if(ax.headroom.found) ok(ax.headroom.cases < 0, `${dims} ${ax.axis}: headroom step must decrease it`);
+    }
+  }
+});
+
+t('search never exceeds the 15% bound', () => {
+  const {a} = analyze(380, 280, 220);
+  for(const ax of a.axes){
+    const bound = Math.floor(SEARCH_FRACTION*ax.current);
+    if(ax.gain.found) ok(ax.gain.step <= bound, `${ax.axis} gain step ${ax.gain.step} > bound ${bound}`);
+    if(ax.headroom.found) ok(ax.headroom.mm < bound + 1, `${ax.axis} headroom ${ax.headroom.mm} past bound ${bound}`);
+  }
+});
+
+/* ---------- END-TO-END: re-verify breakpoints against the real chain ---------- */
+
+t('E2E: every reported GAIN is real AND minimal (chain re-run at the new size)', () => {
+  for(const [L, W, H] of [[580, 240, 200], [380, 280, 220], [300, 300, 300]]){
+    const {a} = analyze(L, W, H);
+    let checked = 0;
+    for(const ax of a.axes){
+      if(!ax.gain.found) continue;
+      const d = {L, W, H};
+      d[ax.axis] -= ax.gain.step;                      // cavity shrinks -> outer shrinks the same
+      eq(chainCases(d.L, d.W, d.H), a.baseline.cases + ax.gain.cases,
+         `${L}×${W}×${H} ${ax.axis} ↓${ax.gain.step}mm chain count:`);
+      if(ax.gain.step > 1){                            // one mm less must NOT yet gain
+        const n = {L, W, H}; n[ax.axis] -= ax.gain.step - 1;
+        eq(chainCases(n.L, n.W, n.H), a.baseline.cases,
+           `${L}×${W}×${H} ${ax.axis} ↓${ax.gain.step - 1}mm must not gain (minimality):`);
+      }
+      checked++;
+    }
+    ok(checked > 0, `${L}×${W}×${H}: no gains found to verify`);
+  }
+});
+
+t('E2E: every reported HEADROOM holds, and one mm past it costs the predicted step', () => {
+  for(const [L, W, H] of [[580, 240, 200], [380, 280, 220], [300, 300, 300]]){
+    const {a} = analyze(L, W, H);
+    for(const ax of a.axes){
+      if(!ax.headroom.found) continue;
+      const hold = {L, W, H}; hold[ax.axis] += ax.headroom.mm;
+      eq(chainCases(hold.L, hold.W, hold.H), a.baseline.cases,
+         `${L}×${W}×${H} ${ax.axis} +${ax.headroom.mm}mm must still hold:`);
+      const over = {L, W, H}; over[ax.axis] += ax.headroom.mm + 1;
+      eq(chainCases(over.L, over.W, over.H), a.baseline.cases + ax.headroom.cases,
+         `${L}×${W}×${H} ${ax.axis} +${ax.headroom.mm + 1}mm must cost the step:`);
+    }
+  }
+});
+
+/* ---------- the search itself: binary == exhaustive ---------- */
+
+t('binary search finds the SAME breakpoints as an exhaustive linear sweep', () => {
+  for(const [L, W, H] of [[580, 240, 200], [380, 280, 220]]){
+    const p = locked(L, W, H);
+    const row = checkLockedCase(p, '1mm');
+    const a = analyzeSensitivity(p, row);
+    const {outerKey} = describeChain(p);
+    const lvl = p[outerKey], pal = p.pallet;
+    const cav = {L: pal.L, W: pal.W, H: pal.maxH - pal.baseH};
+    const proud = row.unitStackH > row.outer.H ? row.unitStackH : 0;
+    const solve = (axis, d) => {
+      const outer = {...row.outer, [axis]: row.outer[axis] + d};
+      const stackH = axis === 'H' ? Math.max(outer.H, proud) : row.unitStackH;
+      const list = palletPatternList({outer: {...outer, H: stackH}, allowedOrientations: lvl.allowedOrientations},
+                                     cav, lvl.clearance, pal.pattern, {noMemo: true});
+      return list.length ? list[0].total : 0;
+    };
+    const base = solve('L', 0);
+    eq(base, a.baseline.cases, 'baseline agrees with a direct solve:');
+    for(const ax of a.axes){
+      const bound = Math.max(0, Math.floor(SEARCH_FRACTION*ax.current));
+      const downMax = Math.min(bound, Math.max(0, Math.ceil(ax.current) - 1));
+      let lin = null;
+      for(let s = 1; s <= downMax; s++) if(solve(ax.axis, -s) > base){ lin = s; break; }
+      eq(ax.gain.found ? ax.gain.step : null, lin, `${L}×${W}×${H} ${ax.axis} down sweep:`);
+      let linUp = null;
+      for(let s = 1; s <= bound; s++) if(solve(ax.axis, s) < base){ linUp = s; break; }
+      eq(ax.headroom.found ? ax.headroom.atStep : null, linUp, `${L}×${W}×${H} ${ax.axis} up sweep:`);
+    }
+  }
+});
+
+t('the count really is monotone in each dimension (the search\'s premise)', () => {
+  const p = locked(380, 280, 220);
+  const row = checkLockedCase(p, '1mm');
+  const {outerKey} = describeChain(p);
+  const lvl = p[outerKey], pal = p.pallet;
+  const cav = {L: pal.L, W: pal.W, H: pal.maxH - pal.baseH};
+  for(const axis of ['L', 'W', 'H']){
+    let prev = Infinity;
+    for(let d = -50; d <= 50; d += 2){
+      const outer = {...row.outer, [axis]: row.outer[axis] + d};
+      const list = palletPatternList({outer, allowedOrientations: lvl.allowedOrientations},
+                                     cav, lvl.clearance, pal.pattern, {noMemo: true});
+      const c = list.length ? list[0].total : 0;
+      ok(c <= prev + 1e-9, `${axis} at ${d}mm: count rose to ${c} from ${prev} — not monotone`);
+      prev = c;
+    }
+  }
+});
+
+/* ---------- honest "nothing within 15%" answers ---------- */
+
+t('reports "no gain"/"headroom >" rather than inventing a breakpoint', () => {
+  // a near-cube on a 48×40 deck: L/W have far more than 15% of headroom
+  const {a} = analyze(300, 300, 300);
+  const lw = a.axes.filter(x => x.axis === 'L' || x.axis === 'W');
+  ok(lw.every(x => !x.headroom.found), 'L/W headroom should exceed the 15% bound here');
+  ok(lw.every(x => x.headroom.bound > 0), 'the bound must still be reported for the message');
+  // and where a bound IS hit, the "no gain" branch carries its bound too
+  const {a: a2} = analyze(580, 240, 200);
+  const noGain = a2.axes.find(x => !x.gain.found);
+  ok(noGain, 'expected at least one axis with no gain within 15% in this combo');
+  ok(noGain.gain.bound > 0, 'no-gain branch must report the bound it searched');
+});
+
+/* ---------- read-only + the per-carton preview ---------- */
+
+t('the analysis mutates NOTHING (project, pallet pick, or row)', () => {
+  const p = locked(380, 280, 220);
+  const row = checkLockedCase(p, '1mm');
+  const before = JSON.stringify({pallet: p.pallet, tertiary: p.tertiary.params,
+                                 links: p.links, secondary: p.secondary.params});
+  const rowBefore = JSON.stringify({outer: row.outer, cases: row.casesPerPallet,
+                                    cartons: row.cartonsPerPallet, stack: row.unitStackH});
+  analyzeSensitivity(p, row);
+  eq(JSON.stringify({pallet: p.pallet, tertiary: p.tertiary.params,
+                     links: p.links, secondary: p.secondary.params}), before, 'project unchanged:');
+  eq(JSON.stringify({outer: row.outer, cases: row.casesPerPallet,
+                     cartons: row.cartonsPerPallet, stack: row.unitStackH}), rowBefore, 'row unchanged:');
+});
+
+t('per-unit preview divides the step by the grid span on that axis', () => {
+  const p = newProject();                      // unlocked: the row carries nx/ny/nz
+  const row = resolveActiveRow(p, '1mm');
+  const a = analyzeSensitivity(p, row);
+  const span = {L: row.nx, W: row.ny, H: row.nz};
+  for(const ax of a.axes){
+    if(!ax.gain.found) continue;
+    if(typeof span[ax.axis] === 'number' && span[ax.axis] > 0)
+      eq(+ax.gain.perCarton.toFixed(9), +(ax.gain.step/span[ax.axis]).toFixed(9), `${ax.axis} per-unit:`);
+    else eq(ax.gain.perCarton, null, `${ax.axis} per-unit unknown -> null:`);
+  }
+});
+
+t('a locked tier reports per-unit only where a span is actually known', () => {
+  // checkLockedCase knows how many layers stack inside (nz) but not the
+  // in-plane grid, so it reports nx/ny as '—'. The preview must follow that:
+  // a real figure for H, null for L/W — never NaN from dividing by a string.
+  const {row, a} = analyze(580, 240, 200);
+  eq([typeof row.nx, typeof row.ny, typeof row.nz], ['string', 'string', 'number'], 'locked row grid:');
+  for(const ax of a.axes){
+    if(!ax.gain.found) continue;
+    if(ax.axis === 'H'){
+      eq(+ax.gain.perCarton.toFixed(9), +(ax.gain.step/row.nz).toFixed(9), 'H per-unit from the layer count:');
+    }else{
+      eq(ax.gain.perCarton, null, `${ax.axis} per-unit unknown on a locked tier:`);
+    }
+  }
+});
+
+t('an open-top tier does not claim a height gain below its proud contents', () => {
+  // when contents stand proud, unitStackH > outer.H and shaving the walls
+  // cannot shorten the pallet pitch — the H probes must respect that floor
+  const p = newProject();
+  const row = resolveActiveRow(p, '1mm');
+  const faked = {...row, unitStackH: row.outer.H + 40};     // pretend contents stand 40mm proud
+  const a = analyzeSensitivity(p, faked);
+  const hAxis = a.axes.find(x => x.axis === 'H');
+  ok(!hAxis.gain.found || hAxis.gain.step > 40,
+     `shaving into the proud contents must not read as a gain (got ↓${hAxis.gain.step}mm)`);
+});
+
+t('probe count stays in the binary-search regime (not a linear sweep)', () => {
+  const {a} = analyze(380, 280, 220);
+  ok(a.probes < 80, `expected ~40 probes from binary search, got ${a.probes}`);
+  ok(a.ms >= 0, 'timing reported');
+});
+
+/* ---------- report ---------- */
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

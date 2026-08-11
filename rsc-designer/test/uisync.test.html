@@ -63,6 +63,11 @@
 <!-- BCT readout elements refreshPal writes to -->
 <span id="bctRatio"></span><span id="bctVal"></span><span id="bctLoad"></span>
 <div id="bctNote"></div><details id="bctHow"><div id="bctHowBody"></div></details>
+<!-- dimensional-sensitivity panel refreshSensitivity writes to (pallet level) -->
+<div id="sensBlock" style="display:none">
+  <span id="sensNoun"></span><span id="sensBase"></span>
+  <div id="sensBody"></div><div id="sensNote"></div>
+</div>
 
 <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
 <div id="cvWrap" style="width:600px;height:400px"></div>
@@ -937,6 +942,69 @@ await (async () => {
     if(getComputedStyle(el('candCycle')).display !== 'none') throw new Error('cycle arrows should hide at carton depth');
     el('d_case').click();
   });
+})();
+
+/* ==================================================================
+   Dimensional sensitivity panel: shown at PALLET level only, populated
+   from the ONE analysis, live on every recompute, and read-only.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  t('sensitivity: hidden at case level (pallet-level panel)', () => {
+    if(el('sensBlock').style.display !== 'none')
+      throw new Error('sensitivity panel should be hidden away from the pallet level');
+  });
+
+  setLevel('pallet'); await settle();
+  t('sensitivity: shown at pallet level with a baseline and all three axes', () => {
+    if(el('sensBlock').style.display === 'none') throw new Error('panel hidden at pallet level');
+    if(!/\d+\s+\w+s\s+·\s+\d+\s+\w+s/.test(el('sensBase').textContent))
+      throw new Error(`baseline malformed: "${el('sensBase').textContent}"`);
+    const txt = el('sensBody').textContent;
+    for(const ax of ['Length', 'Width', 'Height'])
+      if(!txt.includes(ax)) throw new Error(`${ax} axis missing from the panel`);
+    // both directions on every axis: a gain line and a headroom line
+    const arrows = (txt.match(/↓/g) || []).length, ups = (txt.match(/↑/g) || []).length;
+    if(arrows !== 3 || ups !== 3) throw new Error(`expected 3 down + 3 up lines, got ${arrows} + ${ups}`);
+  });
+
+  t('sensitivity: the "not a configuration" caveat is visible', () => {
+    const n = el('sensNote').textContent;
+    if(!/Sensitivity, not a configuration/i.test(n)) throw new Error('caveat headline missing');
+    if(!/holds less/i.test(n) || !/reduce accordingly/i.test(n))
+      throw new Error(`upstream-reduction caveat missing: "${n}"`);
+  });
+
+  t('sensitivity: baseline agrees with the pallet readout on this deck', () => {
+    // the panel's baseline is best-achievable; with no pattern cycled it is
+    // exactly what "Total on pallet" shows — one source, no second solver
+    const base = +(el('sensBase').textContent.match(/^(\d+)/) || [])[1];
+    const tot = +(el('palTot').textContent.match(/(\d+)/) || [])[1];
+    if(build.project.pallet.patternIndex === 0 && base !== tot)
+      throw new Error(`panel baseline ${base} != pallet readout ${tot}`);
+  });
+
+  t('sensitivity: re-analyses live when the deck changes (no stale numbers)', () => {
+    const before = el('sensBody').textContent;
+    el('palMaxH').value = '40'; fire(el('palMaxH'), 'input');    // shrink the height budget
+    const after = el('sensBody').textContent;
+    el('palMaxH').value = '60'; fire(el('palMaxH'), 'input');    // restore
+    if(before === after) throw new Error('panel did not update after a pallet edit');
+    if(el('sensBody').textContent !== before)
+      throw new Error('panel did not return to its original analysis after restoring the deck');
+  });
+
+  t('sensitivity: analysing does not mutate the project or the selection', () => {
+    const keyBefore = JSON.stringify(build.getSelectedCandidateKey());
+    const palBefore = JSON.stringify(build.project.pallet);
+    const caseBefore = JSON.stringify(build.project.tertiary.params);
+    build.recompute();                       // runs the analysis through the notifier
+    eq(JSON.stringify(build.project.pallet), palBefore, 'pallet config unchanged:');
+    eq(JSON.stringify(build.project.tertiary.params), caseBefore, 'case dims unchanged:');
+    eq(JSON.stringify(build.getSelectedCandidateKey()), keyBefore, 'selection unchanged:');
+  });
+
+  setLevel('case'); await settle();
 })();
 
 /* ==================================================================

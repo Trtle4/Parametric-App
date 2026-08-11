@@ -33,6 +33,7 @@ import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
 import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection} from '../core/project.js';
+import {analyzeSensitivity} from '../core/sensitivity.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -378,6 +379,59 @@ function refreshPal(){
   }
   renderBCT(g, {perLayer, layers, total, coveragePct: row.coveragePct});
   drawDims();
+}
+
+/* ---------- dimensional sensitivity: which case dimension is binding ---------
+ * Read-only analysis (core/sensitivity.js) of what the smallest change to each
+ * case dimension would buy or cost on the pallet. Shown at PALLET level: the
+ * quantities are cases/cartons per pallet — the same numbers the adjacent
+ * pallet-stats block reports — and the pallet rail already owns the other
+ * "how do I fit more on this deck" controls (deck dims, stack pattern). At
+ * case level the engineer is sizing the case around its own contents, not
+ * reading deck efficiency.
+ *
+ * NEVER mutates anything: the perturbed sizes are hypotheticals, not
+ * selectable configurations. ~40 pallet solves in ~1-7 ms (binary search over
+ * a monotone count), so it runs LIVE on the one notifier like every other
+ * display — no Analyze button — and is skipped outright at other levels. */
+function refreshSensitivity(){
+  const show = activeLevel === 'pallet';
+  el('sensBlock').style.display = show ? '' : 'none';
+  if(!show) return;                      // not on screen: don't spend the solves
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const a = row ? analyzeSensitivity(build.project, row) : null;
+  if(!a){
+    el('sensBase').textContent = '--';
+    el('sensBody').innerHTML = '';
+    el('sensNote').textContent = '';
+    return;
+  }
+  const u = inputs.getUnit(), f = v => fmtLen(v, u);
+  el('sensNoun').textContent = a.outerNoun;
+  el('sensBase').textContent = a.baseline.cases > 0
+    ? `${a.baseline.cases} ${a.outerNoun}s · ${a.baseline.cartons} ${a.childNoun}s`
+    : 'does not fit';
+  const pct = Math.round(a.searchFraction*100);
+  el('sensBody').innerHTML = a.axes.map(ax => {
+    const gain = ax.gain.found
+      ? `<div class="sensline gain"><span>&darr; ${f(ax.gain.step)} ${u}</span>` +
+        `<span class="amt">+${ax.gain.cases} ${a.outerNoun}s · +${ax.gain.cartons} ${a.childNoun}s</span></div>` +
+        (ax.gain.perCarton
+          ? `<div class="senspc">&asymp; ${f(ax.gain.perCarton)} ${u} per ${a.childNoun} &mdash; approximate</div>` : '')
+      : `<div class="sensline none"><span>&darr; no gain within ${pct}%</span>` +
+        `<span class="amt">&mdash;</span></div>`;
+    const head = ax.headroom.found
+      ? `<div class="sensline loss"><span>&uarr; ${f(ax.headroom.mm)} ${u} headroom</span>` +
+        `<span class="amt">then ${ax.headroom.cases} ${a.outerNoun}s</span></div>`
+      : `<div class="sensline none"><span>&uarr; headroom &gt; ${pct}%</span>` +
+        `<span class="amt">&mdash;</span></div>`;
+    return `<div class="sensax"><div class="axname">${ax.label} <span>${f(ax.current)} ${u}</span></div>${gain}${head}</div>`;
+  }).join('');
+  el('sensNote').innerHTML =
+    `<strong>Sensitivity, not a configuration.</strong> A smaller ${a.outerNoun} holds less — ` +
+    `reducing it requires the ${a.childNoun}/product to reduce accordingly. Per-${a.childNoun} ` +
+    `figures are approximate: they ignore caliper and clearances. One dimension at a time; ` +
+    `searched to &plusmn;${pct}%.`;
 }
 
 /* ---------- stacking strength (BCT) — engineering guidance, not a guarantee ----
@@ -995,6 +1049,7 @@ function setActiveLevel(level){
   renderChainString();
   refresh2d();
   updateArtPanel();
+  refreshSensitivity();      // pallet-level panel: show/hide + recompute for the new level
   if(view === '3d') apply3dMode();
 }
 
@@ -1816,6 +1871,9 @@ notify.onRefresh('hier3d', () => { if(view === '3d' && mode3d === 'hier') applyH
 // when the Palletize view is up. So it runs unconditionally here — this is what
 // makes the BCT readout update live on box/ECT/weight/double-stack/style edits.
 notify.onRefresh('palletize', refreshPal);
+// dimensional sensitivity re-analyses on every project change (it no-ops
+// unless the pallet level is active, so it costs nothing elsewhere)
+notify.onRefresh('sensitivity', refreshSensitivity);
 // the retail shelf reflects the sellable pack's geometry, so it re-fills on
 // every project change too (refreshShelf no-ops unless the Shelf view is up).
 notify.onRefresh('shelf', refreshShelf);

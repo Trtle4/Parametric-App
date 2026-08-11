@@ -229,6 +229,9 @@ const memo = new Map();
  *   Left false, no generated arrangement may extend past the deck (see the
  *   deck-validity block above). Set true and the rejection is skipped —
  *   the caller then owes the BCT an overhang derating.
+ * @param {boolean} [opts.noMemo=false]  skip the result cache. For
+ *   hypothetical probes (core/sensitivity.js) whose dimensions never recur:
+ *   caching them would only evict the real chain's entries.
  * @returns ranked candidates: {family, interlock, orientation, perLayer,
  *   layers, total, label, envelope, density, utilization, build()} —
  *   build() expands the fitInto-compatible Arrangement (placements included)
@@ -236,13 +239,16 @@ const memo = new Map();
  *   "does not fit", never an overhanging fallback.
  */
 export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal', opts = {}){
-  const allowOverhang = !!opts.allowOverhang;
-  const key = [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
-               cavity.L, cavity.W, cavity.H,
-               clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
-               family, allowOverhang ? 'oh' : ''].join('|');
-  const hit = memo.get(key);
-  if(hit) return hit;
+  const allowOverhang = !!opts.allowOverhang, noMemo = !!opts.noMemo;
+  const key = noMemo ? null
+    : [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
+       cavity.L, cavity.W, cavity.H,
+       clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
+       family, allowOverhang ? 'oh' : ''].join('|');
+  if(key !== null){
+    const hit = memo.get(key);
+    if(hit) return hit;
+  }
 
   const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
   const PL = cavity.L - 2*wall + between, PW = cavity.W - 2*wall + between;
