@@ -211,6 +211,39 @@ export function refreshDims(effectiveDims){
  *  means. */
 const collationCount = c => Math.max(1, c.perStack*c.nx*c.ny);
 
+/**
+ * Bind the three linked quantity fields (cells / products-per-cell / total)
+ * for ONE rail. `ids` maps each field to its input id; both rails call this
+ * with their own ids, so the behaviour cannot differ between them.
+ *
+ * Every edit routes to the host's single rule (m.onQuantity) and every
+ * display re-reads the host's single derivation (m.quantities) — the rail
+ * never computes a quantity itself.
+ *
+ * While TYPING, the edited field is left alone and only the other two are
+ * refreshed: rewriting the field under the cursor makes "80" impossible to
+ * type (the "8" would be corrected before the "0" arrives). On `change`
+ * (blur/Enter) all three are normalised, so a total the two factors cannot
+ * produce never survives the edit — 80 over 3 cells settles at 81.
+ */
+export function bindQuantities(ids, m){
+  if(!m.onQuantity || !m.quantities) return;
+  const show = skip => {
+    const v = m.quantities();
+    for(const [field, id] of Object.entries(ids)){
+      const inp = el(id);
+      if(inp && field !== skip) inp.value = v[field];
+    }
+  };
+  for(const [field, id] of Object.entries(ids)){
+    const inp = el(id);
+    if(!inp) continue;
+    inp.addEventListener('input',  () => { m.onQuantity(field, inp.value); show(field); });
+    inp.addEventListener('change', () => { m.onQuantity(field, inp.value); show(); });
+  }
+  return show;
+}
+
 export function mountProduct(prim, m){
   const dims = el('dimFields'), mat = el('matFields');
   el('optFields').innerHTML = '';
@@ -259,23 +292,25 @@ export function mountProduct(prim, m){
   // two-writers bug creeps back in.
   const tray = m.project && m.project.tray;
   const trayOn = !!(tray && tray.enabled);
+  const qty = (trayOn && m.quantities)
+    ? m.quantities() : {cells: trayOn ? tray.nCells : 1, perCell: collationCount(c), total: 0};
   mat.innerHTML =
     (trayOn
-      ? cntF('cCells', 'Cells', 'tray cells — same field as the Tray panel', tray.nCells) +
-        `<div class="field"><label>Total quantity <span class="hint">derived — cells × per cell</span></label>
-          <div class="inp"><input id="cTotal" type="number" value="${tray.nCells*collationCount(c)}" disabled></div></div>`
+      ? cntF('cCells', 'Cells', 'tray cells — shared', qty.cells) +
+        cntF('cPerCell', 'Products per cell', 'total follows', qty.perCell) +
+        cntF('cTotal', 'Total quantity', 'per-cell absorbs', qty.total)
       : '') +
     cntF('cPer', 'Pieces per stack', 'count', c.perStack) +
     cntF('cNx', 'Stacks across', 'nx', c.nx) +
     cntF('cNy', 'Stacks deep', 'ny', c.ny) +
     numF('cSg', 'Stack gap', 'between stacks', c.stackGap) +
     numF('cPg', 'Piece gap', 'within stack', c.pieceGap);
-  if(trayOn) el('cCells').addEventListener('input', () => {
-    // writes THE one stored value; the Tray panel reads the same field
-    tray.nCells = Math.max(1, Math.round(+el('cCells').value || 1));
-    el('cTotal').value = tray.nCells*collationCount(c);   // derived display follows
-    m.onInput();
-  });
+  // the three linked quantities — the SAME binder the Tray rail uses, so the
+  // two rails cannot behave differently. The grid fields below feed per-cell,
+  // so they refresh the derived pair too.
+  const showQty = trayOn
+    ? bindQuantities({cells: 'cCells', perCell: 'cPerCell', total: 'cTotal'}, m)
+    : null;
 
   el('cMode').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
     if(btn.dataset.v === 'onedge'){
@@ -300,9 +335,11 @@ export function mountProduct(prim, m){
     el('cW').addEventListener('input', () => { c.piece.W = mm('cW'); m.onInput(); });
     el('cH').addEventListener('input', () => { c.piece.H = mm('cH'); m.onInput(); });
   }
-  el('cPer').addEventListener('input', () => { c.perStack = cnt('cPer'); m.onInput(); });
-  el('cNx').addEventListener('input', () => { c.nx = cnt('cNx'); m.onInput(); });
-  el('cNy').addEventListener('input', () => { c.ny = cnt('cNy'); m.onInput(); });
+  // per-cell IS perStack x nx x ny, so each of these moves the derived pair —
+  // showQty re-reads the one derivation rather than doing arithmetic here
+  el('cPer').addEventListener('input', () => { c.perStack = cnt('cPer'); m.onInput(); showQty && showQty(); });
+  el('cNx').addEventListener('input', () => { c.nx = cnt('cNx'); m.onInput(); showQty && showQty(); });
+  el('cNy').addEventListener('input', () => { c.ny = cnt('cNy'); m.onInput(); showQty && showQty(); });
   el('cSg').addEventListener('input', () => { c.stackGap = mm('cSg'); m.onInput(); });
   el('cPg').addEventListener('input', () => { c.pieceGap = mm('cPg'); m.onInput(); });
 }
@@ -646,28 +683,21 @@ export function mountTray(project, m){
 
   const D = (k, dflt) => (typeof ov[k] === 'number' ? ov[k] : dflt);
   const auto = m.autoDims || {};
+  const q = m.quantities ? m.quantities() : {cells: tr.nCells, perCell: 0, total: 0};
 
   host.innerHTML =
     `<h2 style="margin-top:6px">Tray</h2>` +
     // THE shared cell count — this control and the collation panel's are two
     // controls onto project.tray.nCells, never two stored values.
-    plainF('nCells', 'Cells', 'across the tray', tr.nCells, 1, 1) +
-    `<div class="field"><label>Products per cell <span class="hint">derived — set on the Product level</span></label>
-      <div class="inp"><input id="tr_perCell" type="number" value="${m.perCell != null ? m.perCell : ''}" disabled></div></div>` +
-    // TOTAL is still derived (cells x per-cell) — never a third stored value.
-    // Editing it writes to whichever FACTOR `distributeBy` names; the other
-    // stays put. That is Cookie-Tray's own resolution of the ambiguity.
-    `<div class="field"><label>Total quantity <span class="hint">cells × per cell</span></label>
-      <div class="inp"><input id="tr_total" type="number" min="1" step="1" value="${(m.perCell || 0)*tr.nCells}"></div></div>` +
-    `<div class="field"><label>Distribute by <span class="hint">what absorbs a total edit</span></label>
-      ${['cells', 'perCell'].map(v => '').join('')}
-      <div class="seg" id="tr_distBy" role="group">${
-        [{v: 'cells', label: 'Cells'}, {v: 'perCell', label: 'Per-cell'}]
-          .map(o => `<button type="button" data-v="${o.v}"${(tr.distributeBy || 'cells') === o.v ? ' class="on"' : ''}>${o.label}</button>`).join('')}</div>
-      <div class="hint" style="margin-top:5px;line-height:1.35">${
-        (tr.distributeBy || 'cells') === 'cells'
-          ? 'Changing the total adds or removes CELLS; products per cell stays fixed.'
-          : 'Changing the total changes PRODUCTS PER CELL; the cell count stays fixed.'}</div></div>` +
+    // The three linked quantities, all editable here and on the Product rail.
+    // CELLS IS THE ANCHOR: it moves only when the user edits cells. Still just
+    // two stored values (tray.nCells + the collation's grid) — total is derived
+    // and writable, resolving to a per-cell rather than becoming a third number.
+    plainF('nCells', 'Cells', 'across the tray', q.cells, 1, 1) +
+    `<div class="field"><label>Products per cell <span class="hint">total follows</span></label>
+      <div class="inp"><input id="tr_perCell" type="number" min="1" step="1" value="${q.perCell}"></div></div>` +
+    `<div class="field"><label>Total quantity <span class="hint">per-cell absorbs</span></label>
+      <div class="inp"><input id="tr_total" type="number" min="1" step="1" value="${q.total}"></div></div>` +
     autoF('cellLen', 'Cell length', 'along the channel', auto.cellLen) +
     autoF('cellWid', 'Cell width', 'across', auto.cellWid) +
     autoF('cellH', 'Cell depth', 'trough', auto.cellH) +
@@ -711,23 +741,13 @@ export function mountTray(project, m){
   for(const k of ['wall', 'divider', 'floor', 'stripL', 'stripW', 'lipH', 'flangeT'])
     el('tr_' + k).addEventListener('input', () => { ov[k] = mmv('tr_' + k); m.onInput(); });
   el('tr_draftDeg').addEventListener('input', () => { ov.draftDeg = Math.max(0, +el('tr_draftDeg').value || 0); m.onInput(); });
-  // the shared cell count: writes THE stored value, then asks for a remount so
-  // the collation panel's mirror of it re-renders from the same source
-  el('tr_nCells').addEventListener('input', () => {
-    tr.nCells = Math.max(1, Math.round(+el('tr_nCells').value || 1)); m.onInput();
-  });
+
   el('tr_longAxis').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     ov.longAxis = b.dataset.v; m.onInput(); m.remount && m.remount();
   }));
 
-  // total quantity -> the selected FACTOR (never a stored total)
-  el('tr_distBy').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-    tr.distributeBy = b.dataset.v; m.onInput(); m.remount && m.remount();
-  }));
-  el('tr_total').addEventListener('input', () => {
-    const want = Math.max(1, Math.round(+el('tr_total').value || 1));
-    if(m.onTotal) m.onTotal(want, tr.distributeBy || 'cells');
-  });
+  // ---- the three linked quantities: one rule in, one derivation out ----
+  bindQuantities({cells: 'tr_nCells', perCell: 'tr_perCell', total: 'tr_total'}, m);
 
   // ---- Cookie-Tray link round trip (delegated to the host: it owns the
   // solved row the export needs, and the recompute the import triggers) ----

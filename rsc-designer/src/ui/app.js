@@ -991,25 +991,44 @@ function applyTrayLink(text){
   return `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;
 }
 
-/** Apply an edited TOTAL quantity by writing the factor `distributeBy` names.
- *  Total stays derived — this resolves which of the two STORED factors
- *  (tray.nCells, or the collation's own per-cell grid) absorbs the change, so
- *  there is never a third value to fall out of step. */
-function applyTrayTotal(want, mode){
+/** THE three linked quantities — cells, products per cell, total — read by
+ *  the Tray rail and the Product rail alike, so the two can never display
+ *  different numbers. Derived from the only two STORED values there are:
+ *  project.tray.nCells and the collation's own grid. */
+function trayQuantities(){
+  const proj = build.project;
+  const cells = Math.max(1, Math.round((proj.tray && proj.tray.nCells) || 1));
+  const perCell = Math.max(1, collate(proj.primary.collation).count);
+  return {cells, perCell, total: cells*perCell};
+}
+
+/** THE rule for an edit to any of those three, from either rail.
+ *  CELLS IS THE ANCHOR — it moves only when the user edits cells directly:
+ *      total   -> cells hold, per-cell absorbs
+ *      perCell -> cells hold, total follows
+ *      cells   -> per-cell holds, total follows
+ *  Total is DERIVED and now writable, which is not a third stored value: an
+ *  edited total resolves to a per-cell and writes THAT. The collation owns
+ *  per-cell, and its plan grid (nx x ny) is fixed here, so the run length
+ *  (perStack) is the factor that absorbs the change — the same owner-write
+ *  the rest of the collation rail uses.
+ *
+ *  ROUNDING: total/cells is not generally whole, and per-cell is itself a
+ *  product, so the write is rounded to the nearest integer and every display
+ *  reads the true value back from the SAME source (trayQuantities). 80 over
+ *  3 cells stores per-cell 27 and the total reads 81 — a total the two
+ *  factors cannot produce is never stored and never shown at rest. */
+function applyTrayQuantity(field, value){
   const proj = build.project, tr = proj.tray, col = proj.primary.collation;
-  const perCell = Math.max(1, collate(col).count);
-  if(mode === 'perCell'){
-    // hold the cell count, change what goes in each cell. The collation's
-    // grid is the owner, so the run length (perStack) is what moves.
-    const per = Math.max(1, Math.ceil(want/Math.max(1, tr.nCells)));
-    const others = Math.max(1, col.nx*col.ny);
-    col.perStack = Math.max(1, Math.round(per/others));
+  const v = Math.max(1, Math.round(+value || 1));
+  if(field === 'cells'){
+    tr.nCells = v;                                    // per-cell untouched; total follows
   }else{
-    // hold per-cell, change the number of cells
-    tr.nCells = Math.max(1, Math.ceil(want/perCell));
+    const wantPer = field === 'total' ? v/Math.max(1, Math.round(tr.nCells || 1)) : v;
+    const others = Math.max(1, col.nx*col.ny);
+    col.perStack = Math.max(1, Math.round(wantPer/others));
   }
-  projectChanged();
-  mountActiveLevel();
+  projectChanged();                                   // the one notifier; no remount (keeps focus)
 }
 
 /** A Cookie-Tray link describing the tray currently on screen. */
@@ -1069,12 +1088,14 @@ function mountActiveLevel(){
     // Product is always the base: no disable, no content-type selector.
     // `project` lets the collation panel host the SHARED cell-count control
     // (a second control onto project.tray.nCells) and the derived total.
-    inputs.mountProduct(proj.primary, {project: proj, onInput: () => projectChanged()});
+    inputs.mountProduct(proj.primary, {project: proj, quantities: trayQuantities,
+                                      onQuantity: applyTrayQuantity, onInput: () => projectChanged()});
   }else if(lvl.kind === 'tray'){
     inputs.mountTray(proj, {autoDims: trayAutoDims(), remount: () => mountActiveLevel(),
-                            perCell: collate(proj.primary.collation).count,
+                            // the three linked quantity fields: one derivation
+                            // read, one rule written — shared with the Product rail
+                            quantities: trayQuantities, onQuantity: applyTrayQuantity,
                             onImportLink: applyTrayLink, onExportLink: currentTrayLink,
-                            onTotal: applyTrayTotal,
                             onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current

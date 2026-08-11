@@ -170,12 +170,12 @@ export function newProject(){
       // Enabling the tray configures the collation to the 10-on-edge default
       // instead (see setTierEnabled), which is a WRITE to the one owner.
       endClearance: 3, sideClearance: 1.5,
-      // Which factor absorbs an edit to TOTAL quantity — Cookie-Tray's own
-      // `distributeBy` control, ported rather than reinvented. Total itself is
-      // still DERIVED (cells x per-cell) and never stored; this only says which
-      // of the two stored factors a total edit writes to, so the ambiguity
-      // ("72 -> 80: more cells or more per cell?") has one explicit answer.
-      distributeBy: 'cells',           // 'cells' | 'perCell'
+      // NOTE there is deliberately no `distributeBy` either. Total is derived
+      // and editable, and the ambiguity it used to resolve ("72 -> 80: more
+      // cells or more per cell?") now has ONE fixed answer instead of a
+      // setting: cells are the ANCHOR, so a total edit is absorbed by per-cell
+      // and the cell count moves only when the user edits cells (app.js
+      // applyTrayQuantity).
       params: {},                      // overrides only; {} = fully auto
       allowedOrientations: ['LWH', 'WLH'],
       clearance: {wall: 0, between: 0},

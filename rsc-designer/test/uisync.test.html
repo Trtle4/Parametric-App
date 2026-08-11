@@ -1037,14 +1037,143 @@ await (async () => {
       throw new Error('tray must NOT store perCell — the collation owns products-per-cell');
   });
 
-  t('DERIVED TOTAL: read-only, and follows both factors', () => {
+  /* ---- QUANTITIES: cells / products-per-cell / total, all three editable
+     in BOTH rails. 3 fields x 2 rails = 6 entry points, each updating the
+     other two. CELLS IS THE ANCHOR: it moves only when the user edits cells.
+     Still only TWO stored values (tray.nCells + the collation grid) — total
+     is derived and writable, resolving to a per-cell rather than becoming a
+     third number. ---- */
+  const RAILS = [
+    ['tray',    {cells: 'tr_nCells', perCell: 'tr_perCell', total: 'tr_total'}],
+    ['product', {cells: 'cCells',    perCell: 'cPerCell',   total: 'cTotal'}]
+  ];
+  const qcol = () => build.project.primary.collation;
+  const perCellNow = () => { const c = qcol(); return c.perStack*c.nx*c.ny; };
+  // per-cell is a PRODUCT (perStack x nx x ny); pin the exact-arithmetic case
+  // with a 1x1 plan, and the rounding case separately below
+  const setQ = (id, v) => { el(id).value = String(v); fire(el(id), 'input'); fire(el(id), 'change'); };
+
+  t('QUANTITIES: all three fields are editable on BOTH rails', () => {
+    for(const [level, ids] of RAILS){
+      setLevel(level);
+      for(const f of ['cells', 'perCell', 'total']){
+        const inp = el(ids[f]);
+        if(!inp) throw new Error(`${level} rail: the ${f} field is missing`);
+        if(inp.disabled) throw new Error(`${level} rail: ${f} must be editable`);
+      }
+    }
+  });
+
+  t('QUANTITIES: no "Distribute by" selector survives (cells is the anchor)', () => {
+    setLevel('tray');
+    if(el('tr_distBy')) throw new Error('the Distribute-by selector should be gone');
+    if('distributeBy' in build.project.tray) throw new Error('distributeBy should no longer be stored');
+  });
+
+  for(const [level, ids] of RAILS){
+    t(`QUANTITIES (${level} rail): edit CELLS -> per-cell holds, total follows`, () => {
+      setLevel(level);
+      Object.assign(qcol(), {nx: 1, ny: 1});
+      setQ(ids.perCell, 6);
+      const held = perCellNow();
+      setQ(ids.cells, 5);
+      eq(build.project.tray.nCells, 5, 'cells stored:');
+      eq(perCellNow(), held, 'per-cell must HOLD:');
+      eq(+el(ids.perCell).value, held, 'per-cell display holds:');
+      eq(+el(ids.total).value, 5*held, 'total follows:');
+    });
+
+    t(`QUANTITIES (${level} rail): edit PER-CELL -> cells hold, total follows`, () => {
+      setLevel(level);
+      Object.assign(qcol(), {nx: 1, ny: 1});
+      setQ(ids.cells, 4);
+      setQ(ids.perCell, 7);
+      eq(build.project.tray.nCells, 4, 'cells must HOLD:');
+      eq(perCellNow(), 7, 'per-cell written through the collation:');
+      eq(+el(ids.cells).value, 4, 'cells display holds:');
+      eq(+el(ids.total).value, 28, 'total follows:');
+    });
+
+    t(`QUANTITIES (${level} rail): edit TOTAL -> cells hold, per-cell absorbs`, () => {
+      setLevel(level);
+      Object.assign(qcol(), {nx: 1, ny: 1});
+      setQ(ids.cells, 4);
+      setQ(ids.total, 28);
+      eq(build.project.tray.nCells, 4, 'cells must HOLD — never absorb a total edit:');
+      eq(perCellNow(), 7, 'per-cell absorbed it:');
+      eq(+el(ids.perCell).value, 7, 'per-cell display follows:');
+      eq(+el(ids.total).value, 28, 'total settles where it was asked:');
+    });
+
+    t(`QUANTITIES (${level} rail): an impossible total is CORRECTED, not stored`, () => {
+      setLevel(level);
+      Object.assign(qcol(), {nx: 1, ny: 1});
+      setQ(ids.cells, 3);
+      setQ(ids.total, 80);                 // 80/3 -> per-cell 27 -> true total 81
+      eq(build.project.tray.nCells, 3, 'cells hold:');
+      eq(perCellNow(), 27, 'per-cell rounds to the NEAREST integer:');
+      eq(+el(ids.perCell).value, 27, 'per-cell display:');
+      eq(+el(ids.total).value, 81, 'the corrected total is shown, not the 80 typed:');
+    });
+  }
+
+  t('QUANTITIES: the two rails stay in lockstep (one derivation)', () => {
+    setLevel('tray');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('tr_nCells', 6); setQ('tr_perCell', 9);
     setLevel('product');
-    const c = build.project.primary.collation;
-    const perCell = c.perStack*c.nx*c.ny;
-    eq(el('cTotal').disabled, true, 'total must not be editable (no third writer):');
-    eq(+el('cTotal').value, build.project.tray.nCells*perCell, 'total = cells x per cell:');
-    el('cCells').value = '4'; fire(el('cCells'), 'input');
-    eq(+el('cTotal').value, 4*perCell, 'total follows the cell count:');
+    eq(+el('cCells').value, 6, 'cells across rails:');
+    eq(+el('cPerCell').value, 9, 'per-cell across rails:');
+    eq(+el('cTotal').value, 54, 'total across rails:');
+    // and back the other way
+    setQ('cTotal', 24);                    // 24/6 -> per-cell 4
+    setLevel('tray');
+    eq(+el('tr_nCells').value, 6, 'cells unchanged by a total edit:');
+    eq(+el('tr_perCell').value, 4, 'per-cell absorbed it, seen from the tray rail:');
+    eq(+el('tr_total').value, 24, 'total agrees:');
+  });
+
+  t('QUANTITIES: rounding is NEAREST, so a total can round DOWN', () => {
+    // 80/3 = 26.67 rounds to 27 under ceil AND nearest, so it cannot tell them
+    // apart; 100/3 = 33.33 can. Without this the rule reads "round" and
+    // behaves "ceil" — always growing the pack.
+    setLevel('tray');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('tr_nCells', 3);
+    setQ('tr_total', 100);                 // -> per-cell 33 (ceil would say 34)
+    eq(perCellNow(), 33, 'per-cell rounds DOWN to the nearest:');
+    eq(+el('tr_total').value, 99, 'corrected total:');
+  });
+
+  t('QUANTITIES: siblings follow on INPUT; the typed field is left alone', () => {
+    // the other two must move as you type, not only on blur — and the field
+    // under the cursor must NOT be rewritten mid-edit, or "80" is untypeable
+    // (the "8" would be corrected before the "0" lands)
+    setLevel('tray');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('tr_nCells', 3); setQ('tr_perCell', 5);
+    el('tr_total').value = '80'; fire(el('tr_total'), 'input');     // input only
+    eq(+el('tr_perCell').value, 27, 'per-cell follows on input, not just on commit:');
+    eq(el('tr_total').value, '80', 'the field being typed into is not rewritten mid-edit:');
+    fire(el('tr_total'), 'change');
+    eq(+el('tr_total').value, 81, 'and it settles to the true total on commit:');
+  });
+
+  t('QUANTITIES: still only TWO stored values — no third number', () => {
+    const tr = build.project.tray;
+    for(const k of ['total', 'perCell', 'qtyTotal', 'distributeBy'])
+      if(k in tr) throw new Error(`tray must not store "${k}" — total is derived`);
+  });
+
+  t('QUANTITIES: the collation grid fields move the derived pair', () => {
+    setLevel('product');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('cCells', 2); setQ('cPerCell', 5);
+    el('cNx').value = '3'; fire(el('cNx'), 'input');
+    eq(perCellNow(), 15, 'per-cell is perStack x nx x ny:');
+    eq(+el('cPerCell').value, 15, 'per-cell display follows a grid edit:');
+    eq(+el('cTotal').value, 30, 'total follows a grid edit:');
+    el('cNx').value = '1'; fire(el('cNx'), 'input');
   });
 
   t('tray: the envelope reaches the wrap (downstream actually re-solves)', () => {
