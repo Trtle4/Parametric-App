@@ -270,6 +270,100 @@ function ringPoints(pos, hH, hCross, roundish, fillet, axisIsW){
   return pts;
 }
 
+/**
+ * The FACETED cross-section of film over a rigid tray, as WRAP_N [h, w]
+ * pairs (same count as ringPoints, so body lofts and the seal-ramp collapse
+ * pair ring-to-ring with either generator). Film is a membrane in tension:
+ * it is STRAIGHT between the things it touches and never bulges, so every
+ * arc the pillow profile would draw is wrong here. Contact points, half-
+ * profile bottom-up (mirrored about the centreline):
+ *
+ *   1. flat bottom  — against the tray underside, spanning the drafted-in
+ *      BASE width (bottomL/bottomW — the tray is widest at the top);
+ *   2. up the drafted sidewall and out over the flange to the LIP CROWN —
+ *      the widest contact (outerL/outerW = the envelope cross dim);
+ *   3. the lip's own outer face (lipH tall, full width);
+ *   4. slope inward and up, lip crown -> the outermost PROUD product tops
+ *      (the cells' across-span; along the machine axis it's cellLen);
+ *   5. flat top — taut across the product tops, bridging cell to cell,
+ *      never dipping between rows.
+ *
+ * When nothing stands proud (envelope.H == overallH) the film rests on the
+ * lip crown instead: facet 4 collapses and the top flat spans the full
+ * width — same code path, degenerate corners (zero-length edges are legal
+ * in the resample and loft as zero-area quads).
+ *
+ * All contact dims come from the tray params the chain already carries
+ * (bundle.tray.params) and the film envelope — nothing is re-derived. The
+ * profile stays exactly inside the envelope: max |w| = hCross, h in
+ * [-hH, +hH], so the drawn film still occupies precisely the box the chain
+ * sized (the uisync tray-envelope pin measures this).
+ *
+ * `pick` maps the tray's OWN L/W dims to the placed cross axis: trayOuter
+ * swaps L and W when longAxis is 'Y', and the section lives on whichever
+ * placed axis is NOT the machine direction (axisIsW ? placed L : placed W).
+ */
+function traySectionProfile(envelope, p, axisIsW){
+  const hH = envelope.H/2;
+  const hCross = (axisIsW ? envelope.L : envelope.W)/2;
+  const longY = p.longAxis === 'Y';
+  const pick = (ownL, ownW) => {
+    const placedL = longY ? ownW : ownL, placedW = longY ? ownL : ownW;
+    return axisIsW ? placedL : placedW;
+  };
+  const baseHalf = Math.min(pick(p.bottomL, p.bottomW)/2, hCross - 0.01);
+  // outermost product extent: across the cells it's the full cell run
+  // (cells + dividers between them); along the tray's own L it's cellLen
+  const cellSpan = p.nCells*p.cellWid + (p.nCells - 1)*p.divider;
+  const prodHalf = Math.min(pick(p.cellLen, cellSpan)/2, hCross);
+  const crownY  = Math.min(-hH + p.overallH, hH);
+  const flangeY = Math.max(crownY - p.lipH, -hH);
+  const proud = envelope.H > p.overallH + 1e-9;
+  const topHalf = proud ? prodHalf : hCross;
+  // corner order matches ringPoints's start + winding (top, +w side, then
+  // descending h; across the bottom; back up the -w side)
+  const corners = [
+    [hH, topHalf], [crownY, hCross], [flangeY, hCross], [-hH, baseHalf],
+    [-hH, -baseHalf], [flangeY, -hCross], [crownY, -hCross], [hH, -topHalf]
+  ];
+  return resampleClosed(corners, WRAP_N);
+}
+
+/** Resample a closed polygon to exactly N points: every corner is kept
+ *  exact (facets stay sharp), the remaining points spread over the edges
+ *  proportional to length (largest remainder). Zero-length edges (a
+ *  degenerate facet) simply get no interior points. */
+function resampleClosed(corners, N){
+  const E = corners.length;
+  const lens = corners.map((c, i) => {
+    const n = corners[(i + 1) % E];
+    return Math.hypot(n[0] - c[0], n[1] - c[1]);
+  });
+  const total = lens.reduce((a, b) => a + b, 0) || 1;
+  const extra = N - E;
+  const raw = lens.map(l => extra*l/total);
+  const cnt = raw.map(Math.floor);
+  let left = extra - cnt.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => [r - cnt[i], i]).sort((a, b) => b[0] - a[0]);
+  for(let k = 0; k < left; k++) cnt[order[k][1]]++;
+  const pts = [];
+  corners.forEach((c, i) => {
+    pts.push(c);
+    const n = corners[(i + 1) % E];
+    for(let j = 1; j <= cnt[i]; j++){
+      const t = j/(cnt[i] + 1);
+      pts.push([c[0] + (n[0] - c[0])*t, c[1] + (n[1] - c[1])*t]);
+    }
+  });
+  return pts;
+}
+
+/** Place an [h, w] profile as a loft ring at `pos` along the machine axis —
+ *  the same local-axis convention as ringPoints (axisIsW: length on Z). */
+function profileRing(profile, pos, axisIsW){
+  return profile.map(([h, w]) => axisIsW ? new THREE.Vector3(w, h, pos) : new THREE.Vector3(pos, h, w));
+}
+
 // hand-built loft: N-point rings connected by quads, capped at both ends.
 // Every material in this file is DoubleSide, so winding direction only
 // affects computeVertexNormals()'s lighting side, never visibility.
@@ -366,8 +460,14 @@ function wrapArtMat(canvas){
  *  never H. The pillow rounding, the taper, and the crimp fin are
  *  cosmetic geometry INSIDE that envelope — nothing here invents or alters
  *  a dimension. */
-function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo){
+function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo, tray){
   const axisIsW = wrapAxis === 'W';
+  // film over a rigid tray: the faceted taut-membrane section replaces both
+  // the pillow's rounded rectangle AND the roundish ellipse (a 1x1 on-edge
+  // slug collation is roundish on its own, but once it rides in a tray the
+  // film wraps the TRAY — rectangular, faceted, never a tube)
+  const trayProf = tray ? traySectionProfile(envelope, tray.params, axisIsW) : null;
+  if(trayProf) roundish = false;
   const H = envelope.H;
   const lenDim = axisIsW ? envelope.W : envelope.L;      // machine direction — where the seals go
   const crossDim = axisIsW ? envelope.L : envelope.W;    // the OTHER horizontal axis
@@ -382,8 +482,8 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
   const hH = H/2, hCross = crossDim/2;   // body half-dims — every ramp ring stays AT OR INSIDE these, never bulges past them
-  const r0 = ringPoints(-lenDim/2, hH, hCross, roundish, fillet, axisIsW);
-  const r1 = ringPoints( lenDim/2, hH, hCross, roundish, fillet, axisIsW);
+  const r0 = trayProf ? profileRing(trayProf, -lenDim/2, axisIsW) : ringPoints(-lenDim/2, hH, hCross, roundish, fillet, axisIsW);
+  const r1 = trayProf ? profileRing(trayProf,  lenDim/2, axisIsW) : ringPoints( lenDim/2, hH, hCross, roundish, fillet, axisIsW);
   // printed wrap: map the artwork's girth panels onto the REAL pillow body
   // (solid + aligned with the pieces — unlike the old separate art tube, which
   // was hollow and axis-transposed). UVs only when artInfo is present.
@@ -400,8 +500,11 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   // scalloped the width past the body and read as a glitch, so it was dropped.
   function ramp(sign){
     const shoulder = sign*(lenDim/2), crimp = sign*(lenDim/2 + jaw);
+    // tray: the shoulder ring is the faceted section — collapsing it linearly
+    // onto the full-width flat crimp line gathers the corner facets into the
+    // triangular dog-ear folds real film makes there, with no extra geometry
     const rings = [
-      ringPoints(shoulder, hH, hCross, roundish, fillet, axisIsW),
+      trayProf ? profileRing(trayProf, shoulder, axisIsW) : ringPoints(shoulder, hH, hCross, roundish, fillet, axisIsW),
       ringPoints(crimp, finThk/2, hCross, roundish, fillet, axisIsW)
     ];
     return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
@@ -484,8 +587,8 @@ function stackInfoOf(w){
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
-function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened, artInfo){
-  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo);
+function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened, artInfo, tray){
+  const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo, tray);
   const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
   const g = new THREE.Group();
   // printed pack: the body carries the girth artwork (OPAQUE — a solid printed
@@ -546,7 +649,7 @@ function buildWrapOpened(bundle, artInfo){
   // the film is drawn only when a wrap is actually in the chain (seals present);
   // a wrapless pack shows the bare collation pieces alone (no conforming film).
   if(bundle.wraps.seals)
-    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !printed, printed ? artInfo : null));
+    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !printed, printed ? artInfo : null, bundle.tray));
   if(printed) return g;                                    // solid printed pack: no contents shown
   // Contents: with a tray in the chain the film encloses the TRAY (loaded with
   // its product), not a loose run of pieces — draw that instead, so the
@@ -708,9 +811,15 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   if(childKind === 'wrap' && w){
     const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     if(w.seals && closed.length){
-      // filmed wrap: instanced conforming-film parts per closed unit
-      const parts = wrapPartsGeometry(w.envelope, w.seals, isRoundishWrap(w), stackInfoOf(w), w.wrapAxis);
-      const finGeo = wrapFinGeometry(w.envelope, w.seals, w.wrapAxis);
+      // filmed wrap: instanced conforming-film parts per closed unit. With a
+      // tray in the chain the film wraps the TRAY, so the closed instances
+      // must be drawn from the film envelope with the faceted tray section —
+      // the bare w.envelope here is ONE CELL's collation run, which drew the
+      // closed packs as undersized round tubes inside their tray-sized slots.
+      // No tray: w.envelope and the tube profile, exactly as before.
+      const cEnv = bundle.tray ? (w.filmEnvelope || w.envelope) : w.envelope;
+      const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w), stackInfoOf(w), w.wrapAxis, undefined, bundle.tray);
+      const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis);
       const partDefs = [
         {geo: parts.bodyGeo, mat: filmClosedMat},
         {geo: parts.taperPos, mat: sealMat},
