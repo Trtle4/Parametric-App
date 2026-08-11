@@ -1278,7 +1278,11 @@ function hierarchyBundle(){
       cases: cases.count, cartonsPerCase: proj.links[0].count,
       wrapsPerCarton: wraps ? wraps.count : 0,
       piecesPerWrap: pieces ? pieces.placements.length : 0
-    }
+    },
+    // warehouse double-stack (two unit loads high): read from the ONE home,
+    // project.pallet.stacking — the render draws the second deck+load and the
+    // BCT doubles its column from this same flag
+    doubleStack: !!(proj.pallet.stacking && proj.pallet.stacking.doubleStack)
   };
 }
 
@@ -1366,7 +1370,10 @@ function applyHierarchy(resetCam){
   el('m3cut').classList.toggle('on', !solid);
   const res = hier.buildHierarchy(bundle, depth, hierSel, solid);
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
-  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT} : res.outer) : null;
+  // palletMM is the TOTAL timber in the stack (drawDims splits H into
+  // Pallet / Load / Total): two decks when double-stacked, so the second
+  // deck is never mislabeled as load height
+  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT*(bundle.doubleStack ? 2 : 1)} : res.outer) : null;
   hier.show(true);
   el('orbithint').textContent = solid
     ? 'drag orbit · right-drag pan · scroll zoom · Solid — artwork on every face'

@@ -1168,52 +1168,75 @@ function buildPallet(bundle, outerTier, S, solid){
   // pallet layout regardless of whether that outer tier is the case or carton.
   const openIdx = solid ? -1 : (S.pallet ?? nearestCameraCorner(cases.placements));
 
-  // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
-  // the SAME asset the Palletize view builds, so both pallet views render an
-  // identical pallet instead of this view's former bare slab
-  group.add(buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W));
+  // DOUBLE-STACK: two full unit loads high — pallet, load, PALLET, load. The
+  // warehouse condition the BCT doubling models (bct.js boxesAboveBottom) is
+  // drawn here too, in this ONE pallet render path (the deleted Palletize
+  // renderer used to draw it; the consolidation, 5e103c6, dropped the drawing
+  // while keeping the BCT math). Each unit load repeats deck + stack at its
+  // own y offset, so the second load carries its own timber — never a load
+  // floating deckless on the first. The cutaway opens a unit in the BOTTOM
+  // load only; the upper load is all closed (there is one selection, and the
+  // bottom load is the one whose slot it names).
+  const nLoads = bundle.doubleStack ? 2 : 1;
+  const oneLoadH = deckH + loadH;
+  for(let u = 0; u < nLoads; u++){
+    const yOff = u*oneLoadH;
+    const uOpenIdx = u === 0 ? openIdx : -1;
 
-  // closed units — textured when the pallet's pack (the outer tier: case, or
-  // carton once the case is off) has artwork, so a printed pallet shows the art
-  // on every case; else bare board, instanced per orientation.
-  const closed = cases.placements.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
-  const art = outerTier.art;
-  // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
-  // name — clicking a carton on the pallet must set the pallet's own selection,
-  // not the "which pack inside a carton" one that shares the 'carton' key.
-  if(openOuter || shrinkOuter){
-    // Contents-visible units: an OPEN tray (shell + proud cartons), a SHRINK
-    // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
-    // cartons + skin). One draw pass instances the parts across the pallet;
-    // the shrink skin is a translucent box per unit rising to the loaded top.
-    openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, deckH + restOffset,
-      {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
-  }else if(art && art.am && art.canvas && closed.length){
-    for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
-  }else{
-    for(const [o, list] of groupByOrientation(cases.placements, openIdx)){
-      const od = orient(co, o);
-      const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
-      const inst = new THREE.InstancedMesh(cgeo, board, list.length);
-      const M = new THREE.Matrix4();
-      list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
-      inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
-      pickables.push({mesh: inst, tier: 'pallet'});
-      group.add(inst);
+    // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
+    // the SAME asset the Palletize view built, so every load rides identical
+    // timber instead of a bare slab. Named so tests can count decks.
+    const timber = buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W);
+    timber.name = 'gmaPallet';
+    timber.position.y = yOff;
+    group.add(timber);
+
+    // closed units — textured when the pallet's pack (the outer tier: case, or
+    // carton once the case is off) has artwork, so a printed pallet shows the art
+    // on every case; else bare board, instanced per orientation.
+    const closed = cases.placements.map((pl, i) => ({pl, i})).filter(x => x.i !== uOpenIdx);
+    const art = outerTier.art;
+    // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
+    // name — clicking a carton on the pallet must set the pallet's own selection,
+    // not the "which pack inside a carton" one that shares the 'carton' key.
+    if(openOuter || shrinkOuter){
+      // Contents-visible units: an OPEN tray (shell + proud cartons), a SHRINK
+      // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
+      // cartons + skin). One draw pass instances the parts across the pallet;
+      // the shrink skin is a translucent box per unit rising to the loaded top.
+      openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, yOff + deckH + restOffset,
+        {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
+    }else if(art && art.am && art.canvas && closed.length){
+      for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: yOff + deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
+    }else{
+      for(const [o, list] of groupByOrientation(cases.placements, uOpenIdx)){
+        const od = orient(co, o);
+        const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
+        const inst = new THREE.InstancedMesh(cgeo, board, list.length);
+        const M = new THREE.Matrix4();
+        list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, yOff + deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
+        inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
+        pickables.push({mesh: inst, tier: 'pallet'});
+        group.add(inst);
+      }
+    }
+    if(u === 0 && !solid && cases.placements[openIdx]){
+      const pl = cases.placements[openIdx];
+      const cg = buildContainer(outerTier, bundle, S, [openIdx]);
+      cg.position.set(pl.x, yOff + deckH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
+      cg.quaternion.copy(orientQuat(pl.orientation));
+      group.add(cg);
     }
   }
-  if(!solid && cases.placements[openIdx]){
-    const pl = cases.placements[openIdx];
-    const cg = buildContainer(outerTier, bundle, S, [openIdx]);
-    cg.position.set(pl.x, deckH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
-    cg.quaternion.copy(orientQuat(pl.orientation));
-    group.add(cg);
-  }
-  group.position.y = -(deckH + loadH)/2;
+  group.position.y = -(nLoads*oneLoadH)/2;
   return {
-    span: Math.max(bundle.cases.deck.L, bundle.cases.deck.W, loadH),
-    // loaded pallet: the deck footprint x (deck + case stack) height
-    outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: deckH + loadH}
+    // span drives camera framing: single-load framing is bit-identical to
+    // before (loadH), a double stack frames the full two-load column
+    span: Math.max(bundle.cases.deck.L, bundle.cases.deck.W, nLoads === 1 ? loadH : nLoads*oneLoadH),
+    // loaded pallet: the deck footprint x the FULL stacked height — every
+    // deck and every load (pallet+load, doubled when double-stacked), so the
+    // Dims overlay total is the real floor-to-top height
+    outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: nLoads*oneLoadH}
   };
 }
 
