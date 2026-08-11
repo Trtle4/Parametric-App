@@ -1504,6 +1504,41 @@ await (async () => {
     el('d_pallet').click();      // rebuild the REAL scene; later pins read renderedOuter()
   });
 
+  t('pallet render stays INSTANCED at scale — draw calls flat, no unit dropped', () => {
+    // The deleted Palletize renderer capped instances at 4000 and silently
+    // dropped every unit past it; that cap died with it (5e103c6). Measured, it
+    // should stay dead: instancing keeps DRAW CALLS CONSTANT (23 meshes at 120
+    // cases and at 12,000), so a large pallet costs geometry, not draw calls —
+    // and 4000 was already below an ordinary small case (60mm -> 4284), so the
+    // guard would have hidden real cases rather than saved a real frame.
+    // What must never regress is the instancing itself: swap InstancedMesh for
+    // a Mesh per unit and draw calls scale with the pallet instead.
+    const p = newProject();
+    Object.assign(p.primary.collation, {piece: {kind: 'box', L: 40, W: 40, H: 40},
+      perStack: 1, nx: 1, ny: 1, stackAxis: 'Z', pieceGap: 0, stackGap: 0});
+    p.primary.wrap = null;
+    p.links[0].count = 1; p.links[1].count = 1; p.links[1].arrangement = {nx: 1, ny: 1, nz: 1};
+    const row = resolveActiveRow(p, '1mm', null);
+    const {cases, cartons} = row.arr;
+    if(!(row.casesPerPallet > 5000))
+      throw new Error(`vacuous fixture: only ${row.casesPerPallet} cases, wanted a large pallet`);
+    hier.buildHierarchy({
+      caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: null, tray: null,
+      cases: {placements: cases.placements, count: cases.count, deck: cases.deck,
+              loadH: row.loadH, unitStackH: row.unitStackH},
+      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {}
+    }, 'pallet', {}, true);                       // solid: every unit closed, the heavy path
+    let meshes = 0, unitInstances = 0;
+    getPivot().traverse(o => {
+      if(o.isInstancedMesh || o.isMesh) meshes++;
+      if(o.isInstancedMesh && o.userData && o.userData.tierName === 'pallet') unitInstances += o.count;
+    });
+    eq(unitInstances, row.casesPerPallet, 'every case on the pallet must be drawn, none capped away:');
+    if(meshes > 60)
+      throw new Error(`draw calls must not scale with the pallet: ${meshes} meshes for ${row.casesPerPallet} cases`);
+    el('d_pallet').click();                       // restore the real scene for later pins
+  });
+
   t('rendered pallet height == deck + the CHAIN\'s layer count x unit height', () => {
     // the render must not recompute the layer count: a Math.round() on each
     // unit's CENTRE z read every layer one too high (12 layers -> 13) and
