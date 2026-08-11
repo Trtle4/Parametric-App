@@ -1205,7 +1205,9 @@ function buildPallet(bundle, outerTier, S, solid){
     // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
     // the SAME asset the Palletize view built, so every load rides identical
     // timber instead of a bare slab. Named so tests can count decks.
-    const timber = buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W);
+    // built to the CHAIN's deck height, the same deckH the load is stacked
+    // from — a fixed-height mesh floats the load above its own deck
+    const timber = buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W, deckH);
     timber.name = 'gmaPallet';
     timber.position.y = yOff;
     group.add(timber);

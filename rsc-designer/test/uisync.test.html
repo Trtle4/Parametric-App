@@ -1674,6 +1674,45 @@ await (async () => {
     }
   });
 
+  t('the drawn deck is built to baseH — load rests ON it, never floats', () => {
+    // L2's visual half. buildPallet stacks the load from the chain's baseH
+    // while the timber mesh was a fixed 127, so at baseH 140 the load floated
+    // 13mm above its own deck. Numbers right, render wrong — the same shape as
+    // the double-stack float. Pinned at a NON-DEFAULT baseH: at 127 the two
+    // agree and a default-only pin proves nothing.
+    const saved = build.project.pallet.baseH;
+    try{
+      build.project.pallet.baseH = 140;
+      build.recompute();
+      el('d_pallet').click();
+      getPivot().updateMatrixWorld(true);
+      const M = new THREE.Matrix4();
+      let deck = null, load = null;
+      getPivot().traverse(o => {
+        if(o.name === 'gmaPallet'){
+          const b = new THREE.Box3().setFromObject(o);
+          deck = deck ? deck.union(b) : b;
+          return;
+        }
+        if(o.isInstancedMesh && o.userData && o.userData.tierName === 'pallet'){
+          o.geometry.computeBoundingBox();
+          const gb = o.geometry.boundingBox, b = new THREE.Box3();
+          for(let i = 0; i < o.count; i++){ o.getMatrixAt(i, M); M.premultiply(o.matrixWorld); b.union(gb.clone().applyMatrix4(M)); }
+          load = load ? load.union(b) : b;
+        }
+      });
+      if(!deck || !load) throw new Error('no deck or no load units in the pallet scene');
+      approx(deck.max.y - deck.min.y, 140, 'the drawn deck must be baseH tall:');
+      const gap = load.min.y - deck.max.y;
+      // only the 1mm cosmetic case seam may show; a whole deck's worth of
+      // float (13mm at baseH 140) is the regression
+      if(!(gap >= -1e-6 && gap <= 1.5))
+        throw new Error(`the load must rest on the drawn deck: gap ${gap.toFixed(2)}mm`);
+    } finally {
+      build.project.pallet.baseH = saved; build.recompute(); el('d_pallet').click();
+    }
+  });
+
   t('Dims split reads the CHAIN deck height, not the mesh constant', () => {
     // MUST be pinned at a NON-DEFAULT baseH: pallet.baseH and palletmesh's
     // PALLET_HEIGHT are two independent 127s, so at the default the wrong one
@@ -1686,7 +1725,9 @@ await (async () => {
     try{
       build.project.pallet.baseH = 140;
       build.recompute();
-      el('d_pallet').click();
+      // force a real rebuild of THIS depth (a re-click of the depth already
+      // shown can be a no-op if a previous pin left the scene mid-flight)
+      el('d_case').click(); el('d_pallet').click();
       const dimsBtn = el('m3dims');
       // force a fresh overlay for THIS build: an inherited 'on' state can leave
       // the previous view's SVG in place, which reads as "lines missing"
