@@ -10,6 +10,7 @@
  */
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
+import {trayParams, trayOuter, isProud} from './cookietray.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
@@ -151,6 +152,24 @@ export function newProject(){
       clearance: {wall: 0, between: 0},
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
+    },
+    // Thermoformed sizing tray between the product and the wrap. OPTIONAL and
+    // OFF by default, so the default chain and every golden pin are untouched
+    // until it is switched on. openTop is a fact of the part (it has no lid):
+    // its footprint constrains, its height does not.
+    // `nCells` is the ONE stored cell count — the tray rail and the collation
+    // rail are two CONTROLS onto this single value, never two values that sync.
+    // `params` holds tray inputs; a null/absent cell dimension means "derive
+    // from the product" (auto-with-override), any number overrides it.
+    tray: {
+      enabled: false,
+      nCells: 2,                       // default when enabled: 2 cells...
+      perCell: 10,                     // ...x 10 products on edge
+      endClearance: 3, sideClearance: 1.5,
+      params: {},                      // overrides only; {} = fully auto
+      allowedOrientations: ['LWH', 'WLH'],
+      clearance: {wall: 0, between: 0},
+      openTop: true
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal', patternIndex: 0,
       // stacking-strength (BCT) inputs — engineering guidance, not packing math.
@@ -298,7 +317,7 @@ function contentEnvelope(prim){
  *  `content` through untouched. Either way the result's allowedOrientations/
  *  clearance are project.primary's OWN: the content's placement settings,
  *  used whether or not a wrap style actually renders any geometry. */
-function solvePrimaryStage(project, content){
+function solvePrimaryStage(project, content, opts = {}){
   const prim = project.primary;
   const base = {allowedOrientations: prim.allowedOrientations, clearance: prim.clearance};
   if(!prim.wrap) return {...base, outer: content.outer, geo: null, fits: true, wrapAxis: null, wp: null};
@@ -311,8 +330,14 @@ function solvePrimaryStage(project, content){
   const env = content.outer;
   // round girth is only meaningful for a single on-edge tube running along L
   // (roundGirthEligible). A plain box has no collation to check — never round.
+  // A round girth only describes a bare on-edge slug. With a tray in the
+  // chain the film is pulled over the TRAY (a rectangular thing that happens
+  // to contain round product), so the caller forces rectangular — reading
+  // the collation here would wrongly keep hugging a cookie that is no longer
+  // what the wrap touches.
   if(wp.girthBasis === 'round'){
-    if(content.collation && roundGirthEligible(prim.collation)) wp.roundDiameter = prim.collation.piece.diameter;
+    if(!opts.forceRectangularGirth && content.collation && roundGirthEligible(prim.collation))
+      wp.roundDiameter = prim.collation.piece.diameter;
     else wp.girthBasis = 'rectangular';
   }
   let wrapFits = true;
@@ -325,6 +350,78 @@ function solvePrimaryStage(project, content){
   // wrapAxis stays 'L' on the row: a fixed constant the renderer/readout read
   // so seals/fin always land on the L-ends, never a resolved-per-envelope pick.
   return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis: 'L', wp};
+}
+
+/* ---------------- the thermoformed tray stage ----------------------------
+ * An OPTIONAL level between the product collation and the wrap:
+ *   collation (product within ONE cell) -> tray (N cells) -> wrap -> carton...
+ *
+ * Disabled by default, so the whole function is a pass-through until someone
+ * turns it on and no existing chain can move.
+ *
+ * WHY THIS IS ITS OWN STAGE, not a level fed through the generic inner
+ * solve. `solveSecondaryInner` never reads `openTop` — a documented
+ * simplification (see CLAUDE.md: openTop is wired for the OUTERMOST tier
+ * only), so an open-top container nested as an inner level still constrains
+ * height as if it were closed. The tray is exactly that case: inner, and
+ * open-top by nature. Routing it through that machinery would silently cap
+ * the product at the tray rim and lose the proud height. Instead the tray
+ * computes its own envelope here, where the open-top rule is explicit:
+ *
+ *   footprint CONSTRAINS (a product wider than its cell is a real misfit)
+ *   height does NOT      (standing proud is legal, never "does not fit")
+ *
+ * containment.js is untouched — this stage never calls it.
+ *
+ * The cell dimensions follow the auto-with-override idiom the rails already
+ * use: a null/absent override means "derive from the product", any number
+ * overrides it. Auto cell depth is the shallowest trough that can complete
+ * the cradle (cellWid/2, since cradleR defaults to the half-width) — which
+ * is why a tall product naturally stands proud rather than being swallowed.
+ */
+function solveTrayStage(project, content){
+  const tray = project.tray;
+  if(!tray || tray.enabled !== true) return null;      // pass-through (the default)
+
+  const env = content.outer;                            // ONE cell's product envelope
+  const ov = tray.params || {};
+  const num = v => typeof v === 'number' && isFinite(v);
+  const endC = num(tray.endClearance) ? tray.endClearance : 3;
+  const sideC = num(tray.sideClearance) ? tray.sideClearance : 1.5;
+
+  // auto-with-override, one axis at a time
+  const cellLen = num(ov.cellLen) ? ov.cellLen : env.L + endC;
+  const cellWid = num(ov.cellWid) ? ov.cellWid : env.W + 2*sideC;
+  const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
+  // The cradle radius defaults to the cell half-width upstream, which is only
+  // valid while the trough is at least that deep (its guard: cellH >= cradleR).
+  // That holds for the auto depth, but a user shallowing the trough would hit
+  // a throw instead of simply getting a shallower cradle — so on the AUTO path
+  // the radius follows the trough. An explicit override is still respected
+  // exactly, guard and all.
+  const cradleR = num(ov.cradleR) ? ov.cradleR : Math.min(cellWid/2, cellH);
+
+  const nCells = Math.max(1, Math.round(tray.nCells || 1));
+  const p = trayParams({...ov, nCells, cellLen, cellWid, cellH, cradleR});
+
+  // the product bottoms out on the trough floor, which sits at the tray's own
+  // floor thickness — so its top is floor + the collation's standing height
+  const standingH = env.H;
+  const outer = trayOuter(p, standingH);
+
+  // FOOTPRINT-ONLY fit. Height is deliberately absent from this test: a
+  // product standing above the cells is the normal case for an open tray,
+  // not a failure. Only an override that makes a cell too small in plan is.
+  const EPS = 1e-9;
+  const fits = cellLen + EPS >= env.L && cellWid + EPS >= env.W;
+
+  return {
+    params: p, outer, nCells, fits, standingH,
+    proud: isProud(p, standingH),
+    perCell: content.count,
+    total: nCells*content.count,
+    cellAuto: {cellLen: !num(ov.cellLen), cellWid: !num(ov.cellWid), cellH: !num(ov.cellH)}
+  };
 }
 
 /**
@@ -413,8 +510,17 @@ function solveSecondaryInner(project, child, step){
  * its OWN placement settings to whatever is now its actual parent.
  */
 function solveBelowOutermost(project, shape, step){
-  const content = contentEnvelope(project.primary);
-  const primaryResult = solvePrimaryStage(project, content);
+  const collation = contentEnvelope(project.primary);
+  // The tray, when enabled, is what the wrap actually wraps: it replaces the
+  // collation envelope with its own (max cross-section, proud-aware) and
+  // multiplies the piece count by its cell count. Disabled — the default —
+  // `trayResult` is null and `content` IS the collation, bit-identical to
+  // the pre-tray chain.
+  const trayResult = solveTrayStage(project, collation);
+  const content = trayResult
+    ? {...collation, outer: trayResult.outer, count: trayResult.total}
+    : collation;
+  const primaryResult = solvePrimaryStage(project, content, {forceRectangularGirth: !!trayResult});
   const primaryChild = {outer: primaryResult.outer, allowedOrientations: primaryResult.allowedOrientations, clearance: primaryResult.clearance};
 
   let secondaryVariant = null, child = primaryChild;
@@ -422,7 +528,7 @@ function solveBelowOutermost(project, shape, step){
     secondaryVariant = solveSecondaryInner(project, primaryChild, step);
     child = {outer: secondaryVariant.geo.outer, allowedOrientations: project.secondary.allowedOrientations, clearance: project.secondary.clearance};
   }
-  return {content, primaryResult, secondaryVariant, child};
+  return {content, collation, trayResult, primaryResult, secondaryVariant, child};
 }
 
 /** Whatever feeds the outermost tier, fitted into its cavity in the
