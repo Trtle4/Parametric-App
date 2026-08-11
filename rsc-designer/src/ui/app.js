@@ -36,6 +36,7 @@ import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describe
 import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
 import {buildTray3d, trayToSTL} from '../render/tray3d.js';
+import {parseTrayLink, buildTrayLink} from '../core/cookietraylink.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -961,6 +962,41 @@ function changeLevelStyle(newId){
  *  so the tray rail can show them as placeholders behind an empty (auto)
  *  field. Read-only: this asks the same core module the chain uses, it never
  *  computes a second answer of its own. */
+/** Apply a pasted Cookie-Tray share link to the tray level. Returns a short
+ *  status string for the panel. Imported dimensions are PINNED (see
+ *  parseTrayLink): the link describes a specific tray, and treating its
+ *  omitted-because-default values as "auto" would rebuild a different one. */
+function applyTrayLink(text){
+  let parsed = null;
+  try{ parsed = parseTrayLink(text); }catch(e){ return 'Could not read that link.'; }
+  if(!parsed) return 'No Cookie-Tray parameters found in that link.';
+  const tr = build.project.tray;
+  tr.nCells = parsed.nCells;
+  tr.params = {...parsed.params};
+  // the product half, when present, writes the COLLATION — the one owner of
+  // per-cell content — rather than being stored on the tray
+  const pr = parsed.product, col = build.project.primary.collation;
+  if(pr.productType === 'round' && pr.cookieDiameter > 0)
+    col.piece = {kind: 'cylinder', diameter: pr.cookieDiameter,
+                 thickness: pr.cookieThickness > 0 ? pr.cookieThickness : col.piece.thickness};
+  else if(pr.productType === 'rectangle' && pr.productWidth > 0)
+    col.piece = {kind: 'box', L: pr.productThickness || 90, W: pr.productWidth, H: pr.productHeight || 20};
+  if(pr.qtyTotal > 0){
+    const per = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+    col.pieceOrientation = 'on-edge'; col.stackAxis = 'X';
+    col.perStack = per; col.nx = 1; col.ny = 1;
+  }
+  projectChanged();
+  mountActiveLevel();
+  return `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;
+}
+
+/** A Cookie-Tray link describing the tray currently on screen. */
+function currentTrayLink(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  return row && row.tray ? buildTrayLink(build.project, row.tray) : null;
+}
+
 function trayAutoDims(){
   const tr = build.project.tray;
   if(!tr) return {};
@@ -1013,6 +1049,7 @@ function mountActiveLevel(){
   }else if(lvl.kind === 'tray'){
     inputs.mountTray(proj, {autoDims: trayAutoDims(), remount: () => mountActiveLevel(),
                             perCell: collate(proj.primary.collation).count,
+                            onImportLink: applyTrayLink, onExportLink: currentTrayLink,
                             onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current

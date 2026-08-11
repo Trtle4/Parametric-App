@@ -670,7 +670,18 @@ export function mountTray(project, m){
     numF('flangeT', 'Flange thickness', '', D('flangeT', 2.5)) +
     `<div class="field"><label>Long axis <span class="hint">channel direction</span></label>
       <div class="seg" id="tr_longAxis" role="group">${
-        ['X', 'Y'].map(a => `<button type="button" data-v="${a}"${(D('longAxis', 'X') === a) ? ' class="on"' : ''}>${a}</button>`).join('')}</div></div>`;
+        ['X', 'Y'].map(a => `<button type="button" data-v="${a}"${(D('longAxis', 'X') === a) ? ' class="on"' : ''}>${a}</button>`).join('')}</div></div>` +
+    // Cookie-Tray round trip — a convenience at the edge. The app never needs
+    // a link to have been used; this just carries a configuration to/from the
+    // sibling app that owns the full solid, STEP and AR.
+    `<h2 style="margin-top:6px">Cookie-Tray link</h2>` +
+    `<div class="field"><label>Share link <span class="hint">import / export</span></label>
+      <div class="inp"><input id="tr_link" type="text" placeholder="https://…/Cookie-Tray/?n=4&cl=219…"></div>
+      <div class="hint" style="margin-top:5px;line-height:1.35">
+        <button type="button" class="btn btnlink" id="tr_linkImport">Apply link</button>
+        &nbsp;&middot;&nbsp;<button type="button" class="btn btnlink" id="tr_linkCopy">Link for this tray</button>
+      </div>
+      <div class="hint" id="tr_linkNote" style="margin-top:5px;line-height:1.35"></div></div>`;
 
   const mmv = id => toMM(+el(id).value || 0, unit);
   const bindAuto = key => {
@@ -694,4 +705,20 @@ export function mountTray(project, m){
   el('tr_longAxis').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     ov.longAxis = b.dataset.v; m.onInput(); m.remount && m.remount();
   }));
+
+  // ---- Cookie-Tray link round trip (delegated to the host: it owns the
+  // solved row the export needs, and the recompute the import triggers) ----
+  const note = msg => { const n = el('tr_linkNote'); if(n) n.textContent = msg; };
+  el('tr_linkImport').addEventListener('click', () => {
+    const res = m.onImportLink ? m.onImportLink(el('tr_link').value) : null;
+    note(res || 'Import is unavailable here.');
+  });
+  el('tr_linkCopy').addEventListener('click', () => {
+    const url = m.onExportLink ? m.onExportLink() : null;
+    if(!url){ note('No tray to link yet.'); return; }
+    el('tr_link').value = url;
+    el('tr_link').select && el('tr_link').select();
+    if(navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
+    note('Link for this tray — opens the full solid, STEP and AR in Cookie-Tray.');
+  });
 }
