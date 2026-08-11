@@ -952,6 +952,12 @@ function makeTiers(bundle, cartonArt, caseArt){
  * @param {string} noun  'carton' or 'case' — which tier is the sellable pack
  */
 export function buildSellableCutaway(bundle, noun){
+  // the WRAP as the sellable unit (a tray -> wrap -> case chain): the pack IS
+  // the film and its contents, with no rigid shell to cut away — so it opens
+  // through the same buildWrapOpened every other depth uses, in the same
+  // canonical frame the caller orients. Without this branch a 'wrap' noun fell
+  // through to the case tier and the shelf drew the shipper.
+  if(noun === 'wrap') return {group: buildWrapOpened(bundle), walls: []};
   const {cartonTier, caseTier} = makeTiers(bundle, {am: null}, {am: null});
   const tier = noun === 'carton' ? cartonTier : caseTier;
   if(!tier || !tier.geo) return {group: new THREE.Group(), walls: []};

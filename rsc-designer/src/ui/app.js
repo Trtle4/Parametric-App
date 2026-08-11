@@ -498,10 +498,17 @@ function renderBCT(g, stats){
  * back wall forward), so the count and the render come from one packing result
  * — never a second hand-rolled grid. containment.js is untouched. */
 
-/** The sellable pack noun + its resolved geometry for the current chain. */
+/** The sellable pack noun + its resolved geometry for the current chain.
+ *  Carton if there is one, else the WRAP if there is one, else the case.
+ *  The wrap was missing from this rule, so a tray -> wrap -> case chain
+ *  merchandised the shipper: a shrink-wrapped tray of product IS the retail
+ *  unit, and nobody puts the case on a shelf. The tray makes that chain
+ *  ordinary rather than exotic, which is what exposed it. */
 function shelfSellable(){
   const proj = build.project;
-  const noun = (proj.secondary.enabled !== false) ? 'carton' : 'case';
+  const noun = (proj.secondary.enabled !== false) ? 'carton'
+             : proj.primary.wrap ? 'wrap'
+             : 'case';
   const row = resolveActiveRow(proj, build.getRounding(), selKey());
   return {noun, geo: row && row.geo ? row.geo[noun] : null};
 }

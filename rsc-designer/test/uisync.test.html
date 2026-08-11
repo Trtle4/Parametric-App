@@ -1633,6 +1633,47 @@ await (async () => {
     el('d_pallet').click();      // rebuild the REAL scene; later pins read renderedOuter()
   });
 
+  t('SHELF: the sellable unit is carton, else WRAP, else case', () => {
+    // The rule used to be "carton if enabled, else case", which merchandised
+    // the SHIPPER for a tray -> wrap -> case chain. A shrink-wrapped tray of
+    // product is the retail unit; the tray makes that chain ordinary, which is
+    // what exposed the gap. Asserts the DISPLAYED noun, across every shape.
+    const proj = build.project;
+    const saved = {wrap: proj.primary.wrap, sec: proj.secondary.enabled,
+                   tray: proj.tray.enabled, nCells: proj.tray.nCells,
+                   col: JSON.parse(JSON.stringify(proj.primary.collation))};
+    const trayCollation = () => Object.assign(proj.primary.collation,
+      {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+    const unitFor = (setup) => {
+      setup();
+      build.recompute();
+      el('tabShelf').click();
+      const u = el('spUnit').textContent.trim();
+      el('tab2d').click();
+      return u;
+    };
+    try{
+      const wrapObj = saved.wrap || {styleId: 'flowwrap', params: {...proj.primary.wrap ? {} : {}}, locked: false};
+      const chains = [
+        ['tray -> wrap -> case',           () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
+        ['tray -> wrap -> carton -> case', () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
+        ['wrap -> carton -> case',         () => { proj.tray.enabled = false; proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
+        ['wrap -> case',                   () => { proj.tray.enabled = false; proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
+        ['carton -> case',                 () => { proj.tray.enabled = false; proj.primary.wrap = null;    proj.secondary.enabled = true;  }, 'cartons'],
+        ['case only',                      () => { proj.tray.enabled = false; proj.primary.wrap = null;    proj.secondary.enabled = false; }, 'cases']
+      ];
+      for(const [label, setup, want] of chains)
+        eq(unitFor(setup), want, `${label} must merchandise the ${want.slice(0, -1)}:`);
+    } finally {
+      proj.primary.wrap = saved.wrap; proj.secondary.enabled = saved.sec;
+      proj.tray.enabled = saved.tray; proj.tray.nCells = saved.nCells;
+      Object.assign(proj.primary.collation, saved.col);
+      build.recompute();
+      // restore the 3D pallet context the pins below this one assume
+      el('tab3d').click(); el('d_pallet').click();
+    }
+  });
+
   t('Dims split reads the CHAIN deck height, not the mesh constant', () => {
     // MUST be pinned at a NON-DEFAULT baseH: pallet.baseH and palletmesh's
     // PALLET_HEIGHT are two independent 127s, so at the default the wrong one
@@ -1647,7 +1688,12 @@ await (async () => {
       build.recompute();
       el('d_pallet').click();
       const dimsBtn = el('m3dims');
-      if(dimsBtn && !dimsBtn.classList.contains('on')) dimsBtn.click();
+      // force a fresh overlay for THIS build: an inherited 'on' state can leave
+      // the previous view's SVG in place, which reads as "lines missing"
+      if(dimsBtn){
+        if(dimsBtn.classList.contains('on')) dimsBtn.click();
+        dimsBtn.click();
+      }
       const txt = (el('dimsOverlay').textContent || '').replace(/\s+/g, ' ');
       const m = txt.match(/Pallet\s*([\d.]+)/);
       if(!m) throw new Error(`no Pallet line in the Dims overlay: "${txt.slice(0, 120)}"`);
