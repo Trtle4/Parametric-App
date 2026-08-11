@@ -35,6 +35,7 @@ import * as notify from './notify.js';
 import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection} from '../core/project.js';
 import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
+import {buildTray3d, trayToSTL} from '../render/tray3d.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -1045,6 +1046,9 @@ function setStateChip(kind, text){
 
 function updateExportButtonsState(){
   const lvl = LEVELS[activeLevel];
+  // STL belongs to the tray alone: it is a 3D part, not a dieline. STEP stays
+  // in Cookie-Tray (a B-rep format needs the kernel this app does not have).
+  el('btnSTL').style.display = (activeLevel === 'tray' && isTierEnabled('tray')) ? '' : 'none';
   if(lvl.kind !== 'style'){
     el('btnDXF').disabled = true;
     el('btnDXF').title = lvl.kind === 'product'
@@ -1237,6 +1241,17 @@ function hudText(bundle, opened, depth){
   const unit = bundle.wrapGeo ? 'wrap' : 'pack';
   const hasCase = !!bundle.caseGeo;                     // pallet's outer unit is a case, else a carton
   const parts = [];
+  if(depth === 'tray' && bundle.tray){
+    const tr = bundle.tray, u = inputs.getUnit(), f = v => fmtLen(v, u);
+    const o = tr.outer, own = tr.params.overallH;
+    // the render draws the TRAY; the chain hands the wrap an envelope that also
+    // covers any proud product. Say both, so the Dims number (the drawn part)
+    // and the envelope can never look like a contradiction.
+    return `Tray: ${tr.nCells} cell${tr.nCells === 1 ? '' : 's'} × ${tr.perCell} = ${tr.total} products` +
+      ` · envelope ${f(o.L)} × ${f(o.W)} × ${f(o.H)} ${u}` +
+      (tr.proud ? ` (product stands proud — tray itself is ${f(own)} ${u} tall)` : '') +
+      (tr.fits ? '' : ' · PRODUCT TOO WIDE FOR THE CELL');
+  }
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} ${hasCase ? 'cases' : 'cartons'}`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
   else if(depth === 'carton') parts.push(`Carton: ${c.wrapsPerCarton} ${unit}${c.wrapsPerCarton === 1 ? '' : 's'}`);
@@ -1563,6 +1578,21 @@ el('units').addEventListener('change', () => {
 });
 el('palUnits').addEventListener('change', () => {
   if(inputs.switchPalUnits()) refreshPal();   // pallet dims re-display; keep the readout in sync
+});
+
+// STL export: the tray mesh's own triangles, built from the SAME ported
+// dimensions the envelope comes from. No CAD kernel — STL is a triangle soup.
+el('btnSTL').addEventListener('click', () => {
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  if(!row || !row.tray){ showNotice('Enable the tray to export it.', true); return; }
+  const {group} = buildTray3d(row.tray.params);
+  const text = trayToSTL(group, 'cookie-tray');
+  const blob = new Blob([text], {type: 'model/stl'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'cookie-tray.stl';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 });
 
 el('tab2d').addEventListener('click', () => setView('2d'));

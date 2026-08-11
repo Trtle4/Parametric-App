@@ -13,6 +13,7 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
+import {buildTray3d} from './tray3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
@@ -879,6 +880,13 @@ export function buildHierarchy(bundle, depth, sel, solid){
     geo.computeBoundingBox();
     const s = (rot ? geo.boundingBox.clone().applyMatrix4(rot) : geo.boundingBox).getSize(new THREE.Vector3());
     outer = {L: s.x, W: s.z, H: s.y};
+  }else if(depth === 'tray'){
+    // the thermoformed tray: a sibling renderer, drawn from the ported
+    // dimensions. `outer` is the PLACED envelope (trayOuter), so the Dims
+    // overlay annotates exactly the box the chain hands to the wrap.
+    const r = buildTray3d(bundle.tray.params);
+    group.add(r.group);
+    span = r.span; outer = r.outer;
   }else if(depth === 'wrap'){
     // Solid + art → the printed pillow (girth artwork on the real body, solid);
     // otherwise the cutaway film + pieces. The art rides the same aligned pillow

@@ -28,7 +28,7 @@
 <button id="tab3d">3D</button>
 <button id="tabShelf">Shelf</button>
 <button id="tabBuild">Build</button>
-<button id="btnDXF">DXF</button>
+<button id="btnDXF">DXF</button><button id="btnSTL" style="display:none">STL</button>
 <button id="btnArt" style="display:none">Art</button>
 <button id="btnSpec" style="display:none">Spec</button>
 <button id="btnPng2d">2D PNG</button>
@@ -167,6 +167,7 @@ import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot} from '../src/render/fold3d.js';
+import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {toMM} from '../src/core/units.js';
 
@@ -1054,7 +1055,88 @@ await (async () => {
     if(!(after > before)) throw new Error(`more cells must widen the wrap: ${before} -> ${after}`);
   });
 
+  /* ---- render + STL (stage 4) ---- */
+  t('tray render: the tray depth builds meshes', async () => {
+    el('tab3d').click();
+    el('d_tray').click();
+    if(el('d_tray').disabled) throw new Error('tray depth must be reachable while the tier is on');
+    if(hier.renderedMeshCount() === 0) throw new Error('tray depth rendered nothing');
+  });
+
+  t('tray render: the part is visibly TAPERED — wider at the flange than the base', () => {
+    // measure the built geometry, not the parameters: the render must AGREE
+    // with the envelope, which is pinned to the flange (max cross-section).
+    // A straight-sided box here would silently contradict the chain.
+    const pivot = getPivot();
+    const v = new THREE.Vector3();
+    let yMin = Infinity, yMax = -Infinity;
+    pivot.traverse(o => {
+      if(!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+      o.updateWorldMatrix(true, false);
+      const pos = o.geometry.attributes.position;
+      for(let i = 0; i < pos.count; i++){
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        if(v.y < yMin) yMin = v.y;
+        if(v.y > yMax) yMax = v.y;
+      }
+    });
+    const band = (yMax - yMin)*0.12;
+    let loMin = Infinity, loMax = -Infinity, hiMin = Infinity, hiMax = -Infinity;
+    pivot.traverse(o => {
+      if(!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+      const pos = o.geometry.attributes.position;
+      for(let i = 0; i < pos.count; i++){
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        if(v.y <= yMin + band){ if(v.x < loMin) loMin = v.x; if(v.x > loMax) loMax = v.x; }
+        if(v.y >= yMax - band){ if(v.x < hiMin) hiMin = v.x; if(v.x > hiMax) hiMax = v.x; }
+      }
+    });
+    const base = loMax - loMin, top = hiMax - hiMin;
+    if(!(top > base + 1))
+      throw new Error(`tray must render tapered: base ${base.toFixed(1)} vs top ${top.toFixed(1)}`);
+    // and the wide end must be the FLANGE the envelope uses, not merely "some" wider band
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    if(Math.abs(top - row.tray.params.outerL) > 1.5)
+      throw new Error(`the widest section should be the flange ${row.tray.params.outerL}, got ${top.toFixed(1)}`);
+  });
+
+  t('tray STL: well-formed triangles whose bbox is the tray box', () => {
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const {group} = buildTray3d(row.tray.params);
+    const stl = trayToSTL(group, 'cookie-tray');
+    const facets = (stl.match(/facet normal/g) || []).length;
+    const verts = (stl.match(/vertex /g) || []).length;
+    if(!stl.startsWith('solid cookie-tray')) throw new Error('missing STL header');
+    if(!stl.trimEnd().endsWith('endsolid cookie-tray')) throw new Error('missing STL footer');
+    if(facets < 20) throw new Error(`too few facets: ${facets}`);
+    eq(verts, facets*3, 'three vertices per facet:');
+    if(/NaN|Infinity/.test(stl)) throw new Error('STL contains non-finite coordinates');
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    const re = /vertex ([-\d.eE+]+) ([-\d.eE+]+) ([-\d.eE+]+)/g;
+    let m;
+    while((m = re.exec(stl))){
+      const x = +m[1], y = +m[2], z = +m[3];
+      if(x < mnx) mnx = x; if(x > mxx) mxx = x;
+      if(y < mny) mny = y; if(y > mxy) mxy = y;
+      if(z < mnz) mnz = z; if(z > mxz) mxz = z;
+    }
+    const p = row.tray.params;
+    if(Math.abs((mxx - mnx) - p.outerL) > 0.01) throw new Error(`STL L ${(mxx-mnx).toFixed(2)} != ${p.outerL}`);
+    if(Math.abs((mxz - mnz) - p.outerW) > 0.01) throw new Error(`STL W ${(mxz-mnz).toFixed(2)} != ${p.outerW}`);
+    if(Math.abs((mxy - mny) - p.overallH) > 0.01) throw new Error(`STL H ${(mxy-mny).toFixed(2)} != ${p.overallH}`);
+  });
+
+  t('tray exports: STL only at tray level; DXF stays unavailable (no dieline)', () => {
+    setLevel('tray');
+    if(el('btnSTL').style.display === 'none') throw new Error('STL must be offered at tray level');
+    if(!el('btnDXF').disabled) throw new Error('a tray has no dieline — DXF must stay disabled');
+    setLevel('case');
+    if(el('btnSTL').style.display !== 'none') throw new Error('STL must not be offered away from the tray');
+    setLevel('tray');
+  });
+
   // restore: tray OFF and the default collation, so later blocks are unaffected
+  el('tab2d').click();
   build.project.tray.enabled = false;
   build.project.tray.nCells = 2;
   build.project.tray.params = {};
