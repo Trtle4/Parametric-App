@@ -35,6 +35,12 @@ export const PALLET_HEIGHT = BOTTOM_T + STRINGER_H + DECK_T;
  *  reading as a stringer pallet at all. */
 const MIN_RAIL = 6;
 
+/** The shortest deck this can draw as a real stringer pallet — fixed boards
+ *  plus a minimum rail above the fork notch. Below it the mesh degrades to a
+ *  proportional miniature (see boardStack), so the UI warns at this boundary
+ *  rather than letting the render quietly misrepresent the fork opening. */
+export const MIN_FAITHFUL_DECK_H = BOTTOM_T + NOTCH_H + MIN_RAIL + DECK_T;
+
 /**
  * The board stack for a requested deck height.
  *

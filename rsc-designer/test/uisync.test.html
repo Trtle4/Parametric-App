@@ -52,6 +52,11 @@
   <span id="uPal">in</span>
   <input id="palMaxH" type="number" value="60">
   <span id="uPalMaxH">in</span>
+  <!-- deck height: a real input since the baseH exposure, so the skeleton must
+       carry it (and its unit + boundary note) or boot throws on the listener -->
+  <input id="palBaseH" type="number" value="5">
+  <span id="uPalBaseH">in</span>
+  <div id="palBaseHNote" style="display:none"></div>
   <select id="palUnits"><option value="in">in</option><option value="mm">mm</option></select>
   <select id="palPattern"><option value="optimal">optimal</option><option value="column">column</option><option value="interlock">interlock</option></select>
   <!-- BCT stacking inputs the real app wires at boot -->
@@ -171,6 +176,7 @@ import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
 import {toMM} from '../src/core/units.js';
+import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
 // importing it boots the real app against the DOM above, exactly like
@@ -1746,6 +1752,61 @@ await (async () => {
       approx(+ml[1], row.loadH, 'the Load line must be the chain load height:');
     } finally {
       build.project.pallet.baseH = saved; build.recompute(); el('d_pallet').click();
+    }
+  });
+
+  t('the deck-height INPUT reaches the chain — value, budget and boundary note', () => {
+    // baseH used to be invisible: a project field with no field. Both bugs that
+    // hid in it (M-1's Dims split, L2's floating load) were only findable
+    // because something else surfaced the number. Now it is typed, so the pin
+    // is on the INPUT path — the two above set project.pallet.baseH directly
+    // and would pass with the field wired to nothing at all.
+    const savedH = build.project.pallet.baseH, savedField = el('palBaseH').value;
+    const pu = inputs.getPalUnit();
+    const type = v => { el('palBaseH').value = String(v); fire(el('palBaseH'), 'input'); };
+    const inField = mm => pu === 'mm' ? mm : mm/25.4;      // the field speaks the rail's unit
+    try{
+      // 1. the typed value lands in the project, through the unit read
+      type(inField(127));
+      approx(build.project.pallet.baseH, 127, 'a typed deck height must reach project.pallet.baseH:', 1e-9);
+
+      // 2. the FIT budget follows the field. Not a restatement of the solver:
+      //    a taller deck must leave strictly fewer case layers, and the load
+      //    must still fit the declared max height at both ends.
+      const layersNow = () => {
+        const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+        return {layers: row.caseLayers, loadH: row.loadH};
+      };
+      const lo = layersNow();
+      const tallDeck = build.project.pallet.maxH * 0.66;   // eats two thirds of the budget
+      type(inField(tallDeck));
+      approx(build.project.pallet.baseH, tallDeck, 'the tall deck must reach the project:', 1e-6);
+      const hi = layersNow();
+      if(!(hi.layers < lo.layers))
+        throw new Error(`a taller deck must cost layers: ${lo.layers} at 127mm, ${hi.layers} at ${tallDeck.toFixed(0)}mm`);
+      for(const [label, r, h] of [['127', lo, 127], ['tall', hi, tallDeck]])
+        if(r.loadH + h > build.project.pallet.maxH + 1e-6)
+          throw new Error(`deck+load must fit maxH (${label}): ${h.toFixed(0)} + ${r.loadH} > ${build.project.pallet.maxH}`);
+
+      // 3. the miniature-timber boundary note tracks the field, both ways.
+      //    Derived from the exported constant, not a copy of 80: the note must
+      //    follow wherever the faithful-shape floor moves to.
+      type(inField(MIN_FAITHFUL_DECK_H + 5));
+      if(el('palBaseHNote').style.display !== 'none')
+        throw new Error('the miniature-timber note must be hidden above the faithful floor');
+      type(inField(MIN_FAITHFUL_DECK_H - 5));
+      if(el('palBaseHNote').style.display === 'none')
+        throw new Error('the miniature-timber note must show below the faithful floor');
+
+      // 4. blank/zero holds the last good deck rather than collapsing it
+      type('');
+      approx(build.project.pallet.baseH, MIN_FAITHFUL_DECK_H - 5,
+             'a blank field must keep the last good deck height:', 1e-6);
+    } finally {
+      build.project.pallet.baseH = savedH;
+      el('palBaseH').value = savedField; fire(el('palBaseH'), 'input');
+      build.project.pallet.baseH = savedH; build.recompute();
+      el('d_pallet').click();
     }
   });
 

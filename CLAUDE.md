@@ -75,6 +75,27 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   assertions run against a real initialized scene, not a silently-aborted
   one.
 
+- A pin that RECOMPUTES the expected value is a restatement, not a test. It
+  will agree with a bug as readily as with a fix — the test-layer face of the
+  single-source rule above. Every pin written that way this session passed its
+  own mutation test: the M-1 Dims split (which recomputed the Pallet/Load
+  arithmetic instead of reading the drawn overlay), a rounding fixture whose
+  80/3 case rounds to 27 under both `ceil` and nearest, and a sibling-refresh
+  check whose helper fired `change` as well as `input` and so never tested the
+  live path. The pins that read what the app actually RENDERED or EXPORTED —
+  overlay text, mesh vertices, the querystring, the deployed Cookie-Tray —
+  caught their bugs immediately. So: mutation-test every pin. Revert the fix;
+  if the pin still passes, it is testing the implementation against itself,
+  and the fixture is at fault, not the code.
+- Fixture hygiene: a cascade of failures around one real fault is how a suite
+  loses its credibility. A pin that inherits state from its neighbours — a
+  stale overlay toggle, a left-over 2D view, a depth click that is a no-op
+  because that depth is already shown — knocks over unrelated tests when one
+  genuinely fails, and can pass by luck when it doesn't. Each pin establishes
+  its own preconditions (force a real rebuild rather than assuming one) and
+  restores what it changed in a `finally`, so it passes in isolation and in
+  any order. Three separate fixtures broke this way in one session.
+
 ## Known simplifications to revisit
 
 - **RESOLVED (seal-angles task): the flow-wrap end seal is angled, not

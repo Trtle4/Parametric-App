@@ -615,7 +615,8 @@ export function readPallet(){
   const match = (el('pal').value || '').match(PAL_RE);
   const a = match ? +match[1] : (palUnit === 'mm' ? 1219.2 : 48);
   const b = match ? +match[2] : (palUnit === 'mm' ? 1016 : 40);
-  return {L: toMM(a, palUnit), W: toMM(b, palUnit), maxH: toMM(+el('palMaxH').value || 0, palUnit)};
+  return {L: toMM(a, palUnit), W: toMM(b, palUnit), maxH: toMM(+el('palMaxH').value || 0, palUnit),
+          baseH: toMM(+el('palBaseH').value || 0, palUnit)};
 }
 
 /* ---------- unit switching ---------- */
@@ -638,8 +639,9 @@ export function switchPalUnits(){
   const m = (el('pal').value || '').match(PAL_RE);
   if(m) el('pal').value = `${fmtP(+m[1]*k)} x ${fmtP(+m[2]*k)}`;
   el('palMaxH').value = fmtP((+el('palMaxH').value || 0)*k);
+  el('palBaseH').value = fmtP((+el('palBaseH').value || 0)*k);
   palUnit = next;
-  ['uPal', 'uPalMaxH'].forEach(id => el(id).textContent = palUnit);
+  ['uPal', 'uPalMaxH', 'uPalBaseH'].forEach(id => el(id).textContent = palUnit);
   return true;
 }
 

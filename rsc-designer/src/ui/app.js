@@ -16,7 +16,7 @@ import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
-import {PALLET_HEIGHT} from '../render/palletmesh.js';
+import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
 import {buildShelf, showShelf} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
@@ -1656,8 +1656,14 @@ levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
 // pallet fields write straight into project.pallet — the single home for
 // pallet dims (no more copy into a detached object)
 function commitPallet(){
-  const {L, W, maxH} = inputs.readPallet();
+  const {L, W, maxH, baseH} = inputs.readPallet();
   build.project.pallet.L = L; build.project.pallet.W = W; build.project.pallet.maxH = maxH;
+  // deck height drives FOUR things — the fit's height budget, where the load
+  // rests, the Dims Pallet/Load split, and the drawn timber — so it has one
+  // writer here like every other pallet field. 0/blank keeps the last good
+  // value rather than collapsing the deck mid-typing.
+  if(baseH > 0) build.project.pallet.baseH = baseH;
+  syncBaseHNote();
   // switching pattern FAMILY re-filters the ranked list, so a held index
   // would silently point at an unrelated layout — restart at the family's
   // best. (Deck/height edits keep the index; the clamp absorbs shrinkage.)
@@ -1671,12 +1677,31 @@ function commitPallet(){
   st.doubleStack = el('bctDouble').checked;
 }
 /** Write project.pallet back into the pallet rail fields (after a load). */
+/** Warn at the mesh's faithful-shape boundary rather than drawing something
+ *  that misrepresents the pallet. Below MIN_FAITHFUL_DECK_H the timber can no
+ *  longer be fixed boards + a fork notch, so it degrades to a proportional
+ *  miniature — say so instead of letting the render imply a real fork opening
+ *  that isn't there. The value is still honoured; this is a note, not a clamp:
+ *  the chain's arithmetic is exact at any height. */
+function syncBaseHNote(){
+  const n = el('palBaseHNote');
+  if(!n) return;
+  const h = build.project.pallet.baseH ?? PALLET_HEIGHT;
+  const below = h < MIN_FAITHFUL_DECK_H;
+  n.style.display = below ? '' : 'none';
+  if(below) n.textContent =
+    `Below ${fmtLen(MIN_FAITHFUL_DECK_H, inputs.getPalUnit())} ${inputs.getPalUnit()} the timber is drawn as a scaled miniature — ` +
+    `boards and fork opening no longer at real proportions. The load height and fit are unaffected.`;
+}
+
 function writePalletFields(){
   const p = build.project.pallet, pu = inputs.getPalUnit();
   const fmtP = v => pu === 'mm' ? Math.round(v).toString() : (+v.toFixed(3)).toString();
   el('pal').value = `${fmtP(fromMM(p.L, pu))} x ${fmtP(fromMM(p.W, pu))}`;
   el('palMaxH').value = fmtP(fromMM(p.maxH, pu));
+  el('palBaseH').value = fmtP(fromMM(p.baseH ?? PALLET_HEIGHT, pu));
   el('palPattern').value = p.pattern;
+  syncBaseHNote();
   const st = p.stacking || {};
   el('bctEct').value = st.ect ?? 32;
   el('bctWeight').value = st.unitWeightLb ?? 20;
@@ -1690,7 +1715,7 @@ function onPalletEdited(){
   // all of them instead of a hand-picked subset keyed off the current tab
   projectChanged();
 }
-['pal', 'palMaxH', 'bctEct', 'bctWeight', 'bctTarget'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+['pal', 'palMaxH', 'palBaseH', 'bctEct', 'bctWeight', 'bctTarget'].forEach(id => el(id).addEventListener('input', onPalletEdited));
 ['palPattern', 'bctDouble'].forEach(id => el(id).addEventListener('change', onPalletEdited));
 
 el('units').addEventListener('change', () => {
