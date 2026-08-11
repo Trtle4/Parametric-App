@@ -510,30 +510,28 @@ t('LINK: round trip is a FIXED POINT (export -> import -> same tray)', () => {
   near(after.outer.W, before.outer.W, 'envelope W:', 1e-9);
 });
 
-t('LINK: an exported link rebuilds the SAME tray over THERE (cross-app)', () => {
-  // The fixed-point test above only proves export->import is stable WITHIN
-  // this app. This is the direction that was never checked: hand our link's
-  // PRODUCT half to the ported derive_params — what Cookie-Tray does when it
-  // re-derives from a product spec — and require the tray it builds to be the
-  // tray we display. Deliberately does NOT feed `cl` back in: honouring our
-  // explicit cell length would make this vacuous, and it is precisely when
-  // they re-derive that a second derivation here shows up as a different tray.
+/* The fixed-point test above only proves export -> import is stable WITHIN
+   this app. This is the direction that was never checked: hand our link's
+   PRODUCT half to the ported derive_params — what Cookie-Tray does when it
+   re-derives from a product spec — and require the tray it builds to be the
+   tray we display. Deliberately does NOT feed `cl`/`cw` back in: honouring our
+   own explicit cell dims would make it vacuous, and it is precisely when they
+   re-derive that a second derivation over here shows up as a different tray. */
+const crossAppTray = colPatch => {
   const p = trayProject();
   Object.assign(p.primary.collation, {
     piece: {kind: 'cylinder', diameter: 47, thickness: 12},
-    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1,
-    // a REAL inter-piece gap: with products touching, both cell-length rules
-    // coincide and this pin would pass no matter which one the app used
-    pieceGap: 0.9
-  });
+    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1
+  }, colPatch);
   const mine = resolveActiveRow(p, '1mm').tray;
   const qs = new URLSearchParams(buildTrayLink(p, mine).split('?')[1]);
   const numOr = (k, d) => qs.has(k) ? +qs.get(k) : d;
-
   const spec = {
     qtyTotal: numOr('qty', 24), nCells: numOr('ncp', 3),
     productType: qs.get('pty') || 'round',
     cookieDiameter: numOr('pdia', 45), cookieThickness: numOr('pthk', 12),
+    productWidth: numOr('pw', 45), productHeight: numOr('ph', 20),
+    productThickness: numOr('ptk', 12),
     cellH: numOr('ch', 28)
   };
   // every structural tray key the link carries, honoured as an override — but
@@ -542,16 +540,58 @@ t('LINK: an exported link rebuilds the SAME tray over THERE (cross-app)', () => 
     if(['nCells', 'cellLen', 'cellWid', 'cellH', 'cradleR', 'longAxis'].includes(long)) continue;
     if(qs.has(short)) spec[long] = +qs.get(short);
   }
-  const theirs = deriveTrayParams(spec);
-
-  near(theirs.cellLen, mine.params.cellLen, 'cell length across the two apps:', 1e-9);
-  near(theirs.outerL, mine.params.outerL, 'tray outer L across the two apps:', 1e-9);
-  near(theirs.outerW, mine.params.outerW, 'tray outer W across the two apps:', 1e-9);
+  return {mine, theirs: deriveTrayParams(spec)};
+};
+const sameTrayBothSides = (label, colPatch) => {
+  const {mine, theirs} = crossAppTray(colPatch);
+  near(theirs.cellLen, mine.params.cellLen, `${label} — cell length across the two apps:`, 1e-9);
+  near(theirs.cellWid, mine.params.cellWid, `${label} — cell WIDTH across the two apps:`, 1e-9);
+  near(theirs.outerL, mine.params.outerL, `${label} — tray outer L:`, 1e-9);
+  near(theirs.outerW, mine.params.outerW, `${label} — tray outer W:`, 1e-9);
   // and therefore the envelope the rest of the chain is built on
   const theirEnv = trayOuter(theirs, mine.standingH);
-  near(theirEnv.L, mine.outer.L, 'envelope L across the two apps:', 1e-9);
-  near(theirEnv.W, mine.outer.W, 'envelope W across the two apps:', 1e-9);
-  near(theirEnv.H, mine.outer.H, 'envelope H across the two apps:', 1e-9);
+  near(theirEnv.L, mine.outer.L, `${label} — envelope L:`, 1e-9);
+  near(theirEnv.W, mine.outer.W, `${label} — envelope W:`, 1e-9);
+  near(theirEnv.H, mine.outer.H, `${label} — envelope H:`, 1e-9);
+};
+
+t('LINK: an exported link rebuilds the SAME tray over THERE (cross-app)', () => {
+  // a REAL inter-piece gap: with products touching, both cell-LENGTH rules
+  // coincide and this would pass no matter which one the app used
+  sameTrayBothSides('gapped collation', {pieceGap: 0.9});
+});
+
+t('LINK: cross-app WIDTH holds for multi-stack and cross-axis collations', () => {
+  // The width rules only coincide at nx=ny=1 with the run along X — which is
+  // what enabling the tray sets, and therefore all any earlier pin ever saw.
+  // The Product rail stays live afterwards, so these are all reachable, and
+  // each one used to inflate the cell by a whole product (ny=2: 97 vs 50,
+  // stackAxis Y: 123 vs 50) while the link still exported one stack's worth.
+  // The tray MODEL is one stack per cell; these configs are reported as
+  // misfits (see the misfit-reason pin below) — but a misfit must still be the
+  // SAME tray on both sides, not silently a different one.
+  sameTrayBothSides('ny=2', {ny: 2});
+  sameTrayBothSides('stackAxis=Y', {stackAxis: 'Y'});
+  sameTrayBothSides('ny=2 + stackGap', {ny: 2, stackGap: 4});
+  sameTrayBothSides('box product', {piece: {kind: 'box', L: 12, W: 47, H: 47}});
+});
+
+t('TRAY: a collation the tray model cannot express is a misfit, and says why', () => {
+  const p = trayProject();
+  Object.assign(p.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X',
+                                      perStack: 10, nx: 1, ny: 2});
+  const t2 = resolveActiveRow(p, '1mm').tray;
+  eq(t2.fits, false, 'two stacks across a one-stack cell must not report a fit:');
+  ok(/one stack per cell/.test(t2.misfitReason || ''),
+     `misfit must name the cause, got ${JSON.stringify(t2.misfitReason)}`);
+  // and the tray-SHAPED collation — the one enabling the tray actually sets
+  // (setTierEnabled: 1x1 on-edge along X) — still fits, with no reason attached
+  const q = trayProject();
+  Object.assign(q.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X',
+                                      perStack: 10, nx: 1, ny: 1});
+  const ok1 = resolveActiveRow(q, '1mm').tray;
+  eq(ok1.fits, true, 'the one-stack-per-cell collation still fits:');
+  eq(ok1.misfitReason, null, 'a fitting tray carries no misfit reason:');
 });
 
 t('LINK: the product half carries the collation across', () => {

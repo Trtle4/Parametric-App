@@ -32,12 +32,11 @@ import {downloadSvgPNG, savePNG} from '../export/png.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection, trayAutoCells} from '../core/project.js';
 import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
 import {buildTray3d, trayToSTL} from '../render/tray3d.js';
 import {parseTrayLink, buildTrayLink} from '../core/cookietraylink.js';
-import {cellLengthFor, packPitchOf} from '../core/cookietray.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -1023,14 +1022,13 @@ function trayAutoDims(){
   const tr = build.project.tray;
   if(!tr) return {};
   try{
-    const col = collate(build.project.primary.collation);
-    // the SAME cell-length rule solveTrayStage uses — this readout is what the
-    // rail shows as the "auto" value, so a second expression here would let the
-    // displayed auto disagree with the tray actually built
-    const cellLen = cellLengthFor(col.count, packPitchOf(build.project.primary.collation.piece),
-                                  tr.endClearance ?? 3);
-    const cellWid = col.envelope.W + 2*(tr.sideClearance ?? 1.5);
-    const cellH = cellWid/2;
+    // THE derivation solveTrayStage uses, not a second copy of it: this readout
+    // is what the rail offers as the "auto" value, so an expression of its own
+    // here would let the displayed auto disagree with the tray actually built.
+    // (It did: this held `env.W + 2*side` for the width, which a multi-stack
+    // collation inflated by a whole product.)
+    const {cellLen, cellWid} = trayAutoCells(build.project);
+    const cellH = cellWid/2;                     // depth follows the auto width
     const ov = tr.params || {};
     const eff = k => (typeof ov[k] === 'number' ? ov[k] : ({cellLen, cellWid, cellH})[k]);
     return {cellLen, cellWid, cellH,
@@ -1326,7 +1324,11 @@ function hudText(bundle, opened, depth){
     return `Tray: ${tr.nCells} cell${tr.nCells === 1 ? '' : 's'} × ${tr.perCell} = ${tr.total} products` +
       ` · envelope ${f(o.L)} × ${f(o.W)} × ${f(o.H)} ${u}` +
       (tr.proud ? ` (product stands proud — tray itself is ${f(own)} ${u} tall)` : '') +
-      (tr.fits ? '' : ' · PRODUCT TOO WIDE FOR THE CELL');
+      // the stage says WHICH axis missed and why: a misfit here is usually a
+      // collation the tray model cannot express (more than one stack across a
+      // cell), not a mistyped dimension — "too wide" alone read as arithmetic,
+      // and was shown even when it was the LENGTH that missed
+      (tr.fits ? '' : ` · DOES NOT FIT — ${tr.misfitReason}`);
   }
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} ${hasCase ? 'cases' : 'cartons'}`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);

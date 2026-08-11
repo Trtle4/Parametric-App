@@ -10,7 +10,7 @@
  */
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
-import {trayParams, trayOuter, isProud, cellLengthFor, packPitchOf} from './cookietray.js';
+import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
@@ -389,6 +389,50 @@ function solvePrimaryStage(project, content, opts = {}){
  * the cradle (cellWid/2, since cradleR defaults to the half-width) — which
  * is why a tall product naturally stands proud rather than being swallowed.
  */
+/**
+ * THE tray auto-derivation: cell length AND cell width, straight out of the
+ * ported Cookie-Tray inverse path (`deriveTrayParams`). Exported so the tray
+ * stage and the rail's "auto" readout are one derivation rather than two
+ * copies that agree until they don't.
+ *
+ * Why the whole path and not another extracted rule: `deriveTrayParams` was
+ * validated to 1e-9 against its source and called by NOTHING, while the app
+ * restated its rules — cell length (fixed in bdf944d) and cell WIDTH, which
+ * still read `env.W + 2*side`. That width is the COLLATION's envelope across,
+ * so a multi-stack or cross-axis collation grew the cell by a whole product
+ * (measured: ny=2 -> 97mm vs 50mm, stackAxis Y -> 123mm vs 50mm) and the tray
+ * our own exported link rebuilds was a different tray. Their rule is one stack
+ * per cell: product across + 2*sideClearance, full stop.
+ *
+ * The PROBE: their derive takes cellH as an input, but our own auto depth is
+ * half the derived WIDTH — knowable only after deriving. One throwaway call
+ * resolves the ordering, with the cradle collapsed (a huge cradleClearance) and
+ * a minimal depth so the `cellH >= cradleR` guard cannot fire on the probe;
+ * neither cellLen nor cellWid depends on either, so what it reports is exact.
+ * Two calls to ONE rule — the alternative is restating the width rule here,
+ * which is the duplication being removed.
+ */
+export function trayAutoCells(project, content = contentEnvelope(project.primary)){
+  const tray = project.tray || {};
+  const ov = tray.params || {};
+  const num = v => typeof v === 'number' && isFinite(v);
+  const piece = content.config.piece;
+  const perCell = content.count;
+  const nCells = Math.max(1, Math.round(tray.nCells || 1));
+  const probe = deriveTrayParams({
+    ...ov,                                        // pass-through §3 inputs (wall, floor, ...)
+    qtyTotal: perCell*nCells, nCells,
+    sideClearance: num(tray.sideClearance) ? tray.sideClearance : 1.5,
+    endClearance:  num(tray.endClearance)  ? tray.endClearance  : 3,
+    ...(piece.kind === 'cylinder'
+      ? {productType: 'round', cookieDiameter: piece.diameter, cookieThickness: packPitchOf(piece)}
+      : {productType: 'rectangle', productThickness: packPitchOf(piece),
+         productWidth: piece.W, productHeight: piece.H}),
+    cellH: 1, cradleClearance: Number.MAX_SAFE_INTEGER   // probe-only; see above
+  });
+  return {cellLen: probe.cellLen, cellWid: probe.cellWid};
+}
+
 function solveTrayStage(project, content){
   const tray = project.tray;
   if(!tray || tray.enabled !== true) return null;      // pass-through (the default)
@@ -399,26 +443,25 @@ function solveTrayStage(project, content){
   const endC = num(tray.endClearance) ? tray.endClearance : 3;
   const sideC = num(tray.sideClearance) ? tray.sideClearance : 1.5;
 
-  // auto-with-override, one axis at a time.
-  // Cell LENGTH comes from the ported Cookie-Tray rule (cellLengthFor), NOT
-  // from the collation envelope's own run: those are two conventions for one
-  // quantity, and `env.L` carries the collation's inter-piece gaps while the
-  // tray rule has products nose-to-tail. Sizing from env.L made a cell that
-  // the tray app — re-deriving from the product spec in our own exported
-  // link — would not reproduce, by (perCell-1)*pieceGap.
-  const cellLen = num(ov.cellLen) ? ov.cellLen
-    : cellLengthFor(content.count, packPitchOf(content.config.piece), endC);
-  const cellWid = num(ov.cellWid) ? ov.cellWid : env.W + 2*sideC;
-  const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
-  // The cradle radius defaults to the cell half-width upstream, which is only
-  // valid while the trough is at least that deep (its guard: cellH >= cradleR).
-  // That holds for the auto depth, but a user shallowing the trough would hit
-  // a throw instead of simply getting a shallower cradle — so on the AUTO path
-  // the radius follows the trough. An explicit override is still respected
-  // exactly, guard and all.
-  const cradleR = num(ov.cradleR) ? ov.cradleR : Math.min(cellWid/2, cellH);
-
   const nCells = Math.max(1, Math.round(tray.nCells || 1));
+  const auto = trayAutoCells(project, content);          // THE derivation (see below)
+
+  // auto-with-override, one axis at a time — the AUTO half now comes entirely
+  // from the ported, validated inverse path; only the user's own overrides are
+  // applied here.
+  const cellLen = num(ov.cellLen) ? ov.cellLen : auto.cellLen;
+  const cellWid = num(ov.cellWid) ? ov.cellWid : auto.cellWid;
+  // trough DEPTH is ours, not theirs: their derive defaults cellH to a flat
+  // 28mm, we use the shallowest trough that still completes the cradle. It
+  // follows the EFFECTIVE width, so a cellWid override deepens the trough too.
+  const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
+  // M4, a DELIBERATE override of the validated path. trayParams derives
+  // cradleR = cellWid/2 when it is null, and guards cellH >= cradleR — so a
+  // user who shallows the trough below the half-width would get a THROW rather
+  // than simply a shallower cradle. Null on the normal path (their rule owns
+  // it); clamped to the trough only when that guard would otherwise fire.
+  const cradleR = num(ov.cradleR) ? ov.cradleR : (cellH < cellWid/2 ? cellH : null);
+
   const p = trayParams({...ov, nCells, cellLen, cellWid, cellH, cradleR});
 
   // the product bottoms out on the trough floor, which sits at the tray's own
@@ -430,10 +473,20 @@ function solveTrayStage(project, content){
   // product standing above the cells is the normal case for an open tray,
   // not a failure. Only an override that makes a cell too small in plan is.
   const EPS = 1e-9;
-  const fits = cellLen + EPS >= env.L && cellWid + EPS >= env.W;
+  const widthFits = cellWid + EPS >= env.W;
+  const lengthFits = cellLen + EPS >= env.L;
+  const fits = widthFits && lengthFits;
+  // A misfit here is nearly always a collation the tray MODEL cannot express
+  // (more than one stack across a cell, or the run laid along the wrong axis),
+  // not a mis-typed dimension — so it says which, rather than a bare "does not
+  // fit" that reads like an arithmetic failure.
+  const why = [];
+  if(!widthFits)  why.push('collation width exceeds the tray cell; the tray models one stack per cell');
+  if(!lengthFits) why.push('collation run exceeds the tray cell length');
+  const misfitReason = why.length ? why.join('; ') : null;
 
   return {
-    params: p, outer, nCells, fits, standingH,
+    params: p, outer, nCells, fits, misfitReason, standingH,
     proud: isProud(p, standingH),
     perCell: content.count,
     total: nCells*content.count,
