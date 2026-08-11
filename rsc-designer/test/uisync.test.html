@@ -1101,6 +1101,30 @@ await (async () => {
       throw new Error(`the widest section should be the flange ${row.tray.params.outerL}, got ${top.toFixed(1)}`);
   });
 
+  t('tray render: products sit at the COLLATION placements, not an even spread', () => {
+    // buildTray3d is handed the collation's real placements and used to drop
+    // them, spreading products evenly at cellLen/perCell instead — which
+    // smears the end clearance BETWEEN every product (12.3mm apart where they
+    // are really 12.0mm and the slack pools at the ends of the run).
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const col = build.project.primary.collation;
+    const c = collate(col);
+    const {group} = buildTray3d(row.tray.params,
+      {piece: col.piece, stackAxis: col.stackAxis, perCell: c.count, pieces: c.placements});
+    let inst = null;
+    group.traverse(o => { if(o.isInstancedMesh) inst = o; });
+    if(!inst) throw new Error('no product instances in the tray render');
+    const M = new THREE.Matrix4(), v = new THREE.Vector3(), xs = new Set();
+    for(let i = 0; i < inst.count; i++){ inst.getMatrixAt(i, M); v.setFromMatrixPosition(M); xs.add(+v.x.toFixed(6)); }
+    const drawn = [...xs].sort((a, b) => a - b);
+    const want = c.placements.map(q => +q.x.toFixed(6)).sort((a, b) => a - b);
+    eq(drawn.length, want.length, 'distinct along-cell positions:');
+    for(let i = 0; i < want.length; i++) approx(drawn[i], want[i], `product ${i} along-cell x:`);
+    // guard the fixture: with no end clearance the even spread would coincide
+    if(Math.abs(row.tray.params.cellLen/want.length - (want[1] - want[0])) < 1e-9)
+      throw new Error('vacuous fixture: the even spread equals the real pitch (endClearance 0?)');
+  });
+
   t('tray STL: well-formed triangles whose bbox is the tray box', () => {
     const row = resolveActiveRow(build.project, build.getRounding(), null);
     const {group} = buildTray3d(row.tray.params);
@@ -1454,6 +1478,30 @@ await (async () => {
     eq(countDecks(), 1, 'deck count:');
     eq(closedUnits(), offClosed, 'closed units:');
     if(Math.abs(hier.renderedOuter().H - offH) > 1e-9) throw new Error('single-stack height must restore');
+  });
+
+  t('pallet render TAKES its load height from the chain, never measures it', () => {
+    // The render used to derive the load height from the placements. That was
+    // wrong twice: as a recomputed layer COUNT (114mm), and still by
+    // (unitStackH - outer.H) whenever an open-top parent's contents stand
+    // proud — the measured extent sees where children were DRAWN, not the
+    // column the fit reserved. project.js exposes loadH/unitStackH saying it
+    // is for exactly this, and nothing read them.
+    // Pinned directly: hand the renderer a load height that does NOT match the
+    // placements' own extent and require the render to report THAT. Measuring
+    // cannot pass this; reading can only pass it.
+    const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+    const {cases, cartons} = row.arr;
+    const DECLARED = row.loadH + 100;            // deliberately not the drawn extent
+    hier.buildHierarchy({
+      caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: null, tray: null,
+      cases: {placements: cases.placements, count: cases.count, deck: cases.deck,
+              loadH: DECLARED, unitStackH: row.unitStackH},
+      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {}
+    }, 'pallet', {}, true);
+    approx(hier.renderedOuter().H, cases.deck.baseH + DECLARED,
+           'rendered pallet height must be deck + the load height it was GIVEN:');
+    el('d_pallet').click();      // rebuild the REAL scene; later pins read renderedOuter()
   });
 
   t('rendered pallet height == deck + the CHAIN\'s layer count x unit height', () => {

@@ -1261,7 +1261,12 @@ function hierarchyBundle(){
     // the tray, when it is in the chain: its resolved params + envelope, so
     // the tray depth can render and the Dims overlay can label it
     tray: row.tray || null,
-    cases: {placements: cases.placements, count: cases.count, deck: cases.deck},
+    // loadH/unitStackH are the CHAIN's own pallet load height and per-unit
+    // stacking pitch (project.js chainMetrics), carried so the render stacks
+    // and reports at the height the fit actually reserved instead of measuring
+    // its own — which is what project.js exposes them for.
+    cases: {placements: cases.placements, count: cases.count, deck: cases.deck,
+            loadH: row.loadH, unitStackH: row.unitStackH},
     cartons: {placements: cartons.placements},
     wraps: (pieces && wrapPlacements) ? {
       placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,

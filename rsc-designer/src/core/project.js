@@ -904,6 +904,19 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   return row;
 }
 
+/* ---- pallet-load metrics: ONE definition, two callers ------------------
+ * chainMetrics (the candidate's own numbers) and applyPatternSelection (the
+ * same numbers re-derived for a non-default pattern) computed these with
+ * identical expressions 77 lines apart — three quantities with two writers
+ * each, free to drift the moment one side is edited. `loadH` in particular is
+ * what the pallet render now reads for its stacking height, so a drift here
+ * would move pixels as well as readouts. */
+const palletLoadH   = (fit, stackH) => fit.layers*stackH;
+const deckCoveragePct = (fit, outer, pallet) =>
+  Math.round(fit.perLayer*outer.L*outer.W/(pallet.L*pallet.W)*100);
+const palletCubeUtilPct = (unitVol, unitCount, pallet, loadH) =>
+  loadH > 0 ? Math.round(unitVol*unitCount/(pallet.L*pallet.W*loadH)*100) : 0;
+
 /** Full-chain metrics for the outermost tier (`outerKey`, 'secondary' or
  *  'tertiary') against the pallet — generalizes what was hardcoded to
  *  tertiary. `count` is outerKey's own link.count: cartons/case when the
@@ -937,7 +950,7 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     p.pattern
   );
   const fit = patternList.length ? patternList[0].build() : emptyArrangement();
-  const loadH = fit.layers*stackH;
+  const loadH = palletLoadH(fit, stackH);
   // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
   // AND its proud contents, so its area needs the loaded (proud) height stackH —
   // known only here, not in the tray geometry (which has no contents). Compute it
@@ -977,7 +990,7 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     caseLayers: fit.layers,
     casesPerPallet: fit.total,
     cartonsPerPallet,
-    coveragePct: Math.round(fit.perLayer*outerGeo.outer.L*outerGeo.outer.W/(p.L*p.W)*100),
+    coveragePct: deckCoveragePct(fit, outerGeo.outer, p),
     // effective per-unit stacking height actually used for the pallet load
     // (== outer.H for closed styles; max(outer.H, child standing height)
     // for an open-top parent whose contents may stand proud of its walls).
@@ -987,7 +1000,7 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
-    cubeUtilPct: loadH > 0 ? Math.round(unitVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
+    cubeUtilPct: palletCubeUtilPct(unitVol, cartonsPerPallet, p, loadH),
     casesFit: fit,                           // retained for decorateRow (single source)
     // retained for applyPatternSelection — cycling a pattern recomputes the
     // per-pallet fields from these without re-deriving outerKey/childVol
@@ -1014,7 +1027,7 @@ export function applyPatternSelection(row, project){
   if(i === 0) return row;
   const fit = list[i].build();
   const stackH = row.unitStackH;
-  const loadH = fit.layers*stackH;
+  const loadH = palletLoadH(fit, stackH);
   const cartonsPerPallet = fit.total*row.perPalletMultiplier;
   return {
     ...row,
@@ -1022,9 +1035,9 @@ export function applyPatternSelection(row, project){
     caseLayers: fit.layers,
     casesPerPallet: fit.total,
     cartonsPerPallet,
-    coveragePct: Math.round(fit.perLayer*row.outer.L*row.outer.W/(p.L*p.W)*100),
+    coveragePct: deckCoveragePct(fit, row.outer, p),
     loadH,
-    cubeUtilPct: loadH > 0 ? Math.round(row.palletUnitVol*cartonsPerPallet/(p.L*p.W*loadH)*100) : 0,
+    cubeUtilPct: palletCubeUtilPct(row.palletUnitVol, cartonsPerPallet, p, loadH),
     piecesPerPallet: row.piecesPerCarton != null ? row.piecesPerCarton*cartonsPerPallet : row.piecesPerPallet,
     filmKgPerPallet: row.filmKgPerCarton != null ? row.filmKgPerCarton*cartonsPerPallet : row.filmKgPerPallet,
     casesFit: fit,

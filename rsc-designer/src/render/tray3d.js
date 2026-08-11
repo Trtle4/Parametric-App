@@ -152,7 +152,17 @@ export function buildTray3d(p, contents){
    * proud of the rim — the same fact the envelope's max() encodes. */
   if(contents && contents.piece && contents.perCell > 0){
     const {geo, rot} = pieceGeo(contents.piece, contents.stackAxis);
-    const per = Math.max(1, Math.round(contents.perCell));
+    // Along-cell positions come from the COLLATION's own placements — the list
+    // the caller already hands us — not from an even cellLen/perCell spread.
+    // The two differ by endClearance/perCell per product (12.3mm vs the real
+    // 12.0mm on the default tray): an even spread silently distributes the end
+    // clearance BETWEEN every product, where physically the products sit
+    // nose-to-tail and the slack pools at the ends of the run. The placements
+    // are already centred on the envelope, and the cell is centred on 0, so
+    // they drop straight in. Falls back to the old spread only if no placement
+    // list was supplied (a caller that has the count but not the layout).
+    const pls = (contents.pieces && contents.pieces.length) ? contents.pieces : null;
+    const per = pls ? pls.length : Math.max(1, Math.round(contents.perCell));
     const total = per*nCells;
     if(total > 0 && total <= 4000){
       const inst = new THREE.InstancedMesh(geo, productMat, total);
@@ -165,7 +175,7 @@ export function buildTray3d(p, contents){
       for(let j = 0; j < nCells; j++){
         const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
         for(let i = 0; i < per; i++){
-          const cx = (i + 0.5)*pitch - cellLen/2;
+          const cx = pls ? pls[i].x : (i + 0.5)*pitch - cellLen/2;
           if(rot) M.copy(rot); else M.identity();
           M.setPosition(cx, cellsY0 + rise, cz);
           inst.setMatrixAt(k++, M);
