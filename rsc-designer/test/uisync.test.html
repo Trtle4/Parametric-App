@@ -199,6 +199,71 @@ function eq(a, e, msg = ''){ if(a !== e) throw new Error(`${msg} expected ${JSON
 function fire(node, type){ node.dispatchEvent(new Event(type, {bubbles: true})); }
 async function settle(){ await new Promise(r => setTimeout(r, 0)); }
 
+/** Wait for the RENDER, not just the model. Overlays (the Dims sheet) and the
+ *  3D scene are painted from fold3d's frame loop, so anything read out of the
+ *  DOM after a toggle needs the frame that draws it. Reading in the same
+ *  synchronous turn is a race, and it is one the fixture loses under load: the
+ *  Dims-split pin failed 3 runs in 4 with "Load/Total lines missing" before
+ *  this existed. Polls one animation frame at a time; returns false on timeout
+ *  so the caller reports a real failure rather than hanging. */
+async function waitFrames(ready, ms = 3000){
+  const t0 = performance.now();
+  while(!ready()){
+    if(performance.now() - t0 > ms) return false;
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  return true;
+}
+
+/** Deep snapshot / restore of the live project, for pins and blocks that must
+ *  edit it. Restore is IN PLACE — the same object identities survive — because
+ *  blocks capture references into the project (`const link1 = linkFor(...)`)
+ *  and a wholesale replacement would leave those pointing at a dead object.
+ *  Restores what was FOUND, never an assumed default: three fixtures "reset"
+ *  a field to a hardcoded value that was never there (the case wall clearance
+ *  went back as 0 against a real 1.5) and silently re-sized every later pin's
+ *  case. */
+const snapProject = () => JSON.parse(JSON.stringify(build.project));
+function deepRestore(target, src){
+  for(const k of Object.keys(target)) if(!(k in src)) delete target[k];
+  for(const [k, v] of Object.entries(src)){
+    const cur = target[k];
+    if(v && typeof v === 'object' && cur && typeof cur === 'object' &&
+       Array.isArray(v) === Array.isArray(cur)){
+      if(Array.isArray(v) && v.length !== cur.length) target[k] = JSON.parse(JSON.stringify(v));
+      else deepRestore(cur, v);
+    }else{
+      target[k] = (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
+    }
+  }
+}
+/** Restore the project AND re-display it: recompute drives every registered
+ *  consumer, and re-mounting the active level re-writes the rail fields from
+ *  the restored values (a field left showing an edited number is a leak too).
+ *  Pass `key` (from getSelectedCandidateKey() on the way in) to hand the
+ *  candidate SELECTION back too — cycling commits, and a committed candidate
+ *  resolves a different case for every pin after it. */
+function restoreProject(snap, key){
+  deepRestore(build.project, snap);
+  build.recompute(key);          // undefined keeps the current pick; null clears it
+  setLevel(el('style').value);
+}
+
+/** A pin that EDITS the project. Same contract as t(), plus: it snapshots on
+ *  the way in and hands everything back on the way out — the project, the rail
+ *  fields that display it, and the active level — whether the body passes,
+ *  fails, or throws. ONE restore path rather than a hand-written `finally` per
+ *  pin: the same reason the app has one recompute() notifier. Use it for any
+ *  pin that types into a field or writes the project; keep plain t() for pins
+ *  that only read. */
+function tEdit(name, fn){
+  t(name, () => {
+    const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+    try{ fn(); }
+    finally{ restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl); }
+  });
+}
+
 function setLevel(level){ el('style').value = level; fire(el('style'), 'change'); }
 
 /** Drive the vertical-axis MULTI-SELECT to a SINGLE axis (the old select's
@@ -327,41 +392,54 @@ for(const lc of LEVEL_CASES){
     });
 
     t(`${lc.level}: may-rotate checkbox reflects project.allowedOrientations after edit`, () => {
-      setVertAxis('pIn', 'H');                                       // known single-axis state first
-      el('pInRot').checked = false; fire(el('pInRot'), 'change');
-      const lvl = lc.vertLevel(build.project);
-      eq(lvl.allowedOrientations.length, 1, 'project has exactly one allowed orientation:');
-      eq(el('pInRot').checked, false, 'checkbox reflects it:');
-      el('pInRot').checked = true; fire(el('pInRot'), 'change');   // reset
+      const snap = snapProject();
+      try{
+        setVertAxis('pIn', 'H');                                     // known single-axis state first
+        el('pInRot').checked = false; fire(el('pInRot'), 'change');
+        const lvl = lc.vertLevel(build.project);
+        eq(lvl.allowedOrientations.length, 1, 'project has exactly one allowed orientation:');
+        eq(el('pInRot').checked, false, 'checkbox reflects it:');
+      } finally { restoreProject(snap); }
     });
   }
 
   if(lc.clearLevel && el('pInWall')){
+    // BOTH of these used to "reset" the field to a hardcoded 0 — which is not
+    // what they found. At case level the real wall clearance is 1.5, so the
+    // reset silently zeroed it and every later pin solved a differently-sized
+    // case. Snapshot and hand back what was actually there, in a finally so a
+    // failure inside doesn't leak either.
     t(`${lc.level}: clearance wall field reflects project.clearance.wall after edit`, () => {
-      el('pInWall').value = '3.5'; fire(el('pInWall'), 'input');
-      const clr = lc.clearLevel(build.project);
-      approx(clr.wall, 3.5, 'project value:');
-      approx(+el('pInWall').value, 3.5, 'displayed value:');
-      el('pInWall').value = '0'; fire(el('pInWall'), 'input');   // reset
+      const snap = snapProject();
+      try{
+        el('pInWall').value = '3.5'; fire(el('pInWall'), 'input');
+        const clr = lc.clearLevel(build.project);
+        approx(clr.wall, 3.5, 'project value:');
+        approx(+el('pInWall').value, 3.5, 'displayed value:');
+      } finally { restoreProject(snap); }
     });
 
     t(`${lc.level}: a SIBLING edit (count/arrangement) does not corrupt the clearance field's display`, () => {
-      el('pInWall').value = '2'; fire(el('pInWall'), 'input');
-      if(el('pInNx')){ el('pInNx').value = String(+el('pInNx').value); fire(el('pInNx'), 'input'); }
-      const clr = lc.clearLevel(build.project);
-      approx(+el('pInWall').value, clr.wall, 'clearance field still matches project after a sibling edit:');
-      el('pInWall').value = '0'; fire(el('pInWall'), 'input');   // reset
+      const snap = snapProject();
+      try{
+        el('pInWall').value = '2'; fire(el('pInWall'), 'input');
+        if(el('pInNx')){ el('pInNx').value = String(+el('pInNx').value); fire(el('pInNx'), 'input'); }
+        const clr = lc.clearLevel(build.project);
+        approx(+el('pInWall').value, clr.wall, 'clearance field still matches project after a sibling edit:');
+      } finally { restoreProject(snap); }
     });
   }
 
   if(lc.linkLevel && el('pInArr')){
     t(`${lc.level}: arrangement grid fields reflect project.links[].arrangement after edit`, () => {
-      el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
-      const link = lc.linkLevel(build.project);
-      eq(+el('pInNx').value, link.arrangement.nx, 'nx:');
-      eq(+el('pInNy').value, link.arrangement.ny, 'ny:');
-      eq(+el('pInNz').value, link.arrangement.nz, 'nz:');
-      el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');   // reset
+      const snap = snapProject();
+      try{
+        el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
+        const link = lc.linkLevel(build.project);
+        eq(+el('pInNx').value, link.arrangement.nx, 'nx:');
+        eq(+el('pInNy').value, link.arrangement.ny, 'ny:');
+        eq(+el('pInNz').value, link.arrangement.nz, 'nz:');
+      } finally { restoreProject(snap); }
     });
   }
 }
@@ -377,12 +455,14 @@ for(const lc of LEVEL_CASES){
 await (async () => {
   setLevel('wrap'); await settle();
   t('wrap: a material field (fin treatment) changes the dims box, matching the wrap\'s own solved H', () => {
-    const treatSel = el('p_finTreatment');
-    treatSel.value = treatSel.value === 'standing' ? 'folded' : 'standing';
-    fire(treatSel, 'change');
-    const shown = shownDims();
-    const params = build.project.primary.wrap.params;
-    approx(shown.H, params.H, 'H displayed vs project.primary.wrap.params.H:');
+    const snap = snapProject(), treatSel = el('p_finTreatment');
+    try{
+      treatSel.value = treatSel.value === 'standing' ? 'folded' : 'standing';
+      fire(treatSel, 'change');
+      const shown = shownDims();
+      const params = build.project.primary.wrap.params;
+      approx(shown.H, params.H, 'H displayed vs project.primary.wrap.params.H:');
+    } finally { restoreProject(snap); }   // it left the fin STANDING for every later pin
   });
 })();
 
@@ -528,37 +608,55 @@ await (async () => {
    ================================================================== */
 await (async () => {
   setLevel('carton'); el('tab2d').click(); await settle();
+  const advisorySnap = snapProject();
   const link1 = linkFor(build.project, 'secondary');   // wraps-per-carton
   // earlier tests in this file may have left this link in either shape —
-  // force it back to an EXPLICIT grid so this block tests what it says
-  link1.arrangement = {nx: 1, ny: 4, nz: 2}; link1.count = 8;
-  el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change'); await settle();
-  // set a known grid through the real inputs (the Arr→explicit handler seeds
-  // the tier's defaults, so drive nx/ny/nz to fix a value this block asserts on)
-  el('pInNx').value = '1'; fire(el('pInNx'), 'input');
-  el('pInNy').value = '4'; fire(el('pInNy'), 'input');
-  el('pInNz').value = '2'; fire(el('pInNz'), 'input');
+  // force it back to an EXPLICIT grid so this block tests what it says. Each
+  // pin below re-runs this, so none of them inherits the previous one's shape.
+  const fixGrid = () => {
+    link1.arrangement = {nx: 1, ny: 4, nz: 2}; link1.count = 8;
+    el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
+    // set a known grid through the real inputs (the Arr→explicit handler seeds
+    // the tier's defaults, so drive nx/ny/nz to fix a value this block asserts on)
+    el('pInNx').value = '1'; fire(el('pInNx'), 'input');
+    el('pInNy').value = '4'; fire(el('pInNy'), 'input');
+    el('pInNz').value = '2'; fire(el('pInNz'), 'input');
+  };
+  fixGrid(); await settle();
   const gridProduct = link1.arrangement.nx*link1.arrangement.ny*link1.arrangement.nz;   // 8
   // UAT #3: typing a count while a MANUAL grid is active must WARN, not
   // silently discard the grid. The switch is deferred to a deliberate choice.
-  t('custom count vs manual grid: typing a count does NOT silently discard the grid; it warns', () => {
+  tEdit('custom count vs manual grid: typing a count does NOT silently discard the grid; it warns', () => {
     if(link1.arrangement === 'auto') throw new Error('test assumption violated: this link should start explicit');
     el('pInC').value = '5'; fire(el('pInC'), 'input');
     if(link1.arrangement === 'auto') throw new Error('grid silently discarded — the exact UAT #3 regression');
     if(!el('pInWarn').querySelector('.countwarn')) throw new Error('no count advisory shown');
   });
-  t('count advisory "keep grid" preserves the manual arrangement', () => {
+  // each of the three below OPENS THE ADVISORY ITSELF. They used to run as a
+  // chain — "keep grid" clicked a #pInKeep that only existed because the pin
+  // above it had typed a count, and "reaches the chain" asserted on a count a
+  // third pin had set. Alone, the first threw `null.click()` and the second
+  // read the old derived 8.
+  const openAdvisory = () => {
+    fixGrid();                                          // manual grid, known product
+    el('pInC').value = '5'; fire(el('pInC'), 'input');   // typing a count opens it
+    if(!el('pInKeep')) throw new Error('the count advisory did not open');
+  };
+  tEdit('count advisory "keep grid" preserves the manual arrangement', () => {
+    openAdvisory();
     el('pInKeep').click();
     if(link1.arrangement === 'auto') throw new Error('keep grid should retain the explicit arrangement');
     eq(link1.arrangement.nx*link1.arrangement.ny*link1.arrangement.nz, gridProduct, 'grid intact:');
   });
-  t('count advisory "use count" switches to auto and is honored', () => {
-    el('pInC').value = '5'; fire(el('pInC'), 'input');   // re-open the advisory
+  tEdit('count advisory "use count" switches to auto and is honored', () => {
+    openAdvisory();
     el('pInUse').click();
     eq(link1.arrangement, 'auto', 'switched to auto only on the deliberate choice:');
     eq(link1.count, 5, 'typed count written to the project:');
   });
-  t('custom count actually reaches the solved chain, not just the link', () => {
+  tEdit('custom count actually reaches the solved chain, not just the link', () => {
+    openAdvisory();
+    el('pInUse').click();                               // commit the count itself
     const rows = build.getRows();
     if(!rows.length) throw new Error('no rows after setting a custom count');
     // 5 wraps/carton, each wrap holding this project's default 6-piece collation -> 30 pieces/carton
@@ -567,7 +665,7 @@ await (async () => {
 
   setLevel('case'); await settle();
   const link0 = linkFor(build.project, 'tertiary');   // cartons-per-case — defaults AUTO
-  t('custom count at case level (cartons/case, starts AUTO): a custom count is honored directly', () => {
+  tEdit('custom count at case level (cartons/case, starts AUTO): a custom count is honored directly', () => {
     if(link0.arrangement !== 'auto') throw new Error('test assumption violated: this link should start auto');
     el('pInC').value = '17'; fire(el('pInC'), 'input');
     eq(link0.arrangement, 'auto', 'still auto (was already):');
@@ -575,6 +673,8 @@ await (async () => {
     const rows = build.getRows();
     if(!rows.length) throw new Error('no candidate rows for a custom count of 17');
   });
+
+  restoreProject(advisorySnap);   // the block edits links + counts — hand them back
 })();
 
 /* ==================================================================
@@ -585,23 +685,24 @@ await (async () => {
    link.count (which would propagate into a 0-child solve downstream).
    ================================================================== */
 await (async () => {
+  const invalidSnap = snapProject();
   setLevel('carton'); await settle();
   const link1 = linkFor(build.project, 'secondary');
   link1.arrangement = 'auto'; link1.count = 8; inputs.refreshCountArrangement('pIn', link1);
-  t('invalid count at carton level: 0 does not corrupt the project', () => {
+  tEdit('invalid count at carton level: 0 does not corrupt the project', () => {
     el('pInC').value = '0'; fire(el('pInC'), 'input');
     if(!(Number.isInteger(link1.count) && link1.count >= 1)) throw new Error(`count corrupted: ${link1.count}`);
   });
-  t('invalid count at carton level: negative does not corrupt the project', () => {
+  tEdit('invalid count at carton level: negative does not corrupt the project', () => {
     el('pInC').value = '-3'; fire(el('pInC'), 'input');
     if(!(Number.isInteger(link1.count) && link1.count >= 1)) throw new Error(`count corrupted: ${link1.count}`);
   });
-  t('invalid count at carton level: decimal rounds to an integer, never truncated to 0', () => {
+  tEdit('invalid count at carton level: decimal rounds to an integer, never truncated to 0', () => {
     link1.count = 8;
     el('pInC').value = '5.6'; fire(el('pInC'), 'input');
     eq(link1.count, 6, 'rounds to nearest integer:');
   });
-  t('invalid count at carton level: empty reverts to the current valid value, not 0/NaN', () => {
+  tEdit('invalid count at carton level: empty reverts to the current valid value, not 0/NaN', () => {
     link1.count = 8;
     el('pInC').value = ''; fire(el('pInC'), 'input');
     eq(link1.count, 8, 'unchanged, not 0/NaN:');
@@ -610,7 +711,7 @@ await (async () => {
   setLevel('case'); await settle();
   const link0 = linkFor(build.project, 'tertiary');
   link0.arrangement = 'auto'; link0.count = 12; inputs.refreshCountArrangement('pIn', link0);
-  t('invalid count at case level: 0/negative/decimal/empty all clamp or revert, never 0/NaN', () => {
+  tEdit('invalid count at case level: 0/negative/decimal/empty all clamp or revert, never 0/NaN', () => {
     el('pInC').value = '0'; fire(el('pInC'), 'input');
     if(!(Number.isInteger(link0.count) && link0.count >= 1)) throw new Error(`0 corrupted count: ${link0.count}`);
     el('pInC').value = '-9'; fire(el('pInC'), 'input');
@@ -622,7 +723,7 @@ await (async () => {
     el('pInC').value = ''; fire(el('pInC'), 'input');
     eq(link0.count, 12, 'empty reverts, not 0/NaN:');
   });
-  link0.count = 12; link0.arrangement = 'auto'; inputs.refreshCountArrangement('pIn', link0);
+  restoreProject(invalidSnap);   // every pin here types into a real link — undo it
 })();
 
 /* ==================================================================
@@ -865,7 +966,7 @@ await (async () => {
     eq(el('chainString').querySelectorAll('.cs-node').length, 6, 'six level nodes (tray added):');
     if(!stripNode('Case').classList.contains('active')) throw new Error('active level (Case) not highlighted');
   });
-  t('chain strip: clicking a node changes the active level', () => {
+  tEdit('chain strip: clicking a node changes the active level', () => {
     stripNode('Carton').click();
     eq(el('style').value, 'carton', 'active level follows the strip click:');
     setLevel('case');
@@ -881,18 +982,21 @@ await (async () => {
   });
 
   t('arrangement badge + inert rotate: MANUAL disables rotate with a hint; AUTO re-enables it', () => {
-    setLevel('carton');
-    el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
-    let badge = el('levelPlacement').querySelector('.arrbadge');
-    if(!badge || !/AUTO/.test(badge.textContent)) throw new Error('expected AUTO badge in auto mode');
-    if(el('pInRot').disabled) throw new Error('rotate should be live in auto mode');
-    el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
-    badge = el('levelPlacement').querySelector('.arrbadge');
-    if(!badge || !badge.classList.contains('manual') || !/MANUAL/.test(badge.textContent)) throw new Error('expected MANUAL badge for an explicit grid');
-    if(!el('pInRot').disabled) throw new Error('rotate should be inert (disabled) with a manual grid');
-    if(el('pInRotHint').style.display === 'none') throw new Error('inert hint should be visible with a manual grid');
-    el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');   // restore
-    if(el('pInRot').disabled) throw new Error('rotate should be live again after returning to auto');
+    const snap = snapProject(), lvl = el('style').value;
+    try{
+      setLevel('carton');
+      el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
+      let badge = el('levelPlacement').querySelector('.arrbadge');
+      if(!badge || !/AUTO/.test(badge.textContent)) throw new Error('expected AUTO badge in auto mode');
+      if(el('pInRot').disabled) throw new Error('rotate should be live in auto mode');
+      el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
+      badge = el('levelPlacement').querySelector('.arrbadge');
+      if(!badge || !badge.classList.contains('manual') || !/MANUAL/.test(badge.textContent)) throw new Error('expected MANUAL badge for an explicit grid');
+      if(!el('pInRot').disabled) throw new Error('rotate should be inert (disabled) with a manual grid');
+      if(el('pInRotHint').style.display === 'none') throw new Error('inert hint should be visible with a manual grid');
+      el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
+      if(el('pInRot').disabled) throw new Error('rotate should be live again after returning to auto');
+    } finally { restoreProject(snap); setLevel(lvl); }   // it also left the rail on carton
   });
 
   t('which-row label: shown on the pallet readout, names row N of M', () => {
@@ -907,6 +1011,7 @@ await (async () => {
    highlight and the pallet readout all read ONE ordered list.
    ================================================================== */
 await (async () => {
+  const cycleSnap = snapProject(), cycleKey = build.getSelectedCandidateKey();
   setLevel('case'); await settle();
   el('tab3d').click(); await settle();
   el('d_case').click(); await settle();                       // hierarchy, case depth
@@ -916,7 +1021,7 @@ await (async () => {
     if(!/^\d+ of \d+$/.test(el('candPos').textContent)) throw new Error(`pos malformed: "${el('candPos').textContent}"`);
   });
 
-  t('cycle arrows: next commits the next candidate; prev clamps at position 1', () => {
+  tEdit('cycle arrows: next commits the next candidate; prev clamps at position 1', () => {
     const total = build.getCycleState().total;
     if(total < 2) return;                                      // single-candidate chain: nothing to step
     for(let i = 0; i < total && !el('candPrev').disabled; i++) el('candPrev').click();   // to the top
@@ -928,6 +1033,10 @@ await (async () => {
   });
 
   t('cycle arrows: arrow position == the highlighted table row position (one order)', () => {
+    // COMMIT a selection here rather than borrowing the one the pin above
+    // leaves: without a committed candidate the table has no highlighted row
+    // at all, and this read "no highlighted row" when run on its own.
+    if(!build.getSelectedCandidateKey() && build.getCycleState().total >= 2) el('candNext').click();
     el('tabBuild').click();
     const cyc = build.getCycleState();
     const trs = [...document.querySelectorAll('#bTable tbody tr')];
@@ -951,6 +1060,10 @@ await (async () => {
     if(getComputedStyle(el('candCycle')).display !== 'none') throw new Error('cycle arrows should hide at carton depth');
     el('d_case').click();
   });
+
+  // cycling COMMITS — hand back the candidate that was selected on the way in,
+  // or every later pin resolves a different case than the default chain
+  restoreProject(cycleSnap, cycleKey);
 })();
 
 /* ==================================================================
@@ -961,6 +1074,7 @@ await (async () => {
    DERIVED read-only display, deliberately not editable.
    ================================================================== */
 await (async () => {
+  const traySnap = snapProject();
   t('tray: off by default and present in the chain between product and wrap', () => {
     eq(build.project.tray.enabled, false, 'default enabled:');
     const opts = [...el('style').options].map(o => o.value);
@@ -968,7 +1082,7 @@ await (async () => {
     eq(opts.indexOf('wrap'), opts.indexOf('tray') + 1, 'wrap follows tray:');
   });
 
-  t('tray: the tray rail is empty while the tier is disabled', () => {
+  tEdit('tray: the tray rail is empty while the tier is disabled', () => {
     setLevel('tray');
     eq(el('trayFields').innerHTML, '', 'no fields for a skipped tier:');
   });
@@ -1001,7 +1115,7 @@ await (async () => {
     if(!(+el('tr_cellWid').placeholder > 0)) throw new Error('auto cellWid placeholder missing');
   });
 
-  t('tray: typing overrides, and reset-to-auto clears the override', () => {
+  tEdit('tray: typing overrides, and reset-to-auto clears the override', () => {
     el('tr_cellWid').value = '80'; fire(el('tr_cellWid'), 'input');
     if(typeof build.project.tray.params.cellWid !== 'number')
       throw new Error('typing must store an override');
@@ -1012,7 +1126,7 @@ await (async () => {
       throw new Error('reset must DELETE the override (absence is the auto state)');
   });
 
-  t('SHARED CELL COUNT: tray rail -> collation rail (one stored value)', () => {
+  tEdit('SHARED CELL COUNT: tray rail -> collation rail (one stored value)', () => {
     setLevel('tray');
     el('tr_nCells').value = '5'; fire(el('tr_nCells'), 'input');
     eq(build.project.tray.nCells, 5, 'stored value after the tray edit:');
@@ -1020,7 +1134,7 @@ await (async () => {
     eq(el('cCells').value, '5', 'collation rail reflects it:');
   });
 
-  t('SHARED CELL COUNT: collation rail -> tray rail (the same one value)', () => {
+  tEdit('SHARED CELL COUNT: collation rail -> tray rail (the same one value)', () => {
     setLevel('product');
     el('cCells').value = '3'; fire(el('cCells'), 'input');
     eq(build.project.tray.nCells, 3, 'stored value after the collation edit:');
@@ -1059,7 +1173,7 @@ await (async () => {
   // with a 1x1 plan, and the rounding case separately below
   const setQ = (id, v) => { el(id).value = String(v); fire(el(id), 'input'); fire(el(id), 'change'); };
 
-  t('QUANTITIES: all three fields are editable on BOTH rails', () => {
+  tEdit('QUANTITIES: all three fields are editable on BOTH rails', () => {
     for(const [level, ids] of RAILS){
       setLevel(level);
       for(const f of ['cells', 'perCell', 'total']){
@@ -1070,14 +1184,14 @@ await (async () => {
     }
   });
 
-  t('QUANTITIES: no "Distribute by" selector survives (cells is the anchor)', () => {
+  tEdit('QUANTITIES: no "Distribute by" selector survives (cells is the anchor)', () => {
     setLevel('tray');
     if(el('tr_distBy')) throw new Error('the Distribute-by selector should be gone');
     if('distributeBy' in build.project.tray) throw new Error('distributeBy should no longer be stored');
   });
 
   for(const [level, ids] of RAILS){
-    t(`QUANTITIES (${level} rail): edit CELLS -> per-cell holds, total follows`, () => {
+    tEdit(`QUANTITIES (${level} rail): edit CELLS -> per-cell holds, total follows`, () => {
       setLevel(level);
       Object.assign(qcol(), {nx: 1, ny: 1});
       setQ(ids.perCell, 6);
@@ -1089,7 +1203,7 @@ await (async () => {
       eq(+el(ids.total).value, 5*held, 'total follows:');
     });
 
-    t(`QUANTITIES (${level} rail): edit PER-CELL -> cells hold, total follows`, () => {
+    tEdit(`QUANTITIES (${level} rail): edit PER-CELL -> cells hold, total follows`, () => {
       setLevel(level);
       Object.assign(qcol(), {nx: 1, ny: 1});
       setQ(ids.cells, 4);
@@ -1100,7 +1214,7 @@ await (async () => {
       eq(+el(ids.total).value, 28, 'total follows:');
     });
 
-    t(`QUANTITIES (${level} rail): edit TOTAL -> cells hold, per-cell absorbs`, () => {
+    tEdit(`QUANTITIES (${level} rail): edit TOTAL -> cells hold, per-cell absorbs`, () => {
       setLevel(level);
       Object.assign(qcol(), {nx: 1, ny: 1});
       setQ(ids.cells, 4);
@@ -1111,7 +1225,7 @@ await (async () => {
       eq(+el(ids.total).value, 28, 'total settles where it was asked:');
     });
 
-    t(`QUANTITIES (${level} rail): an impossible total is CORRECTED, not stored`, () => {
+    tEdit(`QUANTITIES (${level} rail): an impossible total is CORRECTED, not stored`, () => {
       setLevel(level);
       Object.assign(qcol(), {nx: 1, ny: 1});
       setQ(ids.cells, 3);
@@ -1123,7 +1237,7 @@ await (async () => {
     });
   }
 
-  t('QUANTITIES: the two rails stay in lockstep (one derivation)', () => {
+  tEdit('QUANTITIES: the two rails stay in lockstep (one derivation)', () => {
     setLevel('tray');
     Object.assign(qcol(), {nx: 1, ny: 1});
     setQ('tr_nCells', 6); setQ('tr_perCell', 9);
@@ -1139,7 +1253,7 @@ await (async () => {
     eq(+el('tr_total').value, 24, 'total agrees:');
   });
 
-  t('QUANTITIES: rounding is NEAREST, so a total can round DOWN', () => {
+  tEdit('QUANTITIES: rounding is NEAREST, so a total can round DOWN', () => {
     // 80/3 = 26.67 rounds to 27 under ceil AND nearest, so it cannot tell them
     // apart; 100/3 = 33.33 can. Without this the rule reads "round" and
     // behaves "ceil" — always growing the pack.
@@ -1151,7 +1265,7 @@ await (async () => {
     eq(+el('tr_total').value, 99, 'corrected total:');
   });
 
-  t('QUANTITIES: siblings follow on INPUT; the typed field is left alone', () => {
+  tEdit('QUANTITIES: siblings follow on INPUT; the typed field is left alone', () => {
     // the other two must move as you type, not only on blur — and the field
     // under the cursor must NOT be rewritten mid-edit, or "80" is untypeable
     // (the "8" would be corrected before the "0" lands)
@@ -1171,7 +1285,7 @@ await (async () => {
       if(k in tr) throw new Error(`tray must not store "${k}" — total is derived`);
   });
 
-  t('QUANTITIES: the collation grid fields move the derived pair', () => {
+  tEdit('QUANTITIES: the collation grid fields move the derived pair', () => {
     setLevel('product');
     Object.assign(qcol(), {nx: 1, ny: 1});
     setQ('cCells', 2); setQ('cPerCell', 5);
@@ -1182,7 +1296,7 @@ await (async () => {
     el('cNx').value = '1'; fire(el('cNx'), 'input');
   });
 
-  t('tray: the envelope reaches the wrap (downstream actually re-solves)', () => {
+  tEdit('tray: the envelope reaches the wrap (downstream actually re-solves)', () => {
     const before = resolveActiveRow(build.project, build.getRounding(), null).wrapOuter.W;
     el('tr_nCells') || setLevel('tray');
     setLevel('tray');
@@ -1286,7 +1400,7 @@ await (async () => {
     if(Math.abs((mxy - mny) - p.overallH) > 0.01) throw new Error(`STL H ${(mxy-mny).toFixed(2)} != ${p.overallH}`);
   });
 
-  t('WRAP RENDER: with a tray, the film mesh matches renderedOuter, not the collation', () => {
+  tEdit('WRAP RENDER: with a tray, the film mesh matches renderedOuter, not the collation', () => {
     // The regression this pins (fixed in 212e4a9): buildWrapOpened lofted the
     // pillow around bundle.wraps.envelope — the bare COLLATION — while the
     // chain had already sized the film around the TRAY. The drawn pack was a
@@ -1333,7 +1447,7 @@ await (async () => {
         `the tray was skipped in the render (the 212e4a9 regression)`);
   });
 
-  t('tray exports: STL only at tray level; DXF stays unavailable (no dieline)', () => {
+  tEdit('tray exports: STL only at tray level; DXF stays unavailable (no dieline)', () => {
     setLevel('tray');
     if(el('btnSTL').style.display === 'none') throw new Error('STL must be offered at tray level');
     if(!el('btnDXF').disabled) throw new Error('a tray has no dieline — DXF must stay disabled');
@@ -1342,14 +1456,12 @@ await (async () => {
     setLevel('tray');
   });
 
-  // restore: tray OFF and the default collation, so later blocks are unaffected
+  // restore what this block FOUND — tray state, the collation, the quantities
+  // it walked through. This used to write back an ASSUMED default collation
+  // ({perStack 2, nx 3, ny 1}), which is a second source of truth for "the
+  // default project" and wrong the moment that project changes.
   el('tab2d').click();
-  build.project.tray.enabled = false;
-  build.project.tray.nCells = 2;
-  build.project.tray.params = {};
-  Object.assign(build.project.primary.collation,
-    {pieceOrientation: 'flat', stackAxis: 'Z', perStack: 2, nx: 3, ny: 1});
-  build.recompute();
+  restoreProject(traySnap);
   setLevel('case'); await settle();
 })();
 
@@ -1578,9 +1690,13 @@ await (async () => {
     });
     return top; };
 
-  let offH, offDecks, offClosed;
+  // The single-stack baseline is captured HERE, in the block's own arrangement,
+  // not inside the pin below it. It used to be assigned inside that pin, so the
+  // two pins that compare against it read `undefined` unless their sibling had
+  // run first — they failed with "expected null" when run on their own.
+  const offH = hier.renderedOuter().H, offDecks = countDecks(), offClosed = closedUnits();
+
   t('double-stack OFF: one deck, one load (the baseline this block doubles)', () => {
-    offH = hier.renderedOuter().H; offDecks = countDecks(); offClosed = closedUnits();
     eq(offDecks, 1, 'single-stack deck count:');
     if(!(offClosed >= 1)) throw new Error('no closed pallet units in the baseline scene');
     if(!(offH > 0)) throw new Error('no rendered pallet height');
@@ -1645,9 +1761,10 @@ await (async () => {
     // product is the retail unit; the tray makes that chain ordinary, which is
     // what exposed the gap. Asserts the DISPLAYED noun, across every shape.
     const proj = build.project;
-    const saved = {wrap: proj.primary.wrap, sec: proj.secondary.enabled,
-                   tray: proj.tray.enabled, nCells: proj.tray.nCells,
-                   col: JSON.parse(JSON.stringify(proj.primary.collation))};
+    // snapshot the WHOLE project, not a hand-listed subset: the old restore
+    // Object.assign'd a saved collation back, which cannot DELETE a key the
+    // body added — `pieceOrientation: 'on-edge'` survived every run.
+    const saved = snapProject();
     const trayCollation = () => Object.assign(proj.primary.collation,
       {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
     const unitFor = (setup) => {
@@ -1659,7 +1776,7 @@ await (async () => {
       return u;
     };
     try{
-      const wrapObj = saved.wrap || {styleId: 'flowwrap', params: {...proj.primary.wrap ? {} : {}}, locked: false};
+      const wrapObj = saved.primary.wrap || {styleId: 'flowwrap', params: {}, locked: false};
       const chains = [
         ['tray -> wrap -> case',           () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
         ['tray -> wrap -> carton -> case', () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
@@ -1671,10 +1788,7 @@ await (async () => {
       for(const [label, setup, want] of chains)
         eq(unitFor(setup), want, `${label} must merchandise the ${want.slice(0, -1)}:`);
     } finally {
-      proj.primary.wrap = saved.wrap; proj.secondary.enabled = saved.sec;
-      proj.tray.enabled = saved.tray; proj.tray.nCells = saved.nCells;
-      Object.assign(proj.primary.collation, saved.col);
-      build.recompute();
+      restoreProject(saved);
       // restore the 3D pallet context the pins below this one assume
       el('tab3d').click(); el('d_pallet').click();
     }
@@ -1719,6 +1833,25 @@ await (async () => {
     }
   });
 
+  // The Dims-split arrangement runs OUT HERE, in the block's async body, so the
+  // overlay can be waited for: it is drawn from fold3d's frame loop, and the
+  // pin used to toggle it and read it in the same synchronous turn. That race
+  // cost the suite 3 runs in 4 ("Load/Total lines missing") — the assertion was
+  // right and the fixture never gave it a frame to be right about.
+  const dimsSnap = snapProject();
+  build.project.pallet.baseH = 140;                 // NON-DEFAULT — see the pin
+  build.recompute();
+  el('d_case').click(); el('d_pallet').click();     // rebuild THIS depth
+  const dimsWasOn = el('m3dims').classList.contains('on');
+  {
+    const b = el('m3dims');                         // fresh overlay for THIS build
+    if(dimsWasOn) b.click();
+    b.click();
+  }
+  const dimsReady = await waitFrames(() => /Total/.test(el('dimsOverlay').textContent || ''));
+  const dimsTxt = (el('dimsOverlay').textContent || '').replace(/\s+/g, ' ');
+  const dimsRow = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+
   t('Dims split reads the CHAIN deck height, not the mesh constant', () => {
     // MUST be pinned at a NON-DEFAULT baseH: pallet.baseH and palletmesh's
     // PALLET_HEIGHT are two independent 127s, so at the default the wrong one
@@ -1727,33 +1860,17 @@ await (async () => {
     // Total correct, the error a pure transfer between the two lines.
     // Reads the RENDERED overlay text, not a recomputation of the split here:
     // asserting my own arithmetic would pass whichever constant the app used.
-    const saved = build.project.pallet.baseH;
-    try{
-      build.project.pallet.baseH = 140;
-      build.recompute();
-      // force a real rebuild of THIS depth (a re-click of the depth already
-      // shown can be a no-op if a previous pin left the scene mid-flight)
-      el('d_case').click(); el('d_pallet').click();
-      const dimsBtn = el('m3dims');
-      // force a fresh overlay for THIS build: an inherited 'on' state can leave
-      // the previous view's SVG in place, which reads as "lines missing"
-      if(dimsBtn){
-        if(dimsBtn.classList.contains('on')) dimsBtn.click();
-        dimsBtn.click();
-      }
-      const txt = (el('dimsOverlay').textContent || '').replace(/\s+/g, ' ');
-      const m = txt.match(/Pallet\s*([\d.]+)/);
-      if(!m) throw new Error(`no Pallet line in the Dims overlay: "${txt.slice(0, 120)}"`);
-      approx(+m[1], 140, 'the Pallet line must be the CHAIN deck height (baseH), not 127:');
-      const ml = txt.match(/Load\s*([\d.]+)/), mt = txt.match(/Total\s*([\d.]+)/);
-      if(!ml || !mt) throw new Error('Load/Total lines missing from the overlay');
-      approx(+m[1] + +ml[1], +mt[1], 'Pallet + Load must sum to Total:');
-      const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
-      approx(+ml[1], row.loadH, 'the Load line must be the chain load height:');
-    } finally {
-      build.project.pallet.baseH = saved; build.recompute(); el('d_pallet').click();
-    }
+    if(!dimsReady) throw new Error(`the Dims overlay never drew: "${dimsTxt.slice(0, 120)}"`);
+    const m = dimsTxt.match(/Pallet\s*([\d.]+)/);
+    if(!m) throw new Error(`no Pallet line in the Dims overlay: "${dimsTxt.slice(0, 120)}"`);
+    approx(+m[1], 140, 'the Pallet line must be the CHAIN deck height (baseH), not 127:');
+    const ml = dimsTxt.match(/Load\s*([\d.]+)/), mt = dimsTxt.match(/Total\s*([\d.]+)/);
+    if(!ml || !mt) throw new Error('Load/Total lines missing from the overlay');
+    approx(+m[1] + +ml[1], +mt[1], 'Pallet + Load must sum to Total:');
+    approx(+ml[1], dimsRow.loadH, 'the Load line must be the chain load height:');
   });
+  if(!dimsWasOn && el('m3dims').classList.contains('on')) el('m3dims').click();   // leave the overlay as found
+  restoreProject(dimsSnap); el('d_pallet').click();
 
   t('the deck-height INPUT reaches the chain — value, budget and boundary note', () => {
     // baseH used to be invisible: a project field with no field. Both bugs that
@@ -1866,6 +1983,7 @@ await (async () => {
    multiple counts ranked together; the display caps at the top 50.
    ================================================================== */
 await (async () => {
+  const rangeSnap = snapProject(), rangeKey = build.getSelectedCandidateKey();
   setLevel('case'); await settle();
   const tLink = build.project.links.find(l => l.parent === 'tertiary');
 
@@ -1873,7 +1991,7 @@ await (async () => {
     if(!el('pInC') || !el('pInCmax')) throw new Error('cartons-per-case min/max inputs missing at case level');
   });
 
-  t('range: min==max reproduces the single-count candidate set', () => {
+  tEdit('range: min==max reproduces the single-count candidate set', () => {
     tLink.count = 12; tLink.countMax = undefined; build.recompute();
     const single = build.getRows().length;
     el('pInCmax').value = '12'; fire(el('pInCmax'), 'input');   // max==min → still single
@@ -1881,7 +1999,7 @@ await (async () => {
     if(build.getRows().some(r => r.cartonsPerCase !== 12)) throw new Error('single-count set has a stray count');
   });
 
-  t('range: a min–max spread yields multiple counts, ranked, capped at 50', () => {
+  tEdit('range: a min–max spread yields multiple counts, ranked, capped at 50', () => {
     el('pInC').value = '5'; fire(el('pInC'), 'input');
     el('pInCmax').value = '20'; fire(el('pInCmax'), 'input');
     const rows = build.getRows();
@@ -1903,6 +2021,10 @@ await (async () => {
     if(!heads.some(h => /cartons?\/case/i.test(h))) throw new Error(`no Cartons/case column: ${heads.join(', ')}`);
     el('tab3d').click();
   });
+
+  // the block pins count/countMax on a real link and re-ranks the candidate
+  // list — hand both, and the selection the re-rank commits, back
+  restoreProject(rangeSnap, rangeKey);
 })();
 
 /* ==================================================================
@@ -2033,16 +2155,21 @@ await (async () => {
   el('tabShelf').click(); await settle();
 
   t('shelf units: switching to inches converts the shelf fields + labels (one unit source)', () => {
-    const mmVal = el('shWidth').value, mmUnit = el('uShW').textContent;
-    el('units').value = 'in'; el('units').dispatchEvent(new Event('change'));
-    const inVal = el('shWidth').value, inUnit = el('uShW').textContent;
-    if(mmUnit !== 'mm' || inUnit !== 'in') throw new Error(`unit label did not switch: ${mmUnit}->${inUnit}`);
-    if(!(Math.abs(+inVal - +mmVal/25.4) < 0.01)) throw new Error(`shelf width did not convert: ${mmVal}mm -> ${inVal}in`);
-    el('units').value = 'mm'; el('units').dispatchEvent(new Event('change'));   // restore
+    try{
+      const mmVal = el('shWidth').value, mmUnit = el('uShW').textContent;
+      el('units').value = 'in'; el('units').dispatchEvent(new Event('change'));
+      const inVal = el('shWidth').value, inUnit = el('uShW').textContent;
+      if(mmUnit !== 'mm' || inUnit !== 'in') throw new Error(`unit label did not switch: ${mmUnit}->${inUnit}`);
+      if(!(Math.abs(+inVal - +mmVal/25.4) < 0.01)) throw new Error(`shelf width did not convert: ${mmVal}mm -> ${inVal}in`);
+    } finally {
+      el('units').value = 'mm'; el('units').dispatchEvent(new Event('change'));
+    }
   });
 
   await settle();
   t('shelf facings: the block is centred on the shelf at 1, 2, 3 and an even count', () => {
+    const front0 = el('shFront').value, facings0 = el('shFacings').value;
+    try{
     el('shFront').value = 'LWH'; el('shFront').dispatchEvent(new Event('change'));
     for(const f of [1, 2, 3, 4]){
       el('shFacings').value = String(f); el('shFacings').dispatchEvent(new Event('input'));
@@ -2051,7 +2178,10 @@ await (async () => {
       const centre = (xs[0] + xs[xs.length - 1]) / 2;
       if(Math.abs(centre) > 1.0) throw new Error(`facings not centred at ${f}: block centre x=${centre}, xs=${JSON.stringify(xs)}`);
     }
-    el('shFacings').value = ''; el('shFacings').dispatchEvent(new Event('input'));   // back to auto
+    } finally {   // shelf VIEW state is not the project, but it is still state
+      el('shFront').value = front0; el('shFront').dispatchEvent(new Event('change'));
+      el('shFacings').value = facings0; el('shFacings').dispatchEvent(new Event('input'));
+    }
   });
   el('tab2d').click(); setLevel('case'); await settle();
 })();
