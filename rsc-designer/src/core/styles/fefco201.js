@@ -66,6 +66,12 @@ export function fefco201(p){
     outer: {L: L + 2*t, W: W + 2*t, H: H + 4*t},
     meta: {
       style: 'fefco201',
+      // SHELF FRONT: the outward normal of the face this pack is merchandised
+      // on — the printed front panel, which on an upright tube carton is a
+      // WALL (normal along W). The retail shelf reads this instead of assuming
+      // a face, so a pack whose display face is not a wall (the flow wrap's
+      // top) presents correctly without a second orientation rule.
+      frontFace: 'W',
       caliper: p.caliper,
       flapDepth: F,
       panels: {x1, x2, x3, x4, x5, yb1, yt1, yt2},

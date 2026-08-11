@@ -584,6 +584,41 @@ function stackInfoOf(w){
   return {stackAxis: w.stackAxis, nx: w.nx, ny: w.ny, layers: w.pieces.length/(w.nx*w.ny)};
 }
 
+/**
+ * The CLOSED wrap's drawable parts — body, both ramp tapers, both crimp tabs and
+ * the fin — as [{geo, mat}], ready to instance. ONE builder for every place a
+ * closed film pack is drawn: the hierarchy's wrap children and the retail
+ * shelf's facings. The shelf used to draw its facings as plain BoxGeometry,
+ * which is not the pack — a pillow with ramped, crimped ends reads nothing like
+ * a rectangular box, and the shopper's view is exactly where that matters.
+ *
+ * With a tray in the chain the film wraps the TRAY, so the parts come from the
+ * FILM envelope with the faceted tray section — `w.envelope` alone is one
+ * cell's collation run and draws undersized round tubes inside tray-sized
+ * slots. No tray: `w.envelope` and the tube profile, exactly as before.
+ *
+ * Built in the wrap's own canonical frame (x=L, y=H, z=W, centred), the same
+ * frame buildWrapOpened uses, so a caller can orient/position them like any
+ * other pack. Returns [] when the chain carries no filmed wrap.
+ */
+export function closedWrapParts(bundle){
+  const w = bundle && bundle.wraps;
+  if(!w || !w.seals) return [];
+  const cEnv = bundle.tray ? (w.filmEnvelope || w.envelope) : w.envelope;
+  const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w),
+                                  stackInfoOf(w), w.wrapAxis, undefined, bundle.tray);
+  const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis);
+  const defs = [
+    {geo: parts.bodyGeo, mat: filmClosedMat},
+    {geo: parts.taperPos, mat: sealMat},
+    {geo: parts.taperNeg, mat: sealMat},
+    {geo: parts.endTabPos, mat: sealMat},
+    {geo: parts.endTabNeg, mat: sealMat}
+  ];
+  if(finGeo) defs.push({geo: finGeo, mat: sealMat});
+  return defs;
+}
+
 /** Assemble one wrap (body + 2 tapers + fin) as ordinary Meshes — used for
  *  the single opened wrap. Closed (repeated) wraps use the instanced path
  *  in buildContainer instead, sharing these same geometries. */
@@ -817,17 +852,7 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
       // the bare w.envelope here is ONE CELL's collation run, which drew the
       // closed packs as undersized round tubes inside their tray-sized slots.
       // No tray: w.envelope and the tube profile, exactly as before.
-      const cEnv = bundle.tray ? (w.filmEnvelope || w.envelope) : w.envelope;
-      const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w), stackInfoOf(w), w.wrapAxis, undefined, bundle.tray);
-      const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis);
-      const partDefs = [
-        {geo: parts.bodyGeo, mat: filmClosedMat},
-        {geo: parts.taperPos, mat: sealMat},
-        {geo: parts.taperNeg, mat: sealMat},
-        {geo: parts.endTabPos, mat: sealMat},
-        {geo: parts.endTabNeg, mat: sealMat}
-      ];
-      if(finGeo) partDefs.push({geo: finGeo, mat: sealMat});
+      const partDefs = closedWrapParts(bundle);
       for(const pd of partDefs){
         const inst = new THREE.InstancedMesh(pd.geo, pd.mat, closed.length);
         const M = new THREE.Matrix4();

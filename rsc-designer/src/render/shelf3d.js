@@ -16,7 +16,7 @@
  */
 import {getPivot, setCamSpan, kraft, onFrame} from './fold3d.js';
 import {packArtGeometry, packArtMaterials} from './artwork3d.js';
-import {buildSellableCutaway, orientQuat} from './hierarchy3d.js';
+import {buildSellableCutaway, closedWrapParts, orientQuat} from './hierarchy3d.js';
 
 let shelfGroup = null;
 let shelfArtMat = null;                 // per-build art material+texture, disposed on rebuild
@@ -68,13 +68,19 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
   shelfGroup = new THREE.Group();
   const W = shelf.width, D = shelf.depth, H = shelf.height, t = SURFACE_T;
 
+  // the fixture (base/back/ceiling) is NAMED so a measurement can tell the
+  // shelf itself from what is stocked on it — the packs are what any pin about
+  // orientation or draw calls is actually asking about
   const base = new THREE.Mesh(new THREE.BoxGeometry(W, t, D), shelfMat);
+  base.name = 'shelfFixture';
   base.position.set(0, -t/2, 0);                        // top surface at y = 0
   shelfGroup.add(base);
   const wall = new THREE.Mesh(new THREE.BoxGeometry(W, H + t, t), wallMat);
+  wall.name = 'shelfFixture';
   wall.position.set(0, (H + t)/2 - t, D/2 + t/2);       // back wall at the far depth (+Z)
   shelfGroup.add(wall);
   const ceil = new THREE.Mesh(new THREE.BoxGeometry(W, t, D), ceilMat);
+  ceil.name = 'shelfFixture';
   ceil.position.set(0, H + t/2, 0);                     // the shelf above (empty ceiling)
   shelfGroup.add(ceil);
 
@@ -88,45 +94,74 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
   if(shown > 0){
     // the opened pack (if any) is drawn separately below; skip it in the fill
     const solidPl = openIdx < 0 ? placements : placements.filter((_, i) => i !== openIdx);
-    let pgeo, pmat, rot = false;
-    if(art && art.am && art.canvas){
-      // printed pack: the shared closed art body. packArtGeometry's FRONT is
-      // +Z; the shelf's front (frontMat) is local -Z, so rotate each pack 180°
-      // about the vertical to match — then the group's own 180° (below) carries
-      // both to the shopper side. One shared texture across every facing pack.
-      pgeo = packArtGeometry(art.am);
-      const mats = packArtMaterials(art.canvas, kraft);
-      shelfArtMat = mats[0];
-      pmat = mats; rot = true;
+    const printed = !!(art && art.am && art.canvas);
+    // THE PACK, not a stand-in. A filmed wrap is a pillow with ramped, crimped
+    // ends; drawn as a rectangular box, every facing except the opened one lied
+    // about the product's own shape — on the one view whose entire job is what
+    // the shopper sees. The parts come from the SAME builder the hierarchy's
+    // closed wraps use (closedWrapParts), in the same canonical frame, so the
+    // facings and the opened pack can never be two different packs. Still ONE
+    // InstancedMesh per part, so draw calls stay flat in the facing count
+    // exactly as the single box did.
+    const wrapParts = (!printed && opts.wrapBundle) ? closedWrapParts(opts.wrapBundle) : [];
+    if(wrapParts.length){
+      // the parts are canonical-frame, so they take the SAME orientation the
+      // opened pack takes (front-panel quat, then the in-plane spin) — one
+      // placement rule for every facing, opened or not
+      const q = new THREE.Quaternion()
+        .setFromAxisAngle(new THREE.Vector3(0, 0, 1), rotDeg*Math.PI/180)
+        .multiply(orientQuat(opts.frontO || 'LWH'));
+      const M = new THREE.Matrix4();
+      for(const pd of wrapParts){
+        const inst = new THREE.InstancedMesh(pd.geo, pd.mat, solidPl.length);
+        solidPl.forEach((p, i) => {
+          M.makeRotationFromQuaternion(q);
+          M.setPosition(p.x, p.z, p.y);                  // (across, up, depth)
+          inst.setMatrixAt(i, M);
+        });
+        shelfGroup.add(inst);
+      }
     }else{
-      pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
-      pmat = packMats;
+      let pgeo, pmat, rot = false;
+      if(printed){
+        // printed pack: the shared closed art body. packArtGeometry's FRONT is
+        // +Z; the shelf's front (frontMat) is local -Z, so rotate each pack 180°
+        // about the vertical to match — then the group's own 180° (below) carries
+        // both to the shopper side. One shared texture across every facing pack.
+        pgeo = packArtGeometry(art.am);
+        const mats = packArtMaterials(art.canvas, kraft);
+        shelfArtMat = mats[0];
+        pmat = mats; rot = true;
+      }else{
+        pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
+        pmat = packMats;
+      }
+      const inst = new THREE.InstancedMesh(pgeo, pmat, solidPl.length);
+      // TWO rotations about DIFFERENT axes, kept separate:
+      //  • A — art-front alignment (art packs only): packArtGeometry prints FRONT
+      //    at +Z, the shelf front is local -Z, so turn the body 180° about the
+      //    VERTICAL to face the shopper (the group's own 180° below carries it on).
+      //  • S — the user's Rotate 90°: spin the forward face IN ITS OWN PLANE, about
+      //    the DEPTH axis (local Z, the shopper→back axis). The same face stays
+      //    forward — only its content turns — so a side/back face is never shown.
+      //    +rotDeg reads CLOCKWISE to the shopper (verified from the ViewCube
+      //    FRONT: the → arrow goes right→bottom→left→top over the cycle). Because
+      //    S is about Z and the front normal IS the Z axis, S never disturbs which
+      //    face points forward.
+      // rotDeg=0 → S is identity, so the matrix is exactly the pre-rotation one
+      // (bit-identical default: identity for board packs, A for art packs).
+      const A = new THREE.Matrix4().makeRotationY(Math.PI);
+      const S = new THREE.Matrix4().makeRotationZ(rotDeg*Math.PI/180);
+      const M = new THREE.Matrix4();
+      for(let i = 0; i < solidPl.length; i++){
+        const p = solidPl[i];
+        if(rot) M.copy(A); else M.identity();
+        M.premultiply(S);                                // spin in-plane about the depth axis
+        M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
+        inst.setMatrixAt(i, M);
+      }
+      shelfGroup.add(inst);
     }
-    const inst = new THREE.InstancedMesh(pgeo, pmat, solidPl.length);
-    // TWO rotations about DIFFERENT axes, kept separate:
-    //  • A — art-front alignment (art packs only): packArtGeometry prints FRONT
-    //    at +Z, the shelf front is local -Z, so turn the body 180° about the
-    //    VERTICAL to face the shopper (the group's own 180° below carries it on).
-    //  • S — the user's Rotate 90°: spin the forward face IN ITS OWN PLANE, about
-    //    the DEPTH axis (local Z, the shopper→back axis). The same face stays
-    //    forward — only its content turns — so a side/back face is never shown.
-    //    +rotDeg reads CLOCKWISE to the shopper (verified from the ViewCube
-    //    FRONT: the → arrow goes right→bottom→left→top over the cycle). Because
-    //    S is about Z and the front normal IS the Z axis, S never disturbs which
-    //    face points forward.
-    // rotDeg=0 → S is identity, so the matrix is exactly the pre-rotation one
-    // (bit-identical default: identity for board packs, A for art packs).
-    const A = new THREE.Matrix4().makeRotationY(Math.PI);
-    const S = new THREE.Matrix4().makeRotationZ(rotDeg*Math.PI/180);
-    const M = new THREE.Matrix4();
-    for(let i = 0; i < solidPl.length; i++){
-      const p = solidPl[i];
-      if(rot) M.copy(A); else M.identity();
-      M.premultiply(S);                                // spin in-plane about the depth axis
-      M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
-      inst.setMatrixAt(i, M);
-    }
-    shelfGroup.add(inst);
   }
 
   // the ONE opened front pack: canonical-frame cutaway (shell + real contents),

@@ -92,6 +92,12 @@ export function sealend(p){
     outer: {L: L + 2*t, W: W + 2*t, H: H + 6*t},
     meta: {
       style: 'sealend',
+      // SHELF FRONT: the outward normal of the face this pack is merchandised
+      // on — the printed front panel, which on an upright tube carton is a
+      // WALL (normal along W). The retail shelf reads this instead of assuming
+      // a face, so a pack whose display face is not a wall (the flow wrap's
+      // top) presents correctly without a second orientation rule.
+      frontFace: 'W',
       caliper: t,
       sealFlapDepth: F, majorFlapDepth, dustDepth: D, overlap,
       boardLayersTop: 3, boardLayersBottom: 3,

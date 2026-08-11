@@ -177,6 +177,12 @@ export function flowwrap(p){
     outer,
     meta: {
       style: 'flowwrap',
+      // SHELF FRONT: a flow wrap is merchandised face-UP — the printed front
+      // band lands on the TOP of the pillow (the girth is measured from the
+      // bottom-centre seam), so the display face's normal is H, not a wall.
+      // The shelf assumed a wall for every pack and stood a wrapped tray on
+      // its long edge, hiding the very face the product is seen through.
+      frontFace: 'H',
       refLines,                                           // fold references, NOT creases
       // The DERIVED end-seal geometry — computed here and ONLY here. The
       // renderer (hierarchy3d.js) and the wrap-depth readout (app.js) READ

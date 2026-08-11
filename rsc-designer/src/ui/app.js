@@ -71,7 +71,7 @@ const subjectDims = {fold: null, nest: null};
 // face is forward, and the same face stays forward (never a side/back). 90°/270°
 // swap the face's two dims (across ↔ up; depth unchanged), so its width×height
 // on the shelf changes and the fill (facings/stack/count/occupied) recomputes.
-const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'LWH', rot: 0, cutaway: false};
+const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'auto', rot: 0, cutaway: false};
 // the shelf's natural angle IS the shopper's: mostly front-on (looking at the
 // front panels), tilted down slightly and turned a touch to read the depth of
 // the fill. One source for both entry and the ViewCube Home reset.
@@ -80,10 +80,24 @@ const SHELF_ORBIT = {rotX: 0.34, rotY: -0.5, span: 1.6};
 // is (across × up), so the depth axis is the middle char. Defaults to L×H —
 // the carton's printed front panel, upright.
 const FRONT_PANELS = [
+  {v: 'auto', label: 'Auto (the pack\u2019s own front)'},
   {v: 'LWH', label: 'L × H face (upright)'},
   {v: 'WLH', label: 'W × H face (turned)'},
   {v: 'LHW', label: 'L × W face (laid flat)'}
 ];
+
+/* Which face a pack is MERCHANDISED on is a property of the pack, not of the
+ * shelf. The default used to be a flat 'LWH' — right for an upright tube
+ * carton, whose printed panel is a wall, and wrong for anything whose display
+ * face is not a wall: a shrink-wrapped tray came to the shelf standing on its
+ * long edge, presenting 49mm of film end and hiding the open face the product
+ * is actually seen through. Each style declares its own display face as the
+ * axis of that face's outward NORMAL (meta.frontFace), and that normal IS the
+ * depth axis of the orientation string (o[1]) — so the mapping is total and
+ * there is one rule, not one per pack type. */
+const FRONT_BY_NORMAL = {W: 'LWH', L: 'WLH', H: 'LHW'};
+const packFrontOrientation = geo =>
+  (geo && geo.meta && FRONT_BY_NORMAL[geo.meta.frontFace]) || 'LWH';
 
 /* ---------- the active level: the ONE thing the rails + 2D/3D/DXF show ----
  * There is no detached style instance any more (Path A is gone). The rails
@@ -531,7 +545,12 @@ function refreshShelf(){
   // slot matches the textured geometry.
   const sellCanvas = artCanvasFor(noun, geo, () => { if(view === 'shelf') refreshShelf(); });
   const artInfo = sellCanvas ? {am: geo.meta.artMap, canvas: sellCanvas} : null;
-  const frontO = artInfo ? 'LWH' : shelf.front;
+  // 'auto' (the default) follows the PACK's declared display face; an explicit
+  // pick from the selector still wins. Artwork pins it to that same face —
+  // the printed front and the merchandised front are one face, so this is the
+  // same value, not a second convention.
+  const packFront = packFrontOrientation(geo);
+  const frontO = (artInfo || shelf.front === 'auto') ? packFront : shelf.front;
   el('shFront').disabled = !!artInfo;
   el('shFront').title = artInfo ? 'Front follows the uploaded artwork' : '';
   // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
@@ -592,8 +611,16 @@ function refreshShelf(){
   // stay solid printed packs. The bundle carries the pieces/wraps to drill; it
   // resolves the SAME selected candidate as the sellable geo above, so the open
   // pack matches the facings around it.
-  const cutOpts = shelf.cutaway ? {cutaway: true, bundle: hierarchyBundle(), noun, frontO} : {};
-  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot, cutOpts);
+  // ONE bundle for the shelf: the opened pack drills it, and the SOLID facings
+  // are built from it too when the sellable pack is a filmed wrap (a pillow,
+  // not a box — see shelf3d). Resolving it once means the facings and the
+  // opened pack can never describe different packs.
+  const needBundle = shelf.cutaway || noun === 'wrap';
+  const bundle = needBundle ? hierarchyBundle() : null;
+  const shelfOpts = {frontO,
+    ...(shelf.cutaway ? {cutaway: true, bundle, noun} : {}),
+    ...(noun === 'wrap' ? {wrapBundle: bundle} : {})};
+  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot, shelfOpts);
 }
 
 /* ---------- active-level selection + mounting ---------- */

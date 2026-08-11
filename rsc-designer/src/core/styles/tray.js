@@ -121,6 +121,8 @@ export function trayGeometry(p){
     outer: {L: L + 2*t, W: W + 2*t, H: outerH},
     meta: {
       style: 'tray',
+      // SHELF FRONT: an open tray is seen through its open TOP.
+      frontFace: 'H',
       caliper: t,
       cornerGap: g,
       boardLayersBottom: 1,

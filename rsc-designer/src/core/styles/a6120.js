@@ -82,6 +82,12 @@ export function a6120(p){
     outer: {L: L + 2*t, W: W + 2*t, H: H + 4*t},
     meta: {
       style: 'a6120',
+      // SHELF FRONT: the outward normal of the face this pack is merchandised
+      // on — the printed front panel, which on an upright tube carton is a
+      // WALL (normal along W). The retail shelf reads this instead of assuming
+      // a face, so a pack whose display face is not a wall (the flow wrap's
+      // top) presents correctly without a second orientation rule.
+      frontFace: 'W',
       caliper: p.caliper,
       tuckDepth: T, tuckTab: TT, dustDepth: D,
       // generic dieline annotations (style-agnostic renderer contract)

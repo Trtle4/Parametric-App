@@ -1794,6 +1794,133 @@ await (async () => {
     }
   });
 
+  // The hierarchy group is only HIDDEN when the shelf is up (visible=false, not
+  // removed), so a bare pivot traverse measures the pallet and calls it the
+  // shelf. Everything below counts only what is actually drawn.
+  const isShown = o => { for(let n = o; n; n = n.parent) if(!n.visible) return false; return true; };
+
+  t('SHELF: a wrapped tray presents its OPEN FACE, drawn as the real pack', () => {
+    // Two faults, one chain (tray -> wrap -> case, carton off). The shelf's
+    // front-panel default was a flat 'LWH' — the printed panel of an upright
+    // tube carton — so a wrapped tray came to the shelf standing on its long
+    // edge: 49mm of film end to the shopper, the open face with the product in
+    // it pointing at the ceiling. And every facing but the opened one was a
+    // plain BoxGeometry, which is not what a film pillow looks like.
+    //
+    // MEASURED, not asserted from the code: the facings' world extents against
+    // the wrap's own outer, and the drawn geometry's type. Both are read off
+    // the built scene.
+    const saved = snapProject(), savedFront = el('shFront').value;
+    try{
+      const proj = build.project;
+      proj.tray.enabled = true; proj.tray.nCells = 3;
+      Object.assign(proj.primary.collation,
+        {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+      proj.secondary.enabled = false;                 // carton off -> the WRAP is sellable
+      build.recompute();
+      el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+      el('tabShelf').click();
+
+      const row = resolveActiveRow(build.project, build.getRounding(), null);
+      const wo = row.geo.wrap.outer;
+      // the fixture only has teeth while the pack is clearly NOT square: the
+      // open face (L x W) must be plainly bigger than the film end (L x H)
+      if(!(wo.W > wo.H + 40)) throw new Error(`fixture not discriminating: W ${wo.W} vs H ${wo.H}`);
+
+      // measure what is STOCKED on the shelf, never the shelf fixture itself,
+      // and count a pack part whether it is instanced or not (so this pin says
+      // what it means about SHAPE, and the draw-call pin below owns instancing)
+      const box = new THREE.Box3(), M = new THREE.Matrix4();
+      const parts = [];
+      getPivot().updateMatrixWorld(true);
+      getPivot().traverse(o => {
+        if(!isShown(o) || o.name === 'shelfFixture') return;
+        if(!o.isInstancedMesh && !o.isMesh) return;
+        if(!o.geometry || !o.geometry.attributes.position) return;
+        parts.push({verts: o.geometry.attributes.position.count, count: o.count || 1});
+        o.geometry.computeBoundingBox();
+        const gb = o.geometry.boundingBox;
+        if(o.isInstancedMesh)
+          for(let i = 0; i < o.count; i++){ o.getMatrixAt(i, M); M.premultiply(o.matrixWorld); box.union(gb.clone().applyMatrix4(M)); }
+        else box.union(gb.clone().applyMatrix4(o.matrixWorld));
+      });
+      if(!parts.length) throw new Error('no facing packs rendered on the shelf');
+      const up = box.max.y - box.min.y, deep = box.max.z - box.min.z;
+      // the UP extent must be a whole number of W (the open face's height),
+      // never of H — that is what "the open face is forward" means on the shelf
+      // whole multiples of `unit`, with 2mm of slack for the cosmetic pack seam —
+      // enough that a stand-in BOX (drawn PACK_GAP under-size) still SATISFIES
+      // this test, so the "is it the real pack" assertions below are the ones
+      // that have to catch a stand-in, not this one by accident
+      const nearMultiple = (v, unit) => v >= unit - 2 && Math.abs(v - Math.round(v/unit)*unit) <= 2;
+      if(!nearMultiple(up, wo.W))
+        throw new Error(`the open face must stand UP the shelf: up ${up.toFixed(1)} is not a multiple of W ${wo.W}`);
+      if(nearMultiple(deep, wo.W) && !nearMultiple(deep, wo.H))
+        throw new Error(`depth ${deep.toFixed(1)} reads as W — the pack is presenting an end`);
+      // ...and the facings are the REAL pack, not a stand-in box. A filmed wrap
+      // is drawn as SEVERAL parts (lofted body, two ramp tapers, two crimp
+      // tabs, the fin); the stand-in was ONE instanced BoxGeometry, so both the
+      // part count and the body's vertex count separate them. Crimp tabs ARE
+      // boxes, so "no BoxGeometry" would be the wrong test — asserting a lofted
+      // body is the one that means what it says.
+      if(parts.length < 5)
+        throw new Error(`the pack is drawn as ${parts.length} part(s) — a film pillow is body + tapers + crimps`);
+      if(!parts.some(p => p.verts > 24))
+        throw new Error('no lofted body among the facing parts — still a stand-in box (24 verts)');
+    } finally {
+      el('tab2d').click();
+      el('shFront').value = savedFront; fire(el('shFront'), 'change');
+      restoreProject(saved);
+      el('tab3d').click(); el('d_pallet').click();
+    }
+  });
+
+  t('SHELF: real-pack facings stay INSTANCED — draw calls flat in the facing count', () => {
+    // The pillow is six part geometries where the box was one, so this is the
+    // pin that stops "draw the real pack" from quietly becoming a mesh per
+    // facing. Measured at two shelf sizes: the OBJECT count must not move.
+    const saved = snapProject(), savedFront = el('shFront').value;
+    const savedShelf = {w: el('shWidth').value, d: el('shDepth').value, h: el('shHeight').value};
+    // objects = what the renderer issues a draw for. packs = the app's OWN
+    // reported facing count, read off the shelf readout — an independent
+    // source, so "more packs" can't be inferred from the same objects it is
+    // being compared against.
+    const drawObjects = () => {
+      let n = 0;
+      getPivot().traverse(o => { if(isShown(o) && (o.isMesh || o.isInstancedMesh)) n++; });
+      const m = el('shReadout').textContent.match(/(\d+)/);
+      return {n, packs: m ? +m[1] : 0};
+    };
+    const setShelf = (w, d, h) => {
+      el('shWidth').value = String(w); fire(el('shWidth'), 'input');
+      el('shDepth').value = String(d); fire(el('shDepth'), 'input');
+      el('shHeight').value = String(h); fire(el('shHeight'), 'input');
+    };
+    try{
+      const proj = build.project;
+      proj.tray.enabled = true; proj.tray.nCells = 3;
+      Object.assign(proj.primary.collation,
+        {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+      proj.secondary.enabled = false;
+      build.recompute();
+      el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+      el('tabShelf').click();
+      setShelf(1000, 500, 300);
+      const small = drawObjects();
+      setShelf(4000, 2000, 1200);
+      const big = drawObjects();
+      if(!(big.packs > small.packs*5))
+        throw new Error(`fixture not discriminating: ${small.packs} -> ${big.packs} packs`);
+      eq(big.n, small.n, `draw objects must not follow the facing count (${small.packs} -> ${big.packs} packs):`);
+    } finally {
+      setShelf(savedShelf.w, savedShelf.d, savedShelf.h);
+      el('tab2d').click();
+      el('shFront').value = savedFront; fire(el('shFront'), 'change');
+      restoreProject(saved);
+      el('tab3d').click(); el('d_pallet').click();
+    }
+  });
+
   t('the drawn deck is built to baseH — load rests ON it, never floats', () => {
     // L2's visual half. buildPallet stacks the load from the chain's baseH
     // while the timber mesh was a fixed 127, so at baseH 140 the load floated
