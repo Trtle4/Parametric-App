@@ -94,84 +94,62 @@ const box = (l, h, w, mat) => new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat
 export function buildTray3d(p, contents){
   const group = new THREE.Group();
   const {topL, topW, bottomL, bottomW, outerL, outerW, H, floor, cellLen, cellWid,
-         nCells, wall, divider, flangeT, lipH, lipT, overallH} = p;
+         nCells, wall, divider, flangeT, lipH, lipT, overallH, cornerR, cradleR,
+         bottomCornerR, outerR} = p;
+  const y0 = -overallH/2;                         // the tray's own base plane
 
-  // ---- drafted outer body: bottom inset by the draft, top at the rim ----
-  // drawn as a shell: floor slab + four tapered perimeter walls, so the cells
-  // are open from above (there is no lid) and the taper is visible on the
-  // outside faces.
-  const bodyH = H;
-  const yBody = -overallH/2 + bodyH/2;
+  /* ---- outer drafted body, with ROUNDED CORNERS ------------------------
+   * Lofted between two rounded-rect outlines (inset base -> rim), so the
+   * draft and the corner radius are both real geometry. No booleans: the
+   * body is a surface stitched from two loops plus a base cap. */
+  const base = roundedRectLoop(bottomL, bottomW, bottomCornerR, CORNER_SEG);
+  const rim  = roundedRectLoop(topL, topW, cornerR, CORNER_SEG);
+  group.add(new THREE.Mesh(loftLoops(base, y0, rim, y0 + H), trayMat));
+  group.add(new THREE.Mesh(capLoop(base, y0, false), trayMat));      // underside
 
-  // floor slab, itself drafted (it is the bottom of the tapered body)
-  const floorTop = -overallH/2 + floor;
-  const fBotL = bottomL, fBotW = bottomW;
-  // interpolate the taper at the top of the floor slab
-  const tf = floor/bodyH;
-  const fTopL = bottomL + (topL - bottomL)*tf, fTopW = bottomW + (topW - bottomW)*tf;
-  const floorMesh = taperedSlab(fTopL, fTopW, fBotL, fBotW, floor, false);
-  floorMesh.position.y = -overallH/2 + floor/2;
-  group.add(floorMesh);
+  /* ---- flange and lip as DISTINCT STEPS --------------------------------
+   * flange: a flat rounded ring from the rim out to outerL/W, sitting just
+   * below the rim face. lip: a shorter, taller ring standing proud of it —
+   * two separate steps rather than one slab, which is what reads as a
+   * thermoformed rim. */
+  const flOut = roundedRectLoop(outerL, outerW, outerR, CORNER_SEG);
+  const flIn  = roundedRectLoop(topL, topW, cornerR, CORNER_SEG);
+  const yFl = y0 + H;
+  group.add(new THREE.Mesh(ringBetween(flIn, flOut, yFl), trayMat2));                    // flange top face
+  group.add(new THREE.Mesh(loftLoops(flOut, yFl - flangeT, flOut, yFl), trayMat2));      // flange edge
+  group.add(new THREE.Mesh(ringBetween(flIn, flOut, yFl - flangeT, true), trayMat2));    // flange underside
 
-  // perimeter walls above the floor, tapered over their own height
-  const wallH = bodyH - floor;
-  if(wallH > 0.01){
-    const wTop = topL, wTopW = topW;
-    const wBotL = fTopL, wBotW = fTopW;
-    const yW = -overallH/2 + floor + wallH/2;
-    // four separate tapered walls so the interior stays open (a single
-    // tapered slab would fill the cells solid)
-    const mk = (len, wid, cx, cz, botLen, botWid, botCx, botCz) => {
-      const g = new THREE.BufferGeometry();
-      const hh = wallH/2;
-      const v = new Float32Array([
-        botCx - botLen/2, -hh, botCz - botWid/2,  botCx + botLen/2, -hh, botCz - botWid/2,
-        botCx + botLen/2, -hh, botCz + botWid/2,  botCx - botLen/2, -hh, botCz + botWid/2,
-        cx - len/2,        hh, cz - wid/2,        cx + len/2,        hh, cz - wid/2,
-        cx + len/2,        hh, cz + wid/2,        cx - len/2,        hh, cz + wid/2
-      ]);
-      g.setAttribute('position', new THREE.BufferAttribute(v, 3));
-      g.setIndex([0,1,2, 0,2,3, 4,6,5, 4,7,6, 0,4,5, 0,5,1, 1,5,6, 1,6,2, 2,6,7, 2,7,3, 3,7,4, 3,4,0]);
-      g.computeVertexNormals();
-      const m = new THREE.Mesh(g, trayMat);
-      m.position.y = yW;
-      return m;
-    };
-    const sTop = wall, sBot = wall + (topW - wBotW)/2;   // walls thicken toward the base with the draft
-    // ±W walls (run along L)
-    group.add(mk(wTop, sTop, 0, -(wTopW - sTop)/2, wBotL, sBot, 0, -(wBotW - sBot)/2));
-    group.add(mk(wTop, sTop, 0,  (wTopW - sTop)/2, wBotL, sBot, 0,  (wBotW - sBot)/2));
-    // ±L walls (run along W), inset so they meet the others
-    const eTop = wTopW - 2*sTop, eBot = wBotW - 2*sBot;
-    group.add(mk(sTop, Math.max(eTop, 0.1), -(wTop - sTop)/2, 0, sBot, Math.max(eBot, 0.1), -(wBotL - sBot)/2, 0));
-    group.add(mk(sTop, Math.max(eTop, 0.1),  (wTop - sTop)/2, 0, sBot, Math.max(eBot, 0.1),  (wBotL - sBot)/2, 0));
+  const lipIn = roundedRectLoop(outerL - 2*lipT, outerW - 2*lipT, Math.max(outerR - lipT, 0.5), CORNER_SEG);
+  const yLip = yFl + lipH;
+  group.add(new THREE.Mesh(loftLoops(flOut, yFl, flOut, yLip), trayMat2));   // lip outer face
+  group.add(new THREE.Mesh(loftLoops(lipIn, yFl, lipIn, yLip), trayMat2));   // lip inner face
+  group.add(new THREE.Mesh(ringBetween(lipIn, flOut, yLip), trayMat2));      // lip crown
 
-    // ---- dividers between cells (vertical, per the upstream note that only
-    // the outer body drafts — internal cell walls stay vertical) ----
-    for(let j = 1; j < nCells; j++){
-      const cz = -topW/2 + wall + j*(cellWid + divider) - divider/2;
-      const d = box(cellLen, wallH, divider, true);
-      d.position.set(0, yW, cz);
-      group.add(d);
-    }
+  /* ---- the cells as RECESSED TROUGHS with a CRADLE-CURVED bottom -------
+   * Each cell is a real pocket: a U cross-section (straight sides down to a
+   * cradleR arc) swept along the cell length, capped at both ends. The rim
+   * land between pockets is the divider, drawn as the flat strip left over —
+   * so the dividers are what remains between recesses rather than bars laid
+   * on a flat pan. */
+  const rimY = y0 + H;                       // trough opening sits at the rim
+  const cellsY0 = y0 + floor;                // trough floor rides on the tray floor
+  const halfL = cellLen/2;
+  const prof = troughProfile(cellWid, Math.max(H - floor, 0.5), Math.min(cradleR, cellWid/2), TROUGH_SEG);
+  for(let j = 0; j < nCells; j++){
+    const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
+    group.add(new THREE.Mesh(sweepProfileX(prof, -halfL, halfL, cz, cellsY0), trayMat));
+    group.add(new THREE.Mesh(capProfile(prof, -halfL, cz, cellsY0, false), trayMat));
+    group.add(new THREE.Mesh(capProfile(prof,  halfL, cz, cellsY0, true),  trayMat));
   }
+  // the rim land: everything inside the rim that is NOT a pocket mouth
+  group.add(new THREE.Mesh(rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider,
+                                      nCells, wall, rimY), trayMat2));
 
-  // ---- flange: a flat ring flush with the rim, extending past the body ----
-  const yFl = -overallH/2 + H - flangeT/2;
-  const flange = new THREE.Mesh(ringGeo(outerL, outerW, topL, topW, flangeT), trayMat2);
-  flange.position.y = yFl;
-  group.add(flange);
-
-  // ---- perimeter lip standing above the flange ----
-  const lip = new THREE.Mesh(ringGeo(outerL, outerW, outerL - 2*lipT, outerW - 2*lipT, lipH), trayMat2);
-  lip.position.y = -overallH/2 + H + lipH/2;
-  group.add(lip);
-
-  // ---- product sitting IN the cells -------------------------------------
-  // The tray owns the cells; the COLLATION owns what sits in one of them, so
-  // the piece run is replicated per cell rather than re-derived here. Pieces
-  // bear on the trough floor, which is why a tall product visibly stands
-  // proud of the rim — the same fact the envelope's max() encodes.
+  /* ---- product sitting IN the cells ------------------------------------
+   * The tray owns the cells; the COLLATION owns what sits in one of them, so
+   * the piece run is replicated per cell rather than re-derived here. Pieces
+   * bear on the trough floor, which is why a tall product visibly stands
+   * proud of the rim — the same fact the envelope's max() encodes. */
   if(contents && contents.piece && contents.perCell > 0){
     const {geo, rot} = pieceGeo(contents.piece, contents.stackAxis);
     const per = Math.max(1, Math.round(contents.perCell));
@@ -179,15 +157,17 @@ export function buildTray3d(p, contents){
     if(total > 0 && total <= 4000){
       const inst = new THREE.InstancedMesh(geo, productMat, total);
       const M = new THREE.Matrix4();
-      // pitch the run along the cell length, centred, one row per cell
-      const pitch = per > 1 ? Math.min(cellLen/per, cellLen/per) : 0;
+      const pitch = cellLen/per;
+      // pieces rest in the cradle, so their centre sits a radius up from the
+      // arc's lowest point rather than on a flat floor
+      const rise = pieceRise(contents.piece, contents.stackAxis);
       let k = 0;
       for(let j = 0; j < nCells; j++){
         const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
         for(let i = 0; i < per; i++){
-          const cx = (i + 0.5)*pitch - per*pitch/2;
+          const cx = (i + 0.5)*pitch - cellLen/2;
           if(rot) M.copy(rot); else M.identity();
-          M.setPosition(cx, -overallH/2 + floor + pieceRise(contents.piece, contents.stackAxis), cz);
+          M.setPosition(cx, cellsY0 + rise, cz);
           inst.setMatrixAt(k++, M);
         }
       }
@@ -202,6 +182,165 @@ export function buildTray3d(p, contents){
   if(p.longAxis === 'Y') group.rotation.y = Math.PI/2;
 
   return {group, span: Math.max(outer.L, outer.W, outer.H), outer};
+}
+
+/* ---------------- surface builders (no CSG, no fillets) ------------------
+ * Everything below stitches explicit triangles. Corner ROUNDING is a real
+ * arc in the outline; edge FILLETS (blends between two surfaces) genuinely
+ * need a kernel and are deliberately skipped — the brief says so. */
+
+const CORNER_SEG = 6;    // arc segments per rounded corner
+const TROUGH_SEG = 10;   // arc segments across the cradle
+
+/** A closed rounded-rectangle outline as [x, z] points, CCW seen from above. */
+function roundedRectLoop(L, W, r, seg){
+  const hx = L/2, hz = W/2;
+  const rr = Math.max(0.01, Math.min(r, Math.min(hx, hz) - 0.01));
+  const pts = [];
+  // corner centres, in order: +x+z, -x+z, -x-z, +x-z
+  const corners = [[hx - rr, hz - rr, 0], [-(hx - rr), hz - rr, Math.PI/2],
+                   [-(hx - rr), -(hz - rr), Math.PI], [hx - rr, -(hz - rr), 1.5*Math.PI]];
+  for(const [cx, cz, a0] of corners)
+    for(let i = 0; i <= seg; i++){
+      const a = a0 + (Math.PI/2)*(i/seg);
+      pts.push([cx + rr*Math.cos(a), cz + rr*Math.sin(a)]);
+    }
+  return pts;
+}
+
+/** Side surface between two outlines at two heights (they must share length). */
+function loftLoops(loopA, yA, loopB, yB){
+  const n = Math.min(loopA.length, loopB.length);
+  const pos = [], idx = [];
+  for(let i = 0; i < n; i++){
+    pos.push(loopA[i][0], yA, loopA[i][1]);
+    pos.push(loopB[i][0], yB, loopB[i][1]);
+  }
+  for(let i = 0; i < n; i++){
+    const a = 2*i, b = 2*i + 1, c = 2*((i + 1)%n), d = 2*((i + 1)%n) + 1;
+    idx.push(a, b, d, a, d, c);
+  }
+  return finish(pos, idx);
+}
+
+/** Flat fan cap across one outline at height y. */
+function capLoop(loop, y, up = true){
+  const pos = [0, y, 0], idx = [];
+  for(const [x, z] of loop) pos.push(x, y, z);
+  const n = loop.length;
+  for(let i = 0; i < n; i++){
+    const a = 1 + i, b = 1 + (i + 1)%n;
+    if(up) idx.push(0, a, b); else idx.push(0, b, a);
+  }
+  return finish(pos, idx);
+}
+
+/** Flat annulus between an inner and an outer outline at height y. */
+function ringBetween(inner, outer, y, flip = false){
+  const n = Math.min(inner.length, outer.length);
+  const pos = [], idx = [];
+  for(let i = 0; i < n; i++){
+    pos.push(inner[i][0], y, inner[i][1]);
+    pos.push(outer[i][0], y, outer[i][1]);
+  }
+  for(let i = 0; i < n; i++){
+    const a = 2*i, b = 2*i + 1, c = 2*((i + 1)%n), d = 2*((i + 1)%n) + 1;
+    if(flip) idx.push(a, d, b, a, c, d); else idx.push(a, b, d, a, d, c);
+  }
+  return finish(pos, idx);
+}
+
+/**
+ * The U cross-section of one trough as [dz, dy] offsets from the cell centre
+ * at the trough floor: straight sides rising from a cradleR arc. This is the
+ * cradle — a curved bottom, not a flat pan.
+ */
+function troughProfile(cellWid, depth, cradleR, seg){
+  const half = cellWid/2;
+  const r = Math.max(0.01, Math.min(cradleR, half));
+  const flat = half - r;                       // 0 when the cradle is a full half-round
+  const pts = [];
+  pts.push([-half, depth]);                    // rim, -W side
+  if(depth > r + 1e-9) pts.push([-half, r]);   // straight wall down to where the arc starts
+  // left corner arc: centre (-flat, r), sweeping pi -> pi/2 (down to the floor)
+  for(let i = 0; i <= seg; i++){
+    const a = Math.PI - (Math.PI/2)*(i/seg);
+    pts.push([-flat + r*Math.cos(a), r - r*Math.sin(a)]);
+  }
+  // right corner arc: centre (+flat, r), sweeping pi/2 -> 0 (floor back up)
+  for(let i = 1; i <= seg; i++){
+    const a = (Math.PI/2)*(1 - i/seg);
+    pts.push([flat + r*Math.cos(a), r - r*Math.sin(a)]);
+  }
+  if(depth > r + 1e-9) pts.push([half, r]);
+  pts.push([half, depth]);                     // rim, +W side
+  return pts;
+}
+
+/** Sweep a [dz, dy] profile along X between x0 and x1, centred at cz/base y. */
+function sweepProfileX(prof, x0, x1, cz, y){
+  const pos = [], idx = [];
+  for(const [dz, dy] of prof){
+    pos.push(x0, y + dy, cz + dz);
+    pos.push(x1, y + dy, cz + dz);
+  }
+  for(let i = 0; i < prof.length - 1; i++){
+    const a = 2*i, b = 2*i + 1, c = 2*i + 2, d = 2*i + 3;
+    idx.push(a, b, d, a, d, c);
+  }
+  return finish(pos, idx);
+}
+
+/** Close one end of a trough with a flat U-shaped wall. */
+function capProfile(prof, x, cz, y, flip){
+  const pos = [], idx = [];
+  const top = prof[0][1];
+  for(const [dz, dy] of prof){
+    pos.push(x, y + dy, cz + dz);      // profile point
+    pos.push(x, y + top, cz + dz);     // straight up to the rim
+  }
+  for(let i = 0; i < prof.length - 1; i++){
+    const a = 2*i, b = 2*i + 1, c = 2*i + 2, d = 2*i + 3;
+    if(flip) idx.push(a, d, b, a, c, d); else idx.push(a, b, d, a, d, c);
+  }
+  return finish(pos, idx);
+}
+
+/**
+ * The flat land at rim height INSIDE the tray: the region between the rim
+ * outline and the pocket mouths. Drawn as strips around each pocket, so the
+ * dividers appear as the material left between recesses rather than as bars
+ * sitting on a flat pan.
+ */
+function rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider, nCells, wall, y){
+  const parts = [];
+  const hx = topL/2, hz = topW/2;
+  const add = (x0, x1, z0, z1) => {
+    if(x1 - x0 <= 1e-6 || z1 - z0 <= 1e-6) return;
+    const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
+    g.rotateX(-Math.PI/2);
+    g.translate((x0 + x1)/2, y, (z0 + z1)/2);
+    parts.push(g);
+  };
+  const cellZ = j => -hz + wall + j*(cellWid + divider);
+  // end lands (beyond the pockets along the cell run)
+  add(-hx, -cellLen/2, -hz, hz);
+  add(cellLen/2, hx, -hz, hz);
+  // the outer wall lands and the dividers between pockets
+  add(-cellLen/2, cellLen/2, -hz, cellZ(0));
+  for(let j = 0; j < nCells - 1; j++)
+    add(-cellLen/2, cellLen/2, cellZ(j) + cellWid, cellZ(j + 1));
+  add(-cellLen/2, cellLen/2, cellZ(nCells - 1) + cellWid, hz);
+  return parts.length ? mergeGeos(parts) : new THREE.BufferGeometry();
+}
+
+/** positions + indices -> a normalled BufferGeometry. */
+function finish(pos, idx){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
 }
 
 /** A rectangular ring (picture-frame) solid: outer L×W, inner l×w, height h. */
