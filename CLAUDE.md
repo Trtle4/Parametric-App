@@ -259,3 +259,34 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   the far side. `fefco201` (the RSC case) gained an `artMap` so case artwork is
   possible at all. The default carton/case print text is now empty (no
   "FRAGILE").
+- **The shelf shows the PACK's own face, drawn as the pack that is really
+  there.** Two rules, both learned from a wrapped tray. (1) Which face a
+  pack is merchandised on belongs to the STYLE, not to the shelf: each
+  style declares `meta.frontFace` as the axis of that face's outward
+  NORMAL — `'W'` for the upright tube cartons/case (the printed panel is a
+  wall), `'H'` for the flow wrap and the tray (the display face is the
+  top). That normal IS `o[1]` of a `FRONT_PANELS` orientation string, so
+  `FRONT_BY_NORMAL` maps it totally, with no per-pack branch. The selector
+  defaults to `'auto'` (follow the pack) and an explicit pick still wins;
+  artwork pins the front to the SAME face rather than a second hardcoded
+  `'LWH'`. The old flat `'LWH'` default stood a shrink-wrapped tray on its
+  long edge and showed the shopper 49mm of film end. (2) A facing is drawn
+  as the REAL pack: for a filmed wrap the facings come from
+  `closedWrapParts()` — the closed-wrap builder lifted out of hierarchy3d's
+  own instanced path — so the facings and the opened hero pack are built by
+  one function from one bundle. Instancing is per PART (one InstancedMesh
+  each for body, both ramps, both crimps, the fin), so draw calls stay flat
+  in the facing count: 9 draw objects at 40 packs and at 4,560.
+- **Fixture hygiene is measured, not assumed** (`test/uisync.test.html`).
+  A pin that edits the project uses `tEdit` — snapshot in,
+  `restoreProject` in a `finally`, selection included — rather than a
+  hand-written restore, and NEVER writes back a hardcoded "default": three
+  pins used to reset a field to a value that was never there (case wall
+  clearance went back as 0 against a real 1.5, silently re-sizing every
+  later pin's case). Restore is in place and deletes added keys, because
+  blocks capture references into the project and an `Object.assign` restore
+  cannot remove what the body added. Anything read out of the RENDER
+  (overlays, the 3D scene) needs `waitFrames` — it is painted from fold3d's
+  frame loop, and reading in the same synchronous turn is a race the
+  fixture loses under load. The acceptance test is running every pin ALONE
+  in its own page load: that must stay at 0 failures.
