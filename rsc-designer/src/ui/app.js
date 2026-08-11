@@ -37,6 +37,7 @@ import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
 import {buildTray3d, trayToSTL} from '../render/tray3d.js';
 import {parseTrayLink, buildTrayLink} from '../core/cookietraylink.js';
+import {cellLengthFor, packPitchOf} from '../core/cookietray.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -1023,7 +1024,11 @@ function trayAutoDims(){
   if(!tr) return {};
   try{
     const col = collate(build.project.primary.collation);
-    const cellLen = col.envelope.L + (tr.endClearance ?? 3);
+    // the SAME cell-length rule solveTrayStage uses — this readout is what the
+    // rail shows as the "auto" value, so a second expression here would let the
+    // displayed auto disagree with the tray actually built
+    const cellLen = cellLengthFor(col.count, packPitchOf(build.project.primary.collation.piece),
+                                  tr.endClearance ?? 3);
     const cellWid = col.envelope.W + 2*(tr.sideClearance ?? 1.5);
     const cellH = cellWid/2;
     const ov = tr.params || {};

@@ -10,7 +10,7 @@
  */
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
-import {trayParams, trayOuter, isProud} from './cookietray.js';
+import {trayParams, trayOuter, isProud, cellLengthFor, packPitchOf} from './cookietray.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
@@ -399,8 +399,15 @@ function solveTrayStage(project, content){
   const endC = num(tray.endClearance) ? tray.endClearance : 3;
   const sideC = num(tray.sideClearance) ? tray.sideClearance : 1.5;
 
-  // auto-with-override, one axis at a time
-  const cellLen = num(ov.cellLen) ? ov.cellLen : env.L + endC;
+  // auto-with-override, one axis at a time.
+  // Cell LENGTH comes from the ported Cookie-Tray rule (cellLengthFor), NOT
+  // from the collation envelope's own run: those are two conventions for one
+  // quantity, and `env.L` carries the collation's inter-piece gaps while the
+  // tray rule has products nose-to-tail. Sizing from env.L made a cell that
+  // the tray app — re-deriving from the product spec in our own exported
+  // link — would not reproduce, by (perCell-1)*pieceGap.
+  const cellLen = num(ov.cellLen) ? ov.cellLen
+    : cellLengthFor(content.count, packPitchOf(content.config.piece), endC);
   const cellWid = num(ov.cellWid) ? ov.cellWid : env.W + 2*sideC;
   const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
   // The cradle radius defaults to the cell half-width upstream, which is only

@@ -22,7 +22,7 @@
  *
  * DOM-free, mm-only, pure.
  */
-import {TRAY_DEFAULTS} from './cookietray.js';
+import {TRAY_DEFAULTS, packPitchOf} from './cookietray.js';
 
 /** Long name -> Cookie-Tray's compact querystring key (their TRAY_KEY_MAP). */
 export const TRAY_KEYS = Object.freeze({
@@ -156,16 +156,20 @@ export function buildTrayLink(project, trayResult, base = 'https://trtle4.github
     // we always know the cell count, so distribute by cells over there too
     put('distributeBy', PRODUCT_KEYS, PRODUCT_DEFAULTS, 'nCells');
     put('nCellsProduct', PRODUCT_KEYS, PRODUCT_DEFAULTS, trayResult.nCells);
+    // the pitch we EXPORT is packPitchOf — the same value the cell length was
+    // sized from (cookietray.js cellLengthFor), so the tray this link rebuilds
+    // over there is the tray we built here rather than a second reading of the
+    // product's dimensions.
     if(col.piece.kind === 'cylinder'){
       put('productType', PRODUCT_KEYS, PRODUCT_DEFAULTS, 'round');
       put('cookieDiameter', PRODUCT_KEYS, PRODUCT_DEFAULTS, col.piece.diameter);
-      put('cookieThickness', PRODUCT_KEYS, PRODUCT_DEFAULTS, col.piece.thickness);
+      put('cookieThickness', PRODUCT_KEYS, PRODUCT_DEFAULTS, packPitchOf(col.piece));
     }else{
       // their rectangle axes: thickness runs along the channel, width across
       // the cell, height vertical — the same convention our on-edge collation
       // uses, so the piece dims map straight across.
       put('productType', PRODUCT_KEYS, PRODUCT_DEFAULTS, 'rectangle');
-      put('productThickness', PRODUCT_KEYS, PRODUCT_DEFAULTS, col.piece.L);
+      put('productThickness', PRODUCT_KEYS, PRODUCT_DEFAULTS, packPitchOf(col.piece));
       put('productWidth', PRODUCT_KEYS, PRODUCT_DEFAULTS, col.piece.W);
       put('productHeight', PRODUCT_KEYS, PRODUCT_DEFAULTS, col.piece.H);
     }

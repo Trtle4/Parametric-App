@@ -510,6 +510,50 @@ t('LINK: round trip is a FIXED POINT (export -> import -> same tray)', () => {
   near(after.outer.W, before.outer.W, 'envelope W:', 1e-9);
 });
 
+t('LINK: an exported link rebuilds the SAME tray over THERE (cross-app)', () => {
+  // The fixed-point test above only proves export->import is stable WITHIN
+  // this app. This is the direction that was never checked: hand our link's
+  // PRODUCT half to the ported derive_params — what Cookie-Tray does when it
+  // re-derives from a product spec — and require the tray it builds to be the
+  // tray we display. Deliberately does NOT feed `cl` back in: honouring our
+  // explicit cell length would make this vacuous, and it is precisely when
+  // they re-derive that a second derivation here shows up as a different tray.
+  const p = trayProject();
+  Object.assign(p.primary.collation, {
+    piece: {kind: 'cylinder', diameter: 47, thickness: 12},
+    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1,
+    // a REAL inter-piece gap: with products touching, both cell-length rules
+    // coincide and this pin would pass no matter which one the app used
+    pieceGap: 0.9
+  });
+  const mine = resolveActiveRow(p, '1mm').tray;
+  const qs = new URLSearchParams(buildTrayLink(p, mine).split('?')[1]);
+  const numOr = (k, d) => qs.has(k) ? +qs.get(k) : d;
+
+  const spec = {
+    qtyTotal: numOr('qty', 24), nCells: numOr('ncp', 3),
+    productType: qs.get('pty') || 'round',
+    cookieDiameter: numOr('pdia', 45), cookieThickness: numOr('pthk', 12),
+    cellH: numOr('ch', 28)
+  };
+  // every structural tray key the link carries, honoured as an override — but
+  // never the cell dims, which are what derive_params exists to recompute
+  for(const [long, short] of Object.entries(TRAY_KEYS)){
+    if(['nCells', 'cellLen', 'cellWid', 'cellH', 'cradleR', 'longAxis'].includes(long)) continue;
+    if(qs.has(short)) spec[long] = +qs.get(short);
+  }
+  const theirs = deriveTrayParams(spec);
+
+  near(theirs.cellLen, mine.params.cellLen, 'cell length across the two apps:', 1e-9);
+  near(theirs.outerL, mine.params.outerL, 'tray outer L across the two apps:', 1e-9);
+  near(theirs.outerW, mine.params.outerW, 'tray outer W across the two apps:', 1e-9);
+  // and therefore the envelope the rest of the chain is built on
+  const theirEnv = trayOuter(theirs, mine.standingH);
+  near(theirEnv.L, mine.outer.L, 'envelope L across the two apps:', 1e-9);
+  near(theirEnv.W, mine.outer.W, 'envelope W across the two apps:', 1e-9);
+  near(theirEnv.H, mine.outer.H, 'envelope H across the two apps:', 1e-9);
+});
+
 t('LINK: the product half carries the collation across', () => {
   const p = newProject();
   // 5 cells x 6 per cell = 30, deliberately NOT their qty default of 24 —

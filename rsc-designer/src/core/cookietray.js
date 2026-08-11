@@ -238,6 +238,29 @@ export function isProud(p, productStandingH = 0){
  *   plus any pass-through TRAY_DEFAULTS input (wall, floor, cornerR, ...).
  * @returns {Readonly<Object>} same shape as trayParams()
  */
+/**
+ * THE pitch one product occupies along a tray channel. Products sit
+ * nose-to-tail in the cradle, so the pitch is the product's own thickness:
+ * a round product's `thickness`, a box's L — the axis cookietraylink exports
+ * as Cookie-Tray's `productThickness`. ONE definition, so the dimension used
+ * to SIZE a cell is provably the dimension the exported link carries.
+ */
+export const packPitchOf = piece => piece.kind === 'cylinder' ? piece.thickness : piece.L;
+
+/**
+ * THE cell-length rule: `perCell` products nose-to-tail at their own pitch,
+ * plus ONE end clearance total along the channel (not one per end).
+ *
+ * Cookie-Tray's rule, and now the only one. The app used to size the cell
+ * from the COLLATION's envelope instead (its product run, `env.L + endC`) —
+ * a second derivation with a different convention: the collation run carries
+ * the collation's own inter-piece `pieceGap`, while this rule has products
+ * touching. A gapped collation therefore built a cell (perCell-1)*pieceGap
+ * longer than the tray its own exported link rebuilds, a divergence that
+ * GROWS with the count. Everything that needs a cell length calls this.
+ */
+export const cellLengthFor = (perCell, packPitch, endClearance) => perCell*packPitch + endClearance;
+
 export function deriveTrayParams(spec){
   const s = {productType: 'round', sideClearance: 1.5, endClearance: 3,
              cradleClearance: 0, cellH: 28, ...spec};
@@ -282,7 +305,7 @@ export function deriveTrayParams(spec){
   return trayParams({
     ...passThrough,
     nCells,
-    cellLen: perCell*packPitch + s.endClearance,
+    cellLen: cellLengthFor(perCell, packPitch, s.endClearance),
     cellWid,
     cellH: s.cellH,
     cradleR
