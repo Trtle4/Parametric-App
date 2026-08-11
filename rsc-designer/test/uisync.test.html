@@ -1633,6 +1633,35 @@ await (async () => {
     el('d_pallet').click();      // rebuild the REAL scene; later pins read renderedOuter()
   });
 
+  t('Dims split reads the CHAIN deck height, not the mesh constant', () => {
+    // MUST be pinned at a NON-DEFAULT baseH: pallet.baseH and palletmesh's
+    // PALLET_HEIGHT are two independent 127s, so at the default the wrong one
+    // still reads right and a default-only pin proves nothing. At baseH 140
+    // the overlay read Pallet 254 / Load 2316 against a true 280 / 2290 —
+    // Total correct, the error a pure transfer between the two lines.
+    // Reads the RENDERED overlay text, not a recomputation of the split here:
+    // asserting my own arithmetic would pass whichever constant the app used.
+    const saved = build.project.pallet.baseH;
+    try{
+      build.project.pallet.baseH = 140;
+      build.recompute();
+      el('d_pallet').click();
+      const dimsBtn = el('m3dims');
+      if(dimsBtn && !dimsBtn.classList.contains('on')) dimsBtn.click();
+      const txt = (el('dimsOverlay').textContent || '').replace(/\s+/g, ' ');
+      const m = txt.match(/Pallet\s*([\d.]+)/);
+      if(!m) throw new Error(`no Pallet line in the Dims overlay: "${txt.slice(0, 120)}"`);
+      approx(+m[1], 140, 'the Pallet line must be the CHAIN deck height (baseH), not 127:');
+      const ml = txt.match(/Load\s*([\d.]+)/), mt = txt.match(/Total\s*([\d.]+)/);
+      if(!ml || !mt) throw new Error('Load/Total lines missing from the overlay');
+      approx(+m[1] + +ml[1], +mt[1], 'Pallet + Load must sum to Total:');
+      const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+      approx(+ml[1], row.loadH, 'the Load line must be the chain load height:');
+    } finally {
+      build.project.pallet.baseH = saved; build.recompute(); el('d_pallet').click();
+    }
+  });
+
   t('pallet render stays INSTANCED at scale — draw calls flat, no unit dropped', () => {
     // The deleted Palletize renderer capped instances at 4000 and silently
     // dropped every unit past it; that cap died with it (5e103c6). Measured, it

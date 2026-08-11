@@ -23,7 +23,7 @@ import {trayParams, deriveTrayParams, trayOuter, isProud,
         TRAY_DEFAULTS, MIN_WALL, MIN_DIVIDER} from '../src/core/cookietray.js';
 import {newProject, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
-import {parseTrayLink, buildTrayLink, TRAY_KEYS, PRODUCT_KEYS} from '../src/core/cookietraylink.js';
+import {parseTrayLink, buildTrayLink, TRAY_KEYS, PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
 
 const results = [];
 function t(name, fn){
@@ -471,20 +471,106 @@ t('LINK: a string with no Cookie-Tray keys returns null, never a bogus tray', ()
     eq(parseTrayLink(junk), null, `${JSON.stringify(junk)}:`);
 });
 
-t('LINK: export omits defaults, exactly like their encoder', () => {
-  const p = newProject();
-  Object.assign(p.tray, {enabled: true, nCells: 3});
-  const row = resolveActiveRow(p, '1mm');
-  const url = buildTrayLink(p, row.tray);
-  ok(url && url.includes('?'), 'a link is produced');
+/* THEIR resolution rule, modelled honestly. Cookie-Tray's decoder keeps only
+   the keys actually present (verified against the deployed bundle: it iterates
+   its key maps and skips `!params.has(short)`), and an absent CELL DIMENSION
+   then means AUTO — their app re-derives it from the product spec, using its
+   OWN clearances, which no URL key can carry. An absent SHELL param falls back
+   to their static default table.
+
+   Our importer (parseTrayLink) deliberately resolves absences to their static
+   defaults instead, because that is right for a link THEY generated. Using it
+   to check our own export therefore validates our encoder against our
+   encoder — which is exactly why the export bug survived a green round-trip
+   pin. This models their side instead. */
+const THEIR_CLEARANCE = {sideClearance: 1.5, endClearance: 3, cradleClearance: 0};
+const AUTO_CELL_KEYS = ['cellLen', 'cellWid', 'cellH', 'cradleR'];
+function resolveAsCookieTray(url){
   const qs = new URLSearchParams(url.split('?')[1]);
-  // nCells 3 IS their default, so it must be absent
-  ok(!qs.has('n'), 'a default cell count must be omitted');
-  // and values that differ must be present
-  ok(qs.has('cl') || qs.has('cw'), 'non-default cell dims should appear');
-  // never emit an unknown key
+  const num = (k, d) => qs.has(k) ? parseFloat(qs.get(k)) : d;
+  // product half: present keys, else their static defaults
+  const pd = PRODUCT_DEFAULTS;
+  const spec = {
+    productType: qs.get('pty') || pd.productType,
+    cookieDiameter: num('pdia', pd.cookieDiameter), cookieThickness: num('pthk', pd.cookieThickness),
+    productWidth: num('pw', pd.productWidth), productHeight: num('ph', pd.productHeight),
+    productThickness: num('ptk', pd.productThickness),
+    qtyTotal: num('qty', pd.qtyTotal),
+    nCells: num('ncp', pd.nCellsProduct),
+    ...THEIR_CLEARANCE                       // NOT expressible in a link — always theirs
+  };
+  // shell half: present keys, else their static defaults (TRAY_DEFAULTS mirrors them)
+  const shell = {};
+  for(const [long, short] of Object.entries(TRAY_KEYS)){
+    if(AUTO_CELL_KEYS.includes(long) || long === 'nCells') continue;
+    shell[long] = qs.has(short)
+      ? (long === 'longAxis' ? qs.get(short) : parseFloat(qs.get(short)))
+      : TRAY_DEFAULTS[long];
+  }
+  // what THEY derive for the auto-capable dims, from the product half alone.
+  // LAZY on purpose: their derive only runs for fields the link leaves to auto,
+  // so a link that states everything never reaches it (and can never be
+  // rejected by a guard that only the auto values would have tripped).
+  let _derived = null;
+  const derived = () => (_derived ||= deriveTrayParams({...shell, ...spec, cellH: num('ch', 28)}));
+  const cell = {};
+  for(const k of AUTO_CELL_KEYS)
+    cell[k] = qs.has(TRAY_KEYS[k]) ? parseFloat(qs.get(TRAY_KEYS[k])) : derived()[k];
+  const nCells = qs.has('n') ? Math.round(parseFloat(qs.get('n'))) : derived().nCells;
+  return trayParams({...shell, ...cell, nCells});
+}
+
+t('LINK: every resolved value is STATED (absent != default over there)', () => {
+  const p = trayProject();
+  const row = resolveActiveRow(p, '1mm');
+  const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
+  // the cell dims are what their app re-derives when absent, so they must
+  // always be present — including when they collide with a default of theirs
+  for(const k of ['cl', 'cw', 'ch', 'cr', 'n'])
+    ok(qs.has(k), `the link must state ${k} even when it equals a Cookie-Tray default`);
   const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS)]);
   for(const k of qs.keys()) ok(known.has(k), `unknown key in the link: ${k}`);
+});
+
+t('LINK: a default-colliding cell dim survives the trip (the 48mm case)', () => {
+  // MEASURED against the deployed Cookie-Tray: a 44mm product with our
+  // sideClearance 2 gives cellWid 48 — their static default — so the old
+  // encoder dropped `cw` and their auto re-derived 44 + 2*1.5 = 47, landing a
+  // footprint of 167 where ours says 170.
+  const p = trayProject({endClearance: 5, sideClearance: 2, nCells: 3,
+                         params: {wall: 4, divider: 4, draftDeg: 7, lipH: 4, nozzle: 1.2, cellH: 20, floor: 3}});
+  Object.assign(p.primary.collation, {piece: {kind: 'cylinder', diameter: 44, thickness: 11},
+    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 8, nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  const mine = resolveActiveRow(p, '1mm').tray;
+  near(mine.params.cellWid, TRAY_DEFAULTS.cellWid, 'fixture must COLLIDE with their default to have teeth:', 1e-9);
+  const theirs = resolveAsCookieTray(buildTrayLink(p, mine));
+  near(theirs.cellWid, mine.params.cellWid, 'cell width as Cookie-Tray would resolve it:', 1e-9);
+  near(theirs.outerL, mine.params.outerL, 'footprint L:', 1e-9);
+  near(theirs.outerW, mine.params.outerW, 'footprint W:', 1e-9);
+  near(theirs.overallH, mine.params.overallH, 'overall H:', 1e-9);
+});
+
+t('LINK: survives a collision on EVERY default-valued field, not just width', () => {
+  // their numeric defaults: cellLen 170, cellWid 48, cellH 28, nCells 3.
+  // Build a tray that lands on each in turn and require it to come back.
+  const cases = [
+    ['cellLen 170', {perStack: 15, thickness: 11, endC: 5}],   // 15*11 + 5 = 170
+    ['cellH 28',    {cellH: 28}],
+    ['nCells 3',    {nCells: 3}]
+  ];
+  for(const [label, cfg] of cases){
+    const p = trayProject({nCells: cfg.nCells || 2,
+                           endClearance: cfg.endC != null ? cfg.endC : 3, sideClearance: 2,
+                           params: cfg.cellH ? {cellH: cfg.cellH} : {}});
+    Object.assign(p.primary.collation, {
+      piece: {kind: 'cylinder', diameter: 44, thickness: cfg.thickness || 11},
+      pieceOrientation: 'on-edge', stackAxis: 'X', perStack: cfg.perStack || 8,
+      nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+    const mine = resolveActiveRow(p, '1mm').tray;
+    const theirs = resolveAsCookieTray(buildTrayLink(p, mine));
+    for(const k of ['cellLen', 'cellWid', 'cellH', 'outerL', 'outerW', 'overallH'])
+      near(theirs[k], mine.params[k], `${label} — ${k}:`, 1e-9);
+  }
 });
 
 t('LINK: round trip is a FIXED POINT (export -> import -> same tray)', () => {
@@ -608,13 +694,18 @@ t('LINK: the product half carries the collation across', () => {
   eq(+qs.get('pdia'), 47, 'piece diameter:');
 });
 
-t('LINK: a total equal to their default is omitted (omit-defaults holds)', () => {
+t('LINK: a total equal to their default is STATED, not omitted', () => {
+  // was the reverse: we mirrored their omit-if-default encoder. Absent is not
+  // "the default" over there for anything the product half can drive, and a
+  // link that leaves out its own quantity is describing a different tray the
+  // moment either side's default table moves.
   const p = newProject();
   Object.assign(p.tray, {enabled: true, nCells: 4});      // 4 x 6 = 24 = their default
   const row = resolveActiveRow(p, '1mm');
   eq(row.tray.total, 24, 'fixture hits their default exactly:');
   const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
-  ok(!qs.has('qty'), 'a default total must be omitted, exactly as their encoder does');
+  ok(qs.has('qty'), 'the total must be stated even when it equals their default');
+  eq(qs.get('qty'), '24', 'and it must be the real total:');
 });
 
 t('LINK: a box collation exports as their rectangle product', () => {

@@ -1405,8 +1405,17 @@ function applyHierarchy(resetCam){
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
   // palletMM is the TOTAL timber in the stack (drawDims splits H into
   // Pallet / Load / Total): two decks when double-stacked, so the second
-  // deck is never mislabeled as load height
-  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: PALLET_HEIGHT*(bundle.doubleStack ? 2 : 1)} : res.outer) : null;
+  // deck is never mislabeled as load height.
+  // It reads the CHAIN's own deck height (pallet.baseH — what the fit budgets
+  // and what buildPallet stacks the load at), NOT palletmesh's PALLET_HEIGHT
+  // constant. Those are two independent 127s coupled only by a comment, and
+  // the split believed the wrong one: at baseH 140 the overlay read Pallet 254
+  // / Load 2316 where the truth is 280 / 2290. Total was right either way,
+  // which is why it went unnoticed — the error is a pure transfer between the
+  // two component lines, nLoads x (baseH - 127).
+  const deckMM = (bundle.cases && bundle.cases.deck && typeof bundle.cases.deck.baseH === 'number')
+    ? bundle.cases.deck.baseH : PALLET_HEIGHT;
+  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: deckMM*(bundle.doubleStack ? 2 : 1)} : res.outer) : null;
   hier.show(true);
   el('orbithint').textContent = solid
     ? 'drag orbit · right-drag pan · scroll zoom · Solid — artwork on every face'
