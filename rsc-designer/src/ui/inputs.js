@@ -205,6 +205,12 @@ export function refreshDims(effectiveDims){
  * @param {Object} prim  project.primary (mutated in place)
  * @param {Object} m     {onInput()}
  */
+/** Pieces in ONE cell, straight from the collation grid — the per-cell
+ *  factor of the derived total. Kept next to its only two callers so the
+ *  derived display and the tray stage can never disagree on what "per cell"
+ *  means. */
+const collationCount = c => Math.max(1, c.perStack*c.nx*c.ny);
+
 export function mountProduct(prim, m){
   const dims = el('dimFields'), mat = el('matFields');
   el('optFields').innerHTML = '';
@@ -245,12 +251,31 @@ export function mountProduct(prim, m){
       : numF('cL', 'Length', 'L', c.piece.L) + numF('cW', 'Width', 'W', c.piece.W) + numF('cH', 'Height', 'H', c.piece.H));
 
   // RIGHT rail: grouping counts + gaps (always visible)
+  // When a tray is in the chain the collation describes ONE CELL's contents,
+  // so the cell count belongs here too — as a SECOND CONTROL onto
+  // project.tray.nCells, never a copy. Total quantity below it is a DERIVED
+  // read-only display (cells x per-cell): making it editable would need a
+  // rule for which factor absorbs the change, which is exactly where a
+  // two-writers bug creeps back in.
+  const tray = m.project && m.project.tray;
+  const trayOn = !!(tray && tray.enabled);
   mat.innerHTML =
+    (trayOn
+      ? cntF('cCells', 'Cells', 'tray cells — same field as the Tray panel', tray.nCells) +
+        `<div class="field"><label>Total quantity <span class="hint">derived — cells × per cell</span></label>
+          <div class="inp"><input id="cTotal" type="number" value="${tray.nCells*collationCount(c)}" disabled></div></div>`
+      : '') +
     cntF('cPer', 'Pieces per stack', 'count', c.perStack) +
     cntF('cNx', 'Stacks across', 'nx', c.nx) +
     cntF('cNy', 'Stacks deep', 'ny', c.ny) +
     numF('cSg', 'Stack gap', 'between stacks', c.stackGap) +
     numF('cPg', 'Piece gap', 'within stack', c.pieceGap);
+  if(trayOn) el('cCells').addEventListener('input', () => {
+    // writes THE one stored value; the Tray panel reads the same field
+    tray.nCells = Math.max(1, Math.round(+el('cCells').value || 1));
+    el('cTotal').value = tray.nCells*collationCount(c);   // derived display follows
+    m.onInput();
+  });
 
   el('cMode').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
     if(btn.dataset.v === 'onedge'){
@@ -579,4 +604,94 @@ export function switchPalUnits(){
   palUnit = next;
   ['uPal', 'uPalMaxH'].forEach(id => el(id).textContent = palUnit);
   return true;
+}
+
+/* ---------- the thermoformed tray level ---------------------------------
+ * A NON-style level: no styleId, no blank, no DXF (the product2d.js
+ * precedent). Every field writes straight into project.tray — the same
+ * one-writer contract as the rest of the rails.
+ *
+ * AUTO-WITH-OVERRIDE. A cell dimension left blank is DERIVED from the
+ * product (the core tray stage does the deriving); typing a number
+ * overrides it, and "auto" clears back. The stored form is the override
+ * itself: absent from `tray.params` means auto, so there is no second
+ * "isAuto" flag to fall out of sync with the value — the presence of the
+ * key IS the state.
+ */
+export function mountTray(project, m){
+  const host = el('trayFields');
+  const tr = project.tray;
+  if(!tr || !tr.enabled){ host.innerHTML = ''; return; }
+  const ov = tr.params || (tr.params = {});
+  const L = v => fmtInputValue(fromMM(v, unit), unit);
+
+  // a length field that is EITHER an explicit override or auto (placeholder
+  // shows what the derivation produced, so "auto" is never a blank mystery)
+  const autoF = (key, label, hint, autoVal) => {
+    const has = typeof ov[key] === 'number' && isFinite(ov[key]);
+    return `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
+      <div class="inp"><input id="tr_${key}" type="number" min="0" step="0.5"
+        value="${has ? L(ov[key]) : ''}" placeholder="${autoVal != null ? L(autoVal) : 'auto'}">
+        <span class="unit">${unit}</span></div>
+      <div class="hint" style="margin-top:4px">${has
+        ? `<button type="button" class="btn btnlink" id="tr_${key}_auto">reset to auto</button>`
+        : 'auto — from the product'}</div></div>`;
+  };
+  const numF = (key, label, hint, v, step = 0.5) =>
+    `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
+      <div class="inp"><input id="tr_${key}" type="number" min="0" step="${step}" value="${L(v)}"><span class="unit">${unit}</span></div></div>`;
+  const plainF = (key, label, hint, v, step, min = 0) =>
+    `<div class="field"><label>${label} <span class="hint">${hint}</span></label>
+      <div class="inp"><input id="tr_${key}" type="number" min="${min}" step="${step}" value="${v}"></div></div>`;
+
+  const D = (k, dflt) => (typeof ov[k] === 'number' ? ov[k] : dflt);
+  const auto = m.autoDims || {};
+
+  host.innerHTML =
+    `<h2 style="margin-top:6px">Tray</h2>` +
+    // THE shared cell count — this control and the collation panel's are two
+    // controls onto project.tray.nCells, never two stored values.
+    plainF('nCells', 'Cells', 'across the tray', tr.nCells, 1, 1) +
+    `<div class="field"><label>Products per cell <span class="hint">derived — set on the Product level</span></label>
+      <div class="inp"><input id="tr_perCell" type="number" value="${m.perCell != null ? m.perCell : ''}" disabled></div></div>` +
+    autoF('cellLen', 'Cell length', 'along the channel', auto.cellLen) +
+    autoF('cellWid', 'Cell width', 'across', auto.cellWid) +
+    autoF('cellH', 'Cell depth', 'trough', auto.cellH) +
+    `<div class="field"><label>Cell pitch <span class="hint">centre to centre — derived</span></label>
+      <div class="inp"><input id="tr_pitch" type="number" value="${auto.pitch != null ? L(auto.pitch) : ''}" disabled><span class="unit">${unit}</span></div></div>` +
+    `<h2 style="margin-top:6px">Tray shell</h2>` +
+    numF('wall', 'Outer wall', 'thickness', D('wall', 3)) +
+    numF('divider', 'Divider', 'between cells', D('divider', D('wall', 3))) +
+    numF('floor', 'Floor', 'thickness', D('floor', 2.5)) +
+    plainF('draftDeg', 'Draft', 'degrees', D('draftDeg', 5), 0.5) +
+    numF('stripL', 'Flange — length sides', 'strip', D('stripL', 5)) +
+    numF('stripW', 'Flange — width sides', 'strip', D('stripW', 5)) +
+    numF('lipH', 'Lip height', 'rim', D('lipH', 3)) +
+    numF('flangeT', 'Flange thickness', '', D('flangeT', 2.5)) +
+    `<div class="field"><label>Long axis <span class="hint">channel direction</span></label>
+      <div class="seg" id="tr_longAxis" role="group">${
+        ['X', 'Y'].map(a => `<button type="button" data-v="${a}"${(D('longAxis', 'X') === a) ? ' class="on"' : ''}>${a}</button>`).join('')}</div></div>`;
+
+  const mmv = id => toMM(+el(id).value || 0, unit);
+  const bindAuto = key => {
+    const inp = el('tr_' + key);
+    inp.addEventListener('input', () => {
+      if(inp.value === '') delete ov[key]; else ov[key] = mmv('tr_' + key);
+      m.onInput();
+    });
+    const rst = el(`tr_${key}_auto`);
+    if(rst) rst.addEventListener('click', () => { delete ov[key]; m.onInput(); m.remount && m.remount(); });
+  };
+  ['cellLen', 'cellWid', 'cellH'].forEach(bindAuto);
+  for(const k of ['wall', 'divider', 'floor', 'stripL', 'stripW', 'lipH', 'flangeT'])
+    el('tr_' + k).addEventListener('input', () => { ov[k] = mmv('tr_' + k); m.onInput(); });
+  el('tr_draftDeg').addEventListener('input', () => { ov.draftDeg = Math.max(0, +el('tr_draftDeg').value || 0); m.onInput(); });
+  // the shared cell count: writes THE stored value, then asks for a remount so
+  // the collation panel's mirror of it re-renders from the same source
+  el('tr_nCells').addEventListener('input', () => {
+    tr.nCells = Math.max(1, Math.round(+el('tr_nCells').value || 1)); m.onInput();
+  });
+  el('tr_longAxis').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    ov.longAxis = b.dataset.v; m.onInput(); m.remount && m.remount();
+  }));
 }

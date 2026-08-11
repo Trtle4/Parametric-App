@@ -34,6 +34,7 @@ import * as save from './save.js';
 import * as notify from './notify.js';
 import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection} from '../core/project.js';
 import {analyzeSensitivity} from '../core/sensitivity.js';
+import {collate} from '../core/collation.js';
 
 let view = '2d';
 // FEATURE FLAG: the FOLD 3D mode has never shown a real fold animation, so it's
@@ -118,6 +119,13 @@ const LEVELS = {
            derivedFrom: p => `the ${plainNoun(describeChain(p).childNoun)}`,
            fitsOf: row => row.tertiaryFits,
            enabledOf: p => p.tertiary.enabled !== false},
+  // The thermoformed tray: an OPTIONAL, NON-style level. It has no blank, no
+  // cut path and no creases, so it deliberately has no styleId, no geoLevel
+  // and no DXF — the product2d.js precedent (a sibling with its own view).
+  // activeGeometry() already returns null for a non-style level.
+  tray:   {label: 'Tray', kind: 'tray',
+           enabledOf: p => !!(p.tray && p.tray.enabled),
+           setEnabled: (p, v) => { p.tray.enabled = v; }},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
 // wrap disables by going null (the pre-existing pattern) rather than an
@@ -130,7 +138,7 @@ const activeStyleId = () => {
   if(!lvl.enabledOf(build.project)) return DISABLED_STYLE_FALLBACK[activeLevel];
   return lvl.styleIdOf(build.project);
 };
-const LEVEL_ORDER = ['product', 'wrap', 'carton', 'case', 'pallet'];
+const LEVEL_ORDER = ['product', 'tray', 'wrap', 'carton', 'case', 'pallet'];
 let activeLevel = 'case';
 const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
 
@@ -592,6 +600,7 @@ function toggleRailSections(kind){
   el('matFields').style.display = styleOrProduct ? 'contents' : 'none';
   el('optFields').style.display = (kind === 'style') ? 'contents' : 'none';
   el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
+  el('trayFields').style.display = (kind === 'tray') ? 'contents' : 'none';
 }
 
 /* ---------- optional levels: enable/disable + the always-visible chain
@@ -601,7 +610,7 @@ function toggleRailSections(kind){
  * project.js is the single source for that fold; this file only surfaces
  * it (the toggle, the warning, the chain string), never re-derives it. --- */
 
-const TIER_LABEL = {wrap: 'wrap', carton: 'carton', case: 'case'};
+const TIER_LABEL = {tray: 'tray', wrap: 'wrap', carton: 'carton', case: 'case'};
 
 function isTierEnabled(level){ return LEVELS[level].enabledOf(build.project); }
 
@@ -624,7 +633,8 @@ function newDefaultWrap(){
 function pairingAfterDisabling(level){
   const proj = build.project;
   const contentNoun = plainNoun('collation');
-  if(level === 'wrap') return `the ${contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(level === 'tray') return `the ${contentNoun} will feed the ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly, with no tray`;
+  if(level === 'wrap') return `the ${isTierEnabled('tray') ? 'tray' : contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(level === 'carton') return `the ${proj.primary.wrap ? 'wrap' : contentNoun} will feed the case directly`;
   if(level === 'case') return 'the carton will ride the pallet directly, with no case';
   return '';
@@ -632,7 +642,19 @@ function pairingAfterDisabling(level){
 
 function setTierEnabled(level, on){
   const proj = build.project;
-  if(level === 'wrap') proj.primary.wrap = on ? newDefaultWrap() : null;
+  if(level === 'tray'){
+    proj.tray.enabled = on;
+    // "2 cells x 10 products per cell, on edge" is the specified default when
+    // the tray is switched on. Per-cell belongs to the COLLATION, so this is a
+    // write to that one owner — not a copy stored on the tray.
+    if(on){
+      proj.tray.nCells = 2;
+      const c = proj.primary.collation;
+      c.pieceOrientation = 'on-edge'; c.stackAxis = 'X';
+      c.perStack = 10; c.nx = 1; c.ny = 1;
+    }
+  }
+  else if(level === 'wrap') proj.primary.wrap = on ? newDefaultWrap() : null;
   else if(level === 'carton') proj.secondary.enabled = on;
   else if(level === 'case') proj.tertiary.enabled = on;
   setActiveLevel(activeLevel);   // re-derive brand/rails/views for the new chain shape
@@ -667,7 +689,8 @@ function toggleTier(level){
 function mountEnableToggle(){
   const host = el('levelEnable');
   const lvl = LEVELS[activeLevel];
-  if(lvl.kind !== 'style'){ host.innerHTML = ''; return; }
+  // style tiers AND the tray (a non-style optional level) both get the toggle
+  if(!CHAIN_OPTIONAL[activeLevel]){ host.innerHTML = ''; return; }
   const on = isTierEnabled(activeLevel);
   host.innerHTML =
     `<div class="field"><label>Tier <span class="hint">${on ? 'in the chain' : 'skipped'}</span></label>
@@ -688,6 +711,11 @@ function nodeStyleLabel(k){
     const c = proj.primary.collation;
     return `${c.piece.kind === 'cylinder' ? 'cylinders' : 'pieces'} ${c.nx}×${c.ny}`;
   }
+  if(k === 'tray'){
+    if(!isTierEnabled('tray')) return '';
+    const tr = proj.tray;
+    return `${tr.nCells} cell${tr.nCells === 1 ? '' : 's'}`;
+  }
   if(k === 'pallet'){
     const u = inputs.getPalUnit();
     return `${Math.round(fromMM(proj.pallet.L, u))}×${Math.round(fromMM(proj.pallet.W, u))} ${u}`;
@@ -703,7 +731,8 @@ function nodeStyleLabel(k){
 function repointNote(k){
   const proj = build.project;
   const contentNoun = plainNoun('collation');
-  if(k === 'wrap')   return `${contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(k === 'tray')   return `${contentNoun} feeds ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly`;
+  if(k === 'wrap')   return `${isTierEnabled('tray') ? 'tray' : contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(k === 'carton') return `${proj.primary.wrap ? 'wrap' : contentNoun} feeds case directly`;
   if(k === 'case')   return 'carton rides the pallet directly';
   return '';
@@ -714,7 +743,7 @@ function repointNote(k){
  *  optional tiers struck-through with an enable affordance; and each arrow
  *  after a skipped tier labeled with the re-point. Derived from the enabled
  *  chain, never hardcoded. Registered with recompute() (see notify block). */
-const CHAIN_OPTIONAL = {wrap: true, carton: true, case: true};
+const CHAIN_OPTIONAL = {tray: true, wrap: true, carton: true, case: true};
 function renderChainString(){
   const host = el('chainString');
   host.className = 'chainStrip';
@@ -927,6 +956,26 @@ function changeLevelStyle(newId){
  *  params (solved dims shown as derived); the product level mounts the
  *  collation editor; the pallet level uses the pallet fields already in the
  *  DOM. */
+/** The cell dimensions the tray stage WOULD derive from the current product,
+ *  so the tray rail can show them as placeholders behind an empty (auto)
+ *  field. Read-only: this asks the same core module the chain uses, it never
+ *  computes a second answer of its own. */
+function trayAutoDims(){
+  const tr = build.project.tray;
+  if(!tr) return {};
+  try{
+    const col = collate(build.project.primary.collation);
+    const cellLen = col.envelope.L + (tr.endClearance ?? 3);
+    const cellWid = col.envelope.W + 2*(tr.sideClearance ?? 1.5);
+    const cellH = cellWid/2;
+    const ov = tr.params || {};
+    const eff = k => (typeof ov[k] === 'number' ? ov[k] : ({cellLen, cellWid, cellH})[k]);
+    return {cellLen, cellWid, cellH,
+            pitch: eff('cellWid') + (typeof ov.divider === 'number' ? ov.divider
+                                     : (typeof ov.wall === 'number' ? ov.wall : 3))};
+  }catch(e){ return {}; }
+}
+
 function mountActiveLevel(){
   const lvl = LEVELS[activeLevel], proj = build.project;
   toggleRailSections(lvl.kind);
@@ -957,7 +1006,13 @@ function mountActiveLevel(){
     // the product 2 x 2 (orientation + piece shape) and its grouping counts
     // are ALWAYS visible — never gated on the chain (that hid On Edge).
     // Product is always the base: no disable, no content-type selector.
-    inputs.mountProduct(proj.primary, {onInput: () => projectChanged()});
+    // `project` lets the collation panel host the SHARED cell-count control
+    // (a second control onto project.tray.nCells) and the derived total.
+    inputs.mountProduct(proj.primary, {project: proj, onInput: () => projectChanged()});
+  }else if(lvl.kind === 'tray'){
+    inputs.mountTray(proj, {autoDims: trayAutoDims(), remount: () => mountActiveLevel(),
+                            perCell: collate(proj.primary.collation).count,
+                            onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -966,6 +1021,7 @@ function mountActiveLevel(){
 
 const LEVEL_BRAND = {
   product: {code: 'PRODUCT', sub: 'Product arrangement'},
+  tray:    {code: 'TRAY',    sub: 'Thermoformed sizing tray'},
   pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
 };
 
@@ -1136,6 +1192,9 @@ function hierarchyBundle(){
     caseGeo: row.geo.case,
     cartonGeo: row.geo.carton,
     wrapGeo: row.geo.wrap,
+    // the tray, when it is in the chain: its resolved params + envelope, so
+    // the tray depth can render and the Dims overlay can label it
+    tray: row.tray || null,
     cases: {placements: cases.placements, count: cases.count, deck: cases.deck},
     cartons: {placements: cartons.placements},
     wraps: (pieces && wrapPlacements) ? {
@@ -1162,6 +1221,8 @@ function depthAvailable(bundle, d){
   // bundle now carries wraps/pieces without a wrap too (so a wrapless carton/
   // case still renders its product), so wrap availability keys on wrapGeo, not
   // on bundle.wraps.
+  // the tray depth exists only while the tray is in the chain
+  if(d === 'tray') return !!(bundle && bundle.tray);
   if(d === 'product') return !!(bundle && bundle.wraps);
   if(d === 'wrap') return !!(bundle && bundle.wrapGeo);
   if(d === 'carton') return !!(bundle && bundle.cartonGeo);

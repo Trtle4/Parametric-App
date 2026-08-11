@@ -64,6 +64,7 @@
 <span id="bctRatio"></span><span id="bctVal"></span><span id="bctLoad"></span>
 <div id="bctNote"></div><details id="bctHow"><div id="bctHowBody"></div></details>
 <!-- dimensional-sensitivity panel refreshSensitivity writes to (pallet level) -->
+<div id="trayFields" style="display:none"></div>
 <div id="sensBlock" style="display:none">
   <span id="sensNoun"></span><span id="sensBase"></span>
   <div id="sensBody"></div><div id="sensNote"></div>
@@ -83,7 +84,7 @@
 </div>
 <div id="mode3d" style="display:none">
   <button id="m3fold">Fold</button>
-  <button id="d_product">Product</button><button id="d_wrap">Wrap</button
+  <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_wrap">Wrap</button
   ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
   ><button id="d_pallet">Pallet</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
@@ -853,7 +854,7 @@ await (async () => {
     .find(n => n.querySelector('.cs-lvl').textContent === label);
 
   t('chain strip: one node per level, the active one highlighted', () => {
-    eq(el('chainString').querySelectorAll('.cs-node').length, 5, 'five level nodes:');
+    eq(el('chainString').querySelectorAll('.cs-node').length, 6, 'six level nodes (tray added):');
     if(!stripNode('Case').classList.contains('active')) throw new Error('active level (Case) not highlighted');
   });
   t('chain strip: clicking a node changes the active level', () => {
@@ -942,6 +943,125 @@ await (async () => {
     if(getComputedStyle(el('candCycle')).display !== 'none') throw new Error('cycle arrows should hide at carton depth');
     el('d_case').click();
   });
+})();
+
+/* ==================================================================
+   Thermoformed tray level: optional, OFF by default, and the shared
+   cell-count field. The cell count is ONE stored value
+   (project.tray.nCells) with TWO controls — the tray rail and the
+   collation rail — never two values that sync. Total quantity is a
+   DERIVED read-only display, deliberately not editable.
+   ================================================================== */
+await (async () => {
+  t('tray: off by default and present in the chain between product and wrap', () => {
+    eq(build.project.tray.enabled, false, 'default enabled:');
+    const opts = [...el('style').options].map(o => o.value);
+    eq(opts.indexOf('tray'), opts.indexOf('product') + 1, 'tray follows product:');
+    eq(opts.indexOf('wrap'), opts.indexOf('tray') + 1, 'wrap follows tray:');
+  });
+
+  t('tray: the tray rail is empty while the tier is disabled', () => {
+    setLevel('tray');
+    eq(el('trayFields').innerHTML, '', 'no fields for a skipped tier:');
+  });
+
+  // enable it (through the project + the one notifier, as the toggle does)
+  build.project.tray.enabled = true;
+  build.project.tray.nCells = 2;
+  Object.assign(build.project.primary.collation,
+    {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+  build.recompute();
+  setLevel('tray'); await settle();
+
+  t('tray: enabled defaults are 2 cells x 10 per cell, on edge', () => {
+    eq(build.project.tray.nCells, 2, 'cells:');
+    const c = build.project.primary.collation;
+    eq(c.pieceOrientation, 'on-edge', 'orientation:');
+    eq(c.perStack*c.nx*c.ny, 10, 'products per cell:');
+  });
+
+  t('tray: rail exposes the envelope-driving inputs', () => {
+    for(const id of ['tr_nCells', 'tr_cellLen', 'tr_cellWid', 'tr_cellH', 'tr_wall', 'tr_divider',
+                     'tr_floor', 'tr_draftDeg', 'tr_stripL', 'tr_stripW', 'tr_lipH', 'tr_flangeT'])
+      if(!el(id)) throw new Error(`tray rail missing ${id}`);
+    if(!el('tr_longAxis')) throw new Error('tray rail missing the long-axis control');
+  });
+
+  t('tray: cell dims are auto, with the derived value shown as the placeholder', () => {
+    eq(el('tr_cellLen').value, '', 'auto fields start empty:');
+    if(!(+el('tr_cellLen').placeholder > 0)) throw new Error('auto placeholder must show the derived value');
+    if(!(+el('tr_cellWid').placeholder > 0)) throw new Error('auto cellWid placeholder missing');
+  });
+
+  t('tray: typing overrides, and reset-to-auto clears the override', () => {
+    el('tr_cellWid').value = '80'; fire(el('tr_cellWid'), 'input');
+    if(typeof build.project.tray.params.cellWid !== 'number')
+      throw new Error('typing must store an override');
+    setLevel('tray');                       // remount so the reset control appears
+    if(!el('tr_cellWid_auto')) throw new Error('reset-to-auto control missing after an override');
+    el('tr_cellWid_auto').click();
+    if('cellWid' in build.project.tray.params)
+      throw new Error('reset must DELETE the override (absence is the auto state)');
+  });
+
+  t('SHARED CELL COUNT: tray rail -> collation rail (one stored value)', () => {
+    setLevel('tray');
+    el('tr_nCells').value = '5'; fire(el('tr_nCells'), 'input');
+    eq(build.project.tray.nCells, 5, 'stored value after the tray edit:');
+    setLevel('product');
+    eq(el('cCells').value, '5', 'collation rail reflects it:');
+  });
+
+  t('SHARED CELL COUNT: collation rail -> tray rail (the same one value)', () => {
+    setLevel('product');
+    el('cCells').value = '3'; fire(el('cCells'), 'input');
+    eq(build.project.tray.nCells, 3, 'stored value after the collation edit:');
+    setLevel('tray');
+    eq(el('tr_nCells').value, '3', 'tray rail reflects it:');
+  });
+
+  t('SHARED CELL COUNT: exactly ONE stored value, no second copy', () => {
+    const hits = [], seen = new Set();
+    (function walk(o, path){
+      if(!o || typeof o !== 'object' || seen.has(o)) return;
+      seen.add(o);
+      for(const [k, v] of Object.entries(o)){
+        if(k === 'nCells' || /^(cellCount|numCells|cells)$/.test(k)) hits.push(path + '.' + k);
+        walk(v, path + '.' + k);
+      }
+    })(build.project, 'project');
+    eq(hits.join('|'), 'project.tray.nCells', 'the cell count must live in exactly one place:');
+    if('perCell' in build.project.tray)
+      throw new Error('tray must NOT store perCell — the collation owns products-per-cell');
+  });
+
+  t('DERIVED TOTAL: read-only, and follows both factors', () => {
+    setLevel('product');
+    const c = build.project.primary.collation;
+    const perCell = c.perStack*c.nx*c.ny;
+    eq(el('cTotal').disabled, true, 'total must not be editable (no third writer):');
+    eq(+el('cTotal').value, build.project.tray.nCells*perCell, 'total = cells x per cell:');
+    el('cCells').value = '4'; fire(el('cCells'), 'input');
+    eq(+el('cTotal').value, 4*perCell, 'total follows the cell count:');
+  });
+
+  t('tray: the envelope reaches the wrap (downstream actually re-solves)', () => {
+    const before = resolveActiveRow(build.project, build.getRounding(), null).wrapOuter.W;
+    el('tr_nCells') || setLevel('tray');
+    setLevel('tray');
+    el('tr_nCells').value = '6'; fire(el('tr_nCells'), 'input');
+    const after = resolveActiveRow(build.project, build.getRounding(), null).wrapOuter.W;
+    if(!(after > before)) throw new Error(`more cells must widen the wrap: ${before} -> ${after}`);
+  });
+
+  // restore: tray OFF and the default collation, so later blocks are unaffected
+  build.project.tray.enabled = false;
+  build.project.tray.nCells = 2;
+  build.project.tray.params = {};
+  Object.assign(build.project.primary.collation,
+    {pieceOrientation: 'flat', stackAxis: 'Z', perStack: 2, nx: 3, ny: 1});
+  build.recompute();
+  setLevel('case'); await settle();
 })();
 
 /* ==================================================================

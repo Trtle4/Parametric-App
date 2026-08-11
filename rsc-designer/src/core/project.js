@@ -163,8 +163,12 @@ export function newProject(){
     // from the product" (auto-with-override), any number overrides it.
     tray: {
       enabled: false,
-      nCells: 2,                       // default when enabled: 2 cells...
-      perCell: 10,                     // ...x 10 products on edge
+      nCells: 2,                       // default when enabled: 2 cells x 10 on edge
+      // NOTE there is deliberately no `perCell` here. Products-per-cell is
+      // owned by the COLLATION (perStack x nx x ny) and nothing else; storing
+      // it again would be a second writer for one quantity, free to disagree.
+      // Enabling the tray configures the collation to the 10-on-edge default
+      // instead (see setTierEnabled), which is a WRITE to the one owner.
       endClearance: 3, sideClearance: 1.5,
       params: {},                      // overrides only; {} = fully auto
       allowedOrientations: ['LWH', 'WLH'],
@@ -753,6 +757,9 @@ function sealDerived(wrapGeo){
 
 function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit, outerFits = true){
   const {primaryResult, secondaryVariant, content} = below;
+  // the tray stage's own result rides the row, so every consumer (readout,
+  // 3D depth, Dims, STL) reads the ONE solve rather than re-deriving it
+  row.tray = below.trayResult || null;
   const cartonGeo = outerKey === 'secondary' ? outerGeo : (secondaryVariant ? secondaryVariant.geo : null);
   const caseGeo = outerKey === 'tertiary' ? outerGeo : null;
 
