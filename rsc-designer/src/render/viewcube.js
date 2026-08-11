@@ -54,7 +54,7 @@
  * this rotating 3D scene would itself rotate with the camera. stepOrbit()
  * below is the pure, DOM-free math those buttons call into.
  */
-import {getOrbit, tweenOrbit} from './fold3d.js';
+import {getOrbit, tweenOrbit, orbitPose} from './fold3d.js';
 
 const FACE_LABEL = {
   '1,0,0': 'RIGHT', '-1,0,0': 'LEFT',
@@ -424,8 +424,14 @@ export function sync(){
   // one actually toggled.
   if(!renderer || canvas.offsetParent === null) return;
   const {rotX, rotY} = getOrbit();
-  const r = 6;
-  camera.position.set(Math.sin(rotY)*Math.cos(rotX)*r, Math.sin(rotX)*r, Math.cos(rotY)*Math.cos(rotX)*r);
+  // position AND up come from fold3d's one orbitPose — never a second copy of
+  // the spherical formula here. Vertical orbit is unclamped, so `up` flips
+  // past a pole; a cube still mirroring with a fixed +Y up would read 180°
+  // rolled against the view it reports the moment the user drags over the top.
+  // Showing the cube inverted there is correct — that IS the camera's state.
+  const pose = orbitPose(rotX, rotY, 6);
+  camera.position.set(pose.x, pose.y, pose.z);
+  camera.up.set(0, pose.upY, 0);
   camera.lookAt(0, 0, 0);
   renderer.render(scene, camera);
 }

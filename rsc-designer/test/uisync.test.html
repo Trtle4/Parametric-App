@@ -166,7 +166,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
-import {getPivot} from '../src/render/fold3d.js';
+import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
@@ -1318,6 +1318,69 @@ await (async () => {
 
   // restore for later blocks
   build.project.pallet.patternIndex = 0;
+  el('tab2d').click(); await settle();
+})();
+
+/* ==================================================================
+   ORBIT is UNCLAMPED vertically: a drag carries on THROUGH the pole and
+   down the far side, with `up` flipping in step so the view never snaps
+   through 180° of roll. The old ±1.35 rad drag clamp (a wall short of
+   both poles) existed only to dodge that flip; handling the pole is what
+   makes removing it safe. MUTATION-TESTED by reinstating the clamp.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  el('tab3d').click(); await settle();
+
+  const cv = getDomElement();
+  const capture = cv.setPointerCapture;
+  cv.setPointerCapture = () => {};              // synthetic pointers have no real capture
+  const ev = (type, y) => cv.dispatchEvent(new PointerEvent(type,
+    {pointerId: 1, pointerType: 'mouse', button: 0, clientX: 200, clientY: y, bubbles: true}));
+
+  t('a vertical drag passes THROUGH the pole — no wall', () => {
+    setOrbit(0, 0, 1);                          // FRONT
+    ev('pointerdown', 100);
+    const seen = [];
+    for(let y = 105; y <= 500; y += 5){ ev('pointermove', y); seen.push(getOrbit().rotX); }
+    ev('pointerup', 500);
+    if(!seen.some(v => v > Math.PI/2))
+      throw new Error(`drag stopped short of the pole — max rotX ${Math.max(...seen).toFixed(3)} rad (clamped?)`);
+  });
+
+  // screen-up = the part of `up` perpendicular to the view direction. It is
+  // what the user perceives as roll, and it must not reverse at the pole.
+  const screenUp = q => {
+    const L = Math.hypot(q.x, q.y, q.z), d = [-q.x/L, -q.y/L, -q.z/L], u = [0, q.upY, 0];
+    const k = u[0]*d[0] + u[1]*d[1] + u[2]*d[2];
+    const s = u.map((v, i) => v - k*d[i]), S = Math.hypot(...s);
+    return s.map(v => v/S);
+  };
+
+  t('crossing a pole FLIPS `up` rather than rolling the view 180°', () => {
+    for(const pole of [Math.PI/2, -Math.PI/2]){
+      const a = orbitPose(pole - 1e-3, 0, 6), b = orbitPose(pole + 1e-3, 0, 6);
+      if(a.upY === b.upY) throw new Error(`up must flip across the pole at ${pole.toFixed(3)}`);
+      const sa = screenUp(a), sb = screenUp(b);
+      const dot = sa[0]*sb[0] + sa[1]*sb[1] + sa[2]*sb[2];
+      if(dot < 0.999)
+        throw new Error(`screen-up reverses across the pole (dot ${dot.toFixed(3)}) — the gimbal roll is back`);
+    }
+  });
+
+  t('the pose is finite exactly ON a pole, and a TOP snap keeps its usual roll', () => {
+    for(const rx of [Math.PI/2, -Math.PI/2]){
+      const q = orbitPose(rx, 0, 6);
+      if(![q.x, q.y, q.z].every(Number.isFinite)) throw new Error(`non-finite pose at rx=${rx}`);
+    }
+    // the epsilon must be taken on the side that PRESERVES cos's sign, else it
+    // would pick the roll itself and land TOP 180° from where it always has
+    eq(orbitPose(Math.PI/2, 0, 6).upY, 1, 'TOP view up:');
+    eq(orbitPose(-Math.PI/2, 0, 6).upY, 1, 'BOTTOM view up:');
+  });
+
+  cv.setPointerCapture = capture;
+  setOrbit(0.5, 0.65, 1.35);                    // back to HOME_ORBIT for later blocks
   el('tab2d').click(); await settle();
 })();
 

@@ -30,6 +30,50 @@ let lastCentroid = null, pinchDist = 0;     // two-finger pan centroid + pinch s
  *  SAME constant, so "home" can never mean two different views. */
 export const HOME_ORBIT = {rotX: 0.5, rotY: 0.65};
 
+/** Fold an angle into [-pi, pi) — vertical orbit is a full circle now, so
+ *  rotX is wrapped after every drag instead of growing without bound. The
+ *  pose below is 2*pi-periodic, so the wrap is invisible mid-gesture. */
+const wrapPi = a => { const m = (a + Math.PI) % (2*Math.PI); return (m < 0 ? m + 2*Math.PI : m) - Math.PI; };
+
+// held this far off an exact pole (0.006 deg — invisible)
+const POLE_EPS = 1e-4;
+
+/**
+ * THE orbit->camera formula: where the camera sits for an angle pair, and
+ * which way is up there. ONE definition, shared by the main camera and the
+ * ViewCube's mirror (viewcube.js imports it) — the cube used to re-state the
+ * same spherical formula, which was harmless only while `up` was a constant.
+ * It no longer is, and two copies would let the cube disagree with the view
+ * it exists to report.
+ *
+ * Vertical orbit is UNCLAMPED: rotX may pass through +/-90 deg and keep
+ * going down the far side. Past a pole cos(rotX) turns negative, which flips
+ * the horizontal offset to the opposite side of the model — the camera
+ * carries on the same way around — and the world must then appear INVERTED.
+ * So `upY` follows sign(cos(rotX)). Without that flip the screen-up vector
+ * reverses discontinuously at the pole and the view snaps through 180 deg of
+ * roll: the gimbal flip the old +/-1.35 rad drag clamp existed to dodge.
+ * Flipping `up` in step with the crossing is what makes removing the clamp
+ * safe rather than just trading a wall for a glitch.
+ *
+ * Exactly ON a pole the view direction is parallel to up and lookAt is
+ * degenerate (THREE resolves it with an arbitrary internal nudge). The angle
+ * is therefore held POLE_EPS off the pole for the CAMERA only, on whichever
+ * side keeps cos's sign — and so `upY` — as it was: nudging the other way
+ * would let the epsilon pick the roll, landing a ViewCube TOP snap 180 deg
+ * from where it lands today. The stored orbit state keeps the exact +/-90 deg.
+ */
+export function orbitPose(rotX, rotY, r){
+  const upY = Math.cos(rotX) >= 0 ? 1 : -1;
+  let rx = rotX;
+  if(Math.abs(Math.cos(rx)) < POLE_EPS){
+    const s = Math.sin(rx) >= 0 ? 1 : -1;          // +1 at the top pole, -1 at the bottom
+    rx -= s*upY*POLE_EPS;
+  }
+  const c = Math.cos(rx);
+  return {x: Math.sin(rotY)*c*r, y: Math.sin(rx)*r, z: Math.cos(rotY)*c*r, upY};
+}
+
 export const kraft  = new THREE.MeshStandardMaterial({color:0xC69C6D,roughness:0.9, metalness:0,side:THREE.DoubleSide});
 export const kraft2 = new THREE.MeshStandardMaterial({color:0xB98A55,roughness:0.92,metalness:0,side:THREE.DoubleSide});
 
@@ -91,13 +135,13 @@ export function init3d(container){
         pinchDist = d;
       } else {                                         // one-finger orbit
         rotY -= (px - lastX)*0.008; rotX += (py - lastY)*0.008;
-        rotX = Math.max(-1.35, Math.min(1.35, rotX)); lastX = px; lastY = py;
+        rotX = wrapPi(rotX); lastX = px; lastY = py;   // over the pole and on down the far side
       }
     } else {
       const dx = px - lastX, dy = py - lastY;
       if(dragMode === 'pan') panBy(dx, dy);
       else if(dragMode === 'orbit'){                   // horizontal inverted per user preference
-        rotY -= dx*0.008; rotX += dy*0.008; rotX = Math.max(-1.35, Math.min(1.35, rotX));
+        rotY -= dx*0.008; rotX += dy*0.008; rotX = wrapPi(rotX);   // unclamped: through the pole, down the far side
       }
       lastX = px; lastY = py;
     }
@@ -298,16 +342,16 @@ export const getOrbit = () => ({rotX, rotY});
 let tween = null;   // {fromX, fromY, toX, toY, t0, dur}
 /** Animate the orbit to (rx, ry) over `dur` ms instead of jumping — used by
  *  the ViewCube so clicking a face/edge/corner doesn't discard the user's
- *  spatial context. rotY tweens the SHORT way around (wraps through ±π),
- *  never the long way just because the raw angle difference happens to be
- *  large. Unlike drag input, a deliberate snap is allowed the FULL rotX
- *  range (±90°, a true top/bottom view) — the drag clamp exists to avoid a
- *  disorienting gimbal flip mid-gesture, not to forbid an intentional one. */
+ *  spatial context. BOTH angles tween the SHORT way around (wrapping through
+ *  ±π), never the long way just because the raw difference happens to be
+ *  large. rotX needs that wrap too now that vertical orbit is unclamped and
+ *  circular: from an inverted pose (|rotX| > 90°, dragged over a pole) the
+ *  nearer route back to a face view is often onward over the SAME pole, not
+ *  all the way back the way the user came. */
 export function tweenOrbit(rx, ry, dur = 450){
-  let dy = ry - rotY;
-  while(dy > Math.PI) dy -= 2*Math.PI;
-  while(dy < -Math.PI) dy += 2*Math.PI;
-  tween = {fromX: rotX, fromY: rotY, toX: rx, toY: rotY + dy, t0: performance.now(), dur};
+  const short = d => { while(d > Math.PI) d -= 2*Math.PI; while(d < -Math.PI) d += 2*Math.PI; return d; };
+  tween = {fromX: rotX, fromY: rotY, toX: rotX + short(rx - rotX), toY: rotY + short(ry - rotY),
+           t0: performance.now(), dur};
 }
 function updateTween(){
   if(!tween) return;
@@ -315,7 +359,11 @@ function updateTween(){
   const e = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2)/2;    // ease-in-out
   rotX = tween.fromX + (tween.toX - tween.fromX)*e;
   rotY = tween.fromY + (tween.toY - tween.fromY)*e;
-  if(t >= 1) tween = null;
+  // fold rotX back into [-pi, pi) only once the tween LANDS (mid-tween it would
+  // jump): the short-way target can sit outside that range, and repeated snaps
+  // from inverted poses would otherwise let the stored angle drift unbounded.
+  // The pose is 2*pi-periodic, so the fold is invisible.
+  if(t >= 1){ rotX = wrapPi(rotX); tween = null; }
 }
 /** Jump straight to the closed state (flexible styles have no fold sequence). */
 export function jumpClosed(){ folding = false; foldT = 1; applyFold(1); }
@@ -325,11 +373,9 @@ function frameCamera(){
   const span = camSpan || 100; // set by buildBox / buildPallet for the active scene
   const r = span*2.4*dist;
   const t = panTarget || {x: 0, y: 0, z: 0};   // orbit about the (possibly panned) look-at point
-  camera.position.set(
-    t.x + Math.sin(rotY)*Math.cos(rotX)*r,
-    t.y + Math.sin(rotX)*r,
-    t.z + Math.cos(rotY)*Math.cos(rotX)*r
-  );
+  const pose = orbitPose(rotX, rotY, r);
+  camera.position.set(t.x + pose.x, t.y + pose.y, t.z + pose.z);
+  camera.up.set(0, pose.upY, 0);          // flips past a pole — see orbitPose
   camera.lookAt(t.x, t.y, t.z);
   camera.far = r*10; camera.updateProjectionMatrix();
 }
