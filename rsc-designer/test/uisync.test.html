@@ -2551,77 +2551,163 @@ await (async () => {
     }
   });
 
-  // ---- FACE COVERAGE. The quadrant pin above samples the TOP face only, and
-  // that is exactly how the seam smear survived: the body ring had no vertex
-  // at the seam (bottom-face centre), so the girth walk interpolated its whole
-  // range across the ONE segment spanning the bottom — the bottom rendered a
-  // squashed SIDE-FRONT-SIDE sweep and the template's two BACK half-bands and
-  // its fin allowance never appeared on the pack at all. A pin that samples
-  // one face cannot see a defect on the opposite one. This companion samples
-  // the BOTTOM, from below, with a per-PANEL palette rather than quadrants.
-  let panelSrc = null, panelBands = null;
+  // ---- FACE COVERAGE ----
+  // The quadrant pin above samples the TOP face only, and that is exactly how
+  // the seam smear survived three rounds of artwork work: the body ring had no
+  // vertex at the seam (bottom-face centre), so the girth walk interpolated its
+  // whole range across the ONE segment spanning the bottom — the bottom
+  // rendered a squashed SIDE-FRONT-SIDE sweep and the template's two BACK
+  // half-bands and its fin allowance never appeared on the pack at all. A pin
+  // that samples one face cannot see a defect on the opposite one.
+  //
+  // So this palette gives EVERY panel its own colour — the five girth bands
+  // separately (the two BACK halves and the two SIDEs are NOT interchangeable:
+  // identical colours would hide a swap), plus the RAMP and END SEAL columns
+  // and the fin allowance — and the two pins below sample every face of the
+  // pack from a view where that face is front-facing. Faces covered: top,
+  // bottom (both halves), both sides, both ramps, both crimp tabs, fin.
+  const PANELS = [
+    {name: 'BACK-lo',  rgb: [0, 0, 255]},        // faces[0]
+    {name: 'SIDE-lo',  rgb: [0, 204, 0]},        // faces[1]
+    {name: 'FRONT',    rgb: [255, 0, 0]},        // faces[2]
+    {name: 'SIDE-hi',  rgb: [255, 136, 0]},      // faces[3]
+    {name: 'BACK-hi',  rgb: [136, 0, 255]}       // faces[4]
+  ];
+  const EXTRA = [{name: 'RAMP', rgb: [255, 255, 0]}, {name: 'END', rgb: [255, 0, 255]},
+                 {name: 'FIN', rgb: [0, 255, 255]}];
+  // Lighting attenuates every channel, so classify by the RATIO to the
+  // brightest channel and take the NEAREST palette entry — an absolute
+  // threshold mistakes a shaded purple (#8800ff renders ~[72,0,135]) for blue,
+  // which is a false pass waiting to happen.
+  const panelOf = (c) => {
+    const m = Math.max(...c);
+    if(m < 25) return 'BACKGROUND';
+    const n = c.map(x => x/m);
+    let best = null, bd = Infinity;
+    for(const q of PANELS.concat(EXTRA)){
+      const qm = Math.max(...q.rgb), qn = q.rgb.map(x => x/qm);
+      const d = Math.hypot(n[0] - qn[0], n[1] - qn[1], n[2] - qn[2]);
+      if(d < bd){ bd = d; best = q.name; }
+    }
+    return bd < 0.55 ? best : `?(${c.join(',')})`;
+  };
+  let panelSrc = null;
   {
     const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
     const CW = am0.canvas.w, CH = am0.canvas.h, k = 4;
     const c = document.createElement('canvas'); c.width = Math.round(CW*k); c.height = Math.round(CH*k);
     const g = c.getContext('2d');
+    const hex = rgb => '#' + rgb.map(x => x.toString(16).padStart(2, '0')).join('');
     // template space is v-UP, canvas px are y-DOWN
-    const band = (v0, v1, col) => { g.fillStyle = col; g.fillRect(0, (CH - v1)*k, CW*k, (v1 - v0)*k); };
-    const PANEL = ['BACK', 'SIDE', 'FRONT', 'SIDE', 'BACK'];
-    const COL = {BACK: '#0000ff', SIDE: '#00cc00', FRONT: '#ff0000'};
-    band(0, am0.faces[0].v0, '#00ffff');                       // fin allowance
-    band(am0.faces[4].v1, CH, '#00ffff');
-    am0.faces.forEach((f, i) => band(f.v0, f.v1, COL[PANEL[i]]));
+    const band = (v0, v1, rgb) => { g.fillStyle = hex(rgb); g.fillRect(0, (CH - v1)*k, CW*k, (v1 - v0)*k); };
+    const colm = (u0, u1, rgb) => { g.fillStyle = hex(rgb); g.fillRect(u0*k, 0, (u1 - u0)*k, CH*k); };
+    band(0, CH, EXTRA[2].rgb);                                   // fin allowance, above and below the bands
+    am0.faces.forEach((f, i) => band(f.v0, f.v1, PANELS[i].rgb));
+    if(am0.ends){                                                // full-height u columns, outermost last
+      colm(am0.ends[0].u1, am0.product.x0, EXTRA[0].rgb);
+      colm(am0.product.x1, am0.ends[1].u0, EXTRA[0].rgb);
+      colm(0, am0.ends[0].u1, EXTRA[1].rgb);
+      colm(am0.ends[1].u0, CW, EXTRA[1].rgb);
+    }
     panelSrc = c.toDataURL('image/png');
-    panelBands = am0.faces.map((f, i) => ({panel: PANEL[i], v0: f.v0, v1: f.v1}));
     build.project.artwork.wrap = {src: panelSrc, fit: 'none', rect: {x: 0, y: 0, w: CW, h: CH}};
     build.recompute();
   }
   await waitFrames(() => artImage(panelSrc).complete && artImage(panelSrc).naturalWidth > 0);
   el('d_wrap').click(); el('m3solid').click(); build.recompute();
+
+  // sample a set of world points from a given orbit, once the frame has drawn
   const savedPose2 = getOrbit();
-  setOrbit(-0.9, 0, 1.3);                      // from BELOW — the face the smear hid on
-  let bCam = null;
-  const offFrame2 = onFrame(c2 => { bCam = c2; });
-  await waitFrames(() => !!bCam && drawn().some(x => x.map));
-  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  const bottomSamples = (() => {
-    const env = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.inner;
+  const sampleAt = async (rotX, rotY, pick) => {
+    setOrbit(rotX, rotY, 1.3);
+    let cam = null;
+    const offF = onFrame(c2 => { cam = c2; });
+    await waitFrames(() => !!cam && drawn().some(x => x.map));
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    offF && offF();
+    const row = resolveActiveRow(build.project, build.getRounding(), null);
+    const env = row.geo.wrap.inner, seal = row.geo.wrap.meta.seal;
     const cv = getDomElement();
     const g2 = document.createElement('canvas'); g2.width = cv.width; g2.height = cv.height;
     const cx2 = g2.getContext('2d'); cx2.drawImage(cv, 0, 0);
+    const proj = (wx, wy, wz) => new THREE.Vector3(wx, wy, wz).project(cam);
     const samp = (wx, wy, wz) => {
-      const v = new THREE.Vector3(wx, wy, wz).project(bCam);
+      const v = proj(wx, wy, wz);
       const d = cx2.getImageData(Math.round((v.x + 1)/2*cv.width), Math.round((1 - v.y)/2*cv.height), 1, 1).data;
       return [d[0], d[1], d[2]];
     };
+    return pick({env, seal, samp, proj});
+  };
+
+  const faceHits = {};
+  await sampleAt(0.9, 0, ({env, seal, samp}) => {
+    const hH = env.H/2 + 0.05, jaw = seal.jawClearance, flat = seal.sealFlatLength;
+    const lay = (90 - (seal.externalAngle == null ? 90 : seal.externalAngle))*Math.PI/180;
+    const tab = (sign, t) => { const d = t*flat;
+      return [sign*(env.L/2 + jaw) + sign*d*Math.cos(lay), d*Math.sin(lay), 0]; };
+    faceHits.top     = samp(0, hH, 0);
+    faceHits.rampPos = samp(env.L/2 + jaw*0.5, (hH + 0.1)/2, 0);
+    faceHits.rampNeg = samp(-(env.L/2 + jaw*0.5), (hH + 0.1)/2, 0);
+    faceHits.tabPos  = samp(...tab(1, 0.5));
+    faceHits.tabNeg  = samp(...tab(-1, 0.5));
+  });
+  await sampleAt(-0.9, 0, ({env, samp}) => {               // from BELOW
     const y = -env.H/2 - 0.05, W = env.W;
-    // four points across the bottom, both sides of the seam, clear of the fin
-    return {nW: samp(0, y, -W*0.28), nW2: samp(0, y, -W*0.40),
-            pW: samp(0, y, W*0.28),  pW2: samp(0, y, W*0.40)};
-  })();
-  offFrame2 && offFrame2();
+    faceHits.botNegW = samp(0, y, -W*0.32);
+    faceHits.botPosW = samp(0, y, W*0.32);
+    faceHits.fin     = samp(0, -env.H/2 - 0.3, 0);         // the fin lies over the seam
+  });
+  // the SIDES: both sample points project onto whichever side is NEAR, so the
+  // near one is identified by NDC depth and only that one is trusted — and the
+  // two views between them must cover both signs, or a side is going untested.
+  const sideSeen = {};
+  for(const ry of [0, Math.PI]){
+    await sampleAt(0.1, ry, ({env, samp, proj}) => {
+      const W = env.W;
+      const dNeg = proj(0, 0, -W/2 - 0.05).z, dPos = proj(0, 0, W/2 + 0.05).z;
+      const sign = dNeg < dPos ? -1 : 1;
+      sideSeen[sign < 0 ? 'negW' : 'posW'] = samp(0, 0, sign*(W/2 + 0.05));
+    });
+  }
   setOrbit(savedPose2.rotX, savedPose2.rotY, savedPose2.dist);
 
-  t('the pack BOTTOM carries the BACK bands — no seam smear, no discarded artwork', () => {
-    const hue = c => {
-      const [r, g, bl] = c;
-      if(bl > 120 && r < 110 && g < 110) return 'BACK';
-      if(g > 120 && r < 110 && bl < 110) return 'SIDE';
-      if(r > 120 && g < 110 && bl < 110) return 'FRONT';
-      if(g > 100 && bl > 100 && r < 110) return 'FIN';
-      return `?(${c.join(',')})`;
+  t('the pack BOTTOM carries the two BACK halves — no seam smear, no discarded artwork', () => {
+    const a = panelOf(faceHits.botNegW), b2 = panelOf(faceHits.botPosW);
+    // the girth walk puts one BACK half either side of the seam. The smear
+    // rendered SIDE-FRONT-SIDE here and the BACK bands nowhere at all.
+    if(!/^BACK-/.test(a)) throw new Error(`bottom at −W reads ${a}, must be a BACK half`);
+    if(!/^BACK-/.test(b2)) throw new Error(`bottom at +W reads ${b2}, must be a BACK half`);
+    if(a === b2)
+      throw new Error(`both bottom halves read ${a} — the seam is not splitting the walk`);
+    // −W is the half the walk enters first (v descending from the seam), so it
+    // takes the HIGH back band; +W closes the walk on the low one
+    eq(a, 'BACK-hi', 'bottom −W half:');
+    eq(b2, 'BACK-lo', 'bottom +W half:');
+  });
+
+  t('every FACE carries its own panel — sides, ramps, crimps and fin, not just the top', () => {
+    // one assertion per face, each sampled from a view where that face is
+    // front-facing. Without this, a mapping fault confined to a side or the
+    // fin passes every other pin in the file.
+    if(!sideSeen.negW || !sideSeen.posW)
+      throw new Error('the two side views did not cover both sides — one side went untested');
+    const got = {
+      top: panelOf(faceHits.top),
+      sideNegW: panelOf(sideSeen.negW), sidePosW: panelOf(sideSeen.posW),
+      rampPos: panelOf(faceHits.rampPos), rampNeg: panelOf(faceHits.rampNeg),
+      tabPos: panelOf(faceHits.tabPos), tabNeg: panelOf(faceHits.tabNeg),
+      fin: panelOf(faceHits.fin)
     };
-    // the girth walk puts a BACK half-band on each side of the seam, so every
-    // point across the bottom must read BACK. The smear rendered SIDE-FRONT-
-    // SIDE here (and BACK nowhere at all).
-    for(const [k, c] of Object.entries(bottomSamples)){
-      const got = hue(c);
-      if(got !== 'BACK')
-        throw new Error(`bottom at ${k} reads ${got}, must be BACK — the girth walk is smearing across the seam`);
-    }
-    if(!panelBands.some(b => b.panel === 'BACK'))
-      throw new Error('fixture not discriminating: the template has no BACK band');
+    // the girth walk from the seam is BACK-hi → SIDE-hi → FRONT → SIDE-lo →
+    // BACK-lo, so each physical face is determined; the ramps and crimps take
+    // their own template columns, and the fin its allowance band
+    const want = {top: 'FRONT', sideNegW: 'SIDE-hi', sidePosW: 'SIDE-lo',
+                  rampPos: 'RAMP', rampNeg: 'RAMP', tabPos: 'END', tabNeg: 'END', fin: 'FIN'};
+    const bad = Object.entries(want).filter(([k, v]) => got[k] !== v)
+      .map(([k, v]) => `${k}: want ${v}, render shows ${got[k]}`);
+    if(bad.length) throw new Error(bad.join('; '));
+    if(got.sideNegW === got.sidePosW)
+      throw new Error('both sides read the same band — a side/side swap would be invisible');
   });
 
   // ---- Crimp density continuity ----

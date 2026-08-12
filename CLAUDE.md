@@ -242,7 +242,17 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   used to stretch the whole canvas height across its width at 2.3x the
   ramp's texel density, the right region at the right u span but a
   blown-up crop to the eye. The residual gather (body 1.00 → ramp-at-crimp
-  1.51 template-mm of v per mm) is physical and progressive, not a step. UP/LEFT ARE MEASURED, NOT
+  1.51 template-mm of v per mm) is physical and progressive, not a step.
+  FACE COVERAGE IS PART OF THE PIN: the quadrant pin samples the TOP face
+  only, which is how the seam smear survived three rounds of artwork work —
+  a pin that samples one face cannot see a defect on the opposite one. The
+  companion pins paint EVERY panel its own colour (the two BACK halves and
+  the two SIDEs separately, so a swap cannot hide behind a shared colour)
+  plus the RAMP/END columns and the fin allowance, and sample top, bottom
+  (both halves), both sides, both ramps, both crimps and the fin, each from
+  a view where that face is front-facing. Colours are classified by RATIO to
+  the brightest channel, never absolute: a shaded purple renders ~[72,0,135]
+  and an absolute test reads it as blue. UP/LEFT ARE MEASURED, NOT
   EYEBALLED: the first mapping had both u and v reversed and rendered the
   template rotated exactly 180°, signed off from an angle where a 180° turn
   looks plausible; the pin that holds it now quadrant-samples the RENDERED
