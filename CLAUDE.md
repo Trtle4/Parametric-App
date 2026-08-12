@@ -223,13 +223,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   misaligned). Instead the SAME pillow body the cutaway builds
   (`wrapPartsGeometry` loft) carries the art directly: `bodyRingUVs`
   (hierarchy3d.js) assigns per-ring [u,v] so the artMap's girth bands wrap
-  the real body — u along the product length (−L end reads u1 so the print
-  is unmirrored), v around the girth measured by cumulative perimeter (the
-  bands sum to the physical perimeter) from the bottom-centre seam (the
-  w=0 crossing of the bottom edge, interpolated — NOT snapped to a vertex,
-  which lands ~W/2 off-centre and shifts every band). Result: front panel
-  centred/upright on the top face, opaque, solid, sharing the pillow's
-  frame so it can never be hollow or misaligned. Solid = the printed pillow
+  the real body — u along the product length (−L end reads u0, +L reads
+  u1), v around the girth measured by cumulative perimeter (the bands sum
+  to the physical perimeter) from the bottom-centre seam (the w=0 crossing
+  of the bottom edge, interpolated — NOT snapped to a vertex, which lands
+  ~W/2 off-centre and shifts every band). UP/LEFT ARE MEASURED, NOT
+  EYEBALLED: the first mapping had both u and v reversed and rendered the
+  template rotated exactly 180°, signed off from an angle where a 180° turn
+  looks plausible; the pin that holds it now quadrant-samples the RENDERED
+  pixels against the template at a fixed elevated-front view, so any
+  single- or double-axis flip moves a corner colour and fails. The artwork
+  path never forks the geometry: a printed wrap is closedWrapParts /
+  buildWrapMeshes with a texture, and the art canvases ride the BUNDLE
+  (attached in hierarchyBundle), so the shelf and the hierarchy read the
+  same art — the shelf's printed facings once forked to the art tube, whose
+  cross-section is the artMap's girth band widths in template mm, and drew
+  hollow open-ended planes. Result: front panel centred/upright on the top
+  face, opaque, solid, sharing the pillow's frame so it can never be
+  hollow or misaligned. Solid = the printed pillow
   (no contents); Cutaway = the translucent film + pieces (never overlaid
   with the art, so it always aligns). The FEFCO 0300 tray is an OPEN
   cross-blank — a base with four walls that each run a different way in the
@@ -246,8 +257,12 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   showing through, and NO seal colouring, because an unprinted flow wrap is
   plain film from crimp to crimp (the orange there was diagramming a closed
   pack). Artwork replaces the white wherever there IS artwork — white stands
-  in for UNPRINTED film, so hiding an upload would defeat the feature; the
-  crimped ends carry no girth art and stay plain. Callers pass the STATE,
+  in for UNPRINTED film, so hiding an upload would defeat the feature — and
+  it replaces it on EVERY part: printed film runs continuously through the
+  ramp and into the crimp, so the ramps/crimp tabs/fin carry the same
+  texture (UVs into the template's RAMP / END SEAL columns and the fin
+  allowance band), just never the teal/orange seal DIAGRAM colours, which
+  stay cutaway-only. Callers pass the STATE,
   never a material, so every site agrees: wrap depth (Solid vs Cutaway), the
   non-hero packs inside a carton/case and on a pallet, and the shelf facings
   all come through `wrapMaterials` via `buildWrapMeshes`/`closedWrapParts`.

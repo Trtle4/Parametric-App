@@ -171,7 +171,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
-import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose} from '../src/render/fold3d.js';
+import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
@@ -1905,80 +1905,69 @@ await (async () => {
     }
   });
 
-  // A PRINTED wrap takes the other path — the artwork tube, not the film parts —
-  // and it needs its own arrangement (upload, decode, a frame to draw) so it is
-  // set up out here rather than inside the pin.
+  // A PRINTED wrap is the SAME pack as an unprinted one — the texture is a
+  // material, not a shape. The art used to fork the shelf onto packArtGeometry
+  // (the flat-pattern art tube: cross-section built from the artMap's girth
+  // BAND WIDTHS in template mm, crimped ends open), so printed facings drew as
+  // hollow planes while unprinted facings were correct pillows. The arrangement
+  // (upload, decode, a re-render) lives out here rather than inside the pins.
   const printSnap = snapProject(), printKey = build.getSelectedCandidateKey();
   let printSrc = null;
+  const packMeshes = () => {
+    const hits = [];
+    getPivot().traverse(o => { if(o.isInstancedMesh && isShown(o) && o.name !== 'shelfFixture') hits.push(o); });
+    return hits;
+  };
+  const shelfPartStats = () => packMeshes().map(o => ({
+    verts: o.geometry.attributes.position.count,
+    count: o.count,
+    mapped: (Array.isArray(o.material) ? o.material : [o.material]).some(m => m && m.map)
+  }));
+  // UNPRINTED baseline first — same chain, no artwork
   {
     const proj = build.project;
     proj.tray.enabled = true; proj.tray.nCells = 3;
     Object.assign(proj.primary.collation,
       {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
     proj.secondary.enabled = false;
-    const c = document.createElement('canvas'); c.width = c.height = 64;
-    const g = c.getContext('2d');
-    g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 32);
-    g.fillStyle = '#36c'; g.fillRect(0, 32, 64, 32);
-    proj.artwork = proj.artwork || {};
-    printSrc = c.toDataURL('image/png');
-    proj.artwork.wrap = {src: printSrc, fit: 'fill'};
     build.recompute();
     el('shFront').value = 'auto'; fire(el('shFront'), 'change');
     el('tabShelf').click();
   }
+  await waitFrames(() => packMeshes().length > 0);
+  const plainStats = shelfPartStats();
+  // now the artwork
+  {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 32);
+    g.fillStyle = '#36c'; g.fillRect(0, 32, 64, 32);
+    build.project.artwork = build.project.artwork || {};
+    printSrc = c.toDataURL('image/png');
+    build.project.artwork.wrap = {src: printSrc, fit: 'fill'};
+    build.recompute();
+  }
   // The app caches ONE Image per src and only the FIRST caller's decode
-  // callback ever fires — here that is the hierarchy's, which does nothing
-  // while the shelf is up, so the shelf would sit on a null canvas forever.
-  // Wait for the app's OWN cached image, then ask the shelf to re-render.
+  // callback ever fires — wait for the app's OWN cached image, then ask the
+  // shelf to re-render so the texture is actually in the build.
   await waitFrames(() => artImage(printSrc).complete && artImage(printSrc).naturalWidth > 0);
   fire(el('shFront'), 'change');
-  const printRow = resolveActiveRow(build.project, build.getRounding(), null);
-  const packMeshes = () => {
-    const hits = [];
-    getPivot().traverse(o => { if(o.isInstancedMesh && isShown(o) && o.name !== 'shelfFixture') hits.push(o); });
-    return hits;
-  };
-  const artInst = () => packMeshes()[0] || null;
-  // the upload DECODES asynchronously and refreshes the shelf when it lands, so
-  // the wait is for the art path to actually take over (ONE tube where the film
-  // parts drew six) — waiting for "a pack mesh" alone returns instantly on the
-  // film path and measures that instead
-  const printReady = await waitFrames(() => packMeshes().length === 1);
-  const printSpan = (() => {
-    const o = artInst();
-    if(!o) return null;
-    const nPack = packMeshes().length;
-    o.geometry.computeBoundingBox();
-    const m = new THREE.Matrix4();
-    o.getMatrixAt(0, m); m.premultiply(o.matrixWorld);
-    const b = o.geometry.boundingBox.clone().applyMatrix4(m);
-    return {up: b.max.y - b.min.y, deep: b.max.z - b.min.z, count: o.count, packMeshes: nPack};
-  })();
+  const printReady = await waitFrames(() => shelfPartStats().some(x => x.mapped));
+  const printedStats = shelfPartStats();
 
-  t('SHELF: a PRINTED wrap stands in its own slot — the art body is not turned twice', () => {
-    // The artwork path does NOT take the orientation quaternion: packArtGeometry
-    // already builds its tube laid out for the pack's own front (a wrap comes
-    // out L across / W up / H deep), so it needs only the 180° that turns its
-    // printed FRONT toward the shopper. Sending it through the same orient-plus-
-    // parity turn the film parts take applies the layout twice and stands the
-    // pack on the wrong axis — measured, a 172mm-tall printed wrap rendered
-    // 49.5mm tall, matching its slot on no axis at all. Caught only by
-    // measuring; every extent SUM still looked plausible.
-    if(!printReady || !printSpan) throw new Error('no printed facing rendered on the shelf');
-    // the ART path draws ONE tube per pack; the film-parts path draws six. If
-    // the artwork never reached the render this pin would otherwise measure the
-    // film body and pass without testing the printed path at all — which it did
-    // until this line was added (the double-turn mutation walked straight
-    // through it).
-    if(printSpan.packMeshes !== 1)
-      throw new Error(`the artwork never reached the shelf: ${printSpan.packMeshes} pack meshes, expected the 1 art tube`);
-    const wo = printRow.geo.wrap.outer;
-    if(!(wo.W > wo.H + 40)) throw new Error(`fixture not discriminating: W ${wo.W} vs H ${wo.H}`);
-    if(Math.abs(printSpan.up - wo.W) > 3)
-      throw new Error(`printed pack stands ${printSpan.up.toFixed(1)}mm tall, its face is W ${wo.W}`);
-    if(Math.abs(printSpan.deep - wo.H) > 3)
-      throw new Error(`printed pack is ${printSpan.deep.toFixed(1)}mm deep, its thickness is H ${wo.H}`);
+  t('SHELF: printed facings are the SAME pack as unprinted — texture is a material, not a shape', () => {
+    // Compare the printed build against the unprinted baseline measured moments
+    // ago on the same chain: identical part count, identical geometry (vertex
+    // counts), identical instance counts — plus the texture. Under the old art
+    // tube this read 1 part vs 6 and a fraction of the vertices.
+    if(!printReady) throw new Error('the artwork never reached the shelf facings');
+    if(printedStats.length !== plainStats.length)
+      throw new Error(`printed facings are ${printedStats.length} part(s), unprinted are ${plainStats.length} — the art forked the geometry`);
+    const key = st => st.map(x => `${x.verts}x${x.count}`).sort().join('|');
+    if(key(printedStats) !== key(plainStats))
+      throw new Error(`printed and unprinted facings differ in geometry: ${key(printedStats)} vs ${key(plainStats)}`);
+    if(!printedStats.every(x => x.mapped))
+      throw new Error('every part of a printed pack must carry the texture (film prints continuously)');
   });
   el('tab2d').click();
   restoreProject(printSnap, printKey);
@@ -2484,13 +2473,82 @@ await (async () => {
   const printedReady = await waitFrames(() => drawn().some(x => x.map));
   const printedMats = drawn();
 
-  t('wrap SOLID shows ARTWORK where there is artwork — white is the unprinted default', () => {
+  t('wrap SOLID shows ARTWORK where there is artwork — on EVERY part, seals included', () => {
     if(!printedReady) throw new Error('the printed body never reached the render');
     if(!printedMats.some(x => x.map)) throw new Error('Solid hid the artwork — white must be the NO-artwork default only');
     if(printedMats.some(x => x.clear)) throw new Error('a printed pack must still be opaque');
-    if(has(printedMats, SEAL)) throw new Error('the seal zones must stay plain film on a printed pack too');
-    if(!printedMats.every(x => x.map || x.hex === PLAIN))
-      throw new Error(`a printed pack is artwork + plain film: ${[...new Set(printedMats.map(x => x.hex))].join(', ')}`);
+    if(has(printedMats, SEAL)) throw new Error('no seal DIAGRAM colouring on a printed pack (that is cutaway-only)');
+    // printed film runs CONTINUOUSLY through the ramp and into the crimp — the
+    // ramps and crimp tabs carry the same texture, mapped into the template's
+    // RAMP/END SEAL columns, or a printed pack shows a bare white band before
+    // each crimp (bug 3). "Plain film there" was the old rule, and wrong.
+    if(!printedMats.every(x => x.map))
+      throw new Error(`every part of a printed pack must carry the texture: ${printedMats.filter(x => !x.map).length} plain part(s)`);
+  });
+
+  // ---- The print reads like the TEMPLATE — up is up, left is left ----
+  // Quadrant canvas over the FULL artMap canvas (template space: TL red,
+  // TR yellow, BL blue, BR green), sampled off the RENDERED pixels at an
+  // elevated FRONT view. The first mapping rendered the template rotated
+  // exactly 180° — every corner colour sat diagonally opposite — and had
+  // been eyeballed as correct from an angle where a 180° turn looks
+  // plausible. Only a pixel-level comparison of render vs template pins
+  // this; every extent/material measure is blind to it.
+  let qSrc = null;
+  {
+    const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ff0000'; g.fillRect(0, 0, 64, 64);
+    g.fillStyle = '#ffff00'; g.fillRect(64, 0, 64, 64);
+    g.fillStyle = '#0000ff'; g.fillRect(0, 64, 64, 64);
+    g.fillStyle = '#00ff00'; g.fillRect(64, 64, 64, 64);
+    qSrc = c.toDataURL('image/png');
+    build.project.artwork.wrap = {src: qSrc, fit: 'none', rect: {x: 0, y: 0, w: am0.canvas.w, h: am0.canvas.h}};
+    build.recompute();
+  }
+  await waitFrames(() => artImage(qSrc).complete && artImage(qSrc).naturalWidth > 0);
+  el('d_wrap').click(); el('m3solid').click(); build.recompute();
+  const savedPose = getOrbit();
+  setOrbit(0.9, 0, 1.3);                       // straight elevated FRONT — unambiguous axes
+  let qCam = null;
+  const offFrame = onFrame(c2 => { qCam = c2; });
+  await waitFrames(() => !!qCam && drawn().some(x => x.map));
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const quadSamples = (() => {
+    const env = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.inner;
+    const cv = getDomElement();
+    const g2 = document.createElement('canvas'); g2.width = cv.width; g2.height = cv.height;
+    const cx2 = g2.getContext('2d'); cx2.drawImage(cv, 0, 0);
+    const samp = (wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(qCam);
+      const d = cx2.getImageData(Math.round((v.x + 1)/2*cv.width), Math.round((1 - v.y)/2*cv.height), 1, 1).data;
+      return [d[0], d[1], d[2]];
+    };
+    const hH = env.H/2 + 0.1, L = env.L, W = env.W;
+    return {nLnW: samp(-L/4, hH, -W/4), pLnW: samp(L/4, hH, -W/4),
+            nLpW: samp(-L/4, hH, W/4),  pLpW: samp(L/4, hH, W/4)};
+  })();
+  offFrame && offFrame();
+  setOrbit(savedPose.rotX, savedPose.rotY, savedPose.dist);
+
+  t('artwork on the 3D pack reads like the TEMPLATE — quadrants land where the template puts them', () => {
+    const hue = c => {
+      const [r, g, bl] = c;
+      if(r > 150 && g > 150 && bl < 120) return 'YELLOW';
+      if(r > 150 && g < 130 && bl < 130) return 'RED';
+      if(g > 130 && r < 130 && bl < 130) return 'GREEN';
+      if(bl > 150 && r < 130) return 'BLUE';
+      return `?(${c.join(',')})`;
+    };
+    // at the elevated FRONT view, screen-left = −L and the face's reading-up =
+    // the far edge (−W): template top-left must land at (−L, −W), and so on
+    // around. The 180°-rotated mapping put every colour diagonally opposite.
+    const want = {nLnW: 'RED', pLnW: 'YELLOW', nLpW: 'BLUE', pLpW: 'GREEN'};
+    for(const [k, exp] of Object.entries(want)){
+      const got = hue(quadSamples[k]);
+      if(got !== exp) throw new Error(`${k}: template says ${exp}, render shows ${got} — the print does not read like the template`);
+    }
   });
 
   el('tab3d').click();

@@ -420,9 +420,18 @@ function loftGeometry(rings, ringUVs){
  *  front (widest band) lands centred on the top face, upright and unmirrored.
  *  Ring order runs forward from the seam toward −w first, matching the artMap
  *  girth direction, so the panels register without mirroring. */
-function bodyRingUVs(rings, am, axisIsW, hH){
+function bodyRingUVs(rings, am, axisIsW, hH, uPerRing){
   const CW = am.canvas.w, CH = am.canvas.h;
-  const us = [am.faces[0].u1/CW, am.faces[0].u0/CW];                 // product region along length (−L end reads u1 so the print is unmirrored)
+  // −L end reads u0, +L reads u1, and v runs DOWN the canvas as the girth walk
+  // advances. Both axes are flipped from the first mapping, which rendered the
+  // template rotated exactly 180°: quadrant-sampled at an elevated FRONT view,
+  // every corner colour sat diagonally opposite its template position (the
+  // "unmirrored" claim in the old comment had been verified from an angle
+  // where a 180° turn looks plausible). The band layout is palindromic
+  // (back½|side|front|side|back½), so reversing v keeps every band on the same
+  // physical face and the seam at the seam — only the print's own up/left
+  // come right.
+  const us = uPerRing || [am.faces[0].u0/CW, am.faces[0].u1/CW];
   const vLo = am.faces[0].v0/CH, vHi = am.faces[am.faces.length - 1].v1/CH;   // girth band region
   return rings.map((ring, ri) => {
     const n = ring.length;
@@ -442,7 +451,7 @@ function bodyRingUVs(rings, am, axisIsW, hH){
       }
     }
     if(sP == null){ let best = Infinity; for(let k = 0; k < n; k++){ const d = Math.hypot(cross[k][0] + hH, cross[k][1]); if(d < best){ best = d; sP = cum[k]; } } }
-    return ring.map((p, k) => [us[ri], vLo + ((((cum[k] - sP) % total) + total) % total) / total * (vHi - vLo)]);
+    return ring.map((p, k) => [us[ri], vHi - ((((cum[k] - sP) % total) + total) % total) / total * (vHi - vLo)]);
   });
 }
 
@@ -469,8 +478,11 @@ function wrapArtMat(canvas){
  *                     The orange there was diagramming a closed pack.
  *
  * Artwork replaces the white wherever there IS artwork: white stands in for
- * UNPRINTED film, so hiding an upload would defeat the feature. The crimped
- * ends carry no girth art, so they stay plain film.
+ * UNPRINTED film, so hiding an upload would defeat the feature — and it
+ * replaces it on EVERY part: printed film runs continuously through the ramp
+ * and into the crimp, so the seal parts carry the same texture (their UVs land
+ * in the template's RAMP/END SEAL columns), just never the teal/orange seal
+ * DIAGRAM colours, which remain cutaway-only.
  *
  * Callers pass the STATE, never a material, so Solid cannot be white at wrap
  * depth and teal inside a case — the same discipline as filmEnv and
@@ -484,7 +496,9 @@ function wrapArtMat(canvas){
 function wrapMaterials(opened, artInfo){
   if(opened) return {body: filmMat, seal: sealMat};
   const printed = !!(artInfo && artInfo.canvas);
-  return {body: printed ? wrapArtMat(artInfo.canvas) : wrapSolidMat, seal: wrapSolidMat};
+  if(!printed) return {body: wrapSolidMat, seal: wrapSolidMat};
+  const art = wrapArtMat(artInfo.canvas);   // ONE texture, shared by every part
+  return {body: art, seal: art};
 }
 
 /** The wrap's artwork for this bundle, or null — read from the bundle itself so
@@ -544,6 +558,19 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   // vertical plane — it must not touch the width axis.) The crimp edge is a
   // clean full-width line, flush with the endTab fin — an earlier serrated tip
   // scalloped the width past the body and read as a glitch, so it was dropped.
+  // printed film runs CONTINUOUSLY through the ramp and into the crimp — the
+  // template paints those columns (RAMP, END SEAL) and the mapping has to
+  // reach them, or a printed pack shows a bare white band before each crimp.
+  // The ramp spans the canvas from the product-region edge (u0/u1, where the
+  // body mapping ends) out to the end-seal column; the girth walk reuses the
+  // body's own v computation on each ring, so the bands stay registered as
+  // the section collapses. A style whose artMap has no end columns clamps to
+  // the product edge (stretched edge pixels beat an unmapped default).
+  const AM = artInfo && artInfo.am;
+  const uEdge = AM && [AM.faces[0].u0/AM.canvas.w, AM.faces[0].u1/AM.canvas.w];
+  const uCrimp = AM && (AM.ends
+    ? [AM.ends[0].u1/AM.canvas.w, AM.ends[1].u0/AM.canvas.w]
+    : uEdge);
   function ramp(sign){
     const shoulder = sign*(lenDim/2), crimp = sign*(lenDim/2 + jaw);
     // tray: the shoulder ring is the faceted section — collapsing it linearly
@@ -553,7 +580,14 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
       trayProf ? profileRing(trayProf, shoulder, axisIsW) : ringPoints(shoulder, hH, hCross, roundish, fillet, axisIsW),
       ringPoints(crimp, finThk/2, hCross, roundish, fillet, axisIsW)
     ];
-    return loftGeometry(sign > 0 ? rings : rings.slice().reverse());
+    const ordered = sign > 0 ? rings : rings.slice().reverse();
+    let uvs = null;
+    if(AM){
+      const uSh = uEdge[sign > 0 ? 1 : 0], uCr = uCrimp[sign > 0 ? 1 : 0];
+      const uRing = sign > 0 ? [uSh, uCr] : [uCr, uSh];   // match the ring order
+      uvs = bodyRingUVs(ordered, AM, axisIsW, hH, uRing);
+    }
+    return loftGeometry(ordered, uvs);
   }
   // the finished CRIMP TAB: a flat sealed fin the FULL pack width (crossDim),
   // length = the crimp's flat length, hinged at the crimp line and LAID at the
@@ -563,6 +597,21 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   function endTab(sign){
     const geo = new THREE.BoxGeometry(flat, finThk, crossDim);   // long axis local X, FULL width
     geo.translate(flat/2, 0, 0);                             // hinge at origin, extends +X
+    // the crimp tab carries its end-seal COLUMN: the whole web is gathered into
+    // the crimp, so v spans the full canvas height across the tab's width and u
+    // runs hinge -> tip through the column. Assigned in the canonical frame,
+    // BEFORE the lay rotation/remap, so the transforms carry the print with the
+    // geometry.
+    if(AM && AM.ends){
+      const col = AM.ends[sign > 0 ? 1 : 0], CWc = AM.canvas.w;
+      const uHinge = (sign > 0 ? col.u0 : col.u1)/CWc, uTip = (sign > 0 ? col.u1 : col.u0)/CWc;
+      const pos = geo.attributes.position, uv = geo.attributes.uv;
+      for(let i = 0; i < pos.count; i++){
+        const t = Math.min(Math.max(pos.getX(i)/flat, 0), 1);
+        uv.setXY(i, uHinge + t*(uTip - uHinge), 0.5 - pos.getZ(i)/crossDim);
+      }
+      uv.needsUpdate = true;
+    }
     const lay = (90 - ea)*Math.PI/180;                       // 0 at ea=90 (out); 90° at ea=0 (folded up)
     geo.rotateZ(sign > 0 ? lay : Math.PI - lay);             // +end tilts up/out; -end mirrors
     geo.translate(sign*(lenDim/2 + jaw), 0, 0);              // hinge onto the crimp line
@@ -589,7 +638,7 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
  *  own travel axis) and is no longer offered (Prompt 20, Part A). Both
  *  stand the fin off the Y axis; which SIDE of Y (proud stands out from
  *  the underside or the topside) is the only thing that changes. */
-function wrapFinGeometry(envelope, seals, wrapAxis){
+function wrapFinGeometry(envelope, seals, wrapAxis, artInfo){
   const axisIsW = wrapAxis === 'W';
   const H = envelope.H;
   const lenDim = axisIsW ? envelope.W : envelope.L;
@@ -605,6 +654,21 @@ function wrapFinGeometry(envelope, seals, wrapAxis){
   // whichever local axis (X or Z) the machine direction maps to
   const geo = axisIsW ? new THREE.BoxGeometry(band, proud, lenDim) : new THREE.BoxGeometry(lenDim, proud, band);
   geo.translate(0, sign*(H/2 + proud/2), 0);
+  // printed: the fin carries its own allowance band (the web edges below the
+  // first girth band meet here), u along the product run like the body
+  if(artInfo && artInfo.am){
+    const am = artInfo.am, CW = am.canvas.w, CH = am.canvas.h;
+    const u0 = am.faces[0].u0/CW, u1 = am.faces[0].u1/CW, vBand = am.faces[0].v0/CH;
+    const pos = geo.attributes.position, uv = geo.attributes.uv;
+    let yMin = Infinity, yMax = -Infinity;
+    for(let i = 0; i < pos.count; i++){ const y = pos.getY(i); if(y < yMin) yMin = y; if(y > yMax) yMax = y; }
+    const ySpan = Math.max(yMax - yMin, 1e-6);
+    for(let i = 0; i < pos.count; i++){
+      const m = axisIsW ? pos.getZ(i) : pos.getX(i);           // machine coordinate
+      uv.setXY(i, u0 + (m/lenDim + 0.5)*(u1 - u0), (pos.getY(i) - yMin)/ySpan*vBand);
+    }
+    uv.needsUpdate = true;
+  }
   return geo;
 }
 
@@ -654,7 +718,7 @@ export function closedWrapParts(bundle){
   const art = wrapArtOf(bundle);
   const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w),
                                   stackInfoOf(w), w.wrapAxis, art || undefined, bundle.tray);
-  const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis);
+  const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis, art);
   // CLOSED — so plain unprinted film, or the artwork where there is artwork.
   // These are the non-hero packs: inside a carton or case, on a pallet, and
   // every shelf facing.
@@ -675,7 +739,7 @@ export function closedWrapParts(bundle){
  *  in buildContainer instead, sharing these same geometries. */
 function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened, artInfo, tray){
   const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo, tray);
-  const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
+  const finGeo = wrapFinGeometry(envelope, seals, wrapAxis, artInfo);
   const g = new THREE.Group();
   const {body, seal} = wrapMaterials(opened, artInfo);
   g.add(new THREE.Mesh(parts.bodyGeo, body));

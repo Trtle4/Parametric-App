@@ -135,7 +135,15 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
     // facings and the opened pack can never be two different packs. Still ONE
     // InstancedMesh per part, so draw calls stay flat in the facing count
     // exactly as the single box did.
-    const wrapParts = (!printed && opts.wrapBundle) ? closedWrapParts(opts.wrapBundle) : [];
+    // A WRAP always comes from closedWrapParts — printed or not. The artwork
+    // path used to fork here to packArtGeometry, the flat-pattern art TUBE,
+    // whose cross-section is built from the artMap's girth BAND WIDTHS
+    // (template mm, not the pack's physical dims) and whose crimped ends are
+    // open (`ends` present -> no caps): printed facings rendered as hollow
+    // planes you could see straight through, while unprinted facings were
+    // correct pillows. The texture is a MATERIAL, not a shape —
+    // closedWrapParts carries it on the real body via the bundle's own art.
+    const wrapParts = opts.wrapBundle ? closedWrapParts(opts.wrapBundle) : [];
     if(wrapParts.length){
       // the parts are canonical-frame, so they take the SAME orientation the
       // opened pack takes (front-panel quat, then the in-plane spin) — one

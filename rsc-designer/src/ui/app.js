@@ -1313,7 +1313,18 @@ function hierarchyBundle(){
   // `wraps` presence, not on row.geo.carton, is what lets a carton-outermost
   // chain (case off) still render its wrap/pack contents.
   const wrapPlacements = wraps ? wraps.placements : cartons.placements;
+  // per-pack-type art canvases ride the bundle itself, so EVERY consumer —
+  // the hierarchy and the shelf — reads the same art from the same place.
+  // This used to be bolted on by applyHierarchy after the fact, which meant
+  // the shelf's bundle carried no art at all: the very gap that pushed the
+  // shelf's printed facings onto their own forked geometry path.
+  const art = {
+    carton: artCanvasFor('carton', row.geo.carton),
+    case:   artCanvasFor('case', row.geo.case),
+    wrap:   artCanvasFor('wrap', row.geo.wrap)
+  };
   return {
+    art,
     caseGeo: row.geo.case,
     cartonGeo: row.geo.carton,
     wrapGeo: row.geo.wrap,
@@ -1422,11 +1433,6 @@ function applyHierarchy(resetCam){
   // per-pack-type art textures: one composed canvas per level, shared across
   // every instance of that pack by the renderer (art is a pack property, not
   // an instance property).
-  bundle.art = {
-    carton: artCanvasFor('carton', bundle.cartonGeo),
-    case:   artCanvasFor('case', bundle.caseGeo),
-    wrap:   artCanvasFor('wrap', bundle.wrapGeo)
-  };
   // the active level IS the depth; if it isn't reachable for this config
   // (e.g. the case is the active level but has just been disabled), fall back
   // to the outermost depth that IS available — never a hardcoded 'case', which
