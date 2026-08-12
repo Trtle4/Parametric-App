@@ -376,14 +376,19 @@ function profileRing(profile, pos, axisIsW){
 // attribute so a textured material can wrap the loft — the printed-wrap body
 // uses it to map the artwork's girth panels; a cap vertex takes its ring's
 // average uv (caps are hidden by the ramps, so their uv is immaterial).
-function loftGeometry(rings, ringUVs){
+function loftGeometry(rings, ringUVs, open){
   const N = rings[0].length;
+  // an OPEN ring already carries its own closing point (first and last sit at
+  // the same place, with DIFFERENT uv — the seam), so the wrap-around segment
+  // must not be generated: it would be a zero-area quad, and worse, it is the
+  // segment the girth walk is discontinuous across.
+  const segs = open ? N - 1 : N;
   const pos = [], uv = [];
   rings.forEach((r, ri) => r.forEach((p, k) => { pos.push(p.x, p.y, p.z); if(ringUVs) uv.push(ringUVs[ri][k][0], ringUVs[ri][k][1]); }));
   const idx = (ri, k) => ri*N + (k % N);
   const indices = [];
   for(let r = 0; r < rings.length - 1; r++)
-    for(let k = 0; k < N; k++){
+    for(let k = 0; k < segs; k++){
       const a = idx(r, k), b = idx(r, k + 1), c = idx(r + 1, k), d = idx(r + 1, k + 1);
       indices.push(a, c, b,  b, c, d);
     }
@@ -394,7 +399,7 @@ function loftGeometry(rings, ringUVs){
     cx /= N; cy /= N; cz /= N;
     pos.push(cx, cy, cz);
     if(ringUVs){ let cu = 0, cv = 0; ringUVs[ri].forEach(t => { cu += t[0]; cv += t[1]; }); uv.push(cu/N, cv/N); }
-    for(let k = 0; k < N; k++){
+    for(let k = 0; k < segs; k++){
       const a = ri*N + k, b = ri*N + ((k + 1) % N);
       indices.push(base, flip ? b : a, flip ? a : b);
     }
@@ -406,6 +411,50 @@ function loftGeometry(rings, ringUVs){
   if(ringUVs) geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.computeVertexNormals();
   return geo;
+}
+
+/**
+ * Re-open a closed section ring AT THE SEAM — the bottom-face centre, where
+ * the fin lands and the girth walk starts and ends.
+ *
+ * A closed ring has no vertex there and no way to carry two values at one
+ * point, so the girth walk had to interpolate its whole range across the ONE
+ * segment that spans the bottom face: v swept 0.79 -> 0.21 straight across it.
+ * The bottom therefore rendered a mirrored, squashed sweep of SIDE-FRONT-SIDE,
+ * and the template's two BACK half-bands and its fin allowance never appeared
+ * on the pack at all — artwork the user painted that the model silently threw
+ * away. (It hid because the seam is on the face nobody photographs.)
+ *
+ * The fix is a real discontinuity: the seam point is inserted (interpolated at
+ * the w=0 crossing of the bottom edge, never snapped to a neighbour) and
+ * DUPLICATED, so the ring starts and ends there and the two copies can carry
+ * v = vHi and v = vLo. The band boundaries themselves need no new vertices —
+ * they fall on the section corners, which the corner arcs already populate.
+ *
+ * Shape is unchanged: the inserted point is collinear on a straight edge and
+ * the duplicate closes nothing (loftGeometry skips the wrap segment for an
+ * open ring), so an UNPRINTED wrap renders exactly as before. Applied to every
+ * section ring — body and both ramp ends — printed or not, so the printed and
+ * unprinted packs stay the same geometry.
+ */
+function seamOpenRing(ring, axisIsW){
+  const n = ring.length;
+  const cross = p => axisIsW ? [p.y, p.x] : [p.y, p.z];   // [h(height), w(cross)]
+  let si = -1, t = 0;
+  for(let k = 0; k < n; k++){
+    const a = cross(ring[k]), b = cross(ring[(k + 1) % n]);
+    if(a[0] < 0 && b[0] < 0 && ((a[1] <= 0 && b[1] >= 0) || (a[1] >= 0 && b[1] <= 0)) && a[1] !== b[1]){
+      si = k; t = a[1]/(a[1] - b[1]); break;                // fraction along to w = 0
+    }
+  }
+  // no bottom crossing (a degenerate section): open at the first point rather
+  // than leaving the caller a ring it cannot walk
+  if(si < 0) return ring.map(p => p.clone()).concat([ring[0].clone()]);
+  const seam = new THREE.Vector3().lerpVectors(ring[si], ring[(si + 1) % n], t);
+  const out = [seam];
+  for(let k = 1; k <= n; k++) out.push(ring[(si + k) % n].clone());
+  out.push(seam.clone());
+  return out;
 }
 
 /** Per-point [u,v] for the two body rings so the artwork's girth panels wrap
@@ -420,39 +469,88 @@ function loftGeometry(rings, ringUVs){
  *  front (widest band) lands centred on the top face, upright and unmirrored.
  *  Ring order runs forward from the seam toward −w first, matching the artMap
  *  girth direction, so the panels register without mirroring. */
-function bodyRingUVs(rings, am, axisIsW, hH, uPerRing){
+function bodyRingUVs(rings, am, axisIsW, uPerRing){
   const CW = am.canvas.w, CH = am.canvas.h;
   // −L end reads u0, +L reads u1, and v runs DOWN the canvas as the girth walk
   // advances. Both axes are flipped from the first mapping, which rendered the
   // template rotated exactly 180°: quadrant-sampled at an elevated FRONT view,
   // every corner colour sat diagonally opposite its template position (the
   // "unmirrored" claim in the old comment had been verified from an angle
-  // where a 180° turn looks plausible). The band layout is palindromic
-  // (back½|side|front|side|back½), so reversing v keeps every band on the same
-  // physical face and the seam at the seam — only the print's own up/left
-  // come right.
+  // where a 180° turn looks plausible).
   const us = uPerRing || [am.faces[0].u0/CW, am.faces[0].u1/CW];
   const vLo = am.faces[0].v0/CH, vHi = am.faces[am.faces.length - 1].v1/CH;   // girth band region
   return rings.map((ring, ri) => {
     const n = ring.length;
-    const cross = ring.map(p => axisIsW ? [p.y, p.x] : [p.y, p.z]);  // [h(height), w(cross)]
+    const cross = p => axisIsW ? [p.y, p.x] : [p.y, p.z];   // [h(height), w(cross)]
+    // the ring ARRIVES open at the seam (seamOpenRing), so the walk simply
+    // starts at index 0 and runs to the duplicate at the end — no seam search,
+    // no modular wrap, and the two seam copies get vHi and vLo as they must
     const cum = [0];
-    for(let k = 0; k < n; k++){ const a = cross[k], b = cross[(k + 1) % n]; cum.push(cum[k] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
-    const total = cum[n] || 1;
-    // seam arc-length = where the bottom edge (h<0) crosses w=0. Find the segment
-    // whose two endpoints straddle w=0 while both sit on the lower half, and
-    // interpolate the crossing; fall back to the nearest vertex if none does.
-    let sP = null;
-    for(let k = 0; k < n; k++){
-      const a = cross[k], b = cross[(k + 1) % n];
-      if(a[0] < 0 && b[0] < 0 && ((a[1] <= 0 && b[1] >= 0) || (a[1] >= 0 && b[1] <= 0)) && a[1] !== b[1]){
-        const t = a[1]/(a[1] - b[1]);                                // fraction to w=0
-        sP = cum[k] + t*(cum[k + 1] - cum[k]); break;
+    for(let k = 1; k < n; k++){
+      const a = cross(ring[k - 1]), b = cross(ring[k]);
+      cum.push(cum[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+    }
+    const total = cum[n - 1] || 1;
+    return ring.map((p, k) => [us[ri], vHi - cum[k]/total*(vHi - vLo)]);
+  });
+}
+
+/**
+ * The crimp ring's own [w -> v], per face of the flattened section, as a
+ * lookup the crimp TAB continues. Reading the ring's own v is what makes the
+ * print continuous across the crimp line: the tab is the same web, gathered
+ * flat, so it must pick up exactly where the ramp's outer ring left off
+ * rather than re-deriving a range of its own.
+ *
+ * Split into the walk's three monotonic-w runs (seam -> one edge across the
+ * bottom, the full top, the other edge back to the seam), which is robust for
+ * both the rounded-rectangle and the elliptical section; the top run is the
+ * one whose points sit highest. w = 0 is the seam and genuinely two-valued —
+ * each bottom run owns its own side of it.
+ */
+function crimpVLookup(ring, uvs, axisIsW){
+  const cross = p => axisIsW ? [p.y, p.x] : [p.y, p.z];
+  const runs = [];
+  let cur = null, dir = 0;
+  for(let k = 0; k < ring.length; k++){
+    const [h, w] = cross(ring[k]);
+    if(k > 0){
+      const dw = w - cross(ring[k - 1])[1];
+      if(Math.abs(dw) > 1e-9){
+        const d = Math.sign(dw);
+        if(dir && d !== dir){ cur = null; }                 // w reversed -> new run
+        dir = d;
       }
     }
-    if(sP == null){ let best = Infinity; for(let k = 0; k < n; k++){ const d = Math.hypot(cross[k][0] + hH, cross[k][1]); if(d < best){ best = d; sP = cum[k]; } } }
-    return ring.map((p, k) => [us[ri], vHi - ((((cum[k] - sP) % total) + total) % total) / total * (vHi - vLo)]);
+    if(!cur){ cur = {pts: [], h: 0}; runs.push(cur); }
+    cur.pts.push([w, uvs[k][1]]); cur.h += h;
+  }
+  const usable = runs.filter(r => r.pts.length > 1);
+  if(!usable.length) return () => 0;
+  const topRun = usable.reduce((a, b) => (b.h/b.pts.length > a.h/a.pts.length ? b : a));
+  const interp = pts => {
+    const s = pts.slice().sort((a, b) => a[0] - b[0]);
+    return w => {
+      if(w <= s[0][0]) return s[0][1];
+      const last = s[s.length - 1];
+      if(w >= last[0]) return last[1];
+      for(let i = 1; i < s.length; i++) if(w <= s[i][0]){
+        const t = (w - s[i - 1][0])/((s[i][0] - s[i - 1][0]) || 1);
+        return s[i - 1][1] + t*(s[i][1] - s[i - 1][1]);
+      }
+      return last[1];
+    };
+  };
+  const shaped = usable.map(r => {
+    const ws = r.pts.map(x => x[0]);
+    return {top: r === topRun, min: Math.min(...ws), max: Math.max(...ws), f: interp(r.pts)};
   });
+  return (w, isTop) => {
+    const cands = shaped.filter(r => r.top === isTop);
+    if(!cands.length) return 0;
+    const hit = cands.find(r => w >= r.min - 1e-6 && w <= r.max + 1e-6) || cands[0];
+    return hit.f(w);
+  };
 }
 
 /** Opaque printed-wrap body material (the pillow surface carrying the girth
@@ -542,13 +640,18 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   const fillet = safeFillet(envelope, stackInfo.stackAxis, stackInfo.nx, stackInfo.ny, stackInfo.layers, axisIsW);
 
   const hH = H/2, hCross = crossDim/2;   // body half-dims — every ramp ring stays AT OR INSIDE these, never bulges past them
-  const r0 = trayProf ? profileRing(trayProf, -lenDim/2, axisIsW) : ringPoints(-lenDim/2, hH, hCross, roundish, fillet, axisIsW);
-  const r1 = trayProf ? profileRing(trayProf,  lenDim/2, axisIsW) : ringPoints( lenDim/2, hH, hCross, roundish, fillet, axisIsW);
+  // every section ring is OPENED AT THE SEAM (bottom-face centre) so the girth
+  // walk has somewhere to be discontinuous — see seamOpenRing. Shape unchanged;
+  // done printed or not, so printed and unprinted stay the same geometry.
+  const section = (pos) => seamOpenRing(
+    trayProf ? profileRing(trayProf, pos, axisIsW) : ringPoints(pos, hH, hCross, roundish, fillet, axisIsW),
+    axisIsW);
+  const r0 = section(-lenDim/2), r1 = section(lenDim/2);
   // printed wrap: map the artwork's girth panels onto the REAL pillow body
   // (solid + aligned with the pieces — unlike the old separate art tube, which
   // was hollow and axis-transposed). UVs only when artInfo is present.
-  const bodyUVs = (artInfo && artInfo.am) ? bodyRingUVs([r0, r1], artInfo.am, axisIsW, hH) : null;
-  const bodyGeo = loftGeometry([r0, r1], bodyUVs);
+  const bodyUVs = (artInfo && artInfo.am) ? bodyRingUVs([r0, r1], artInfo.am, axisIsW) : null;
+  const bodyGeo = loftGeometry([r0, r1], bodyUVs, true);
 
   // the RAMP: the film descends in HEIGHT only — full cross-section at the pack
   // face -> a flat, FULL-WIDTH crimp line the jaw clearance further out. Only
@@ -567,6 +670,7 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   // the section collapses. A style whose artMap has no end columns clamps to
   // the product edge (stretched edge pixels beat an unmapped default).
   const AM = artInfo && artInfo.am;
+  let crimpV = null;                      // set by ramp(): the crimp ring's own [w -> v]
   const uEdge = AM && [AM.faces[0].u0/AM.canvas.w, AM.faces[0].u1/AM.canvas.w];
   const uCrimp = AM && (AM.ends
     ? [AM.ends[0].u1/AM.canvas.w, AM.ends[1].u0/AM.canvas.w]
@@ -577,17 +681,20 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
     // onto the full-width flat crimp line gathers the corner facets into the
     // triangular dog-ear folds real film makes there, with no extra geometry
     const rings = [
-      trayProf ? profileRing(trayProf, shoulder, axisIsW) : ringPoints(shoulder, hH, hCross, roundish, fillet, axisIsW),
-      ringPoints(crimp, finThk/2, hCross, roundish, fillet, axisIsW)
+      section(shoulder),
+      seamOpenRing(ringPoints(crimp, finThk/2, hCross, roundish, fillet, axisIsW), axisIsW)
     ];
     const ordered = sign > 0 ? rings : rings.slice().reverse();
     let uvs = null;
     if(AM){
       const uSh = uEdge[sign > 0 ? 1 : 0], uCr = uCrimp[sign > 0 ? 1 : 0];
       const uRing = sign > 0 ? [uSh, uCr] : [uCr, uSh];   // match the ring order
-      uvs = bodyRingUVs(ordered, AM, axisIsW, hH, uRing);
+      uvs = bodyRingUVs(ordered, AM, axisIsW, uRing);
+      // the tab continues THIS ring — remember its v so the print runs on
+      // across the crimp line instead of restarting at a different density
+      crimpV = crimpVLookup(rings[1], uvs[sign > 0 ? 1 : 0], axisIsW);
     }
-    return loftGeometry(ordered, uvs);
+    return loftGeometry(ordered, uvs, true);
   }
   // the finished CRIMP TAB: a flat sealed fin the FULL pack width (crossDim),
   // length = the crimp's flat length, hinged at the crimp line and LAID at the
@@ -597,18 +704,27 @@ function wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artIn
   function endTab(sign){
     const geo = new THREE.BoxGeometry(flat, finThk, crossDim);   // long axis local X, FULL width
     geo.translate(flat/2, 0, 0);                             // hinge at origin, extends +X
-    // the crimp tab carries its end-seal COLUMN: the whole web is gathered into
-    // the crimp, so v spans the full canvas height across the tab's width and u
-    // runs hinge -> tip through the column. Assigned in the canonical frame,
-    // BEFORE the lay rotation/remap, so the transforms carry the print with the
-    // geometry.
-    if(AM && AM.ends){
+    // the crimp tab carries its end-seal COLUMN: u runs hinge -> tip through the
+    // column, and v is the CRIMP RING's own v continued (crimpV) rather than a
+    // range of the tab's own. The tab used to stretch the whole canvas height
+    // (0..1) across its width — the right region at the right u span, but 3.5x
+    // the body's texel density, so a real graphic read as a blown-up crop at a
+    // hard scale jump on the crimp line. Reading the ring makes the gather
+    // CONTINUOUS: the web narrows progressively along the ramp and the tab
+    // simply carries on. Assigned in the canonical frame, BEFORE the lay
+    // rotation/remap, so the transforms carry the print with the geometry.
+    if(AM && AM.ends && crimpV){
       const col = AM.ends[sign > 0 ? 1 : 0], CWc = AM.canvas.w;
       const uHinge = (sign > 0 ? col.u0 : col.u1)/CWc, uTip = (sign > 0 ? col.u1 : col.u0)/CWc;
       const pos = geo.attributes.position, uv = geo.attributes.uv;
       for(let i = 0; i < pos.count; i++){
         const t = Math.min(Math.max(pos.getX(i)/flat, 0), 1);
-        uv.setXY(i, uHinge + t*(uTip - uHinge), 0.5 - pos.getZ(i)/crossDim);
+        // the tab is built length-along-local-X, width along local Z. The ring's
+        // cross axis is world X when the machine dir is W, and the tab's later
+        // rotateY(-90°) sends local +Z to world −X — so the width coordinate
+        // flips sign in that case, or the print mirrors across the crimp.
+        const w = axisIsW ? -pos.getZ(i) : pos.getZ(i);
+        uv.setXY(i, uHinge + t*(uTip - uHinge), crimpV(w, pos.getY(i) >= 0));
       }
       uv.needsUpdate = true;
     }

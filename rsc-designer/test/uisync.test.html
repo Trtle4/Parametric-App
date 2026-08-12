@@ -2551,6 +2551,155 @@ await (async () => {
     }
   });
 
+  // ---- FACE COVERAGE. The quadrant pin above samples the TOP face only, and
+  // that is exactly how the seam smear survived: the body ring had no vertex
+  // at the seam (bottom-face centre), so the girth walk interpolated its whole
+  // range across the ONE segment spanning the bottom — the bottom rendered a
+  // squashed SIDE-FRONT-SIDE sweep and the template's two BACK half-bands and
+  // its fin allowance never appeared on the pack at all. A pin that samples
+  // one face cannot see a defect on the opposite one. This companion samples
+  // the BOTTOM, from below, with a per-PANEL palette rather than quadrants.
+  let panelSrc = null, panelBands = null;
+  {
+    const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
+    const CW = am0.canvas.w, CH = am0.canvas.h, k = 4;
+    const c = document.createElement('canvas'); c.width = Math.round(CW*k); c.height = Math.round(CH*k);
+    const g = c.getContext('2d');
+    // template space is v-UP, canvas px are y-DOWN
+    const band = (v0, v1, col) => { g.fillStyle = col; g.fillRect(0, (CH - v1)*k, CW*k, (v1 - v0)*k); };
+    const PANEL = ['BACK', 'SIDE', 'FRONT', 'SIDE', 'BACK'];
+    const COL = {BACK: '#0000ff', SIDE: '#00cc00', FRONT: '#ff0000'};
+    band(0, am0.faces[0].v0, '#00ffff');                       // fin allowance
+    band(am0.faces[4].v1, CH, '#00ffff');
+    am0.faces.forEach((f, i) => band(f.v0, f.v1, COL[PANEL[i]]));
+    panelSrc = c.toDataURL('image/png');
+    panelBands = am0.faces.map((f, i) => ({panel: PANEL[i], v0: f.v0, v1: f.v1}));
+    build.project.artwork.wrap = {src: panelSrc, fit: 'none', rect: {x: 0, y: 0, w: CW, h: CH}};
+    build.recompute();
+  }
+  await waitFrames(() => artImage(panelSrc).complete && artImage(panelSrc).naturalWidth > 0);
+  el('d_wrap').click(); el('m3solid').click(); build.recompute();
+  const savedPose2 = getOrbit();
+  setOrbit(-0.9, 0, 1.3);                      // from BELOW — the face the smear hid on
+  let bCam = null;
+  const offFrame2 = onFrame(c2 => { bCam = c2; });
+  await waitFrames(() => !!bCam && drawn().some(x => x.map));
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const bottomSamples = (() => {
+    const env = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.inner;
+    const cv = getDomElement();
+    const g2 = document.createElement('canvas'); g2.width = cv.width; g2.height = cv.height;
+    const cx2 = g2.getContext('2d'); cx2.drawImage(cv, 0, 0);
+    const samp = (wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(bCam);
+      const d = cx2.getImageData(Math.round((v.x + 1)/2*cv.width), Math.round((1 - v.y)/2*cv.height), 1, 1).data;
+      return [d[0], d[1], d[2]];
+    };
+    const y = -env.H/2 - 0.05, W = env.W;
+    // four points across the bottom, both sides of the seam, clear of the fin
+    return {nW: samp(0, y, -W*0.28), nW2: samp(0, y, -W*0.40),
+            pW: samp(0, y, W*0.28),  pW2: samp(0, y, W*0.40)};
+  })();
+  offFrame2 && offFrame2();
+  setOrbit(savedPose2.rotX, savedPose2.rotY, savedPose2.dist);
+
+  t('the pack BOTTOM carries the BACK bands — no seam smear, no discarded artwork', () => {
+    const hue = c => {
+      const [r, g, bl] = c;
+      if(bl > 120 && r < 110 && g < 110) return 'BACK';
+      if(g > 120 && r < 110 && bl < 110) return 'SIDE';
+      if(r > 120 && g < 110 && bl < 110) return 'FRONT';
+      if(g > 100 && bl > 100 && r < 110) return 'FIN';
+      return `?(${c.join(',')})`;
+    };
+    // the girth walk puts a BACK half-band on each side of the seam, so every
+    // point across the bottom must read BACK. The smear rendered SIDE-FRONT-
+    // SIDE here (and BACK nowhere at all).
+    for(const [k, c] of Object.entries(bottomSamples)){
+      const got = hue(c);
+      if(got !== 'BACK')
+        throw new Error(`bottom at ${k} reads ${got}, must be BACK — the girth walk is smearing across the seam`);
+    }
+    if(!panelBands.some(b => b.panel === 'BACK'))
+      throw new Error('fixture not discriminating: the template has no BACK band');
+  });
+
+  // ---- Crimp density continuity ----
+  // The tab used to stretch the WHOLE canvas height across its width: the
+  // right region at the right u span (the diagnostic proved that), but 2.3x
+  // the texel density of the ramp it joins, so a real graphic read as a
+  // blown-up crop at a hard scale jump on the crimp line. Measured on the
+  // BUILT geometry — template-mm of v per mm of surface, along the girth on
+  // each side of the join — because that ratio IS the visible artefact and no
+  // colour or extent check can see it.
+  const crimpDensities = (() => {
+    const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
+    const CH = am0.canvas.h;
+    let parts = null;
+    getPivot().traverse(o => {
+      if(parts || !o.isGroup) return;
+      for(let n = o; n; n = n.parent) if(!n.visible) return;
+      const kids = o.children.filter(x => x.isMesh && x.geometry.attributes.uv);
+      if(kids.length >= 5) parts = kids;
+    });
+    if(!parts) return null;
+    // walk one ring of a loft: the vertices sharing the extreme machine coord.
+    // loftGeometry lays the rings first and appends two cap centroids, so the
+    // last two vertices are excluded.
+    const ringDensity = (m, wantMax) => {
+      const pos = m.geometry.attributes.position, uv = m.geometry.attributes.uv;
+      const n = pos.count - 2;
+      let lo = Infinity, hi = -Infinity;
+      for(let i = 0; i < n; i++){ const x = pos.getX(i); if(x < lo) lo = x; if(x > hi) hi = x; }
+      const target = wantMax ? hi : lo;
+      let arc = 0, dv = 0, prev = -1;
+      for(let i = 0; i < n; i++){
+        if(Math.abs(pos.getX(i) - target) > 1e-4) continue;
+        if(prev >= 0){
+          const d = Math.hypot(pos.getX(i) - pos.getX(prev), pos.getY(i) - pos.getY(prev), pos.getZ(i) - pos.getZ(prev));
+          const s2 = Math.abs(uv.getY(i) - uv.getY(prev))*CH;
+          if(s2 <= CH*0.5){ arc += d; dv += s2; }      // skip the seam discontinuity
+        }
+        prev = i;
+      }
+      return arc > 0 ? dv/arc : 0;
+    };
+    // the tab's own top face, walked across its width
+    const tabDensity = (m) => {
+      const pos = m.geometry.attributes.position, uv = m.geometry.attributes.uv;
+      let hy = -Infinity;
+      for(let i = 0; i < pos.count; i++) hy = Math.max(hy, pos.getY(i));
+      const ids = [];
+      for(let i = 0; i < pos.count; i++) if(Math.abs(pos.getY(i) - hy) < 1e-6) ids.push(i);
+      ids.sort((a2, b2) => pos.getZ(a2) - pos.getZ(b2));
+      let arc = 0, dv = 0;
+      for(let k = 1; k < ids.length; k++){
+        const d = Math.abs(pos.getZ(ids[k]) - pos.getZ(ids[k - 1]));
+        if(d < 1e-9) continue;
+        arc += d; dv += Math.abs(uv.getY(ids[k]) - uv.getY(ids[k - 1]))*CH;
+      }
+      return arc > 0 ? dv/arc : 0;
+    };
+    return {body: ringDensity(parts[0], true), rampCrimp: ringDensity(parts[1], true), tab: tabDensity(parts[3])};
+  })();
+
+  t('the print does not jump scale at the crimp line — tab density continues the ramp', () => {
+    const d = crimpDensities;
+    if(!d) throw new Error('no printed wrap parts to measure');
+    if(!(d.body > 0 && d.rampCrimp > 0 && d.tab > 0))
+      throw new Error(`densities not measurable: ${JSON.stringify(d)}`);
+    // the gather is REAL: the section collapses along the ramp, so the ramp's
+    // crimp end is denser than the body. What must not exist is a STEP at the
+    // join, where the film is one continuous web.
+    const step = d.tab/d.rampCrimp;
+    if(!(step > 0.8 && step < 1.25))
+      throw new Error(`density steps ${step.toFixed(2)}x across the crimp line ` +
+        `(body ${d.body.toFixed(2)}, ramp-at-crimp ${d.rampCrimp.toFixed(2)}, tab ${d.tab.toFixed(2)})`);
+    // and the fixture is only discriminating while the ramp actually gathers
+    if(!(d.rampCrimp > d.body*1.2))
+      throw new Error(`fixture not discriminating: ramp ${d.rampCrimp.toFixed(2)} vs body ${d.body.toFixed(2)}`);
+  });
+
   el('tab3d').click();
   restoreProject(wmSnap);
   setLevel('case'); await settle();

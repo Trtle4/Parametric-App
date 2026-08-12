@@ -225,9 +225,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   (hierarchy3d.js) assigns per-ring [u,v] so the artMap's girth bands wrap
   the real body — u along the product length (−L end reads u0, +L reads
   u1), v around the girth measured by cumulative perimeter (the bands sum
-  to the physical perimeter) from the bottom-centre seam (the w=0 crossing
-  of the bottom edge, interpolated — NOT snapped to a vertex, which lands
-  ~W/2 off-centre and shifts every band). UP/LEFT ARE MEASURED, NOT
+  to the physical perimeter) from the bottom-centre seam. THE RING IS
+  OPENED AT THAT SEAM (`seamOpenRing`): the seam point is interpolated at
+  the w=0 crossing of the bottom edge — never snapped to a neighbour, which
+  lands ~W/2 off-centre — and DUPLICATED, so the walk starts and ends there
+  and the two copies carry vHi and vLo. Without that vertex there was
+  nowhere to be discontinuous, so v interpolated its whole range across the
+  ONE segment spanning the bottom face: the bottom rendered a squashed
+  SIDE-FRONT-SIDE sweep and the template's two BACK half-bands and its fin
+  allowance never appeared on the pack at all. Applied to every section ring
+  (body and both ramps), printed or not, so printed and unprinted stay one
+  geometry; `loftGeometry(rings, uvs, open)` skips the wrap segment, so the
+  shape is unchanged. The CRIMP TAB continues that ring rather than
+  inventing a range: its v is read from the crimp ring's own v
+  (`crimpVLookup`), which removes the scale STEP at the crimp line — the tab
+  used to stretch the whole canvas height across its width at 2.3x the
+  ramp's texel density, the right region at the right u span but a
+  blown-up crop to the eye. The residual gather (body 1.00 → ramp-at-crimp
+  1.51 template-mm of v per mm) is physical and progressive, not a step. UP/LEFT ARE MEASURED, NOT
   EYEBALLED: the first mapping had both u and v reversed and rendered the
   template rotated exactly 180°, signed off from an angle where a 180° turn
   looks plausible; the pin that holds it now quadrant-samples the RENDERED
