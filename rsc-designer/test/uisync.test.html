@@ -217,6 +217,115 @@ async function waitFrames(ready, ms = 3000){
   return true;
 }
 
+/* ---- THE INSTRUMENT, and its calibration ----
+ * A pin is only as sharp as the comparison it measures with. Classifying a
+ * rendered pixel by ABSOLUTE channel thresholds fails under lighting: a lit
+ * purple (#8800ff) renders ~[72,0,135], and an absolute test buckets that as
+ * blue — which is exactly how a palette pin once reported both of the pack's
+ * bottom halves correct when one of them was wrong. A false pass looks
+ * identical to a fixed bug.
+ *
+ * So a swatch is read by RATIO to the brightest channel (a chromaticity, which
+ * lighting scales out) against the NEAREST palette entry, and every reading
+ * certifies itself: the nearest entry must be both close enough AND clearly
+ * closer than the runner-up. A sample that lands between two swatches — an
+ * antialiased edge, a colour the palette cannot separate — comes back
+ * AMBIGUOUS and fails loudly instead of picking one.
+ *
+ * The reader is then CALIBRATED against its own palette (see the pin below):
+ * assuming an instrument discriminates is the same mistake one level down.
+ */
+function makeSwatchReader(palette){
+  const norm = c => { const m = Math.max(...c); return m > 0 ? c.map(x => x/m) : [0, 0, 0]; };
+  const ref = palette.map(p => ({name: p.name, n: norm(p.rgb)}));
+  const read = (c, tol = 0.55, margin = 0.25) => {
+    if(Math.max(...c) < 25) return 'BACKGROUND';
+    const n = norm(c);
+    let best = null, bd = Infinity, sd = Infinity;
+    for(const q of ref){
+      const d = Math.hypot(n[0] - q.n[0], n[1] - q.n[1], n[2] - q.n[2]);
+      if(d < bd){ sd = bd; bd = d; best = q.name; } else if(d < sd) sd = d;
+    }
+    if(bd >= tol) return `?(${c.join(',')})`;
+    if(sd - bd < margin) return `AMBIGUOUS between ${best} and its neighbour (${c.join(',')})`;
+    return best;
+  };
+  read.entries = ref;
+  return read;
+}
+
+/** The two palettes the render pins read. Kept here, beside the reader, so the
+ *  calibration pin below covers exactly the swatches the pins actually use. */
+const QUAD_PALETTE = [
+  {name: 'RED', rgb: [255, 0, 0]}, {name: 'YELLOW', rgb: [255, 255, 0]},
+  {name: 'BLUE', rgb: [0, 0, 255]}, {name: 'GREEN', rgb: [0, 255, 0]}
+];
+// Normalising by the brightest channel projects onto chromaticity, and that
+// space holds only SEVEN mutually-distant colours (the saturated corners plus
+// white, all 1.0 apart). Eight panels do not fit: the first attempt used
+// orange for SIDE-hi, which the calibration pin below measured at 0.47 from
+// RAMP's yellow — under the reader's own resolution. So the faces are covered
+// in TWO passes with a well-separated palette each, rather than one pass with
+// a palette the instrument cannot read.
+const BAND_PALETTE = [                        // pass A — the girth walk + fin
+  {name: 'BACK-lo', rgb: [0, 0, 255]},        // artMap faces[0]
+  {name: 'SIDE-lo', rgb: [0, 255, 0]},        // faces[1]
+  {name: 'FRONT',   rgb: [255, 0, 0]},        // faces[2]
+  {name: 'SIDE-hi', rgb: [0, 255, 255]},      // faces[3]
+  {name: 'BACK-hi', rgb: [255, 0, 255]},      // faces[4]
+  {name: 'FIN',     rgb: [255, 255, 0]},      // the fin allowance band
+  {name: 'COLUMN',  rgb: [255, 255, 255]}     // ramp/end columns — a stray sample must show
+];
+const COLUMN_PALETTE = [                      // pass B — the end allowances
+  {name: 'RAMP', rgb: [255, 255, 0]}, {name: 'END', rgb: [255, 0, 255]},
+  {name: 'BAND', rgb: [0, 0, 255]},           // every girth band, as one colour
+  {name: 'FIN',  rgb: [0, 255, 255]}
+];
+const readQuad = makeSwatchReader(QUAD_PALETTE);
+const readBand = makeSwatchReader(BAND_PALETTE);
+const readColumn = makeSwatchReader(COLUMN_PALETTE);
+
+t('swatch reader: every palette colour stays itself under real render lighting', () => {
+  // Calibration, not a render test. The renderer's own shading attenuates a
+  // swatch to roughly 0.45-1.0 of its authored value (measured off these very
+  // pins: #0000ff comes back [0,0,134], #8800ff comes back ~[72,0,135]); this
+  // sweeps wider than that and requires every entry to still read as itself.
+  // The old absolute-threshold classifier fails this at the first step down.
+  for(const [label, reader, palette] of [['quadrant', readQuad, QUAD_PALETTE],
+                                         ['band', readBand, BAND_PALETTE],
+                                         ['column', readColumn, COLUMN_PALETTE]]){
+    for(const sw of palette){
+      for(let k = 0.30; k <= 1.0001; k += 0.05){
+        const lit = sw.rgb.map(x => Math.round(x*k));
+        const got = reader(lit);
+        if(got !== sw.name)
+          throw new Error(`${label} palette: ${sw.name} at ${(k*100).toFixed(0)}% light reads "${got}" [${lit.join(',')}]`);
+      }
+    }
+  }
+});
+
+t('swatch reader: no two palette colours collapse into each other', () => {
+  // The separation the readings depend on, stated as a number. If a future
+  // palette adds a colour too close to an existing one, this fails HERE rather
+  // than by silently mis-bucketing a face somewhere downstream.
+  for(const [label, reader] of [['quadrant', readQuad], ['band', readBand], ['column', readColumn]]){
+    let worst = Infinity, pair = '';
+    const e = reader.entries;
+    for(let i = 0; i < e.length; i++) for(let j = i + 1; j < e.length; j++){
+      const d = Math.hypot(e[i].n[0] - e[j].n[0], e[i].n[1] - e[j].n[1], e[i].n[2] - e[j].n[2]);
+      if(d < worst){ worst = d; pair = `${e[i].name}/${e[j].name}`; }
+    }
+    // The reader answers only when the runner-up is 0.25 further away, and a
+    // real sample carries error of its own (the fin's, contaminated by the
+    // antialiased edge against the bottom face, measured 0.34 off ideal). A
+    // pair must clear both: 0.25 + 2x0.34 ≈ 0.93. All three palettes here sit
+    // at 1.0 — saturated corners — with room to spare.
+    if(worst < 0.9)
+      throw new Error(`${label} palette: ${pair} are only ${worst.toFixed(2)} apart — closer than the reader can resolve`);
+  }
+});
+
 /** Deep snapshot / restore of the live project, for pins and blocks that must
  *  edit it. Restore is IN PLACE — the same object identities survive — because
  *  blocks capture references into the project (`const link1 = linkFor(...)`)
@@ -2554,67 +2663,41 @@ await (async () => {
   // ---- FACE COVERAGE ----
   // The quadrant pin above samples the TOP face only, and that is exactly how
   // the seam smear survived three rounds of artwork work: the body ring had no
-  // vertex at the seam (bottom-face centre), so the girth walk interpolated its
-  // whole range across the ONE segment spanning the bottom — the bottom
-  // rendered a squashed SIDE-FRONT-SIDE sweep and the template's two BACK
-  // half-bands and its fin allowance never appeared on the pack at all. A pin
-  // that samples one face cannot see a defect on the opposite one.
+  // vertex at the seam, so the girth walk interpolated its whole range across
+  // the ONE segment spanning the bottom — the bottom rendered a squashed
+  // SIDE-FRONT-SIDE sweep and the template's two BACK half-bands and its fin
+  // allowance never appeared on the pack at all. A pin that samples one face
+  // cannot see a defect on the opposite one.
   //
-  // So this palette gives EVERY panel its own colour — the five girth bands
-  // separately (the two BACK halves and the two SIDEs are NOT interchangeable:
-  // identical colours would hide a swap), plus the RAMP and END SEAL columns
-  // and the fin allowance — and the two pins below sample every face of the
-  // pack from a view where that face is front-facing. Faces covered: top,
-  // bottom (both halves), both sides, both ramps, both crimp tabs, fin.
-  const PANELS = [
-    {name: 'BACK-lo',  rgb: [0, 0, 255]},        // faces[0]
-    {name: 'SIDE-lo',  rgb: [0, 204, 0]},        // faces[1]
-    {name: 'FRONT',    rgb: [255, 0, 0]},        // faces[2]
-    {name: 'SIDE-hi',  rgb: [255, 136, 0]},      // faces[3]
-    {name: 'BACK-hi',  rgb: [136, 0, 255]}       // faces[4]
-  ];
-  const EXTRA = [{name: 'RAMP', rgb: [255, 255, 0]}, {name: 'END', rgb: [255, 0, 255]},
-                 {name: 'FIN', rgb: [0, 255, 255]}];
-  // Lighting attenuates every channel, so classify by the RATIO to the
-  // brightest channel and take the NEAREST palette entry — an absolute
-  // threshold mistakes a shaded purple (#8800ff renders ~[72,0,135]) for blue,
-  // which is a false pass waiting to happen.
-  const panelOf = (c) => {
-    const m = Math.max(...c);
-    if(m < 25) return 'BACKGROUND';
-    const n = c.map(x => x/m);
-    let best = null, bd = Infinity;
-    for(const q of PANELS.concat(EXTRA)){
-      const qm = Math.max(...q.rgb), qn = q.rgb.map(x => x/qm);
-      const d = Math.hypot(n[0] - qn[0], n[1] - qn[1], n[2] - qn[2]);
-      if(d < bd){ bd = d; best = q.name; }
-    }
-    return bd < 0.55 ? best : `?(${c.join(',')})`;
-  };
-  let panelSrc = null;
-  {
+  // So every panel gets its own colour — the two BACK halves and the two SIDEs
+  // SEPARATELY, since a shared colour would hide a swap between them — and
+  // every face is sampled from a view where it is front-facing. Two passes,
+  // because the reader cannot resolve eight colours at once (see
+  // BAND_PALETTE/COLUMN_PALETTE): pass A reads the girth walk and the fin,
+  // pass B the ramp and end-seal columns.
+  const hexOf = rgb => '#' + rgb.map(x => x.toString(16).padStart(2, '0')).join('');
+  const paint = (bandCols, rampCol, endCol, finCol) => {
     const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
     const CW = am0.canvas.w, CH = am0.canvas.h, k = 4;
     const c = document.createElement('canvas'); c.width = Math.round(CW*k); c.height = Math.round(CH*k);
     const g = c.getContext('2d');
-    const hex = rgb => '#' + rgb.map(x => x.toString(16).padStart(2, '0')).join('');
     // template space is v-UP, canvas px are y-DOWN
-    const band = (v0, v1, rgb) => { g.fillStyle = hex(rgb); g.fillRect(0, (CH - v1)*k, CW*k, (v1 - v0)*k); };
-    const colm = (u0, u1, rgb) => { g.fillStyle = hex(rgb); g.fillRect(u0*k, 0, (u1 - u0)*k, CH*k); };
-    band(0, CH, EXTRA[2].rgb);                                   // fin allowance, above and below the bands
-    am0.faces.forEach((f, i) => band(f.v0, f.v1, PANELS[i].rgb));
-    if(am0.ends){                                                // full-height u columns, outermost last
-      colm(am0.ends[0].u1, am0.product.x0, EXTRA[0].rgb);
-      colm(am0.product.x1, am0.ends[1].u0, EXTRA[0].rgb);
-      colm(0, am0.ends[0].u1, EXTRA[1].rgb);
-      colm(am0.ends[1].u0, CW, EXTRA[1].rgb);
+    const band = (v0, v1, rgb) => { g.fillStyle = hexOf(rgb); g.fillRect(0, (CH - v1)*k, CW*k, (v1 - v0)*k); };
+    const colm = (u0, u1, rgb) => { g.fillStyle = hexOf(rgb); g.fillRect(u0*k, 0, (u1 - u0)*k, CH*k); };
+    band(0, CH, finCol);                                   // fin allowance, above and below the bands
+    am0.faces.forEach((f, i) => band(f.v0, f.v1, bandCols[i]));
+    if(am0.ends){                                          // full-height u columns, outermost last
+      colm(am0.ends[0].u1, am0.product.x0, rampCol);
+      colm(am0.product.x1, am0.ends[1].u0, rampCol);
+      colm(0, am0.ends[0].u1, endCol);
+      colm(am0.ends[1].u0, CW, endCol);
     }
-    panelSrc = c.toDataURL('image/png');
-    build.project.artwork.wrap = {src: panelSrc, fit: 'none', rect: {x: 0, y: 0, w: CW, h: CH}};
+    const src = c.toDataURL('image/png');
+    build.project.artwork.wrap = {src, fit: 'none', rect: {x: 0, y: 0, w: CW, h: CH}};
     build.recompute();
-  }
-  await waitFrames(() => artImage(panelSrc).complete && artImage(panelSrc).naturalWidth > 0);
-  el('d_wrap').click(); el('m3solid').click(); build.recompute();
+    return src;
+  };
+  const named = (palette, n) => palette.find(x => x.name === n).rgb;
 
   // sample a set of world points from a given orbit, once the frame has drawn
   const savedPose2 = getOrbit();
@@ -2638,47 +2721,60 @@ await (async () => {
     };
     return pick({env, seal, samp, proj});
   };
-
-  const faceHits = {};
-  await sampleAt(0.9, 0, ({env, seal, samp}) => {
+  const endPoints = ({env, seal, samp}) => {
     const hH = env.H/2 + 0.05, jaw = seal.jawClearance, flat = seal.sealFlatLength;
     const lay = (90 - (seal.externalAngle == null ? 90 : seal.externalAngle))*Math.PI/180;
     const tab = (sign, t) => { const d = t*flat;
       return [sign*(env.L/2 + jaw) + sign*d*Math.cos(lay), d*Math.sin(lay), 0]; };
-    faceHits.top     = samp(0, hH, 0);
-    faceHits.rampPos = samp(env.L/2 + jaw*0.5, (hH + 0.1)/2, 0);
-    faceHits.rampNeg = samp(-(env.L/2 + jaw*0.5), (hH + 0.1)/2, 0);
-    faceHits.tabPos  = samp(...tab(1, 0.5));
-    faceHits.tabNeg  = samp(...tab(-1, 0.5));
-  });
-  await sampleAt(-0.9, 0, ({env, samp}) => {               // from BELOW
-    const y = -env.H/2 - 0.05, W = env.W;
-    faceHits.botNegW = samp(0, y, -W*0.32);
-    faceHits.botPosW = samp(0, y, W*0.32);
-    faceHits.fin     = samp(0, -env.H/2 - 0.3, 0);         // the fin lies over the seam
-  });
-  // the SIDES: both sample points project onto whichever side is NEAR, so the
-  // near one is identified by NDC depth and only that one is trusted — and the
-  // two views between them must cover both signs, or a side is going untested.
-  const sideSeen = {};
-  for(const ry of [0, Math.PI]){
-    await sampleAt(0.1, ry, ({env, samp, proj}) => {
-      const W = env.W;
-      const dNeg = proj(0, 0, -W/2 - 0.05).z, dPos = proj(0, 0, W/2 + 0.05).z;
-      const sign = dNeg < dPos ? -1 : 1;
-      sideSeen[sign < 0 ? 'negW' : 'posW'] = samp(0, 0, sign*(W/2 + 0.05));
+    return {rampPos: samp(env.L/2 + jaw*0.5, (hH + 0.1)/2, 0),
+            rampNeg: samp(-(env.L/2 + jaw*0.5), (hH + 0.1)/2, 0),
+            tabPos: samp(...tab(1, 0.5)), tabNeg: samp(...tab(-1, 0.5))};
+  };
+
+  // ---- pass A: the girth walk and the fin ----
+  const bandHits = {};
+  {
+    const src = paint(['BACK-lo', 'SIDE-lo', 'FRONT', 'SIDE-hi', 'BACK-hi'].map(n => named(BAND_PALETTE, n)),
+                      named(BAND_PALETTE, 'COLUMN'), named(BAND_PALETTE, 'COLUMN'), named(BAND_PALETTE, 'FIN'));
+    await waitFrames(() => artImage(src).complete && artImage(src).naturalWidth > 0);
+    el('d_wrap').click(); el('m3solid').click(); build.recompute();
+    await sampleAt(0.9, 0, ({env, samp}) => { bandHits.top = samp(0, env.H/2 + 0.05, 0); });
+    await sampleAt(-0.9, 0, ({env, samp}) => {              // from BELOW
+      const y = -env.H/2 - 0.05, W = env.W;
+      bandHits.botNegW = samp(0, y, -W*0.32);
+      bandHits.botPosW = samp(0, y, W*0.32);
+      bandHits.fin     = samp(0, -env.H/2 - 0.3, 0);        // the fin lies over the seam
     });
+    // the SIDES: both sample points project onto whichever side is NEAR, so the
+    // near one is identified by NDC depth and only that one is trusted — and the
+    // two views between them must cover both signs, or a side goes untested.
+    for(const ry of [0, Math.PI])
+      await sampleAt(0.1, ry, ({env, samp, proj}) => {
+        const W = env.W;
+        const sign = proj(0, 0, -W/2 - 0.05).z < proj(0, 0, W/2 + 0.05).z ? -1 : 1;
+        bandHits[sign < 0 ? 'sideNegW' : 'sidePosW'] = samp(0, 0, sign*(W/2 + 0.05));
+      });
+  }
+
+  // ---- pass B: the ramp and end-seal columns ----
+  const colHits = {};
+  {
+    const blue = named(COLUMN_PALETTE, 'BAND');
+    const src = paint([blue, blue, blue, blue, blue],
+                      named(COLUMN_PALETTE, 'RAMP'), named(COLUMN_PALETTE, 'END'), named(COLUMN_PALETTE, 'FIN'));
+    await waitFrames(() => artImage(src).complete && artImage(src).naturalWidth > 0);
+    el('d_wrap').click(); el('m3solid').click(); build.recompute();
+    Object.assign(colHits, await sampleAt(0.9, 0, endPoints));
   }
   setOrbit(savedPose2.rotX, savedPose2.rotY, savedPose2.dist);
 
   t('the pack BOTTOM carries the two BACK halves — no seam smear, no discarded artwork', () => {
-    const a = panelOf(faceHits.botNegW), b2 = panelOf(faceHits.botPosW);
+    const a = readBand(bandHits.botNegW), b2 = readBand(bandHits.botPosW);
     // the girth walk puts one BACK half either side of the seam. The smear
     // rendered SIDE-FRONT-SIDE here and the BACK bands nowhere at all.
     if(!/^BACK-/.test(a)) throw new Error(`bottom at −W reads ${a}, must be a BACK half`);
     if(!/^BACK-/.test(b2)) throw new Error(`bottom at +W reads ${b2}, must be a BACK half`);
-    if(a === b2)
-      throw new Error(`both bottom halves read ${a} — the seam is not splitting the walk`);
+    if(a === b2) throw new Error(`both bottom halves read ${a} — the seam is not splitting the walk`);
     // −W is the half the walk enters first (v descending from the seam), so it
     // takes the HIGH back band; +W closes the walk on the low one
     eq(a, 'BACK-hi', 'bottom −W half:');
@@ -2686,23 +2782,20 @@ await (async () => {
   });
 
   t('every FACE carries its own panel — sides, ramps, crimps and fin, not just the top', () => {
-    // one assertion per face, each sampled from a view where that face is
-    // front-facing. Without this, a mapping fault confined to a side or the
-    // fin passes every other pin in the file.
-    if(!sideSeen.negW || !sideSeen.posW)
+    if(!bandHits.sideNegW || !bandHits.sidePosW)
       throw new Error('the two side views did not cover both sides — one side went untested');
-    const got = {
-      top: panelOf(faceHits.top),
-      sideNegW: panelOf(sideSeen.negW), sidePosW: panelOf(sideSeen.posW),
-      rampPos: panelOf(faceHits.rampPos), rampNeg: panelOf(faceHits.rampNeg),
-      tabPos: panelOf(faceHits.tabPos), tabNeg: panelOf(faceHits.tabNeg),
-      fin: panelOf(faceHits.fin)
-    };
     // the girth walk from the seam is BACK-hi → SIDE-hi → FRONT → SIDE-lo →
     // BACK-lo, so each physical face is determined; the ramps and crimps take
     // their own template columns, and the fin its allowance band
-    const want = {top: 'FRONT', sideNegW: 'SIDE-hi', sidePosW: 'SIDE-lo',
-                  rampPos: 'RAMP', rampNeg: 'RAMP', tabPos: 'END', tabNeg: 'END', fin: 'FIN'};
+    const got = {
+      top: readBand(bandHits.top),
+      sideNegW: readBand(bandHits.sideNegW), sidePosW: readBand(bandHits.sidePosW),
+      fin: readBand(bandHits.fin),
+      rampPos: readColumn(colHits.rampPos), rampNeg: readColumn(colHits.rampNeg),
+      tabPos: readColumn(colHits.tabPos), tabNeg: readColumn(colHits.tabNeg)
+    };
+    const want = {top: 'FRONT', sideNegW: 'SIDE-hi', sidePosW: 'SIDE-lo', fin: 'FIN',
+                  rampPos: 'RAMP', rampNeg: 'RAMP', tabPos: 'END', tabNeg: 'END'};
     const bad = Object.entries(want).filter(([k, v]) => got[k] !== v)
       .map(([k, v]) => `${k}: want ${v}, render shows ${got[k]}`);
     if(bad.length) throw new Error(bad.join('; '));

@@ -344,6 +344,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   as well applies the layout twice and stands the pack on the wrong axis. Instancing is per PART (one InstancedMesh
   each for body, both ramps, both crimps, the fin), so draw calls stay flat
   in the facing count: 9 draw objects at 40 packs and at 4,560.
+- **A check is only as sharp as the INSTRUMENT it measures with, so test the
+  instrument too.** A pin that classifies or compares measured values needs
+  its comparison verified under the conditions the real render produces —
+  assuming it discriminates is the same mistake one level down, and it fails
+  in the worst direction: a false pass looks exactly like a fixed bug. Colour
+  classification by ABSOLUTE channel thresholds bucketed a lit purple
+  (#8800ff renders ~[72,0,135]) as blue, so a palette pin reported both of the
+  pack's bottom halves correct when one was wrong. The rule now: read a swatch
+  by RATIO to the brightest channel (lighting scales out), take the NEAREST
+  palette entry, and have every reading CERTIFY ITSELF — the runner-up must be
+  clearly further away, or the sample comes back AMBIGUOUS and fails loudly
+  rather than picking one. Then calibrate the reader against its own palette
+  (`swatch reader:` pins): every colour must still read as itself from 30% to
+  100% light, and no two entries may sit closer than the reader can resolve.
+  That calibration immediately found a palette the instrument could NOT read —
+  orange and yellow 0.47 apart — which is why the face coverage runs in two
+  passes: normalised chromaticity holds only seven mutually-distant colours,
+  and eight panels do not fit.
 - **Fixture hygiene is measured, not assumed** (`test/uisync.test.html`).
   A pin that edits the project uses `tEdit` — snapshot in,
   `restoreProject` in a `finally`, selection included — rather than a
