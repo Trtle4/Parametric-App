@@ -17,7 +17,7 @@ import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
-import {buildShelf, showShelf} from '../render/shelf3d.js';
+import {buildShelf, showShelf, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
@@ -545,14 +545,25 @@ function refreshShelf(){
   // slot matches the textured geometry.
   const sellCanvas = artCanvasFor(noun, geo, () => { if(view === 'shelf') refreshShelf(); });
   const artInfo = sellCanvas ? {am: geo.meta.artMap, canvas: sellCanvas} : null;
+  // Whether a PRINTED pack can still be turned to another face depends on where
+  // its art lives. A wrap's art rides the real pillow geometry (closedWrapParts
+  // + bodyRingUVs), which orients like any other geometry, so every face stays
+  // selectable. A tube pack's art is packArtGeometry — built already laid out
+  // for that pack's own front — so turning it to another face would carry the
+  // layout rather than re-derive it, and the selector stays pinned. The old
+  // rule locked on "has artwork" alone, which took the control away from wraps
+  // that never needed it locked. ONE expression, read by the lock and by the
+  // renderer's own choice of path below.
+  const artOnBody = noun === 'wrap';
+  const artPinsFront = !!artInfo && !artOnBody;
   // 'auto' (the default) follows the PACK's declared display face; an explicit
-  // pick from the selector still wins. Artwork pins it to that same face —
-  // the printed front and the merchandised front are one face, so this is the
-  // same value, not a second convention.
+  // pick from the selector still wins. A pinned-front pack takes that same
+  // face — the printed front and the merchandised front are one face, so this
+  // is the same value, not a second convention.
   const packFront = packFrontOrientation(geo);
-  const frontO = (artInfo || shelf.front === 'auto') ? packFront : shelf.front;
-  el('shFront').disabled = !!artInfo;
-  el('shFront').title = artInfo ? 'Front follows the uploaded artwork' : '';
+  const frontO = (artPinsFront || shelf.front === 'auto') ? packFront : shelf.front;
+  el('shFront').disabled = artPinsFront;
+  el('shFront').title = artPinsFront ? 'Front follows the uploaded artwork' : '';
   // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
   // axis, like turning a framed picture on the wall) — the same face stays
   // toward the shopper, never a side or the back. So the two dims OF THAT FACE
@@ -561,7 +572,15 @@ function refreshShelf(){
   // the fill recomputes. The renderer spins each pack about the depth axis to
   // match. (This is NOT the vertical/lazy-Susan turn, which would swap
   // across/depth and rotate a side face into view.)
-  const spun = (shelf.rot % 180) !== 0;
+  // ...and the pack's declared UP on that face (meta.frontUp) is a quarter-turn
+  // in exactly the same plane, so it simply ADDS to the user's rotation. It
+  // applies only while the DECLARED face is the one being shown: on a face the
+  // user picked by hand there is no declared up to honour, and Rotate is theirs
+  // to set. One effective angle drives the fill and the render together.
+  const baseRoll = faceUpRoll(frontO, geo.meta.frontFace,
+                              frontO === packFront ? geo.meta.frontUp : null);
+  const rotDeg = ((baseRoll + shelf.rot) % 360 + 360) % 360;
+  const spun = (rotDeg % 180) !== 0;
   const fillO = spun ? frontO[2] + frontO[1] + frontO[0] : frontO;
   // fixed to the front-panel orientation — the shopper-facing face is the
   // user's choice, not a solver optimization; 'column' gives a clean aligned
@@ -615,7 +634,7 @@ function refreshShelf(){
   // are built from it too when the sellable pack is a filmed wrap (a pillow,
   // not a box — see shelf3d). Resolving it once means the facings and the
   // opened pack can never describe different packs.
-  const needBundle = shelf.cutaway || noun === 'wrap';
+  const needBundle = shelf.cutaway || artOnBody;
   const bundle = needBundle ? hierarchyBundle() : null;
   // frontAxis travels WITH frontO: the orientation says which axis is the depth
   // axis, the axis alone says nothing about which of that axis's two faces is
@@ -623,8 +642,8 @@ function refreshShelf(){
   // tray's open top at the back wall.
   const shelfOpts = {frontO, frontAxis: geo.meta.frontFace,
     ...(shelf.cutaway ? {cutaway: true, bundle, noun} : {}),
-    ...(noun === 'wrap' ? {wrapBundle: bundle} : {})};
-  buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot, shelfOpts);
+    ...(artOnBody ? {wrapBundle: bundle} : {})};
+  buildShelf(odGeo, shelf, placements, true, artInfo, rotDeg, shelfOpts);
 }
 
 /* ---------- active-level selection + mounting ---------- */

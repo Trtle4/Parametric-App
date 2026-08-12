@@ -2885,6 +2885,153 @@ await (async () => {
 })();
 
 /* ==================================================================
+   The shelf presents the pack's declared face THE RIGHT WAY UP, and a
+   printed wrap keeps its face selector. Two gaps in the same convention:
+   an orientation string names axes only, so it fixes which face is
+   forward but not which way is up on it (the wrap stood on its head);
+   and the selector locked on "has artwork" alone, which took the control
+   away from wraps whose art rides the real geometry and orients freely.
+   ================================================================== */
+await (async () => {
+  const shSnap = snapProject(), shKey = build.getSelectedCandidateKey();
+  const savedFront = el('shFront').value, savedPose3 = getOrbit();
+  const packMeshes3 = () => {
+    const hits = [];
+    getPivot().traverse(o => {
+      if(!o.isInstancedMesh || o.name === 'shelfFixture') return;
+      for(let n = o; n; n = n.parent) if(!n.visible) return;
+      hits.push(o);
+    });
+    return hits;
+  };
+  const printedFacings = () => packMeshes3().some(m =>
+    (Array.isArray(m.material) ? m.material : [m.material]).some(x => x && x.map));
+
+  // ---- a PRINTED WRAP on the shelf, artwork with an unmistakable up/left ----
+  let quadSrc = null;
+  {
+    const proj = build.project;
+    proj.tray.enabled = true; proj.tray.nCells = 3;
+    Object.assign(proj.primary.collation,
+      {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+    proj.secondary.enabled = false;                  // carton off -> the WRAP is sellable
+    const am0 = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.meta.artMap;
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ff0000'; g.fillRect(0, 0, 64, 64);      // template TOP-LEFT
+    g.fillStyle = '#ffff00'; g.fillRect(64, 0, 64, 64);     // TOP-RIGHT
+    g.fillStyle = '#0000ff'; g.fillRect(0, 64, 64, 64);     // BOTTOM-LEFT
+    g.fillStyle = '#00ff00'; g.fillRect(64, 64, 64, 64);    // BOTTOM-RIGHT
+    quadSrc = c.toDataURL('image/png');
+    proj.artwork = {wrap: {src: quadSrc, fit: 'none', rect: {x: 0, y: 0, w: am0.canvas.w, h: am0.canvas.h}}};
+    build.recompute();
+  }
+  await waitFrames(() => artImage(quadSrc).complete && artImage(quadSrc).naturalWidth > 0);
+  el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+  el('tabShelf').click(); build.recompute();
+  const shPrinted = await waitFrames(() => printedFacings());
+
+  // sample ONE facing pack's front face at a straight FRONT view. Screen up is
+  // the shelf's up and screen right is the shopper's right, so the template's
+  // own corners must land in the matching screen corners — which catches an
+  // upside-down pack AND a mirrored one, neither of which moves any extent.
+  setOrbit(0, 0, 1.15);
+  let shCam = null;
+  const offF3 = onFrame(c2 => { shCam = c2; });
+  await waitFrames(() => !!shCam && printedFacings());
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  offF3 && offF3();
+  const shCorners = (() => {
+    const mesh = packMeshes3()[0];
+    if(!mesh) return null;
+    const cv = getDomElement();
+    const g2 = document.createElement('canvas'); g2.width = cv.width; g2.height = cv.height;
+    const cx2 = g2.getContext('2d'); cx2.drawImage(cv, 0, 0);
+    const M = new THREE.Matrix4();
+    mesh.getMatrixAt(0, M); M.premultiply(mesh.matrixWorld);
+    const centre = new THREE.Vector3().setFromMatrixPosition(M);
+    const o = resolveActiveRow(build.project, build.getRounding(), null).geo.wrap.outer;
+    const scr = v => { const q = v.clone().project(shCam);
+      return [Math.round((q.x + 1)/2*cv.width), Math.round((1 - q.y)/2*cv.height)]; };
+    const samp = (x, y) => { const d = cx2.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2]]; };
+    const c0 = scr(centre);
+    // a quarter of the face across and up, in SCREEN terms (the shelf group's
+    // own 180° turn is already in the projection, so this needs no unpicking)
+    const dx = Math.abs(scr(centre.clone().add(new THREE.Vector3(o.L/4, 0, 0)))[0] - c0[0]);
+    const dy = Math.abs(scr(centre.clone().add(new THREE.Vector3(0, o.W/4, 0)))[1] - c0[1]);
+    if(dx < 3 || dy < 3) return null;
+    return {UL: samp(c0[0] - dx, c0[1] - dy), UR: samp(c0[0] + dx, c0[1] - dy),
+            LL: samp(c0[0] - dx, c0[1] + dy), LR: samp(c0[0] + dx, c0[1] + dy)};
+  })();
+  setOrbit(savedPose3.rotX, savedPose3.rotY, savedPose3.dist);
+
+  // ---- is the selector usable, and honoured? ----
+  const wrapFrontState = {disabled: el('shFront').disabled, fills: {}};
+  for(const f of ['auto', 'LWH', 'WLH', 'LHW']){
+    el('shFront').value = f; fire(el('shFront'), 'change');
+    wrapFrontState.fills[f] = (el('shReadout').textContent || '').replace(/\s+/g, ' ').slice(0, 60);
+  }
+  el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+
+  // ---- and a printed TUBE pack stays pinned (its art is pre-laid-out) ----
+  let cartonPinned = null;
+  {
+    const proj = build.project;
+    proj.tray.enabled = false; proj.secondary.enabled = true;
+    Object.assign(proj.primary.collation,
+      {pieceOrientation: 'flat', stackAxis: 'Z', perStack: 2, nx: 3, ny: 1});
+    const cGeo = resolveActiveRow(build.project, build.getRounding(), null).geo.carton;
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 64);
+    const csrc = c.toDataURL('image/png');
+    proj.artwork = {carton: {src: csrc, fit: 'fill'}};
+    build.recompute();
+    await waitFrames(() => artImage(csrc).complete && artImage(csrc).naturalWidth > 0);
+    fire(el('shFront'), 'change');
+    await waitFrames(() => printedFacings());
+    cartonPinned = {disabled: el('shFront').disabled, hasArtMap: !!(cGeo && cGeo.meta.artMap)};
+  }
+
+  t('shelf AUTO stands the wrap the right way up — the declared face AND its declared up', () => {
+    // meta.frontFace gets the display face forward; on its own that leaves the
+    // print 180° out, because an orientation string names axes with no notion
+    // of which way is up on the face it selects. meta.frontUp closes it. The
+    // symptom was a shelf of upside-down packs that Rotate had to correct by
+    // hand — and it moves NO extent, so only the rendered pixels can see it.
+    if(!shPrinted) throw new Error('the artwork never reached the shelf facings');
+    if(!shCorners) throw new Error('could not sample a facing pack front face');
+    const want = {UL: 'RED', UR: 'YELLOW', LL: 'BLUE', LR: 'GREEN'};
+    const bad = Object.entries(want)
+      .filter(([k, v]) => readQuad(shCorners[k]) !== v)
+      .map(([k, v]) => `${k}: template says ${v}, shelf shows ${readQuad(shCorners[k])}`);
+    if(bad.length) throw new Error(bad.join('; '));
+  });
+
+  t('face selection stays available for a printed WRAP, and pinned for a printed tube pack', () => {
+    // A wrap's art rides the real pillow geometry, which orients like anything
+    // else, so every face stays selectable; a tube pack's art is built already
+    // laid out for one front, so it stays pinned. The old rule locked on "has
+    // artwork" alone and took the control away from both.
+    if(wrapFrontState.disabled)
+      throw new Error('the face selector is locked for a printed wrap');
+    const fills = wrapFrontState.fills;
+    // ...and the pick is HONOURED: a different face packs the shelf differently
+    if(fills.LWH === fills.WLH && fills.WLH === fills.LHW)
+      throw new Error(`every face gives the same fill — the selection is not reaching the solve: ${fills.LWH}`);
+    eq(fills.auto, fills.LHW, 'Auto must resolve to the wrap\'s declared face (LHW):');
+    if(!cartonPinned.hasArtMap)
+      throw new Error('fixture not discriminating: the carton carries no artMap');
+    if(!cartonPinned.disabled)
+      throw new Error('a printed TUBE pack must keep its front pinned — its art is pre-laid-out');
+  });
+
+  el('tab2d').click();
+  el('shFront').value = savedFront; fire(el('shFront'), 'change');
+  restoreProject(shSnap, shKey);
+  setLevel('case'); await settle();
+})();
+
+/* ==================================================================
    Retail shelf: units reach the shelf readouts (single source), and the
    facings block stays centred on the shelf at every count (bugfix pass).
    ================================================================== */

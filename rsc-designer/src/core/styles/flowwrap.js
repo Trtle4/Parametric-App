@@ -183,6 +183,12 @@ export function flowwrap(p){
       // The shelf assumed a wall for every pack and stood a wrapped tray on
       // its long edge, hiding the very face the product is seen through.
       frontFace: 'H',
+      // ...and which way is UP on it. The girth walk runs seam -> back half ->
+      // side -> FRONT -> side -> back half with v DESCENDING, so on the top face
+      // the template's up (+v) points toward −W. An orientation string cannot
+      // say that (it maps axes, with no parity), which is why the shelf stood
+      // every printed wrap on its head until this was declared.
+      frontUp: '-W',
       refLines,                                           // fold references, NOT creases
       // The DERIVED end-seal geometry — computed here and ONLY here. The
       // renderer (hierarchy3d.js) and the wrap-depth readout (app.js) READ

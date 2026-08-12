@@ -98,6 +98,7 @@ export function sealend(p){
       // a face, so a pack whose display face is not a wall (the flow wrap's
       // top) presents correctly without a second orientation rule.
       frontFace: 'W',
+      frontUp: '+H',
       caliper: t,
       sealFlapDepth: F, majorFlapDepth, dustDepth: D, overlap,
       boardLayersTop: 3, boardLayersBottom: 3,

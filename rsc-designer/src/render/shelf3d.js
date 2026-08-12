@@ -92,6 +92,44 @@ function faceShopperQuat(frontO, frontAxis){
  *        other facing stays a solid printed/board pack. `noun` is the sellable
  *        tier ('carton'|'case'); `frontO` is the pack's front-panel orientation.
  */
+/**
+ * The roll (0/90/180/270°, about the DEPTH axis) that stands the pack's
+ * declared display face THE RIGHT WAY UP.
+ *
+ * meta.frontFace says which face the shopper sees; faceShopperQuat gets that
+ * face pointing forward. Neither says which way is UP on it — an orientation
+ * string maps axes only, so of the two directions perpendicular to the front
+ * normal, "up" is whichever one the string happens to name, and for the flow
+ * wrap that is the wrong one: the girth walk puts the template's up toward −W
+ * on the top face, the orientation puts +W up, and every printed wrap on the
+ * shelf stood on its head. Rotate 90° was the only way to correct it by hand.
+ *
+ * meta.frontUp names the pack-frame direction that is up on the display face
+ * ('+H', '-W', ...), and this returns the quarter-turn that takes it there.
+ * The result composes with the user's own Rotate 90° — it is the same in-plane
+ * spin about the same axis — so the caller adds the two and the fill and the
+ * render both follow one number.
+ *
+ * @param {string} frontO   the orientation the pack is presented in
+ * @param {string} frontAxis  meta.frontFace
+ * @param {string} frontUp  meta.frontUp, or null/undefined for no roll
+ * @returns {number} degrees, one of 0/90/180/270
+ */
+export function faceUpRoll(frontO, frontAxis, frontUp){
+  if(!frontUp) return 0;
+  const sign = frontUp[0] === '-' ? -1 : 1;
+  const ax = PACK_AXIS[frontUp.replace(/^[+-]/, '')];
+  if(!ax) return 0;
+  const v = new THREE.Vector3(...ax).multiplyScalar(sign)
+    .applyQuaternion(faceShopperQuat(frontO, frontAxis));
+  // the declared up should lie in the shopper's view plane; if the caller has
+  // presented a face that consumes it (up pointing at the shopper), there is
+  // no roll that helps
+  if(Math.hypot(v.x, v.y) < 1e-6) return 0;
+  const deg = Math.round((90 - Math.atan2(v.y, v.x)*180/Math.PI)/90)*90;
+  return ((deg % 360) + 360) % 360;
+}
+
 export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts = {}){
   const pivot = getPivot();
   if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }

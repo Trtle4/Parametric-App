@@ -72,6 +72,7 @@ export function fefco201(p){
       // a face, so a pack whose display face is not a wall (the flow wrap's
       // top) presents correctly without a second orientation rule.
       frontFace: 'W',
+      frontUp: '+H',
       caliper: p.caliper,
       flapDepth: F,
       panels: {x1, x2, x3, x4, x5, yb1, yt1, yt2},

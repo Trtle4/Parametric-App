@@ -88,6 +88,9 @@ export function a6120(p){
       // a face, so a pack whose display face is not a wall (the flow wrap's
       // top) presents correctly without a second orientation rule.
       frontFace: 'W',
+      // the tube is extruded along H and the height carries v, so the
+      // template's up is +H — the panel reads upright on an upright carton
+      frontUp: '+H',
       caliper: p.caliper,
       tuckDepth: T, tuckTab: TT, dustDepth: D,
       // generic dieline annotations (style-agnostic renderer contract)
