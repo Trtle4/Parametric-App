@@ -1460,15 +1460,19 @@ function applyHierarchy(resetCam){
     : 'drag orbit · right-drag pan · scroll zoom · click a unit to open it';
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
-  renderLegend(bundle, depth);
+  renderLegend(bundle, depth, solid);
   drawDims();
 }
 
 /** Legend naming every coloured element, plus (at wrap depth) the seal
  *  compensation read straight off the model geometry. */
-function renderLegend(bundle, depth){
+function renderLegend(bundle, depth, solid){
+  // A swatch is a claim about what is on screen. Solid draws a CLOSED pack —
+  // plain unprinted film, no seal colouring — so naming the cutaway's film and
+  // seal colours there would caption colours the render does not contain.
   const swatches = LEGEND
-    .filter(l => bundle.wrapGeo || (l.name !== 'Film' && !l.name.includes('seal')))
+    .filter(l => solid ? !l.cutaway : !l.solid)
+    .filter(l => bundle.wrapGeo || (l.name !== 'Film' && l.name !== 'Unprinted film' && !l.name.includes('seal')))
     .map(l => `<span class="lg"><span class="sw" style="background:${l.hex}"></span>${l.name}</span>`).join('');
   let readout = '';
   if(depth === 'wrap' && bundle.wrapGeo){

@@ -178,6 +178,7 @@ import {collate} from '../src/core/collation.js';
 import {toMM} from '../src/core/units.js';
 import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
+import {LEGEND} from '../src/render/hierarchy3d.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
 // importing it boots the real app against the DOM above, exactly like
@@ -2373,6 +2374,128 @@ await (async () => {
   // restore a clean default state
   setLevel('product'); await settle(); setSeg('cMode', 'pile'); await settle();
   el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   The wrap's TWO states, one material rule. Solid draws a CLOSED pack —
+   what ships: opaque, nothing showing through, no seal colouring, plain
+   unprinted film unless there is artwork. Cutaway is the look-inside view
+   and is unchanged. Every site that draws a closed wrap takes the same
+   materials, so Solid cannot be white at wrap depth and teal inside a case.
+   ================================================================== */
+await (async () => {
+  const wmSnap = snapProject();
+  let wmSrc = null;
+  const hex = name => (LEGEND.find(l => l.name === name) || {}).hex.toLowerCase();
+  const FILM = hex('Film'), SEAL = hex('Fin seal'), PLAIN = hex('Unprinted film'), PRODUCT = hex('Product');
+  // every material actually drawn, by colour/transparency/texture — the render,
+  // not the code that chose it
+  const drawn = () => {
+    const out = [];
+    getPivot().traverse(o => {
+      if(!(o.isMesh || o.isInstancedMesh) || o.name === 'shelfFixture') return;
+      for(let n = o; n; n = n.parent) if(!n.visible) return;
+      for(const m of (Array.isArray(o.material) ? o.material : [o.material]))
+        if(m) out.push({hex: '#' + m.color.getHexString().toLowerCase(),
+                        clear: !!m.transparent && (m.opacity ?? 1) < 1, map: !!m.map, n: o.count || 1});
+    });
+    return out;
+  };
+  const has = (list, h) => list.some(x => x.hex === h);
+
+  setLevel('wrap'); el('tab3d').click(); await settle();
+  el('d_wrap').click(); await settle();
+  el('m3solid').click();
+  const solidReady = await waitFrames(() => drawn().length > 0 && !drawn().some(x => x.clear));
+  const solidMats = drawn();
+  el('m3cut').click();
+  const cutReady = await waitFrames(() => drawn().some(x => x.clear));
+  const cutMats = drawn();
+
+  t('wrap SOLID is the closed pack — opaque, no seal colour, no contents', () => {
+    // Solid used to fall through to the cutaway whenever there was no artwork,
+    // so an unprinted pack had two identical modes and the crimp zones showed
+    // orange on a pack that was meant to be plain film.
+    if(!solidReady || !solidMats.length) throw new Error('nothing drawn at wrap depth in Solid');
+    const clear = solidMats.filter(x => x.clear);
+    if(clear.length) throw new Error(`${clear.length} translucent material(s) in Solid — the pack must be opaque`);
+    if(has(solidMats, SEAL)) throw new Error('the seal zones are still coloured in Solid');
+    if(has(solidMats, FILM)) throw new Error('the cutaway film colour is still in Solid');
+    if(has(solidMats, PRODUCT)) throw new Error('product is visible through a closed pack');
+    if(!solidMats.every(x => x.hex === PLAIN || x.map))
+      throw new Error(`Solid must be plain film (or artwork) end to end: ${[...new Set(solidMats.map(x => x.hex))].join(', ')}`);
+  });
+
+  t('wrap CUTAWAY is unchanged — translucent film, seal zones coloured, contents visible', () => {
+    if(!cutReady) throw new Error('no translucent film at wrap depth in Cutaway');
+    if(!cutMats.some(x => x.clear && x.hex === FILM)) throw new Error('the film must stay translucent in Cutaway');
+    if(!has(cutMats, SEAL)) throw new Error('the seal zones must stay coloured in Cutaway');
+    if(!has(cutMats, PRODUCT)) throw new Error('the contents must stay visible in Cutaway');
+  });
+
+  // the SAME rule at every other site a closed wrap is drawn: the non-hero
+  // packs inside an opened case, and the shelf facings
+  el('d_case').click(); el('m3cut').click(); await settle();
+  const insideCase = await waitFrames(() => drawn().some(x => x.hex === PLAIN));
+  const caseMats = drawn();
+  const casePlain = caseMats.filter(x => x.hex === PLAIN).reduce((a, x) => a + x.n, 0);
+
+  t('closed wraps inside a case follow the same rule — plain film, one hero cut away', () => {
+    if(!insideCase) throw new Error('no closed wrap parts drawn inside the opened case');
+    if(!(casePlain > 5)) throw new Error(`only ${casePlain} plain-film parts — the non-hero packs are not following the rule`);
+    // exactly ONE pack is opened, so the cutaway colours appear once, not per pack
+    const clearFilm = caseMats.filter(x => x.clear && x.hex === FILM).reduce((a, x) => a + x.n, 0);
+    if(clearFilm !== 1) throw new Error(`${clearFilm} translucent film bodies — only the ONE opened pack may be see-through`);
+  });
+
+  // the shelf sells the CARTON while there is one — turn it off so the WRAP is
+  // the sellable pack and the facings are actually wraps (this pin is about the
+  // wrap's material rule, so the fixture has to put a wrap on the shelf)
+  build.project.secondary.enabled = false;
+  build.recompute();
+  el('tabShelf').click();
+  const shelfReady = await waitFrames(() => drawn().length > 0 && drawn().every(x => x.hex === PLAIN));
+  const shelfMats = drawn();
+
+  t('shelf facings follow the same rule — a shelf of plain film packs', () => {
+    if(!shelfReady || !shelfMats.length) throw new Error('no facings drawn on the shelf');
+    const stray = [...new Set(shelfMats.filter(x => x.hex !== PLAIN).map(x => x.hex))];
+    if(stray.length) throw new Error(`shelf facings are not plain film: ${stray.join(', ')}`);
+  });
+
+  // ARTWORK beats white: white stands in for UNPRINTED film, so an uploaded
+  // graphic must still show in Solid — hiding it would defeat the feature.
+  // The upload decodes asynchronously and only the FIRST caller's decode
+  // callback fires, so wait for the app's own cached image and re-render.
+  {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 32);
+    g.fillStyle = '#36c'; g.fillRect(0, 32, 64, 32);
+    wmSrc = c.toDataURL('image/png');
+    build.project.artwork = build.project.artwork || {};
+    build.project.artwork.wrap = {src: wmSrc, fit: 'fill'};
+    build.recompute();
+  }
+  el('tab3d').click(); setLevel('wrap'); await settle();
+  el('d_wrap').click(); el('m3solid').click(); await settle();
+  await waitFrames(() => artImage(wmSrc).complete && artImage(wmSrc).naturalWidth > 0);
+  build.recompute();                                   // re-render now it has decoded
+  const printedReady = await waitFrames(() => drawn().some(x => x.map));
+  const printedMats = drawn();
+
+  t('wrap SOLID shows ARTWORK where there is artwork — white is the unprinted default', () => {
+    if(!printedReady) throw new Error('the printed body never reached the render');
+    if(!printedMats.some(x => x.map)) throw new Error('Solid hid the artwork — white must be the NO-artwork default only');
+    if(printedMats.some(x => x.clear)) throw new Error('a printed pack must still be opaque');
+    if(has(printedMats, SEAL)) throw new Error('the seal zones must stay plain film on a printed pack too');
+    if(!printedMats.every(x => x.map || x.hex === PLAIN))
+      throw new Error(`a printed pack is artwork + plain film: ${[...new Set(printedMats.map(x => x.hex))].join(', ')}`);
+  });
+
+  el('tab3d').click();
+  restoreProject(wmSnap);
+  setLevel('case'); await settle();
 })();
 
 /* ==================================================================

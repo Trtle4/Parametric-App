@@ -36,11 +36,13 @@ const ENV_AXIS = {X: 'L', Y: 'W', Z: 'H'};
 // blue (#3E63DD) used in the 2D dieline. Seals are warm orange so they never
 // collide with any blue. The LEGEND export keeps the HUD swatches in sync.
 const C_PRODUCT = 0xE0C089, C_FILM = 0x8FD4C4, C_SEAL = 0xE08A2E, C_BOARD = 0xC69C6D;
+const C_WRAP_SOLID = 0xF7F7F5;          // unprinted film — a closed wrap, no seal colouring
 export const LEGEND = [
-  {name: 'Product',           hex: '#E0C089'},
-  {name: 'Film',              hex: '#8FD4C4'},
-  {name: 'Fin seal',          hex: '#E08A2E'},
-  {name: 'End seal',          hex: '#E08A2E'},
+  {name: 'Product',           hex: '#E0C089', cutaway: true},
+  {name: 'Film',              hex: '#8FD4C4', cutaway: true},
+  {name: 'Fin seal',          hex: '#E08A2E', cutaway: true},
+  {name: 'End seal',          hex: '#E08A2E', cutaway: true},
+  {name: 'Unprinted film',    hex: '#F7F7F5', solid: true},
   {name: 'Board (carton/case)', hex: '#C69C6D'}
 ];
 
@@ -52,6 +54,9 @@ const filmMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, 
 const filmClosedMat = new THREE.MeshStandardMaterial({color: C_FILM, roughness: 0.25, metalness: 0,
   transparent: true, opacity: 0.7, side: THREE.DoubleSide});
 const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, metalness: 0, side: THREE.DoubleSide});
+// A CLOSED wrap as it actually ships: plain unprinted film, opaque, one colour
+// end to end — the crimped ends are the same film, not a coloured feature.
+const wrapSolidMat = new THREE.MeshStandardMaterial({color: C_WRAP_SOLID, roughness: 0.45, metalness: 0, side: THREE.DoubleSide});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
 // Shrink film skin: CLEAR wrap, not the teal conforming film — a faint cool-white
 // sheen so the contents read cleanly through it. polygonOffset pushes it just in
@@ -449,6 +454,47 @@ function wrapArtMat(canvas){
   return m;
 }
 
+/**
+ * THE wrap material rule — one place, every site that draws a wrap.
+ *
+ * A wrap is drawn in exactly one of two states, and the state is what picks the
+ * materials:
+ *
+ *   OPENED (cutaway)  translucent film, seal zones coloured, contents visible.
+ *                     The look-INSIDE view: the film has to be see-through and
+ *                     the ramps/crimps have to be legible AS seals.
+ *   CLOSED (solid)    what a pack looks like as it ships: opaque, nothing
+ *                     showing through, and NO seal colouring, because an
+ *                     unprinted flow wrap is plain film from crimp to crimp.
+ *                     The orange there was diagramming a closed pack.
+ *
+ * Artwork replaces the white wherever there IS artwork: white stands in for
+ * UNPRINTED film, so hiding an upload would defeat the feature. The crimped
+ * ends carry no girth art, so they stay plain film.
+ *
+ * Callers pass the STATE, never a material, so Solid cannot be white at wrap
+ * depth and teal inside a case — the same discipline as filmEnv and
+ * closedWrapParts, and for the same reason: the moment a second site picks its
+ * own material, the two drift.
+ *
+ * @param {boolean} opened  true = the cutaway, false = a closed pack
+ * @param {{am:object, canvas:HTMLCanvasElement}|null} [artInfo]
+ * @returns {{body: THREE.Material, seal: THREE.Material}}
+ */
+function wrapMaterials(opened, artInfo){
+  if(opened) return {body: filmMat, seal: sealMat};
+  const printed = !!(artInfo && artInfo.canvas);
+  return {body: printed ? wrapArtMat(artInfo.canvas) : wrapSolidMat, seal: wrapSolidMat};
+}
+
+/** The wrap's artwork for this bundle, or null — read from the bundle itself so
+ *  every closed-wrap site gets the same answer without threading it through. */
+function wrapArtOf(bundle){
+  const geo = bundle && bundle.wrapGeo, canvas = bundle && bundle.art && bundle.art.wrap;
+  const am = (geo && geo.meta.artMap && !geo.meta.artMap.flat) ? geo.meta.artMap : null;
+  return (am && canvas) ? {am, canvas} : null;
+}
+
 /** Body (constant cross-section over the product span, along whichever true
  *  axis is the resolved machine direction) + two end tapers (shoulder at
  *  the pack's own end -> crimped fin tip endSealWidth further out — each
@@ -605,17 +651,22 @@ export function closedWrapParts(bundle){
   const w = bundle && bundle.wraps;
   if(!w || !w.seals) return [];
   const cEnv = bundle.tray ? (w.filmEnvelope || w.envelope) : w.envelope;
+  const art = wrapArtOf(bundle);
   const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w),
-                                  stackInfoOf(w), w.wrapAxis, undefined, bundle.tray);
+                                  stackInfoOf(w), w.wrapAxis, art || undefined, bundle.tray);
   const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis);
+  // CLOSED — so plain unprinted film, or the artwork where there is artwork.
+  // These are the non-hero packs: inside a carton or case, on a pallet, and
+  // every shelf facing.
+  const {body, seal} = wrapMaterials(false, art);
   const defs = [
-    {geo: parts.bodyGeo, mat: filmClosedMat},
-    {geo: parts.taperPos, mat: sealMat},
-    {geo: parts.taperNeg, mat: sealMat},
-    {geo: parts.endTabPos, mat: sealMat},
-    {geo: parts.endTabNeg, mat: sealMat}
+    {geo: parts.bodyGeo, mat: body},
+    {geo: parts.taperPos, mat: seal},
+    {geo: parts.taperNeg, mat: seal},
+    {geo: parts.endTabPos, mat: seal},
+    {geo: parts.endTabNeg, mat: seal}
   ];
-  if(finGeo) defs.push({geo: finGeo, mat: sealMat});
+  if(finGeo) defs.push({geo: finGeo, mat: seal});
   return defs;
 }
 
@@ -626,16 +677,13 @@ function buildWrapMeshes(envelope, seals, roundish, stackInfo, wrapAxis, opened,
   const parts = wrapPartsGeometry(envelope, seals, roundish, stackInfo, wrapAxis, artInfo, tray);
   const finGeo = wrapFinGeometry(envelope, seals, wrapAxis);
   const g = new THREE.Group();
-  // printed pack: the body carries the girth artwork (OPAQUE — a solid printed
-  // pack, never see-through); the ramps + crimp fins stay seal-coloured. Else
-  // the conforming film (translucent when opened, closed board otherwise).
-  const bodyMat = artInfo ? wrapArtMat(artInfo.canvas) : (opened ? filmMat : filmClosedMat);
-  g.add(new THREE.Mesh(parts.bodyGeo, bodyMat));
-  g.add(new THREE.Mesh(parts.taperPos, sealMat));
-  g.add(new THREE.Mesh(parts.taperNeg, sealMat));
-  g.add(new THREE.Mesh(parts.endTabPos, sealMat));
-  g.add(new THREE.Mesh(parts.endTabNeg, sealMat));
-  if(finGeo) g.add(new THREE.Mesh(finGeo, sealMat));
+  const {body, seal} = wrapMaterials(opened, artInfo);
+  g.add(new THREE.Mesh(parts.bodyGeo, body));
+  g.add(new THREE.Mesh(parts.taperPos, seal));
+  g.add(new THREE.Mesh(parts.taperNeg, seal));
+  g.add(new THREE.Mesh(parts.endTabPos, seal));
+  g.add(new THREE.Mesh(parts.endTabNeg, seal));
+  if(finGeo) g.add(new THREE.Mesh(finGeo, seal));
   return g;
 }
 
@@ -660,11 +708,15 @@ function pieceGeo(piece, stackAxis, o){
 
 // tiers, outer→inner. Each returns a Group representing ONE unit.
 // `sel` holds the opened child index per tier; `depthTiers` is the visible chain.
-function buildWrapOpened(bundle, artInfo){
-  // The wrap at wrap depth. PRINTED (Solid + artwork): the real pillow body
-  // textured with the girth art, OPAQUE and solid, no contents — a closed
-  // printed pack. Otherwise CUTAWAY: the translucent conforming film + all
-  // pieces inside (never overlaid with the art, so it always aligns).
+function buildWrapOpened(bundle, artInfo, solid){
+  // The wrap at wrap depth, in whichever of the two states the caller asks for.
+  // SOLID: the closed pack — the real pillow body, opaque, no contents, plain
+  // unprinted film unless there is artwork to carry (see wrapMaterials). That
+  // is what the pack looks like as it ships, and it is what gives Solid a job
+  // distinct from Cutaway; it used to fall through to the cutaway whenever
+  // there was no artwork, so unprinted packs had two identical modes.
+  // CUTAWAY: the translucent conforming film + all pieces inside (never
+  // overlaid with the art, so it always aligns).
   const g = new THREE.Group();
   // no wrap/piece data on the row means the film tier is disabled (or the
   // content never collates into a wrap): there is nothing to open — return
@@ -680,12 +732,13 @@ function buildWrapOpened(bundle, artInfo){
   const envelope = bundle.wraps.filmEnvelope || bundle.wraps.envelope;
   const {pieces, piece, stackAxis} = bundle.wraps;
   const o = 'LWH';                                         // pieces already in envelope frame
-  const printed = !!(artInfo && artInfo.am && artInfo.canvas);
+  const closed = !!solid;
+  const art = (artInfo && artInfo.am && artInfo.canvas) ? artInfo : null;
   // the film is drawn only when a wrap is actually in the chain (seals present);
   // a wrapless pack shows the bare collation pieces alone (no conforming film).
   if(bundle.wraps.seals)
-    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !printed, printed ? artInfo : null, bundle.tray));
-  if(printed) return g;                                    // solid printed pack: no contents shown
+    g.add(buildWrapMeshes(envelope, bundle.wraps.seals, isRoundishWrap(bundle.wraps), stackInfoOf(bundle.wraps), bundle.wraps.wrapAxis, !closed, closed ? art : null, bundle.tray));
+  if(closed) return g;                                     // a closed pack shows no contents
   // Contents: with a tray in the chain the film encloses the TRAY (loaded with
   // its product), not a loose run of pieces — draw that instead, so the
   // cutaway shows what is physically inside the film.
@@ -949,7 +1002,7 @@ function makeTiers(bundle, cartonArt, caseArt){
   const cartonTier = bundle.cartonGeo ? {
     name: 'carton', geo: bundle.cartonGeo, mat: board, childKind: 'wrap',
     children: bundle.wraps ? bundle.wraps.placements : [],
-    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: filmClosedMat,
+    childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.cartonGeo.outer), childMat: wrapSolidMat,
     art: cartonArt,               // clads the carton when it rides the pallet (case off)
     childArt: null,               // wrap children are conforming film, not textured here
     buildChild: (b, s, path) => buildWrapOpened(b)
@@ -960,7 +1013,7 @@ function makeTiers(bundle, cartonArt, caseArt){
     ...(bundle.cartonGeo
       ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
          buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
-      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: filmClosedMat,
+      : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: wrapSolidMat,
          buildChild: (b, s, path) => buildWrapOpened(b)})
   };
   return {cartonTier, caseTier};
@@ -1065,11 +1118,11 @@ export function buildHierarchy(bundle, depth, sel, solid){
     group.add(r.group);
     span = r.span; outer = r.outer;
   }else if(depth === 'wrap'){
-    // Solid + art → the printed pillow (girth artwork on the real body, solid);
-    // otherwise the cutaway film + pieces. The art rides the same aligned pillow
-    // geometry the cutaway uses, so it can never be hollow or misaligned.
-    const printed = solid && wrapArt.am && wrapArt.canvas;
-    group.add(buildWrapOpened(bundle, printed ? wrapArt : null));
+    // Solid → the closed pack (white film, or the girth artwork on that same
+    // real body when there is art); Cutaway → the film + pieces. The art rides
+    // the same aligned pillow geometry the cutaway uses, so it can never be
+    // hollow or misaligned.
+    group.add(buildWrapOpened(bundle, wrapArt, solid));
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){

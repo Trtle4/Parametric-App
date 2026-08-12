@@ -240,6 +240,23 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   2D map and 3D UVs all derive from that one `artMap`, so they can't
   disagree; artwork is persisted downscaled (render/artwork.js `MAX_EDGE`)
   so the save file round-trips the art without bloating.
+- **A wrap has TWO drawn states, and ONE material rule picks between them**
+  (`wrapMaterials`, hierarchy3d.js). OPENED = the cutaway: translucent film,
+  seal zones coloured, contents visible. CLOSED = what ships: opaque, nothing
+  showing through, and NO seal colouring, because an unprinted flow wrap is
+  plain film from crimp to crimp (the orange there was diagramming a closed
+  pack). Artwork replaces the white wherever there IS artwork — white stands
+  in for UNPRINTED film, so hiding an upload would defeat the feature; the
+  crimped ends carry no girth art and stay plain. Callers pass the STATE,
+  never a material, so every site agrees: wrap depth (Solid vs Cutaway), the
+  non-hero packs inside a carton/case and on a pallet, and the shelf facings
+  all come through `wrapMaterials` via `buildWrapMeshes`/`closedWrapParts`.
+  Solid at wrap depth used to fall through to the cutaway whenever there was
+  no artwork, so an unprinted pack had two identical modes. The HUD legend
+  takes the same switch (`LEGEND` entries are tagged `cutaway`/`solid`) — a
+  swatch is a claim about what is on screen, and Solid contains no film teal
+  or seal orange to name.
+
 - **Artwork clads every instance — hierarchy, pallet AND shelf.**
   Artwork is a property of the pack (its level/style), not of one opened
   instance. Every rendered instance carries it from ONE shared texture per
