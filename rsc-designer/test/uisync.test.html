@@ -177,6 +177,7 @@ import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
 import {toMM} from '../src/core/units.js';
 import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
+import {artImage} from '../src/render/artwork.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
 // importing it boots the real app against the DOM above, exactly like
@@ -1857,6 +1858,34 @@ await (async () => {
         throw new Error(`the open face must stand UP the shelf: up ${up.toFixed(1)} is not a multiple of W ${wo.W}`);
       if(nearMultiple(deep, wo.W) && !nearMultiple(deep, wo.H))
         throw new Error(`depth ${deep.toFixed(1)} reads as W — the pack is presenting an end`);
+
+      // ...and it is the OPEN side of that face pointing at the shopper, not the
+      // underside. The right axis with the wrong sign looks identical to every
+      // extent measurement above — orientation strings carry no front/back
+      // parity — and it is what shipped: the tray's open top faced the back
+      // wall and the shopper got the bottom of the tray, cookies hidden.
+      // Measured as a DIRECTION: the pack's +frontFace axis against the side of
+      // the shelf the back wall is on.
+      const frontAxis = row.geo.wrap.meta.frontFace;
+      if(!frontAxis) throw new Error('the wrap style must declare its display face (meta.frontFace)');
+      const AXIS = {L: [1, 0, 0], H: [0, 1, 0], W: [0, 0, 1]}[frontAxis];
+      let backZ = 0, faceZ = null;
+      getPivot().traverse(o => {
+        if(o.name === 'shelfFixture'){
+          const wp = new THREE.Vector3(); o.getWorldPosition(wp);
+          if(Math.abs(wp.z) > Math.abs(backZ)) backZ = wp.z;      // the back wall, not the deck
+          return;
+        }
+        if(faceZ !== null || !o.isInstancedMesh || !isShown(o)) return;
+        const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+        o.getMatrixAt(0, m); m.premultiply(o.matrixWorld);
+        m.decompose(new THREE.Vector3(), q, new THREE.Vector3());
+        faceZ = new THREE.Vector3(...AXIS).applyQuaternion(q).z;
+      });
+      if(faceZ === null) throw new Error('no facing pack to take a facing direction from');
+      if(!backZ) throw new Error('no shelf back wall found to orient against');
+      if(faceZ*backZ > 0)
+        throw new Error(`the pack's ${frontAxis} face points at the BACK WALL — the shopper sees its underside`);
       // ...and the facings are the REAL pack, not a stand-in box. A filmed wrap
       // is drawn as SEVERAL parts (lofted body, two ramp tapers, two crimp
       // tabs, the fin); the stand-in was ONE instanced BoxGeometry, so both the
@@ -1874,6 +1903,85 @@ await (async () => {
       el('tab3d').click(); el('d_pallet').click();
     }
   });
+
+  // A PRINTED wrap takes the other path — the artwork tube, not the film parts —
+  // and it needs its own arrangement (upload, decode, a frame to draw) so it is
+  // set up out here rather than inside the pin.
+  const printSnap = snapProject(), printKey = build.getSelectedCandidateKey();
+  let printSrc = null;
+  {
+    const proj = build.project;
+    proj.tray.enabled = true; proj.tray.nCells = 3;
+    Object.assign(proj.primary.collation,
+      {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+    proj.secondary.enabled = false;
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 32);
+    g.fillStyle = '#36c'; g.fillRect(0, 32, 64, 32);
+    proj.artwork = proj.artwork || {};
+    printSrc = c.toDataURL('image/png');
+    proj.artwork.wrap = {src: printSrc, fit: 'fill'};
+    build.recompute();
+    el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+    el('tabShelf').click();
+  }
+  // The app caches ONE Image per src and only the FIRST caller's decode
+  // callback ever fires — here that is the hierarchy's, which does nothing
+  // while the shelf is up, so the shelf would sit on a null canvas forever.
+  // Wait for the app's OWN cached image, then ask the shelf to re-render.
+  await waitFrames(() => artImage(printSrc).complete && artImage(printSrc).naturalWidth > 0);
+  fire(el('shFront'), 'change');
+  const printRow = resolveActiveRow(build.project, build.getRounding(), null);
+  const packMeshes = () => {
+    const hits = [];
+    getPivot().traverse(o => { if(o.isInstancedMesh && isShown(o) && o.name !== 'shelfFixture') hits.push(o); });
+    return hits;
+  };
+  const artInst = () => packMeshes()[0] || null;
+  // the upload DECODES asynchronously and refreshes the shelf when it lands, so
+  // the wait is for the art path to actually take over (ONE tube where the film
+  // parts drew six) — waiting for "a pack mesh" alone returns instantly on the
+  // film path and measures that instead
+  const printReady = await waitFrames(() => packMeshes().length === 1);
+  const printSpan = (() => {
+    const o = artInst();
+    if(!o) return null;
+    const nPack = packMeshes().length;
+    o.geometry.computeBoundingBox();
+    const m = new THREE.Matrix4();
+    o.getMatrixAt(0, m); m.premultiply(o.matrixWorld);
+    const b = o.geometry.boundingBox.clone().applyMatrix4(m);
+    return {up: b.max.y - b.min.y, deep: b.max.z - b.min.z, count: o.count, packMeshes: nPack};
+  })();
+
+  t('SHELF: a PRINTED wrap stands in its own slot — the art body is not turned twice', () => {
+    // The artwork path does NOT take the orientation quaternion: packArtGeometry
+    // already builds its tube laid out for the pack's own front (a wrap comes
+    // out L across / W up / H deep), so it needs only the 180° that turns its
+    // printed FRONT toward the shopper. Sending it through the same orient-plus-
+    // parity turn the film parts take applies the layout twice and stands the
+    // pack on the wrong axis — measured, a 172mm-tall printed wrap rendered
+    // 49.5mm tall, matching its slot on no axis at all. Caught only by
+    // measuring; every extent SUM still looked plausible.
+    if(!printReady || !printSpan) throw new Error('no printed facing rendered on the shelf');
+    // the ART path draws ONE tube per pack; the film-parts path draws six. If
+    // the artwork never reached the render this pin would otherwise measure the
+    // film body and pass without testing the printed path at all — which it did
+    // until this line was added (the double-turn mutation walked straight
+    // through it).
+    if(printSpan.packMeshes !== 1)
+      throw new Error(`the artwork never reached the shelf: ${printSpan.packMeshes} pack meshes, expected the 1 art tube`);
+    const wo = printRow.geo.wrap.outer;
+    if(!(wo.W > wo.H + 40)) throw new Error(`fixture not discriminating: W ${wo.W} vs H ${wo.H}`);
+    if(Math.abs(printSpan.up - wo.W) > 3)
+      throw new Error(`printed pack stands ${printSpan.up.toFixed(1)}mm tall, its face is W ${wo.W}`);
+    if(Math.abs(printSpan.deep - wo.H) > 3)
+      throw new Error(`printed pack is ${printSpan.deep.toFixed(1)}mm deep, its thickness is H ${wo.H}`);
+  });
+  el('tab2d').click();
+  restoreProject(printSnap, printKey);
+  el('tab3d').click(); el('d_pallet').click();
 
   t('SHELF: real-pack facings stay INSTANCED — draw calls flat in the facing count', () => {
     // The pillow is six part geometries where the box was one, so this is the

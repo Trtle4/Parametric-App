@@ -617,7 +617,11 @@ function refreshShelf(){
   // opened pack can never describe different packs.
   const needBundle = shelf.cutaway || noun === 'wrap';
   const bundle = needBundle ? hierarchyBundle() : null;
-  const shelfOpts = {frontO,
+  // frontAxis travels WITH frontO: the orientation says which axis is the depth
+  // axis, the axis alone says nothing about which of that axis's two faces is
+  // the display face. Sending only the orientation is what pointed a wrapped
+  // tray's open top at the back wall.
+  const shelfOpts = {frontO, frontAxis: geo.meta.frontFace,
     ...(shelf.cutaway ? {cutaway: true, bundle, noun} : {}),
     ...(noun === 'wrap' ? {wrapBundle: bundle} : {})};
   buildShelf(odGeo, shelf, placements, true, artInfo, shelf.rot, shelfOpts);

@@ -274,7 +274,17 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   as the REAL pack: for a filmed wrap the facings come from
   `closedWrapParts()` — the closed-wrap builder lifted out of hierarchy3d's
   own instanced path — so the facings and the opened hero pack are built by
-  one function from one bundle. Instancing is per PART (one InstancedMesh
+  one function from one bundle. (3) An orientation string carries NO
+  front/back parity — `orientBasis` flips a horizontal column purely to keep
+  the rotation proper — so naming the axis is only half the answer.
+  `faceShopperQuat` (shelf3d) turns the pack 180° about the VERTICAL when its
+  declared front normal comes out facing the shelf's back; without it the
+  wrapped tray had the right axis forward and the wrong SIDE of it, showing
+  the shopper the underside of the tray. It applies to the film parts and the
+  opened hero pack, NOT to the artwork tube: `packArtGeometry` already builds
+  its tube laid out for the pack's own front (a carton L/H/W, a wrap L/W/H),
+  so the tube needs only the front flip — running it through the orientation
+  as well applies the layout twice and stands the pack on the wrong axis. Instancing is per PART (one InstancedMesh
   each for body, both ramps, both crimps, the fin), so draw calls stay flat
   in the facing count: 9 draw objects at 40 packs and at 4,560.
 - **Fixture hygiene is measured, not assumed** (`test/uisync.test.html`).

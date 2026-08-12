@@ -35,6 +35,38 @@ const frontMat = new THREE.MeshStandardMaterial({color: 0xEFE7D2, roughness: 0.8
 // -Z, so the front panel is group index 5.
 const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
 
+/* The pack's canonical frame: x = L, y = H, z = W (hierarchy3d builds every
+ * pack in it). meta.frontFace names the display face by the axis of its
+ * outward normal, and the sign is POSITIVE — the flow wrap's printed band and
+ * the tray's open top are both +H. */
+const PACK_AXIS = {L: [1, 0, 0], H: [0, 1, 0], W: [0, 0, 1]};
+
+/**
+ * The orientation that puts the pack's declared display face where the shopper
+ * can see it.
+ *
+ * orientQuat() maps AXES only — never front/back or up/down parity (orient.js
+ * says so, and flips a horizontal column purely to keep the rotation proper).
+ * So the declared front normal can land on the BACK, and it did: a wrapped tray
+ * pointed its open top at the back wall and showed the shopper the underside of
+ * the tray, cookies hidden. Nothing in the axis mapping can catch that, because
+ * the axis was right.
+ *
+ * Here the pack is turned 180° about the VERTICAL when its front normal comes
+ * out facing the shelf's back (local +Z) — the opposite face comes forward and
+ * "up" is untouched, unlike a flip about the across axis, which would present
+ * the face upside down. This also subsumes the art path's old hardcoded 180°:
+ * the artMap's FRONT is +Z of ITS frame, which is exactly the declared front
+ * axis, so an upright tube carton still gets the same turn it always got.
+ */
+function faceShopperQuat(frontO, frontAxis){
+  const q = orientQuat(frontO);
+  const n = new THREE.Vector3(...(PACK_AXIS[frontAxis] || PACK_AXIS.W)).applyQuaternion(q);
+  if(n.z > 0.5)                                       // pointing at the back wall
+    q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
+  return q;
+}
+
 /**
  * @param {{l:number,w:number,h:number}} od  oriented pack dims (l across, w deep, h up)
  * @param {{width:number,depth:number,height:number}} shelf
@@ -110,7 +142,7 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
       // placement rule for every facing, opened or not
       const q = new THREE.Quaternion()
         .setFromAxisAngle(new THREE.Vector3(0, 0, 1), rotDeg*Math.PI/180)
-        .multiply(orientQuat(opts.frontO || 'LWH'));
+        .multiply(faceShopperQuat(opts.frontO || 'LWH', opts.frontAxis));
       const M = new THREE.Matrix4();
       for(const pd of wrapParts){
         const inst = new THREE.InstancedMesh(pd.geo, pd.mat, solidPl.length);
@@ -138,9 +170,15 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
       }
       const inst = new THREE.InstancedMesh(pgeo, pmat, solidPl.length);
       // TWO rotations about DIFFERENT axes, kept separate:
-      //  • A — art-front alignment (art packs only): packArtGeometry prints FRONT
-      //    at +Z, the shelf front is local -Z, so turn the body 180° about the
-      //    VERTICAL to face the shopper (the group's own 180° below carries it on).
+      //  • A — art-front alignment (art packs only): packArtGeometry already
+      //    builds the tube laid out for the pack's OWN front orientation (an
+      //    upright carton comes out L across / H up / W deep, a flow wrap L
+      //    across / W up / H deep), so the tube needs no orientation rotation —
+      //    only the 180° about the VERTICAL that turns its FRONT (+Z of that
+      //    frame, i.e. the shelf's back) toward the shopper. Running it through
+      //    faceShopperQuat instead applies the orientation TWICE and stands the
+      //    pack on the wrong axis; measured, it put a printed wrap 49mm tall
+      //    where it should be 172.
       //  • S — the user's Rotate 90°: spin the forward face IN ITS OWN PLANE, about
       //    the DEPTH axis (local Z, the shopper→back axis). The same face stays
       //    forward — only its content turns — so a side/back face is never shown.
@@ -173,7 +211,7 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
     const {group: packG, walls} = buildSellableCutaway(opts.bundle, opts.noun);
     const openG = new THREE.Group();
     openG.add(packG);
-    openG.quaternion.copy(orientQuat(opts.frontO || 'LWH'));
+    openG.quaternion.copy(faceShopperQuat(opts.frontO || 'LWH', opts.frontAxis));
     openG.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rotDeg*Math.PI/180));
     openG.position.set(p.x, p.z, p.y);
     shelfGroup.add(openG);
