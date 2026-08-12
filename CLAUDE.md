@@ -337,7 +337,20 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   `faceShopperQuat` (shelf3d) turns the pack 180° about the VERTICAL when its
   declared front normal comes out facing the shelf's back; without it the
   wrapped tray had the right axis forward and the wrong SIDE of it, showing
-  the shopper the underside of the tray. It applies to the film parts and the
+  the shopper the underside of the tray. The SAME gap one step along: an
+  orientation string does not say which way is UP on the face it selects
+  either, so `meta.frontUp` names that direction in the pack frame ('+H' for
+  the tube cartons, '-W' for the flow wrap, whose girth walk puts the
+  template's up toward −W on the top face) and `faceUpRoll` returns the
+  quarter-turn that stands it up. It composes with the user's Rotate 90° —
+  same axis, same plane — so ONE effective angle drives the fill and the
+  render, and it applies only while the DECLARED face is the one shown (on a
+  hand-picked face there is no declared up to honour). Without it every
+  printed wrap stood on its head and Rotate was the only cure. The shelf's
+  face selector is likewise pinned for a printed TUBE pack but NOT for a
+  printed wrap: the tube is built already laid out for one front, while the
+  wrap's art rides geometry that orients like any other. Locking on "has
+  artwork" alone took the control away from wraps that never needed it. It applies to the film parts and the
   opened hero pack, NOT to the artwork tube: `packArtGeometry` already builds
   its tube laid out for the pack's own front (a carton L/H/W, a wrap L/W/H),
   so the tube needs only the front flip — running it through the orientation
