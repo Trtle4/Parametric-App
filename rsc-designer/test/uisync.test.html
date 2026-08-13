@@ -3,6 +3,14 @@
 <head>
 <meta charset="utf-8">
 <title>UI sync tests</title>
+<!-- The ONE style the harness needs: index.html's own --mono. The 2D
+     drawings set font-family="var(--mono)", and text METRICS follow the font
+     that actually resolves — with the variable undefined, a proportional
+     fallback measures ~25% narrower than the real app and an overflowing line
+     fits inside the sheet. Measured: the notes-clipping pin passed its own
+     mutation for exactly that reason. Same value as index.html; nothing else
+     of the stylesheet is pulled in. -->
+<style>:root{--mono:"DM Mono",ui-monospace,monospace}</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
@@ -105,7 +113,7 @@
   <div id="shBg"><button id="shBgGrid" class="on">Grid</button><button id="shBgWhite">White</button></div>
   <button id="btnPdf">Pallet PDF</button>
 </div>
-<div id="hud"></div>
+<div id="hud"><span id="hud2dKeys"></span></div>
 <div id="hierHud" style="display:none"></div>
 <div id="hierLegend" style="display:none"></div>
 <div id="orbithint"></div>
@@ -179,7 +187,8 @@ import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capture
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
-import {toMM} from '../src/core/units.js';
+import {toMM, fmtLen} from '../src/core/units.js';
+import {view2d} from '../src/render/dieline2d.js';
 import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
@@ -1513,6 +1522,169 @@ await (async () => {
     if(Math.abs((mxx - mnx) - p.outerL) > 0.01) throw new Error(`STL L ${(mxx-mnx).toFixed(2)} != ${p.outerL}`);
     if(Math.abs((mxz - mnz) - p.outerW) > 0.01) throw new Error(`STL W ${(mxz-mnz).toFixed(2)} != ${p.outerW}`);
     if(Math.abs((mxy - mny) - p.overallH) > 0.01) throw new Error(`STL H ${(mxy-mny).toFixed(2)} != ${p.overallH}`);
+  });
+
+  /* ---- the tray's 2D multiview ----
+   * Read what the drawing RENDERED (the labels it emitted, by name), never
+   * what a layout function would have returned — a pin that recomputes the
+   * layout agrees with a bug as readily as with a fix. */
+  /** Put the tray's 2D drawing on screen, hand the body a `redraw` it can call
+   *  after an edit, and give back the level AND the 2D/3D tab it found. */
+  function withTrayDrawing(fn){
+    const lvl = el('style').value, was3d = el('tab3d').classList.contains('on');
+    const redraw = () => { setLevel('tray'); el('tab2d').click(); return el('svg'); };
+    try{ redraw(); return fn(redraw); }
+    finally{ if(was3d) el('tab3d').click(); if(el('style').value !== lvl) setLevel(lvl); }
+  }
+  const dimText = k => {
+    const n = el('svg').querySelector(`[data-dim="${k}"]`);
+    if(!n) throw new Error(`the drawing has no "${k}" dimension`);
+    return n.textContent;
+  };
+  const trayNow = () => resolveActiveRow(build.project, build.getRounding(), null).tray;
+
+  t('tray 2D: a third-angle multiview, and still no die to export', () => {
+    withTrayDrawing(() => {
+      const names = [...el('svg').querySelectorAll('text')].map(n => n.textContent);
+      for(const v of ['TOP', 'FRONT', 'RIGHT'])
+        if(!names.includes(v)) throw new Error(`the drawing is missing its ${v} view`);
+      eq(el('tab2d').textContent, '2D Drawing', 'the tab must not call it a dieline:');
+      if(!el('btnDXF').disabled)
+        throw new Error('a thermoformed tray has no cut path — DXF must stay disabled');
+    });
+  });
+
+  t('2D legend: names what the level actually draws, dieline or drawing', () => {
+    // A legend is a claim about what is on screen. The tray drawing has no cut
+    // and no crease in it; a dieline level still must name both.
+    withTrayDrawing(() => {
+      const drawn = el('hud2dKeys').textContent;
+      if(/Cut|Crease/.test(drawn))
+        throw new Error(`the tray legend still claims a dieline: "${drawn}"`);
+      if(!/Outline/.test(drawn))
+        throw new Error(`the tray legend names nothing that is drawn: "${drawn}"`);
+      setLevel('case');
+      const die = el('hud2dKeys').textContent;
+      if(!/Cut/.test(die) || !/Crease/.test(die))
+        throw new Error(`a dieline level must still name cut and crease: "${die}"`);
+    });
+  });
+
+  t('tray 2D: overall L/W are the MAX CROSS-SECTION, never the tapered base', () => {
+    // THE pin. The tray is drafted, so its base is smaller than its flange, and
+    // the flange is what trayOuter() hands the wrap. A drawing dimensioned off
+    // the base would undersize every level above it and still look right.
+    withTrayDrawing(() => {
+      const tr = trayNow(), p = tr.params, u = inputs.getUnit();
+      if(!(p.outerL - p.bottomL > 2) || !(p.outerW - p.bottomW > 2))
+        throw new Error(`vacuous fixture: flange ${p.outerL}x${p.outerW} barely differs ` +
+                        `from base ${p.bottomL}x${p.bottomW} — no draft to catch`);
+      eq(dimText('overallL'), fmtLen(tr.outer.L, u), 'drawn overall L = the envelope handoff:');
+      eq(dimText('overallW'), fmtLen(tr.outer.W, u), 'drawn overall W = the envelope handoff:');
+      const rot = p.longAxis === 'Y';
+      const baseL = rot ? p.bottomW : p.bottomL, baseW = rot ? p.bottomL : p.bottomW;
+      if(dimText('overallL') === fmtLen(baseL, u)) throw new Error('overall L is the tapered BASE');
+      if(dimText('overallW') === fmtLen(baseW, u)) throw new Error('overall W is the tapered BASE');
+    });
+  });
+
+  t('tray 2D: the taper is DRAWN even though the flange is what is dimensioned', () => {
+    // The complement of the pin above: a drawing that dimensioned the flange
+    // but drew straight sides would disagree with the part (and with the 3D
+    // view, which is pinned tapered a few tests up).
+    withTrayDrawing(() => {
+      const p = trayNow().params, rot = p.longAxis === 'Y';
+      const bL = rot ? p.bottomW : p.bottomL, bW = rot ? p.bottomL : p.bottomW;
+      const hit = [...el('svg').querySelectorAll('rect')].some(r =>
+        Math.abs(+r.getAttribute('width') - bL) < 0.01 &&
+        Math.abs(+r.getAttribute('height') - bW) < 0.01);
+      if(!hit) throw new Error(`no drafted base outline (${bL} x ${bW}) in the plan view`);
+    });
+  });
+
+  /** Is there a drawn rectangle of exactly this size? Reads the emitted plan,
+   *  which is how a "the label is right, the picture is wrong" fault shows. */
+  const hasRect = (w, h) => [...el('svg').querySelectorAll('rect')].some(r =>
+    Math.abs(+r.getAttribute('width') - w) < 0.01 && Math.abs(+r.getAttribute('height') - h) < 0.01);
+
+  t('tray 2D: cell dimensions READ the tray parameters', () => {
+    withTrayDrawing(() => {
+      const p = trayNow().params, u = inputs.getUnit();
+      if(new Set([p.cellLen, p.cellWid, p.cellH]).size < 3)
+        throw new Error(`vacuous fixture: the cell dims coincide (${p.cellLen}/${p.cellWid}/${p.cellH}) ` +
+                        'so a swapped pair would pass');
+      eq(dimText('cellLen'), fmtLen(p.cellLen, u), 'cell length:');
+      eq(dimText('cellWid'), fmtLen(p.cellWid, u), 'cell width:');
+      eq(dimText('cellH'),   fmtLen(p.cellH, u),   'cell (trough) depth:');
+      if(!(p.divider > 0)) throw new Error('vacuous fixture: pitch equals cell width with no divider');
+      eq(dimText('pitch'),   fmtLen(p.pitch, u),   'cell pitch (centre to centre):');
+      eq(p.longAxis, 'X', 'fixture axis:');
+      if(!hasRect(p.cellLen, p.cellWid))
+        throw new Error('the plan draws no cell mouth running along the placed L');
+    });
+  });
+
+  t('tray 2D: the notes state the base AS the base, and no line is clipped', () => {
+    // Two failures in one pin, because they hide each other. (1) The drafted
+    // base has to appear labelled as the base — it is the number that must
+    // never be mistaken for the envelope. (2) SVG does not wrap text and a
+    // long line is silently CLIPPED at the sheet edge: value-correct and
+    // invisible, exactly the blank-GRID-field failure. Measure the rendered
+    // box against the viewBox rather than trusting the string.
+    withTrayDrawing(() => {
+      // measure against the SHEET (view2d.base), not the live viewBox: the
+      // viewBox carries the shared zoom/pan, so a pin that read it would call
+      // an overflowing line "fitting" the moment an earlier pin left the view
+      // zoomed out — measured, that is exactly what happened here.
+      const svg = el('svg'), vb = view2d.base;
+      const notes = [...svg.querySelectorAll('.tray2dNote')];
+      if(!notes.length) throw new Error('the drawing has no notes block');
+      const text = notes.map(n => n.textContent).join('  ');
+      const p = trayNow().params;
+      if(!/base/i.test(text)) throw new Error(`the base is not stated: "${text}"`);
+      for(const v of [p.bottomL, p.bottomW])
+        if(!text.includes(String(+v.toFixed(3))))
+          throw new Error(`the base dimension ${v} is missing from the notes: "${text}"`);
+      if(text.includes(`${+p.outerL.toFixed(3)} × ${+p.outerW.toFixed(3)}`))
+        throw new Error('the notes restate the envelope where the base belongs');
+      for(const n of notes){
+        const bb = n.getBBox();
+        // certify the instrument: an unrendered/unmeasurable text node reports
+        // a zero box, and every bounds test below would then pass vacuously —
+        // a false green that looks exactly like a fitting line
+        if(!(bb.width > 0))
+          throw new Error(`cannot measure "${n.textContent}" — the clipping check would be vacuous`);
+        if(bb.x < vb[0] - 0.01 || bb.x + bb.width > vb[0] + vb[2] + 0.01)
+          throw new Error(`a notes line runs off the sheet and is clipped: "${n.textContent}" ` +
+            `spans ${bb.x.toFixed(1)}..${(bb.x + bb.width).toFixed(1)} of ${vb[0]}..${vb[0] + vb[2]}`);
+      }
+    });
+  });
+
+  tEdit('tray 2D: the long-axis rotation reaches the drawing, L and W together', () => {
+    // `longAxis: 'Y'` rotates the part in plan; trayOuter() swaps L and W to
+    // match. A drawing that read the tray's own outerL/outerW and skipped the
+    // rotation would dimension the placed part transposed — the partial-consumer
+    // failure, one axis of a two-value handoff.
+    withTrayDrawing(redraw => {
+      el('tr_longAxis').querySelector('[data-v="Y"]').click();
+      redraw();
+      const tr = trayNow(), p = tr.params, u = inputs.getUnit();
+      eq(p.longAxis, 'Y', 'the rotation actually applied:');
+      if(!(Math.abs(p.outerL - p.outerW) > 2))
+        throw new Error('vacuous fixture: a square tray cannot show the swap');
+      eq(dimText('overallL'), fmtLen(tr.outer.L, u), 'rotated overall L follows the envelope:');
+      eq(dimText('overallW'), fmtLen(tr.outer.W, u), 'rotated overall W follows the envelope:');
+      eq(dimText('overallL'), fmtLen(p.outerW, u), "rotated, the placed L is the tray's own W:");
+      // AND the picture, not only the labels: the labels come off the already
+      // rotated envelope, so they alone cannot tell a drawing that consumed the
+      // rotation from one that ignored it. The rim and the cell mouths must
+      // turn with it — that is the half a partial consumer drops.
+      if(!hasRect(p.topW, p.topL))
+        throw new Error('rotated: the rim outline is still drawn in the tray\'s own frame');
+      if(!hasRect(p.cellWid, p.cellLen))
+        throw new Error('rotated: the plan cells still run along the placed L');
+    });
   });
 
   tEdit('WRAP RENDER: with a tray, the film mesh matches renderedOuter, not the collation', () => {

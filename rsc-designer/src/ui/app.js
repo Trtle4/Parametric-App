@@ -13,6 +13,7 @@ import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
+import {drawTray2d} from '../render/tray2d.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
@@ -175,6 +176,14 @@ function activeRow(){
   if(!isStyleLevel()) return null;
   return resolveActiveRow(build.project, build.getRounding(), selKey());
 }
+/** The resolved tray stage on screen (`solveTrayStage`'s result), or null when
+ *  the tray is out of the chain. ONE accessor, so the 2D drawing, the STL
+ *  export and the Cookie-Tray link all describe the same tray — the drawing
+ *  must never be able to show a tray the exports don't. */
+function activeTray(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  return (row && row.tray) || null;
+}
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
 
@@ -204,6 +213,31 @@ function refresh2d(){
       drawProduct2d(el('svg'), piece, u);
     }
     setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
+    return;
+  }
+  if(activeLevel === 'tray'){
+    // the thermoformed tray: a multiview drawing, not a dieline (tray2d.js's
+    // own doc comment explains why it can't be one — no blank, no cut, no
+    // crease, nothing to DXF). Reads the SAME resolved stage the 3D depth,
+    // the STL and the Cookie-Tray link read.
+    const tray = activeTray();
+    if(!tray){
+      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--ink-3)" font-family="var(--mono)" font-size="14">Enable the tray to draw it</text>`;
+      setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
+      return;
+    }
+    drawTray2d(el('svg'), tray, u);
+    const o = tray.outer;
+    // the tray has no blank and no board area; its OUTER is the envelope the
+    // chain is sized from, so that is the one summary field it can honestly fill
+    const outerText = `${fmtLen(o.L, u)} × ${fmtLen(o.W, u)} × ${fmtLen(o.H, u)} ${u}`;
+    setSummary('—', outerText, '--');
+    const stat = (lab, val) => `<div class="stat"><span class="lab">${lab}</span><span class="val">${val}</span></div>`;
+    el('styleStats').innerHTML =
+      stat('Envelope', outerText) +
+      stat('Tray height', `${fmtLen(tray.params.overallH, u)} ${u}`) +
+      stat('Cells', `${tray.nCells} × ${tray.perCell} = ${tray.total}`) +
+      stat('Cell', `${fmtLen(tray.params.cellLen, u)} × ${fmtLen(tray.params.cellWid, u)} × ${fmtLen(tray.params.cellH, u)} ${u}`);
     return;
   }
   if(!isStyleLevel()){
@@ -896,12 +930,28 @@ function updateDimsLabel(){
  *  precedent as updateDimsLabel: read what the level/style actually is,
  *  never hardcode one word for every kind. Pallet keeps the original text
  *  — it has no 2D view of its own and that isn't changing here. */
+/** The 2D legend, per level kind. A legend is a CLAIM about what is on
+ *  screen — the same rule the 3D HUD's swatches follow — and a multiview has
+ *  no cut and no crease to name: the product and tray drawings are solid
+ *  outlines, with the tray adding dashed HIDDEN detail (its drafted base and
+ *  its cell troughs, seen through the wall). Written from the level by the
+ *  same update that names the tab, so the two cannot disagree. */
+const LEGEND_2D = {
+  style:   [['var(--cut)', 'solid', 'Cut'], ['var(--crease)', 'dashed', 'Crease']],
+  product: [['var(--ink)', 'solid', 'Outline']],
+  tray:    [['var(--ink)', 'solid', 'Outline'], ['var(--ink-3)', 'dashed', 'Hidden detail']],
+  pallet:  []
+};
+
 function update2dTabLabel(){
   const lvl = LEVELS[activeLevel];
-  const word = lvl.kind === 'product' ? 'Drawing'
+  const word = lvl.kind === 'product' || lvl.kind === 'tray' ? 'Drawing'
     : lvl.kind === 'style' ? (activeStyle().structure === 'flexible' ? 'Blank' : 'Dieline')
     : 'Dieline';
   el('tab2d').textContent = `2D ${word}`;
+  el('hud2dKeys').innerHTML = (LEGEND_2D[lvl.kind] || []).map(([c, style, label]) =>
+    `<span class="k"><span class="swatch" style="border-top-color:${c};border-top-style:${style}"></span>${label}</span>`
+  ).join('');
 }
 
 /** Orientation + clearance + count/arrangement — Step 5 moved these off
@@ -1091,8 +1141,8 @@ function applyTrayQuantity(field, value){
 
 /** A Cookie-Tray link describing the tray currently on screen. */
 function currentTrayLink(){
-  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
-  return row && row.tray ? buildTrayLink(build.project, row.tray) : null;
+  const tray = activeTray();
+  return tray ? buildTrayLink(build.project, tray) : null;
 }
 
 function trayAutoDims(){
@@ -1194,10 +1244,13 @@ function updateExportButtonsState(){
     el('btnDXF').disabled = true;
     el('btnDXF').title = lvl.kind === 'product'
       ? 'A product drawing is not a cut file — select Wrap, Carton, or Case for a dieline'
+      : lvl.kind === 'tray'
+      ? 'A thermoformed tray has no die — export the STL for the 3D part'
       : 'No dieline at this level — select Wrap, Carton, or Case';
     el('btnArt').style.display = 'none';
     el('btnSpec').style.display = 'none';
-    setStateChip('muted', lvl.kind === 'product' ? 'Product view' : 'No dieline here');
+    setStateChip('muted', lvl.kind === 'product' ? 'Product view'
+      : lvl.kind === 'tray' ? 'Tray view' : 'No dieline here');
     return;
   }
   const style = activeStyle();
@@ -1792,9 +1845,9 @@ el('palUnits').addEventListener('change', () => {
 // STL export: the tray mesh's own triangles, built from the SAME ported
 // dimensions the envelope comes from. No CAD kernel — STL is a triangle soup.
 el('btnSTL').addEventListener('click', () => {
-  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
-  if(!row || !row.tray){ showNotice('Enable the tray to export it.', true); return; }
-  const {group} = buildTray3d(row.tray.params);
+  const tray = activeTray();
+  if(!tray){ showNotice('Enable the tray to export it.', true); return; }
+  const {group} = buildTray3d(tray.params);
   const text = trayToSTL(group, 'cookie-tray');
   const blob = new Blob([text], {type: 'model/stl'});
   const url = URL.createObjectURL(blob);
@@ -1974,7 +2027,8 @@ function pngBaseName(){
 // 2D: the full blank/dieline from geometry, view-independent (ignores zoom/pan).
 el('btnPng2d').addEventListener('click', () => {
   if(LEVELS[activeLevel].kind === 'pallet') return;   // no 2D at the pallet level
-  const suffix = isStyleLevel() ? (activeStyle().structure === 'flexible' ? 'blank' : 'dieline') : 'product';
+  const suffix = isStyleLevel() ? (activeStyle().structure === 'flexible' ? 'blank' : 'dieline')
+    : LEVELS[activeLevel].kind === 'tray' ? 'tray' : 'product';
   downloadSvgPNG(el('svg'), `${pngBaseName()}_${suffix}.png`);
 });
 // 3D: exactly the on-screen camera (fold3d reads its own canvas; the ViewCube

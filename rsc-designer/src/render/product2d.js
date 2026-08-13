@@ -25,8 +25,7 @@
  */
 import {fmtLen} from '../core/units.js';
 import {view2d, apply2dView} from './dieline2d.js';
-
-const DIM_C = 'var(--ink-2)';
+import {dimLine} from './dim2d.js';
 
 /** Resolve the piece's own shape from the collation — a box-piece or a
  *  cylinder-piece — as ONE small shape descriptor a renderer can draw. A
@@ -74,29 +73,6 @@ function cylinderLayout(d, t){
 
 function layoutFor(piece){
   return piece.kind === 'cylinder' ? cylinderLayout(piece.diameter, piece.thickness) : boxLayout(piece.L, piece.W, piece.H);
-}
-
-/** One dimension line + two end-ticks + centered label — visually
- *  identical to dieline2d.js's own dimH/dimV (same tick size, stroke, mono
- *  font, muted blue-grey), reproduced here rather than imported because
- *  dieline2d's versions are private closures over ITS OWN world-to-svg
- *  flip; this module's coordinate space is plain Y-down (no flip needed),
- *  and it draws one dimension per VIEW TILE rather than one shared
- *  row/column for the whole drawing. */
-function dimLine(orient, x1, y1, x2, y2, val, dimFS, dw, tick){
-  if(orient === 'h'){
-    if(x2 - x1 < dimFS*0.9) return '';
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y1}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-      `<line x1="${x1}" y1="${y1 - tick}" x2="${x1}" y2="${y1 + tick}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-      `<line x1="${x2}" y1="${y1 - tick}" x2="${x2}" y2="${y1 + tick}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-      `<text x="${(x1 + x2)/2}" y="${y1 - dimFS*0.45}" fill="${DIM_C}" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle">${val}</text>`;
-  }
-  if(y2 - y1 < dimFS*0.9) return '';
-  const cy = (y1 + y2)/2, tx = x1 - dimFS*0.45;
-  return `<line x1="${x1}" y1="${y1}" x2="${x1}" y2="${y2}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-    `<line x1="${x1 - tick}" y1="${y1}" x2="${x1 + tick}" y2="${y1}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-    `<line x1="${x1 - tick}" y1="${y2}" x2="${x1 + tick}" y2="${y2}" stroke="${DIM_C}" stroke-width="${dw}"/>` +
-    `<text x="${tx}" y="${cy}" fill="${DIM_C}" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle" transform="rotate(-90 ${tx} ${cy})">${val}</text>`;
 }
 
 /** @param {SVGElement} svg

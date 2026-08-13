@@ -129,6 +129,34 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   level is untouched). The carton->case chain passes vertical zeros:
   cartons bear on the case floor, no default headspace. Headspace as a
   first-class design input is still pending an engineering ruling.
+- **RESOLVED (tray-2D task): the tray has a 2D view, and it is a MULTIVIEW,
+  not a dieline.** `render/tray2d.js` draws TOP/FRONT/RIGHT in third angle —
+  the product2d.js precedent one level up, and for the same reason: a
+  thermoformed part has no blank, no cut, no crease, so it cannot go through
+  dieline2d.js's cut/crease renderer, cannot satisfy the `Geometry` contract,
+  and has no DXF (the level's export chip says so; STL stays its export). The
+  DIMENSIONED overall L/W is the MAX CROSS-SECTION — `tray.outer`, the value
+  `trayOuter()` hands the wrap — read off the resolved stage, never
+  re-derived. The tapered base IS drawn (a hidden outline in plan, the real
+  slope of the elevations) but is never the dimensioned extent: the base is
+  the number a drawing most plausibly shows and the one that would undersize
+  every level above it. Height dimensions the DRAWN part (`params.overallH`)
+  and the caption states the envelope when product stands proud, the same
+  split the tray-depth HUD makes. `longAxis: 'Y'` is a placed-frame rotation
+  that the drawing must consume in FULL — labels come off the already-rotated
+  envelope, so a pin that reads only the labels cannot tell a drawing that
+  turned the rim and cells from one that ignored the rotation (measured: that
+  mutation passed the first version of the pin). The three drawings now share
+  ONE callout renderer, `render/dim2d.js` — lifted out of product2d.js rather
+  than copied a third time; its optional `key` tags a label `data-dim="…"` so
+  a pin reads the value the drawing RENDERED, by name. The 2D LEGEND is a
+  claim about what is on screen, same as the 3D HUD's swatches: it is written
+  from the level (`LEGEND_2D`, app.js) into `#hud2dKeys`, because a multiview
+  contains no cut and no crease to name — the static "Cut / Crease" markup had
+  been over-claiming at the product level already. (Adding that node meant
+  adding it to `test/uisync.test.html`'s DOM skeleton too — the harness rule
+  below, hit again: app.js wrote to a null element and every pin in the file
+  died at import.)
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.
