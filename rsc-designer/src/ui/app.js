@@ -13,7 +13,8 @@ import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
-import {drawTray2d} from '../render/tray2d.js';
+import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
+import {dateStamp} from '../core/stamp.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
@@ -226,7 +227,7 @@ function refresh2d(){
       setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
       return;
     }
-    drawTray2d(el('svg'), tray, u);
+    drawTray2d(el('svg'), tray, u, dateStamp());
     const o = tray.outer;
     // the tray has no blank and no board area; its OUTER is the envelope the
     // chain is sized from, so that is the one summary field it can honestly fill
@@ -939,7 +940,8 @@ function updateDimsLabel(){
 const LEGEND_2D = {
   style:   [['var(--cut)', 'solid', 'Cut'], ['var(--crease)', 'dashed', 'Crease']],
   product: [['var(--ink)', 'solid', 'Outline']],
-  tray:    [['var(--ink)', 'solid', 'Outline'], ['var(--ink-3)', 'dashed', 'Hidden detail']],
+  // read off the drawing's OWN vocabulary, never a second list beside it
+  tray:    TRAY_LINE_TYPES.map(t => [t.color, t.dash ? 'dashed' : 'solid', t.label]),
   pallet:  []
 };
 
@@ -2149,10 +2151,8 @@ function exportPalletPdf(){
     ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(nLoads*(deckH + row.loadH))} ${u}`]
   ]});
 
-  const now = new Date();
-  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const bytes = buildPalletPdf({
-    dateStr, unit: u, images,
+    dateStr: dateStamp(), unit: u, images,
     captions: {iso: 'Pallet · isometric', top: 'Layer pattern · top',
                cut: `${outerNoun} cutaway`},
     sections

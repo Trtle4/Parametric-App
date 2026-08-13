@@ -7,7 +7,7 @@
  * nothing to route through dieline2d.js's cut/crease renderer and nothing to
  * DXF. This is the product2d.js precedent one level up — a sibling module
  * with its own view, sharing dieline2d's already-exported zoom/pan state
- * (`view2d`/`apply2dView`) and the shared callout renderer (dim2d.js) rather
+ * (`view2d`/`apply2dView`) and the shared callout renderers (dim2d.js) rather
  * than inventing either again.
  *
  * THE DIMENSION THAT MATTERS. Overall L and W are the MAX CROSS-SECTION —
@@ -16,9 +16,18 @@
  * it is narrowest at the base and widest at the rim; the base is the number
  * a drawing most plausibly shows and the one that would silently undersize
  * every level above it (cookietray.js's trayOuter doc explains why). The
- * TAPERED BASE is still drawn — as a hidden outline in plan and as the real
- * slope of the elevations — because a drawing that showed straight sides
- * would disagree with the part; it is just never the dimensioned extent.
+ * TAPERED BASE is still drawn AND dimensioned — but always LABELLED `BASE`,
+ * so the taper reads as information rather than as a contradiction.
+ *
+ * EVERY CALLOUT IS NAMED. An unlabelled number beside another of similar
+ * size is ambiguous no matter how correct it is: a bare 50 under an elevation
+ * reads as an overall until something says CELL W, and 139/123 on adjacent
+ * views read as a mistake until they say OVERALL/BASE. Only the envelope L/W
+ * go bare, and only because they are what a reader assumes by default.
+ *
+ * Values a dimension line cannot letter at this scale — a 2.5mm flange or a
+ * 3mm divider on a 139mm sheet — get a LEADER instead, and the ones that are
+ * not linear at all (the draft angle) can only be leaders.
  *
  * Every value comes from the resolved parameter set (core/cookietray.js
  * `trayParams`) or the stage's envelope. Nothing here computes a dimension
@@ -30,9 +39,27 @@
  */
 import {fmtLen, fmtInputValue, fromMM} from '../core/units.js';
 import {view2d, apply2dView} from './dieline2d.js';
-import {dimLine} from './dim2d.js';
+import {dimLine, leader} from './dim2d.js';
 
-const HID = 'var(--ink-3)';        // hidden/internal outlines
+/**
+ * THE line vocabulary, and the only place it is defined.
+ *
+ * Dashed used to do double duty — hidden edges AND cell boundaries — so at
+ * four cells the dividers were faint ghosts inside a strong outline, in the
+ * one view where the cell layout is the whole point. Three types now, and the
+ * CELL is the one that reads: solid, in the accent, with a wash so a cell is
+ * a region and the divider between two of them is the unwashed land.
+ *
+ * Exported because the rail's 2D legend names these same three (app.js
+ * LEGEND_2D). A legend is a claim about what is on screen; reading it off the
+ * drawing's own vocabulary is what stops the claim and the ink diverging.
+ */
+export const TRAY_LINE_TYPES = [
+  {id: 'outline', label: 'Outline',      color: 'var(--ink)',    w: 1,    dash: 0, fill: 'rgba(20,26,31,0.04)'},
+  {id: 'cell',    label: 'Cell',         color: 'var(--accent)', w: 0.75, dash: 0, fill: 'rgba(15,110,119,0.07)'},
+  {id: 'hidden',  label: 'Hidden edge',  color: 'var(--ink-3)',  w: 0.5,  dash: 1, fill: 'none'}
+];
+const LINE = Object.fromEntries(TRAY_LINE_TYPES.map(t => [t.id, t]));
 
 /**
  * The placed geometry the three views are drawn from.
@@ -54,6 +81,7 @@ function placed(tray){
     topW:    rot ? p.topL    : p.topW,
     bottomL: rot ? p.bottomW : p.bottomL,     // drafted base, placed
     bottomW: rot ? p.bottomL : p.bottomW,
+    stripL:  rot ? p.stripW  : p.stripL,      // flange strip, placed
     // the cell run lies along the tray's own L, i.e. along placed W when rotated
     runAlongL: !rot
   };
@@ -74,40 +102,63 @@ function planCells(g){
   return out;
 }
 
-/** TOP: the flange outline (the dimensioned max cross-section), the rim
- *  inside it, the drafted base as a hidden outline, and the cell mouths. */
+/**
+ * TOP: the flange outline (the dimensioned max cross-section), the rim inside
+ * it, the drafted base as a hidden outline, and the cell mouths.
+ *
+ * The plan carries the cell geometry, because this is the view it reads in:
+ * CELL L along the run, CELL W and PITCH across it, each INBOARD of the
+ * overall on its own side. Tiers, outermost = overall, is the convention;
+ * it also keeps the two ~equal numbers (cell length vs overall length) from
+ * sitting on the same line where only the label separates them.
+ */
 function topTile(g, x, y){
   const {p} = g, cx = g.L/2, cy = g.W/2;
   const shapes = [
-    {kind: 'rect', x: 0, y: 0, w: g.L, h: g.W, r: p.outerR},                         // flange (max section)
-    {kind: 'rect', x: cx - g.topL/2, y: cy - g.topW/2, w: g.topL, h: g.topW, r: p.cornerR},   // rim
-    {kind: 'rect', hidden: true, x: cx - g.bottomL/2, y: cy - g.bottomW/2,
-     w: g.bottomL, h: g.bottomW, r: p.bottomCornerR}                                  // drafted base
+    {kind: 'rect', line: 'outline', x: 0, y: 0, w: g.L, h: g.W, r: p.outerR},          // flange (max section)
+    {kind: 'rect', line: 'outline', x: cx - g.topL/2, y: cy - g.topW/2,
+     w: g.topL, h: g.topW, r: p.cornerR},                                              // rim
+    {kind: 'rect', line: 'hidden', x: cx - g.bottomL/2, y: cy - g.bottomW/2,
+     w: g.bottomL, h: g.bottomW, r: p.bottomCornerR}                                   // drafted base
   ];
   const cells = planCells(g);
   for(const c of cells)
-    shapes.push({kind: 'rect', hidden: true, x: cx + c.x0, y: cy + c.y0, w: c.x1 - c.x0, h: c.y1 - c.y0});
+    shapes.push({kind: 'rect', line: 'cell', x: cx + c.x0, y: cy + c.y0,
+                 w: c.x1 - c.x0, h: c.y1 - c.y0});
 
-  // CELL PITCH — centre to centre, across the run: the view of `divider` the
-  // rail also shows. It goes INBOARD of the overall on the same side, the way
-  // a drawing stacks a feature dimension under an envelope one. TOP's other
-  // two sides are spoken for: below faces the FRONT view, left faces nothing
-  // but would sit over the elevations' own height stack.
-  const mids = cells.map(c => g.runAlongL ? (c.y0 + c.y1)/2 : (c.x0 + c.x1)/2);
-  const pitch = cells.length > 1
-    ? [g.runAlongL
-        ? {orient: 'v', y1: cy + mids[0], y2: cy + mids[1], side: 'right', value: p.pitch, key: 'pitch'}
-        : {orient: 'h', x1: cx + mids[0], x2: cx + mids[1], side: 'above', value: p.pitch, key: 'pitch'}]
-    : [];
-  const overallRank = cells.length > 1 ? 1 : 0;      // outboard of the pitch when there is one
-  const dims = [
-    ...pitch,
-    {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: g.runAlongL ? 0 : overallRank,
-     value: g.L, key: 'overallL'},
-    {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: g.runAlongL ? overallRank : 0,
-     value: g.W, key: 'overallW'}
-  ];
-  return {name: 'TOP', x, y, w: g.L, h: g.W, shapes, dims};
+  const runSide    = g.runAlongL ? 'above' : 'right';   // the axis the cells run along
+  const acrossSide = g.runAlongL ? 'right' : 'above';
+  const span = (side, a, b, rank, value, key, label) => side === 'above'
+    ? {orient: 'h', x1: cx + a, x2: cx + b, side: 'above', rank, value, key, label}
+    : {orient: 'v', y1: cy + a, y2: cy + b, side: 'right', rank, value, key, label};
+
+  const c0 = cells[0];
+  const runA = g.runAlongL ? c0.x0 : c0.y0, runB = g.runAlongL ? c0.x1 : c0.y1;
+  const acrA = g.runAlongL ? c0.y0 : c0.x0, acrB = g.runAlongL ? c0.y1 : c0.x1;
+  const dims = [span(runSide, runA, runB, 0, p.cellLen, 'cellLen', 'CELL L'),
+                span(acrossSide, acrA, acrB, 0, p.cellWid, 'cellWid', 'CELL W')];
+
+  // PITCH, centre to centre — the view of `divider` the rail also shows
+  let acrossTop = 1;
+  if(cells.length > 1){
+    const mid = c => g.runAlongL ? (c.y0 + c.y1)/2 : (c.x0 + c.x1)/2;
+    dims.push(span(acrossSide, mid(cells[0]), mid(cells[1]), 1, p.pitch, 'pitch', 'PITCH'));
+    acrossTop = 2;
+  }
+  // the envelope, outermost on both sides and the only callouts left bare
+  dims.push(g.runAlongL
+    ? {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: 1, value: g.L, key: 'overallL'}
+    : {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: acrossTop, value: g.L, key: 'overallL'});
+  dims.push(g.runAlongL
+    ? {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: acrossTop, value: g.W, key: 'overallW'}
+    : {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: 1, value: g.W, key: 'overallW'});
+
+  // FLANGE WIDTH — a 5mm land on a 139mm sheet: a leader, not a dimension
+  // line whose two ticks would be further apart than the span they bound.
+  const leaders = [{px: g.L - g.stripL/2, py: cy - g.topW/2 - (g.W - g.topW)/4,
+                    dx: g.L*0.34, dy: -g.W*0.30, key: 'flange',
+                    text: `FLANGE ${p.stripL === p.stripW ? '' : ''}`}];
+  return {name: 'TOP', x, y, w: g.L, h: g.W, shapes, dims, leaders};
 }
 
 /**
@@ -117,6 +168,11 @@ function topTile(g, x, y){
  * because the draft is the fact the envelope depends on. Above the body the
  * flange steps out to the full outer width for its own thickness, and the lip
  * stands on top of it: three steps, the same three tray3d.js builds.
+ *
+ * Heights go on ONE side per view (drafting convention, and the reason the
+ * old sheet read as inconsistent): FRONT carries them on the left, RIGHT
+ * repeats the overall on its right. Below each elevation is the BASE — the
+ * drafted width, in the view where the taper that produces it is visible.
  */
 function elevation(g, name, x, y, across, wantRun){
   const {p} = g;
@@ -129,7 +185,7 @@ function elevation(g, name, x, y, across, wantRun){
   const cx = outer/2;
   // tile-local: x centred on cx, y measured DOWN from the lip crown
   const P = (dx, u) => [cx + dx, oH - u];
-  const shapes = [{kind: 'poly', pts: [
+  const shapes = [{kind: 'poly', line: 'outline', pts: [
     P(-bot/2, 0), P(bot/2, 0), P(xAt(hf), hf), P(outer/2, hf),
     P(outer/2, oH), P(-outer/2, oH), P(-outer/2, hf), P(-xAt(hf), hf)
   ]}];
@@ -137,8 +193,7 @@ function elevation(g, name, x, y, across, wantRun){
   // The troughs, seen through the wall. Along the run a trough reads as ONE
   // rectangular recess (its bottom is the cradle's lowest line, seen end-on);
   // ACROSS the run each cell shows its real U cross-section — straight sides
-  // down to the cradle arc — and the dividers as the land between them. Which
-  // one this elevation gets follows the placed run axis.
+  // down to the cradle arc — and the dividers as the land between them.
   //
   // The cradle is drawn as a true SVG arc from cellWid/cradleR/depth — the
   // same parameters tray3d.js tessellates its swept profile from, in this
@@ -152,106 +207,157 @@ function elevation(g, name, x, y, across, wantRun){
   const yRim = oH - p.H, yFloor = oH - p.floor;
   for(const s of spans){
     if(wantRun){
-      shapes.push({kind: 'rect', hidden: true, x: cx + s.a, y: yRim, w: s.b - s.a, h: p.H - p.floor});
+      shapes.push({kind: 'rect', line: 'cell', x: cx + s.a, y: yRim,
+                   w: s.b - s.a, h: p.H - p.floor});
       continue;
     }
     const half = (s.b - s.a)/2, c0 = cx + (s.a + s.b)/2;
     const r = Math.max(0.01, Math.min(p.cradleR, half, yFloor - yRim));
     const flat = half - r;
-    shapes.push({kind: 'path', hidden: true, d:
+    shapes.push({kind: 'path', line: 'cell', d:
       `M ${c0 - half} ${yRim} L ${c0 - half} ${yFloor - r} ` +
       `A ${r} ${r} 0 0 0 ${c0 - flat} ${yFloor} L ${c0 + flat} ${yFloor} ` +
       `A ${r} ${r} 0 0 0 ${c0 + half} ${yFloor - r} L ${c0 + half} ${yRim}`});
   }
 
-  const dims = [];
-  if(wantRun) dims.push({orient: 'h', x1: cx - p.cellLen/2, x2: cx + p.cellLen/2,
-                         side: 'below', value: p.cellLen, key: 'cellLen'});
-  else if(spans.length) dims.push({orient: 'h', x1: cx + spans[0].a, x2: cx + spans[0].b,
-                                   side: 'below', value: p.cellWid, key: 'cellWid'});
-  return {name, x, y, w: outer, h: oH, shapes, dims};
+  const isFront = across === 'L';
+  // the base is the ONE callout with a fraction in it (a 5° draft off 129 is
+  // 124.6, not 125), and the title block states it to the same precision —
+  // rounding it here would put two different numbers for one edge on one sheet
+  const dims = [{orient: 'h', x1: cx - bot/2, x2: cx + bot/2, side: 'below', rank: 0,
+                 value: bot, exactVal: true, key: isFront ? 'baseL' : 'baseW', label: 'BASE'}];
+  const leaders = [];
+  if(isFront){
+    // heights, stacked on the ONE free side: the feature inboard, the
+    // envelope outboard
+    dims.push({orient: 'v', y1: yRim, y2: yFloor, side: 'left', rank: 0,
+               value: p.cellH, key: 'cellH', label: 'CELL DEPTH'});
+    dims.push({orient: 'v', y1: 0, y2: oH, side: 'left', rank: 1,
+               value: oH, key: 'overallH', label: 'OVERALL H'});
+    // the DRAFT: an angle has no two ends to tick, so it can only be a leader
+    leaders.push({px: cx + xAt(bH*0.45), py: oH - bH*0.45,
+                  dx: outer*0.30, dy: oH*0.55, key: 'draft', angle: true});
+    // the LIP, standing on the flange — 3mm on a 139mm sheet. It points UP and
+    // RIGHT, into the empty band between this elevation and the plan above it:
+    // the left of this view is the height stack, and a leader landing in it
+    // collided with both callouts (measured on the first draft).
+    leaders.push({px: cx + outer/2, py: (oH - bH)/2,
+                  dx: outer*0.16, dy: -oH*0.85, key: 'lip', lip: true});
+  }else{
+    dims.push({orient: 'v', y1: 0, y2: oH, side: 'right', rank: 0,
+               value: oH, key: 'overallH2', label: 'OVERALL H'});
+    // the DIVIDER land between two troughs, in the view that shows it
+    if(spans.length > 1)
+      leaders.push({px: cx + (spans[0].b + spans[1].a)/2, py: yRim,
+                    dx: 0, dy: -oH*0.75, key: 'divider', divider: true});
+  }
+  return {name, x, y, w: outer, h: oH, shapes, dims, leaders};
 }
 
 function layoutFor(tray, fmt, unit){
   const g = placed(tray), p = g.p;
-  const exact = v => fmtInputValue(fromMM(v, unit), unit);
   const gap = Math.max(g.L, g.W, g.H)*0.32;
 
   const front = elevation(g, 'FRONT', 0, 0, 'L', g.runAlongL);
   const top   = topTile(g, 0, -(g.W + gap));
   const right = elevation(g, 'RIGHT', g.L + gap, 0, 'W', !g.runAlongL);
+  return {tiles: [front, top, right], g, p};
+}
 
-  // Heights go on the FRONT view's free (left) side, STACKED the way a drawing
-  // stacks them: the feature (trough depth, from the rim down to the cell
-  // floor) inboard at rank 0, the overall outboard at rank 1. Both on the
-  // OUTSIDE of the pair — a callout parked in the gap between two views reads
-  // as belonging to whichever it happens to sit nearer, which is the FRONT
-  // view, not the one it dimensions. RIGHT repeats the overall height on its
-  // own right side, which is correct multiview practice.
-  front.dims.push({orient: 'v', y1: g.H - p.H, y2: g.H - p.floor, side: 'left',
-                   value: p.cellH, key: 'cellH'});
-  front.dims.push({orient: 'v', y1: 0, y2: g.H, side: 'left', rank: 1, value: g.H, key: 'overallH'});
-  right.dims.push({orient: 'h', x1: 0, x2: g.W, side: 'above', value: g.W});
-  right.dims.push({orient: 'v', y1: 0, y2: g.H, side: 'right', value: g.H});
-
-  const cells = `${p.nCells} cell${p.nCells === 1 ? '' : 's'}`;
-  // the drawing dimensions the TRAY; the chain hands the wrap an envelope that
-  // also covers product standing proud of the cells. Say both when they differ,
-  // exactly as the 3D depth's HUD does, so the two can never read as a
-  // contradiction (tray3d.js's `outer` doc carries the same note).
-  const caption = `tray ${fmt(g.L)} × ${fmt(g.W)} × ${fmt(g.H)} ${unit} · ${cells}` +
-    (tray.proud ? ` · envelope ${fmt(tray.outer.H)} ${unit} tall over proud product` : '');
-
-  // NOTES — the values a callout could not letter legibly at this scale (a
-  // 2.5mm flange against a 139mm tray) plus the BASE, stated as the base so it
-  // can never be mistaken for the headline envelope dims. Drafting practice:
-  // small and non-geometric values belong in a notes block, not on a leader
-  // that overlaps the part. `effectiveDraftDeg` is the angle the tray actually
-  // has — trayParams reduces it when the wall is too thin to take the full one.
-  // NOTE the formatter: `exact` (the rail's own fmtInputValue), not the
-  // callouts' whole-mm fmtLen. A 2.5mm flange rounds to "3" under fmtLen, and
-  // a note that restates a PARAMETER has to read the same as the field the
-  // user typed it into — the callouts dimension drawn geometry, these restate
-  // inputs. Same values, the precision each is for.
-  const notes = [
-    `wall ${exact(p.wall)} · divider ${exact(p.divider)}`,
-    `flange ${exact(p.stripL)} × ${exact(p.stripW)}, ${exact(p.flangeT)} thick · lip ${exact(p.lipH)}`,
-    `draft ${p.effectiveDraftDeg.toFixed(1)}° · cradle R ${exact(p.cradleR)}`,
-    `base (drafted, not the envelope) ${exact(g.bottomL)} × ${exact(g.bottomW)} ${unit}`
+/**
+ * The TITLE BLOCK rows — the pallet sheet's own pattern (export/palletpdf.js):
+ * an eyebrow label over a mono value, grouped and ruled, in the same design
+ * tokens. The two documents are meant to read as one family, so the layout is
+ * borrowed rather than reinvented.
+ *
+ * COMPOSITION ONLY, exactly as that sheet's doc insists: every number here is
+ * already-resolved and merely formatted. `exact` is the rail's own
+ * fmtInputValue rather than the callouts' whole-mm fmtLen — a 2.5mm flange
+ * rounds to "3" under fmtLen, and a block that restates a PARAMETER has to
+ * read the same as the field the user typed it into.
+ *
+ * MATERIAL, not "gauge": a thermoformed part is drawn from a sheet of some
+ * starting gauge, and this model does not carry one — it carries the wall,
+ * floor and divider thicknesses. Naming the row for what the model actually
+ * knows beats printing a plausible number the model never had.
+ */
+function titleRows(tray, g, p, fmt, exact, unit, dateStr){
+  const rows = [
+    ['Part', 'Thermoformed sizing tray'],
+    ['Overall (max section)', `${fmt(g.L)} × ${fmt(g.W)} × ${fmt(g.H)} ${unit}`]
   ];
-  return {tiles: [front, top, right], caption, notes};
+  // the drawing dimensions the TRAY; the chain hands the wrap an envelope that
+  // also covers product standing proud of the cells. State both when they
+  // differ, exactly as the 3D depth's HUD does, so the two can never read as a
+  // contradiction (tray3d.js's `outer` doc carries the same note).
+  if(tray.proud)
+    rows.push(['Envelope (proud product)',
+               `${fmt(tray.outer.L)} × ${fmt(tray.outer.W)} × ${fmt(tray.outer.H)} ${unit}`]);
+  rows.push(
+    ['Base (drafted)', `${exact(g.bottomL)} × ${exact(g.bottomW)} ${unit}`],
+    ['Cells', `${p.nCells} × ${tray.perCell} = ${tray.total} products`],
+    ['Cell L × W × D', `${fmt(p.cellLen)} × ${fmt(p.cellWid)} × ${fmt(p.cellH)} ${unit}` +
+                           ` · pitch ${fmt(p.pitch)} · cradle R ${exact(p.cradleR)}`],
+    ['Material', `wall ${exact(p.wall)} · divider ${exact(p.divider)} · floor ${exact(p.floor)} ${unit}`],
+    ['Rim', `flange ${exact(p.stripL)} × ${exact(p.stripW)}, ${exact(p.flangeT)} thick` +
+            ` · lip ${exact(p.lipH)} ${unit}`],
+    ['Draft', `${p.effectiveDraftDeg.toFixed(1)}°`],
+    ['Units · scale · date', `${unit} · NTS · ${dateStr}`]
+  );
+  return rows;
 }
 
 /** @param {SVGElement} svg
  *  @param {Object} tray  a resolved tray stage: {params, outer, proud, ...}
  *  @param {'mm'|'in'} unit  display unit for labels only
+ *  @param {string} dateStr  the sheet's date stamp, from the app's ONE stamper
  *  @returns {{w:number,h:number}} overall drawing extents, mm */
-export function drawTray2d(svg, tray, unit){
+export function drawTray2d(svg, tray, unit, dateStr){
   const fmt = v => fmtLen(v, unit);
-  const {tiles, caption, notes} = layoutFor(tray, fmt, unit);
+  const exact = v => fmtInputValue(fromMM(v, unit), unit);
+  const {tiles, g, p} = layoutFor(tray, fmt, unit);
 
   const minX = Math.min(...tiles.map(t => t.x)), maxX = Math.max(...tiles.map(t => t.x + t.w));
   const minY = Math.min(...tiles.map(t => t.y)), maxY = Math.max(...tiles.map(t => t.y + t.h));
   const w = maxX - minX, h = maxY - minY;
-  const m = Math.max(w, h)*0.22 + (unit === 'mm' ? 24 : 25.4);
-  const capH = m*0.6;
-  const VW = w + 2*m, VH = h + 2*m + capH;
-  const ox = m - minX, oy = m - minY + capH;
+  // the margin has to hold the deepest DIMENSION TIER, not just a fixed
+  // fraction: three tiers of callouts outside a view need room, and a sheet
+  // sized for one would clip the outermost — value-correct and invisible.
+  const m = Math.max(w, h)*0.30 + (unit === 'mm' ? 24 : 25.4);
+  const rows = titleRows(tray, g, p, fmt, exact, unit, dateStr);
+  // ONE scale for the whole sheet, taken from the DRAWING area before the
+  // title block is added. Sizing the block from one strokeW and lettering it
+  // from another is the two-computation bug in miniature: the band reserved
+  // 10 rows and the renderer drew 10 taller ones, so the last row fell off
+  // the sheet (measured: content to 614.4 on a 603.9 sheet).
+  const DW = w + 2*m, DH = h + 2*m;
+  const strokeW = Math.max(DW, DH)/460;
+  const rowH = strokeW*13;
+  const blockH = rows.length*rowH + strokeW*34;            // title block band, at the foot
+  // a HEADER band at the head, for the same reason a printed sheet has one:
+  // the app floats its view-switch pill over the top of the canvas, and the
+  // outermost callout — the overall length — was landing under it
+  const padTop = strokeW*30;
+  const VW = DW, VH = DH + blockH + padTop;
+  const ox = m - minX, oy = m - minY + padTop;             // world -> svg translation
 
-  const strokeW = Math.max(VW, VH)/460;
   const dimFS = strokeW*9, dw = strokeW*0.7, tick = dimFS*0.5;
   const off = Math.max(w, h)*0.06 + dimFS*1.6;
-  const dash = `stroke-dasharray="${strokeW*3} ${strokeW*2}"`;
+  const step = dimFS*2.8;                                  // one dimension tier
 
   let body = '';
+  const styleOf = id => {
+    const t = LINE[id] || LINE.outline;
+    return `stroke="${t.color}" stroke-width="${strokeW*t.w}" fill="${t.fill}"` +
+      (t.dash ? ` stroke-dasharray="${strokeW*3} ${strokeW*2}"` : '');
+  };
+
   for(const t of tiles){
     const x = t.x + ox, y = t.y + oy;
     body += `<text x="${x}" y="${y - strokeW*3}" fill="var(--muted)" font-family="var(--mono)" ` +
       `font-size="${strokeW*10}" letter-spacing="0.08em">${t.name}</text>`;
     for(const s of t.shapes){
-      const stroke = s.hidden
-        ? `stroke="${HID}" stroke-width="${strokeW*0.6}" ${dash} fill="none"`
-        : `stroke="var(--ink)" stroke-width="${strokeW}" fill="rgba(20,26,31,0.04)"`;
+      const stroke = styleOf(s.line);
       if(s.kind === 'rect'){
         if(s.w <= 0 || s.h <= 0) continue;
         const r = s.r ? ` rx="${Math.min(s.r, s.w/2, s.h/2)}"` : '';
@@ -263,39 +369,61 @@ export function drawTray2d(svg, tray, unit){
       }
     }
     for(const d of t.dims){
-      const val = fmt(d.value);
-      const clear = off + (d.rank || 0)*dimFS*2.8;      // stacked callouts step outward
+      const clear = off + (d.rank || 0)*step;              // stacked tiers step outward
+      const o = {key: d.key, label: d.label};
+      const shown = (d.exactVal ? exact : fmt)(d.value);
       if(d.orient === 'h'){
         const dy = d.side === 'below' ? y + t.h + clear : y - clear;
-        body += dimLine('h', x + d.x1, dy, x + d.x2, dy, val, dimFS, dw, tick, d.key);
+        body += dimLine('h', x + d.x1, dy, x + d.x2, dy, shown, dimFS, dw, tick, o);
       }else{
         const dx = d.side === 'right' ? x + t.w + clear : x - clear;
-        body += dimLine('v', dx, y + d.y1, dx, y + d.y2, val, dimFS, dw, tick, d.key);
+        body += dimLine('v', dx, y + d.y1, dx, y + d.y2, shown, dimFS, dw, tick, o);
       }
+    }
+    for(const l of t.leaders){
+      const text = l.angle    ? `DRAFT ${p.effectiveDraftDeg.toFixed(1)}°`
+                 : l.divider  ? `DIVIDER ${exact(p.divider)}`
+                 : l.lip      ? `LIP ${exact(p.lipH)}`
+                 : `FLANGE ${exact(p.stripL)}`;
+      body += leader(x + l.px, y + l.py, x + l.px + l.dx, y + l.py + l.dy,
+                     text, dimFS, dw, {key: l.key});
     }
   }
 
-  body += `<text x="${VW/2}" y="${capH*0.62}" fill="var(--muted)" font-family="var(--mono)" ` +
-    `font-size="${dimFS}" text-anchor="middle">${caption}</text>`;
-  // NOTES, wrapped to the sheet. SVG does not wrap text, and an over-long line
-  // is CLIPPED at the viewBox edge — value-correct and invisible, the exact
-  // failure mode the blank GRID fields had. So the notes are packed into lines
-  // that fit: monospace at `fs` is ~0.6*fs per character, which is a bound
-  // rather than a guess for the one font family this drawing uses. The block
-  // sits under the lowest callout, growing upward, so more notes never push
-  // into the drawing.
-  const nfs = dimFS*0.85, perChar = nfs*0.6, maxChars = Math.max(20, Math.floor((VW - 2*nfs)/perChar));
-  const lines = [];
-  for(const n of notes){
-    const last = lines[lines.length - 1];
-    if(last && (last.length + 3 + n.length) <= maxChars) lines[lines.length - 1] = `${last}  ·  ${n}`;
-    else lines.push(n);
-  }
-  lines.forEach((ln, i) => {
-    const yb = VH - nfs*0.8 - (lines.length - 1 - i)*nfs*1.35;
-    body += `<text class="tray2dNote" x="${VW/2}" y="${yb}" fill="var(--ink-3)" ` +
-      `font-family="var(--mono)" font-size="${nfs}" text-anchor="middle">${ln}</text>`;
+  /* ---- title block: the pallet sheet's pattern, at the foot of the sheet --- */
+  const bTop = VH - blockH, bx = m*0.5, bw = VW - m;
+  const eb = strokeW*7.2, val = strokeW*9.4;
+  body += `<line x1="${bx}" y1="${bTop}" x2="${bx + bw}" y2="${bTop}" ` +
+    `stroke="var(--line)" stroke-width="${strokeW*0.7}"/>`;
+  body += `<text class="tray2dTB" x="${bx}" y="${bTop + strokeW*13}" fill="var(--accent)" ` +
+    `font-family="var(--mono)" font-size="${eb}" letter-spacing="0.14em">TRAY · MULTIVIEW (THIRD ANGLE)</text>`;
+  rows.forEach(([k, v], i) => {
+    const ry = bTop + strokeW*28 + i*rowH;
+    // AUTO-FIT the value against its own label. The block is one mono type at
+    // a known size, so both widths are computable rather than hoped for; a
+    // long row (the cell line) otherwise runs straight through its own label,
+    // which is what the first draft did. Shrinking the value is the right
+    // give: the label is fixed vocabulary, the value is the content.
+    const labelW = k.length*eb*0.66, room = bw - labelW - strokeW*6;
+    const vfs = Math.min(val, room/Math.max(1, v.length*0.62));
+    body += `<text class="tray2dTB" x="${bx}" y="${ry}" fill="var(--ink-3)" font-family="var(--mono)" ` +
+      `font-size="${eb}" letter-spacing="0.1em">${k.toUpperCase()}</text>`;
+    body += `<text class="tray2dTB" data-tb="${k}" x="${bx + bw}" y="${ry}" fill="var(--ink)" ` +
+      `font-family="var(--mono)" font-size="${vfs}" text-anchor="end">${v}</text>`;
   });
+
+  /* ---- line-type legend: three types are in play, so the sheet names them -- */
+  const lx = bx, ly = bTop - strokeW*8;
+  let lcur = lx;
+  for(const t of TRAY_LINE_TYPES){
+    const seg = strokeW*11;
+    body += `<line class="tray2dKey" x1="${lcur}" y1="${ly}" x2="${lcur + seg}" y2="${ly}" ` +
+      `stroke="${t.color}" stroke-width="${strokeW*Math.max(t.w, 0.7)}"` +
+      (t.dash ? ` stroke-dasharray="${strokeW*3} ${strokeW*2}"` : '') + '/>';
+    body += `<text class="tray2dKey" x="${lcur + seg + strokeW*3}" y="${ly + eb*0.36}" ` +
+      `fill="var(--ink-3)" font-family="var(--mono)" font-size="${eb}">${t.label}</text>`;
+    lcur += seg + strokeW*3 + t.label.length*eb*0.62 + strokeW*10;
+  }
 
   view2d.base = [0, 0, VW, VH];
   apply2dView(svg);

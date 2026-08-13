@@ -149,14 +149,39 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   mutation passed the first version of the pin). The three drawings now share
   ONE callout renderer, `render/dim2d.js` — lifted out of product2d.js rather
   than copied a third time; its optional `key` tags a label `data-dim="…"` so
-  a pin reads the value the drawing RENDERED, by name. The 2D LEGEND is a
+  a pin reads the value the drawing RENDERED, by name, and its optional
+  `label` NAMES the callout: an unlabelled number beside another of similar
+  size is ambiguous however correct it is (a bare 50 under an elevation reads
+  as an overall), so only the envelope L/W go bare and everything else carries
+  BASE / CELL L / CELL W / CELL DEPTH / PITCH. Features a dimension line
+  cannot letter (a 2.5mm flange on a 139mm sheet — `dimLine` suppresses those
+  outright) and quantities that are not linear at all (the draft ANGLE) get
+  `leader()` instead. The sheet carries a TITLE BLOCK in the pallet PDF's own
+  pattern (eyebrow label, mono value, design tokens) rather than a prose
+  caption, and a THREE-TYPE line vocabulary — outline / cell / hidden —
+  because dashed had been doing double duty and the dividers vanished at four
+  cells. `TRAY_LINE_TYPES` is the one definition; the sheet legend and the
+  rail legend both read it. The 2D LEGEND is a
   claim about what is on screen, same as the 3D HUD's swatches: it is written
   from the level (`LEGEND_2D`, app.js) into `#hud2dKeys`, because a multiview
   contains no cut and no crease to name — the static "Cut / Crease" markup had
   been over-claiming at the product level already. (Adding that node meant
   adding it to `test/uisync.test.html`'s DOM skeleton too — the harness rule
   below, hit again: app.js wrote to a null element and every pin in the file
-  died at import.)
+  died at import.) Three more instrument faults surfaced by mutation
+  in the same file: the title-block band was SIZED from one strokeW and drawn
+  at another (the two-computation bug in miniature — the last row fell off the
+  sheet); `export/png.js` inlined `var(--x)` from a HAND-MAINTAINED token list
+  that had no `--accent`, so the exported PNG dropped every cell line and the
+  legend swatch while the screen was perfect (the list is now SCANNED out of
+  the markup and cannot go stale); and the harness had no design tokens at all,
+  which made both the text-metric and the token-resolution pins unable to fail
+  — it now pulls index.html's own `:root` block synchronously at boot, so the
+  tokens are the app's, not a copy. DATES go through `core/stamp.js`: the zone
+  is NAMED (`America/New_York`, so the daylight rule is live rather than a
+  hardcoded -5), because reading the host's zone stamped a sheet generated at
+  9pm Eastern with TOMORROW's date, and a document dated in the future is how
+  a reader tells two revisions apart.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.

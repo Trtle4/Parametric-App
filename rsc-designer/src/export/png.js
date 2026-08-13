@@ -13,21 +13,36 @@
  */
 import {view2d} from '../render/dieline2d.js';
 
-// CSS custom properties the 2D renderers emit as var(--x); the rest of the
-// SVG uses literal hex already (seal-zone amber, bleed red, reference greys).
-const CSS_TOKENS = ['--cut', '--crease', '--ink', '--ink-2', '--ink-3', '--muted', '--mono', '--sans'];
-
-/** Replace every var(--token) with its computed literal value. Font families
- *  carry double quotes ("DM Mono",…) that would break the double-quoted SVG
- *  attribute they sit in, so those get re-quoted single. */
-function inlineTokens(markup){
+/**
+ * Replace every var(--token) in the markup with its computed literal value.
+ *
+ * A standalone SVG has no document to inherit custom properties from, so any
+ * var() left in it is INVALID AT COMPUTED-VALUE TIME — and an invalid `stroke`
+ * falls back to `none`. The line does not go wrong, it goes MISSING, only in
+ * the export, which is where nobody is looking.
+ *
+ * The tokens are therefore SCANNED OUT OF THE MARKUP, never listed here. The
+ * list this replaced was hand-maintained and had gone stale exactly as this
+ * codebase's one-writer rule predicts: the tray drawing introduced
+ * `var(--accent)` for its cell boundaries, the list did not have it, and the
+ * exported PNG dropped every cell line and the legend swatch that names them
+ * while the on-screen drawing was perfect. Scanning cannot go stale.
+ *
+ * Font families carry double quotes ("DM Mono",…) that would break the
+ * double-quoted SVG attribute they sit in, so those get re-quoted single.
+ *
+ * Exported so a pin can run the app's REAL drawing markup through it and
+ * assert nothing is left unresolved.
+ */
+export function inlineTokens(markup){
   const cs = getComputedStyle(document.documentElement);
+  const seen = new Set(markup.match(/var\(--[a-zA-Z0-9-]+\)/g) || []);
   let out = markup;
-  for(const tok of CSS_TOKENS){
-    let val = cs.getPropertyValue(tok).trim();
+  for(const ref of seen){
+    let val = cs.getPropertyValue(ref.slice(4, -1)).trim();
     if(!val) continue;
     if(val.includes('"')) val = val.replace(/"/g, "'");
-    out = out.split(`var(${tok})`).join(val);
+    out = out.split(ref).join(val);
   }
   return out;
 }

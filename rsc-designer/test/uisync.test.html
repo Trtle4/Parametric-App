@@ -3,14 +3,32 @@
 <head>
 <meta charset="utf-8">
 <title>UI sync tests</title>
-<!-- The ONE style the harness needs: index.html's own --mono. The 2D
-     drawings set font-family="var(--mono)", and text METRICS follow the font
-     that actually resolves — with the variable undefined, a proportional
-     fallback measures ~25% narrower than the real app and an overflowing line
-     fits inside the sheet. Measured: the notes-clipping pin passed its own
-     mutation for exactly that reason. Same value as index.html; nothing else
-     of the stylesheet is pulled in. -->
-<style>:root{--mono:"DM Mono",ui-monospace,monospace}</style>
+<!-- The harness takes the app's OWN design tokens, fetched from index.html
+     at boot rather than copied here. Two reasons it needs them at all, both
+     found by mutation: text METRICS follow the font that actually resolves,
+     so with --mono undefined a proportional fallback measures ~25% narrower
+     and an overflowing line "fits"; and the PNG exporter inlines var(--x)
+     from the live document, so with no tokens defined nothing resolves and
+     the export pin cannot tell a working exporter from a broken one. Only
+     the :root token block is pulled in — none of the layout CSS, which the
+     skeleton deliberately does without. -->
+<script>
+  // synchronous on purpose: the tokens must be in the document BEFORE app.js
+  // boots and before the first pin measures anything. A fetch would land after
+  // both, and a pin reading an unstyled document is a pin that cannot fail.
+  (function(){
+    try{
+      const x = new XMLHttpRequest();
+      x.open('GET', '../index.html', false);
+      x.send();
+      const m = x.responseText.match(/:root\{[\s\S]*?\n\s*\}/);
+      if(!m) throw new Error('no :root token block in index.html');
+      const st = document.createElement('style');
+      st.textContent = m[0];
+      document.head.appendChild(st);
+    }catch(e){ document.write('<h1>token load failed: ' + e.message + '</h1>'); }
+  })();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
@@ -187,8 +205,11 @@ import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capture
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
-import {toMM, fmtLen} from '../src/core/units.js';
+import {toMM, fmtLen, fmtInputValue} from '../src/core/units.js';
 import {view2d} from '../src/render/dieline2d.js';
+import {TRAY_LINE_TYPES, drawTray2d} from '../src/render/tray2d.js';
+import {dateStamp, STAMP_ZONE} from '../src/core/stamp.js';
+import {inlineTokens} from '../src/export/png.js';
 import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
@@ -1613,51 +1634,177 @@ await (async () => {
       if(new Set([p.cellLen, p.cellWid, p.cellH]).size < 3)
         throw new Error(`vacuous fixture: the cell dims coincide (${p.cellLen}/${p.cellWid}/${p.cellH}) ` +
                         'so a swapped pair would pass');
-      eq(dimText('cellLen'), fmtLen(p.cellLen, u), 'cell length:');
-      eq(dimText('cellWid'), fmtLen(p.cellWid, u), 'cell width:');
-      eq(dimText('cellH'),   fmtLen(p.cellH, u),   'cell (trough) depth:');
+      // the LABEL is part of the callout now: '50' alone under an elevation
+      // read as an overall, which is the ambiguity the names remove
+      eq(dimText('cellLen'), `CELL L ${fmtLen(p.cellLen, u)}`, 'cell length:');
+      eq(dimText('cellWid'), `CELL W ${fmtLen(p.cellWid, u)}`, 'cell width:');
+      eq(dimText('cellH'), `CELL DEPTH ${fmtLen(p.cellH, u)}`, 'cell (trough) depth:');
       if(!(p.divider > 0)) throw new Error('vacuous fixture: pitch equals cell width with no divider');
-      eq(dimText('pitch'),   fmtLen(p.pitch, u),   'cell pitch (centre to centre):');
+      eq(dimText('pitch'), `PITCH ${fmtLen(p.pitch, u)}`, 'cell pitch (centre to centre):');
       eq(p.longAxis, 'X', 'fixture axis:');
       if(!hasRect(p.cellLen, p.cellWid))
         throw new Error('the plan draws no cell mouth running along the placed L');
     });
   });
 
-  t('tray 2D: the notes state the base AS the base, and no line is clipped', () => {
-    // Two failures in one pin, because they hide each other. (1) The drafted
-    // base has to appear labelled as the base — it is the number that must
-    // never be mistaken for the envelope. (2) SVG does not wrap text and a
-    // long line is silently CLIPPED at the sheet edge: value-correct and
-    // invisible, exactly the blank-GRID-field failure. Measure the rendered
-    // box against the viewBox rather than trusting the string.
+  t('tray 2D: the title block states the base AS the base, in the pallet family', () => {
+    // The block replaced a prose caption, and carries the values a callout
+    // cannot letter. The BASE row is the one that must never be mistaken for
+    // the envelope, so it is named and checked against the parameter.
     withTrayDrawing(() => {
-      // measure against the SHEET (view2d.base), not the live viewBox: the
-      // viewBox carries the shared zoom/pan, so a pin that read it would call
-      // an overflowing line "fitting" the moment an earlier pin left the view
-      // zoomed out — measured, that is exactly what happened here.
+      const rows = [...el('svg').querySelectorAll('.tray2dTB[data-tb]')];
+      if(!rows.length) throw new Error('the drawing has no title block');
+      const by = k => {
+        const n = rows.find(r => r.getAttribute('data-tb').toLowerCase().startsWith(k));
+        if(!n) throw new Error(`the title block has no "${k}" row (has: ${
+          rows.map(r => r.getAttribute('data-tb')).join(', ')})`);
+        return n.textContent;
+      };
+      const p = trayNow().params, u = inputs.getUnit();
+      const ex = v => fmtInputValue(v, u);
+      eq(by('base'), `${ex(p.bottomL)} × ${ex(p.bottomW)} ${u}`, 'BASE row is the drafted base:');
+      if(by('base') === `${ex(p.outerL)} × ${ex(p.outerW)} ${u}`)
+        throw new Error('the BASE row restates the envelope');
+      if(!/mm|in/.test(by('units'))) throw new Error('no units in the title block');
+      if(!/NTS/.test(by('units'))) throw new Error('no scale note in the title block');
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(by('units').split('·').pop().trim()))
+        throw new Error(`the title block date is not an ISO stamp: "${by('units')}"`);
+      if(!/\u00b0/.test(by('draft'))) throw new Error('the draft angle is not stated');
+      eq(by('cells'), `${p.nCells} \u00d7 ${trayNow().perCell} = ${trayNow().total} products`, 'cell configuration:');
+    });
+  });
+
+  t("date stamp: dated in the reader's zone, so a sheet is never dated tomorrow", () => {
+    // THE defect, reported from the field: a sheet stamped with tomorrow's
+    // date. getFullYear/getMonth/getDate read the HOST's zone, and a machine
+    // running UTC rolls over five hours (four in daylight time) before the
+    // reader does. Pinned on fixed instants rather than the clock, so the
+    // rollover is testable at any hour of the day.
+    // 02:00 UTC on the 13th is 22:00 on the 12th in Eastern daylight time
+    eq(dateStamp(new Date('2026-08-13T02:00:00Z')), '2026-08-12', 'summer evening, still the 12th:');
+    eq(dateStamp(new Date('2026-08-13T12:00:00Z')), '2026-08-13', 'summer midday, the 13th:');
+    // the offset is -4 in summer and -5 in winter; a hardcoded offset would be
+    // an hour out for eight months of the year, so the winter side is pinned too
+    eq(dateStamp(new Date('2026-01-13T02:00:00Z')), '2026-01-12', 'winter evening, still the 12th:');
+    eq(dateStamp(new Date('2026-01-13T06:00:00Z')), '2026-01-13', 'winter 1am Eastern, the 13th:');
+    // and the DAYLIGHT rule has to be live, not a hardcoded -5: at 04:30 UTC in
+    // August it is 00:30 on the 13th in Eastern (-4) but still the 12th under a
+    // fixed -5, so this instant is the one that separates the two
+    eq(dateStamp(new Date('2026-08-13T04:30:00Z')), '2026-08-13',
+       'summer, just past midnight Eastern (a fixed -5 offset would say the 12th):');
+    // the name comes LAST, so a wrong zone fails on what it DOES first
+    eq(STAMP_ZONE, 'America/New_York', 'the zone is NAMED, never inherited:');
+    // the fixture only bites where the two zones DISAGREE
+    if(new Date('2026-08-13T02:00:00Z').getUTCDate() !== 13)
+      throw new Error('vacuous fixture: pick an instant that has already rolled over in UTC');
+  });
+
+  t('tray 2D: the sheet is dated by the app\'s stamper, not by a clock of its own', () => {
+    // Structural, and checked: the drawing takes the stamp as an ARGUMENT, so
+    // it cannot read a clock. Hand it a date no clock would produce and the
+    // sheet must show that one.
+    withTrayDrawing(() => {
+      drawTray2d(el('svg'), trayNow(), inputs.getUnit(), '1999-12-31');
+      const row = [...el('svg').querySelectorAll('.tray2dTB[data-tb]')]
+        .find(r => /units/i.test(r.getAttribute('data-tb')));
+      if(!row) throw new Error('no units/date row in the title block');
+      if(!row.textContent.includes('1999-12-31'))
+        throw new Error(`the sheet ignored the stamp it was given: "${row.textContent}"`);
+    });
+  });
+
+  t('tray 2D: EVERY callout is labelled, and nothing runs off the sheet', () => {
+    // Two legibility failures that are invisible to a value assertion.
+    // (1) An unnamed number beside another of similar size is ambiguous: a
+    // bare 50 under an elevation reads as an overall. Only the envelope L/W
+    // may go bare. (2) SVG neither wraps nor grows: text past the sheet edge
+    // is silently clipped — value-correct and invisible, the blank-GRID-field
+    // failure. Measure against the SHEET (view2d.base), never the live
+    // viewBox: that carries the shared zoom, so an earlier pin leaving the
+    // view zoomed out would make an overflowing line "fit" (measured — it did).
+    withTrayDrawing(() => {
       const svg = el('svg'), vb = view2d.base;
-      const notes = [...svg.querySelectorAll('.tray2dNote')];
-      if(!notes.length) throw new Error('the drawing has no notes block');
-      const text = notes.map(n => n.textContent).join('  ');
-      const p = trayNow().params;
-      if(!/base/i.test(text)) throw new Error(`the base is not stated: "${text}"`);
-      for(const v of [p.bottomL, p.bottomW])
-        if(!text.includes(String(+v.toFixed(3))))
-          throw new Error(`the base dimension ${v} is missing from the notes: "${text}"`);
-      if(text.includes(`${+p.outerL.toFixed(3)} × ${+p.outerW.toFixed(3)}`))
-        throw new Error('the notes restate the envelope where the base belongs');
-      for(const n of notes){
-        const bb = n.getBBox();
-        // certify the instrument: an unrendered/unmeasurable text node reports
-        // a zero box, and every bounds test below would then pass vacuously —
-        // a false green that looks exactly like a fitting line
-        if(!(bb.width > 0))
-          throw new Error(`cannot measure "${n.textContent}" — the clipping check would be vacuous`);
-        if(bb.x < vb[0] - 0.01 || bb.x + bb.width > vb[0] + vb[2] + 0.01)
-          throw new Error(`a notes line runs off the sheet and is clipped: "${n.textContent}" ` +
-            `spans ${bb.x.toFixed(1)}..${(bb.x + bb.width).toFixed(1)} of ${vb[0]}..${vb[0] + vb[2]}`);
+      const BARE = new Set(['overallL', 'overallW']);
+      const dims = [...svg.querySelectorAll('[data-dim]')];
+      if(dims.length < 8) throw new Error(`only ${dims.length} callouts — the sheet lost dimensions`);
+      for(const d of dims){
+        const k = d.getAttribute('data-dim');
+        const named = /[A-Z]{2,}/.test(d.textContent);
+        if(BARE.has(k)){
+          if(named) throw new Error(`${k} is the envelope and should read bare: "${d.textContent}"`);
+        }else if(!named){
+          throw new Error(`callout "${k}" is unlabelled: "${d.textContent}" — ambiguous beside its neighbours`);
+        }
       }
+      // nothing — callout, leader, title block or legend — past the sheet edge
+      for(const n of svg.querySelectorAll('text, tspan')){
+        const bb = n.getBBox();
+        // certify the instrument: an unmeasurable node reports a zero box and
+        // every bounds test below would pass vacuously, which looks exactly
+        // like a fitting sheet
+        if(!(bb.width > 0)) throw new Error(`cannot measure "${n.textContent}" — the check would be vacuous`);
+        if(bb.x < vb[0] - 0.01 || bb.x + bb.width > vb[0] + vb[2] + 0.01 ||
+           bb.y < vb[1] - 0.01 || bb.y + bb.height > vb[1] + vb[3] + 0.01)
+          throw new Error(`"${n.textContent}" runs off the sheet: ` +
+            `${bb.x.toFixed(1)},${bb.y.toFixed(1)} to ${(bb.x + bb.width).toFixed(1)},` +
+            `${(bb.y + bb.height).toFixed(1)} of ${vb[2].toFixed(1)}x${vb[3].toFixed(1)}`);
+      }
+    });
+  });
+
+  t('2D PNG export: every design token resolves, so no line goes missing', () => {
+    // A standalone SVG inherits no custom properties: a var() the exporter
+    // fails to inline is INVALID, and an invalid stroke falls back to `none`.
+    // The line does not go wrong, it disappears — in the export only, which is
+    // where nobody looks. The hand-maintained token list this pin replaced had
+    // already gone stale on --accent: the exported sheet dropped every cell
+    // boundary and the legend swatch naming them.
+    withTrayDrawing(() => {
+      const markup = el('svg').innerHTML;
+      const used = [...new Set(markup.match(/var\(--[a-zA-Z0-9-]+\)/g) || [])];
+      if(used.length < 2)
+        throw new Error(`vacuous fixture: the drawing uses ${used.length} tokens`);
+      const out = inlineTokens(markup);
+      const left = [...new Set(out.match(/var\(--[a-zA-Z0-9-]+\)/g) || [])];
+      if(left.length)
+        throw new Error(`unresolved in the export: ${left.join(', ')} (drawing uses ${used.join(', ')})`);
+    });
+  });
+
+  t('tray 2D: three line types, distinguishable, and the legend names them', () => {
+    // Dashed used to mean both "hidden" and "cell boundary", which is why the
+    // dividers vanished at four cells. The cell must be visually SEPARATE
+    // from the hidden edge — measured as different ink, not assumed — and the
+    // legend must name exactly what the drawing draws.
+    withTrayDrawing(() => {
+      const svg = el('svg');
+      const style = sel => {
+        const n = [...svg.querySelectorAll(sel)];
+        return n.map(x => `${x.getAttribute('stroke')}|${x.getAttribute('stroke-dasharray') || ''}`);
+      };
+      const all = new Set(style('rect, polygon, path'));
+      if(all.size < 3) throw new Error(`only ${all.size} line styles in the drawing: ${[...all].join(' , ')}`);
+      // the plan's cell mouths must not be drawn as hidden edges
+      const p = trayNow().params;
+      const cell = [...svg.querySelectorAll('rect')].find(r =>
+        Math.abs(+r.getAttribute('width') - p.cellLen) < 0.01 &&
+        Math.abs(+r.getAttribute('height') - p.cellWid) < 0.01);
+      if(!cell) throw new Error('no cell mouth in the plan');
+      const base = [...svg.querySelectorAll('rect')].find(r =>
+        Math.abs(+r.getAttribute('width') - p.bottomL) < 0.01);
+      if(!base) throw new Error('no drafted base outline in the plan');
+      if(cell.getAttribute('stroke') === base.getAttribute('stroke') &&
+         (cell.getAttribute('stroke-dasharray') || '') === (base.getAttribute('stroke-dasharray') || ''))
+        throw new Error('cell boundaries and hidden edges are drawn identically — ' +
+          'the dividers cannot read against the base outline');
+      // the legend is a claim about the ink: it must name every type, and the
+      // rail's legend is fed from the SAME list, so they cannot disagree
+      const keys = [...svg.querySelectorAll('text.tray2dKey')].map(n => n.textContent);
+      for(const t of TRAY_LINE_TYPES)
+        if(!keys.includes(t.label)) throw new Error(`the sheet legend omits "${t.label}"`);
+      const rail = el('hud2dKeys').textContent;
+      for(const t of TRAY_LINE_TYPES)
+        if(!rail.includes(t.label)) throw new Error(`the rail legend omits "${t.label}"`);
     });
   });
 
