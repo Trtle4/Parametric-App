@@ -95,6 +95,7 @@ export function init3d(container){
   // default (the same cleared-buffer trap the ViewCube diagnosis hit).
   renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, preserveDrawingBuffer:true});
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  setStageBackground(stageBg);                 // apply a choice made before init
   container.appendChild(renderer.domElement);
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100000);
@@ -387,6 +388,57 @@ function frameCamera(){
  *  reads it back (needs preserveDrawingBuffer), then restores the on-screen
  *  size — all synchronous, so the animation loop never sees the enlarged
  *  buffer. Returns null if the 3D view isn't initialised. */
+/** Stage background — 'grid' (transparent canvas, the page's drafting grid
+ *  shows through) or 'white' (the renderer's own opaque clear colour).
+ *
+ *  ONE mechanism for the on-screen toggle and every capture: white is not a
+ *  post-process or an export-only variant, it is the colour the canvas
+ *  actually clears to, so what the user sees IS what toDataURL reads back.
+ *  A view preference, not project state — it lives on the renderer, which
+ *  scene rebuilds never touch, so it survives every recompute without
+ *  registering anywhere. */
+let stageBg = 'grid';
+export function setStageBackground(mode){
+  stageBg = mode === 'white' ? 'white' : 'grid';
+  if(!renderer) return;                        // stored; init3d applies it
+  if(stageBg === 'white') renderer.setClearColor(0xffffff, 1);
+  else renderer.setClearColor(0x000000, 0);
+}
+export const getStageBackground = () => stageBg;
+
+/** Render ONE fixed view at an explicit pixel size and read it back — the
+ *  print-capture path. Unlike capturePNG (the 3D PNG button, which grabs the
+ *  CURRENT camera at the on-screen aspect), this sets its own orbit and its
+ *  own backing-store size, so a PDF sheet gets consistent, print-resolution
+ *  views regardless of what the user was looking at. Restores everything —
+ *  orbit, pan, pixel ratio, canvas size — and repaints, all synchronously,
+ *  so the animation loop never sees the capture state. Background is
+ *  whatever setStageBackground says (the caller sets 'white' around a print
+ *  capture — the same mechanism as the toggle, not a second one). */
+export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92){
+  if(!renderer || !scene || !camera) return null;
+  const prev = {rotX, rotY, dist,
+                pan: panTarget ? {x: panTarget.x, y: panTarget.y, z: panTarget.z} : null,
+                pr: renderer.getPixelRatio()};
+  const size = new THREE.Vector2(); renderer.getSize(size);
+  rotX = rx; rotY = ry; dist = d;
+  if(panTarget) panTarget.set(0, 0, 0);        // a print view is centred, never panned
+  renderer.setPixelRatio(1);
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h;
+  frameCamera();
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/jpeg', quality);
+  rotX = prev.rotX; rotY = prev.rotY; dist = prev.dist;
+  if(panTarget && prev.pan) panTarget.set(prev.pan.x, prev.pan.y, prev.pan.z);
+  renderer.setPixelRatio(prev.pr);
+  renderer.setSize(size.x, size.y, false);
+  if(size.y > 0) camera.aspect = size.x/size.y;
+  frameCamera();
+  renderer.render(scene, camera);
+  return url;
+}
+
 export function capturePNG(scale = 2){
   if(!renderer || !scene || !camera || !cvWrap) return null;
   const w = cvWrap.clientWidth, h = cvWrap.clientHeight;

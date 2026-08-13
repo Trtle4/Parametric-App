@@ -28,7 +28,8 @@ import {downloadDXF} from '../export/dxf.js';
 import {downloadArtwork, downloadArtworkPNG, filmSpecText} from '../export/artwork.js';
 import {loadArtworkFile, defaultFit, composeArtCanvas, artImage} from '../render/artwork.js';
 import {buildWrapArt, showWrapArt, clearWrapArt} from '../render/artwork3d.js';
-import {downloadSvgPNG, savePNG} from '../export/png.js';
+import {downloadSvgPNG, savePNG, saveBlob} from '../export/png.js';
+import {buildPalletPdf} from '../export/palletpdf.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
@@ -1982,6 +1983,133 @@ el('btnPng3d').addEventListener('click', () => {
   const url = fold.capturePNG(2);
   if(url) savePNG(url, `${pngBaseName()}_${activeLevel}_3d.png`);
 });
+
+/* ---------- stage background: Grid (default) or White ----------
+ * A view preference like the camera, never project state. It lives on the
+ * renderer as its clear colour (fold3d.setStageBackground) — the ONE
+ * mechanism the on-screen toggle and the PDF capture share — and scene
+ * rebuilds never touch the clear colour, so it survives every recompute
+ * without registering with the notifier. Grid stays the default: it is a
+ * scale reference in a design tool, not decoration. */
+function setStageBg(mode){
+  fold.setStageBackground(mode);
+  const on = fold.getStageBackground();
+  for(const [g, w] of [['bgGrid', 'bgWhite'], ['shBgGrid', 'shBgWhite']]){
+    el(g).classList.toggle('on', on === 'grid');
+    el(w).classList.toggle('on', on === 'white');
+  }
+}
+['bgGrid', 'shBgGrid'].forEach(id => el(id).addEventListener('click', () => setStageBg('grid')));
+['bgWhite', 'shBgWhite'].forEach(id => el(id).addEventListener('click', () => setStageBg('white')));
+
+/* ---------- pallet summary PDF ----------
+ * Three print-resolution views on a white ground + the key numbers, one
+ * portrait letter page. The sheet READS the resolved row and the project —
+ * the same sources every readout uses — and never computes a dimension of
+ * its own: a second computation on a report sheet is exactly where the
+ * pallet height and the cell length bugs hid.
+ *
+ * Captures use fold3d's captureOrbitPNG with the stage background set to
+ * white through the SAME setStageBackground the toggle uses (then restored
+ * to whatever the user had). Cameras are fixed per view, not the on-screen
+ * camera — that is what separates this from the 3D PNG button. */
+function exportPalletPdf(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const outerNoun = describeChain(build.project).outerNoun;
+  if(!row || !row.geo || !row.geo[outerNoun] || !(row.casesPerPallet > 0)){
+    showNotice('No pallet result to export — the current chain does not palletize.', true);
+    return;
+  }
+  const bundle = hierarchyBundle();
+  if(!bundle){ showNotice('No pallet result to export.', true); return; }
+  if(!fold.isInit()) fold.init3d(el('cvWrap'));
+
+  const u = inputs.getUnit(), f = v => fmtLen(v, u);
+  const pal = build.project.pallet;
+  const nLoads = (pal.stacking && pal.stacking.doubleStack) ? 2 : 1;
+  const deckH = pal.baseH ?? 127;
+
+  const prevBg = fold.getStageBackground();
+  fold.setStageBackground('white');
+  // set the orbit, sync the camera with a throwaway 8px capture, THEN build:
+  // the cutaway's default open channel is chosen at build time from the
+  // camera's near corner, and the camera only moves on a frame.
+  // dist scales the frame: buildHierarchy sets camSpan to the subject's max
+  // extent, so dist < 1.35 zooms in. The top view frames on the FOOTPRINT
+  // (from overhead the load height contributes nothing, and a tall load left
+  // the plan view small in the middle of its panel); the cutaway sits a
+  // touch tighter than the iso because a single case fills its panel poorly
+  // at pallet framing.
+  const shot = (depth, solid, rx, ry, w, h, distOf) => {
+    fold.captureOrbitPNG(rx, ry, 1.35, 8, 8);
+    const res = hier.buildHierarchy(bundle, depth, {}, solid);
+    const d = distOf ? distOf(res) : 1.35;
+    return {data: fold.captureOrbitPNG(rx, ry, d, w, h, 0.92), w, h};
+  };
+  const HOME = fold.HOME_ORBIT;
+  let images;
+  try{
+    images = {
+      iso: shot('pallet', true, HOME.rotX, HOME.rotY, 1344, 1200),  // ~290 dpi placed
+      top: shot('pallet', true, Math.PI/2, 0, 1032, 920,
+                res => 0.78*Math.max(pal.L, pal.W)/(res.span || 1)),
+      cut: shot(bundle.caseGeo ? 'case' : 'carton', false, HOME.rotX, HOME.rotY, 1032, 920,
+                () => 0.85)
+    };
+  } finally {
+    fold.setStageBackground(prevBg);
+    // put the on-screen scene back for whatever view is actually up
+    if(view === '3d') apply3dMode();
+    else if(view === 'shelf') refreshShelf();
+    else hier.show(false);
+  }
+  if(!images.iso.data || !images.top.data || !images.cut.data){
+    showNotice('3D capture failed — open the 3D view once and retry.', true);
+    return;
+  }
+
+  const dims = o => `${f(o.L)} × ${f(o.W)} × ${f(o.H)} ${u}`;
+
+  const sections = [];
+  // CARTON — only when the tier is in the chain (label/omit, never blanks)
+  if(build.project.secondary.enabled !== false && row.geo.carton){
+    const rows = [['Outside dimensions', dims(row.geo.carton.outer)]];
+    if(outerNoun === 'case'){
+      rows.push(['Per case', `${row.cartonsPerCase}`]);
+      rows.push(['Per pallet', `${row.cartonsPerPallet}`]);
+    }else{
+      rows.push(['Per pallet', `${row.casesPerPallet}`]);   // carton IS the outer tier
+    }
+    sections.push({label: 'Carton', rows});
+  }
+  // CASE / outer shipper — row.casesPerPallet counts the OUTERMOST tier,
+  // exactly what the pallet readout shows
+  if(outerNoun === 'case' && row.geo.case){
+    sections.push({label: 'Case', rows: [
+      ['Outside dimensions', dims(row.geo.case.outer)],
+      ['Per pallet', `${row.casesPerPallet}`]
+    ]});
+  }
+  sections.push({label: 'Pallet', rows: [
+    ['Load (on deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(row.loadH*nLoads)} ${u}`],
+    ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(nLoads*(deckH + row.loadH))} ${u}`]
+  ]});
+
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const bytes = buildPalletPdf({
+    dateStr, unit: u, images,
+    captions: {iso: 'Pallet · isometric', top: 'Layer pattern · top',
+               cut: `${outerNoun} cutaway`},
+    sections
+  });
+  const filename = `PALLET_${f(pal.L)}x${f(pal.W)}_${u}_summary.pdf`;
+  // cancelable so a test can read the exported bytes instead of downloading
+  if(document.dispatchEvent(new CustomEvent('palletpdf:generated',
+      {cancelable: true, detail: {bytes, filename}})))
+    saveBlob(bytes, filename);
+}
+el('btnPdf').addEventListener('click', exportPalletPdf);
 
 // 2D zoom & pan
 const wrap2 = el('svgWrap');

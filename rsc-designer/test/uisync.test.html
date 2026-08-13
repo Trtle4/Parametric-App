@@ -100,6 +100,10 @@
      must exist or app.js's module-level listener wiring throws at import. -->
 <div id="modeShelf" style="display:none">
   <div id="shViewmode"><button id="shSolid" class="on">Solid</button><button id="shCut">Cutaway</button></div>
+  <!-- stage background toggle (both toolbars) + the pallet PDF button -->
+  <div id="m3bg"><button id="bgGrid" class="on">Grid</button><button id="bgWhite">White</button></div>
+  <div id="shBg"><button id="shBgGrid" class="on">Grid</button><button id="shBgWhite">White</button></div>
+  <button id="btnPdf">Pallet PDF</button>
 </div>
 <div id="hud"></div>
 <div id="hierHud" style="display:none"></div>
@@ -171,7 +175,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
-import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame} from '../src/render/fold3d.js';
+import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
@@ -3074,6 +3078,97 @@ await (async () => {
       el('shFacings').value = facings0; el('shFacings').dispatchEvent(new Event('input'));
     }
   });
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   Stage background (Grid default / White) + the pallet summary PDF.
+   ONE mechanism: White is the renderer's own opaque clear colour, so the
+   screen and every capture read the same pixels; the PDF capture sets it
+   through the same setStageBackground the toggle uses and hands back
+   whatever the user had.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); el('tab3d').click(); el('d_pallet').click(); await settle();
+
+  // corner pixel of the renderer's own readback — the capture IS the screen
+  const cornerPixel = async () => {
+    const url = capturePNG(1);
+    if(!url) return null;
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    const c = document.createElement('canvas'); c.width = c.height = 4;
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, 4, 4);
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(1, 1, 1, 1).data;
+    return [d[0], d[1], d[2], d[3]];
+  };
+
+  const pxGrid = await cornerPixel();
+  el('bgWhite').click(); await waitFrames(() => true); await settle();
+  const pxWhite = await cornerPixel();
+  const whiteSync = {m3: el('bgWhite').classList.contains('on'), sh: el('shBgWhite').classList.contains('on')};
+  el('bgGrid').click(); await settle();
+  const pxBack = await cornerPixel();
+
+  t('stage background: Grid is default and transparent; White is the capture-visible clear colour', () => {
+    // read off the RENDERER'S OWN readback, because that is the one-mechanism
+    // claim: what toDataURL sees is what the screen shows. Grid mode clears
+    // transparent (the page grid shows through); White clears opaque white.
+    if(!pxGrid || !pxWhite || !pxBack) throw new Error('no capture from the 3D canvas');
+    if(pxGrid[3] !== 0) throw new Error(`default must be GRID (transparent clear): corner alpha ${pxGrid[3]}`);
+    if(!(pxWhite[0] > 250 && pxWhite[1] > 250 && pxWhite[2] > 250 && pxWhite[3] === 255))
+      throw new Error(`White must clear to opaque white: corner [${pxWhite.join(',')}]`);
+    if(!whiteSync.m3 || !whiteSync.sh)
+      throw new Error('the two toolbars\' toggles must reflect the ONE background state');
+    if(pxBack[3] !== 0) throw new Error('toggling back to Grid must restore the transparent clear');
+  });
+
+  // ---- the PDF: intercept the export event, read the actual bytes ----
+  let pdf = null;
+  const grab = e => { e.preventDefault(); pdf = e.detail; };
+  document.addEventListener('palletpdf:generated', grab);
+  try{ el('btnPdf').click(); }
+  finally{ document.removeEventListener('palletpdf:generated', grab); }
+  const pdfText = pdf ? Array.from(pdf.bytes, b => String.fromCharCode(b)).join('') : '';
+  const pxAfter = await cornerPixel();
+
+  t('pallet PDF: one portrait letter page, three views, the readouts\' own numbers', () => {
+    // Reads the EXPORTED bytes (the content stream is uncompressed for exactly
+    // this), and takes its expectations from the app's own displayed readouts
+    // and resolved row — the sheet must never recompute a number.
+    if(!pdf) throw new Error('no palletpdf:generated event — the export did not run');
+    if(!/^%PDF-1\.4/.test(pdfText)) throw new Error('not a PDF');
+    eq((pdfText.match(/\/Type \/Page(?![s])/g) || []).length, 1, 'exactly one page:');
+    if(!pdfText.includes('/MediaBox [0 0 612 792]')) throw new Error('page must be portrait US Letter (612x792pt)');
+    eq((pdfText.match(/\/DCTDecode/g) || []).length, 3, 'three captured views embedded:');
+
+    // the pallet readout, verbatim: "60 cases" -> the count must be on the sheet
+    const tot = (el('palTot').textContent.match(/(\d+)/) || [])[1];
+    if(!tot) throw new Error('no pallet readout to compare against');
+    if(!pdfText.includes(`(${tot}) Tj`)) throw new Error(`the readout count ${tot} is not on the sheet`);
+
+    // the case OD — the resolved row's OUTER dims through the app formatter
+    const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+    const u = el('units').value;
+    const f = v => (+(v/(u === 'mm' ? 1 : 25.4)).toFixed(u === 'mm' ? 0 : 2)).toString();
+    const od = row.geo.case.outer;
+    const odStr = `${f(od.L)} \u00d7 ${f(od.W)} \u00d7 ${f(od.H)} ${u}`;
+    if(!pdfText.includes(`(${odStr})`))
+      throw new Error(`case outside dims "${odStr}" not on the sheet`);
+
+    // the date, generated today
+    const now = new Date();
+    const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if(!pdfText.includes(iso)) throw new Error(`generation date ${iso} not on the sheet`);
+    // units line follows the app setting
+    if(!pdfText.includes(`(All dimensions in ${u})`)) throw new Error('units line missing or wrong');
+    // ...and the export hands back the background it found (Grid here)
+    if(!pxAfter || pxAfter[3] !== 0)
+      throw new Error('the export must restore the stage background it found');
+  });
+
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

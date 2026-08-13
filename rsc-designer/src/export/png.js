@@ -39,6 +39,16 @@ export function savePNG(url, filename){
   a.click();
 }
 
+/** Download raw bytes (the PDF export). Object URL revoked after the click —
+ *  the browser holds its own reference for the download. */
+export function saveBlob(bytes, filename, type = 'application/pdf'){
+  const url = URL.createObjectURL(new Blob([bytes], {type}));
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // --- font embedding: fetch the page's own DM Mono + Hanken woff2 once, base64,
 // and build @font-face rules the isolated SVG raster can actually use. Cached;
 // wrapped so a fetch failure degrades to system fonts rather than breaking
