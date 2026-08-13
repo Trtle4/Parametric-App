@@ -175,7 +175,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
-import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG} from '../src/render/fold3d.js';
+import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
@@ -3167,6 +3167,38 @@ await (async () => {
     // ...and the export hands back the background it found (Grid here)
     if(!pxAfter || pxAfter[3] !== 0)
       throw new Error('the export must restore the stage background it found');
+  });
+
+  // ---- the capture honours the per-frame cutaway suppression ----
+  // The near-panel hiding is a frame hook: it only ever ran inside the RAF
+  // loop, against the ON-SCREEN camera. A synchronous capture that skips it
+  // renders whatever visibility the last live frame left behind — the PDF's
+  // cutaway came out a closed box with an end gap, open toward a camera
+  // nobody was using. The pin: park the LIVE camera at the BACK, then capture
+  // from the FRONT — the result must be identical to a capture taken once the
+  // live camera has actually been at the front, i.e. the suppression is
+  // computed against the CAPTURE camera, never inherited from the live one.
+  el('d_case').click();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  const F = HOME_ORBIT, CAP = [F.rotX, F.rotY, 1.35, 320, 260];
+  setOrbit(F.rotX, F.rotY + Math.PI, 1.35);            // live camera at the BACK
+  await waitFrames(() => true); await settle();        // let the loop suppress for the back
+  const capFromBackParked = captureOrbitPNG(...CAP);   // capture from the FRONT
+  setOrbit(F.rotX, F.rotY, 1.35);                      // live camera to the front
+  await waitFrames(() => true); await settle();
+  const capFromFrontParked = captureOrbitPNG(...CAP);  // ground truth: live == capture
+  const capBackView = captureOrbitPNG(F.rotX, F.rotY + Math.PI, 1.35, 320, 260);
+
+  t('print capture computes the cutaway suppression against ITS OWN camera', () => {
+    if(!capFromBackParked || !capFromFrontParked) throw new Error('no capture from the 3D canvas');
+    // the fixture only discriminates if the two angles genuinely render
+    // different open faces
+    if(capBackView === capFromFrontParked)
+      throw new Error('fixture not discriminating: front and back captures are identical');
+    if(capFromBackParked !== capFromFrontParked)
+      throw new Error('capture inherited the LIVE camera\'s suppression — ' +
+        'the walls in the print view were hidden for a camera nobody was using');
   });
 
   el('tab2d').click(); setLevel('case'); await settle();

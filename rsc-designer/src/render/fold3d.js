@@ -427,6 +427,14 @@ export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92){
   renderer.setSize(w, h, false);
   camera.aspect = w/h;
   frameCamera();
+  // Run the per-frame hooks against the CAPTURE camera before rendering. The
+  // cutaway's near-panel suppression is one of these hooks — it hides the
+  // walls that face the camera, and it only ever runs inside the RAF loop
+  // with the ON-SCREEN camera. A synchronous capture that skips it renders
+  // whatever visibility the last on-screen frame (or a fresh build, which
+  // creates every wall visible) left behind: the PDF's cutaway came out a
+  // closed box with an end gap, open toward a camera nobody was using.
+  for(const cb of frameCbs) cb(camera);
   renderer.render(scene, camera);
   const url = renderer.domElement.toDataURL('image/jpeg', quality);
   rotX = prev.rotX; rotY = prev.rotY; dist = prev.dist;
@@ -435,6 +443,7 @@ export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92){
   renderer.setSize(size.x, size.y, false);
   if(size.y > 0) camera.aspect = size.x/size.y;
   frameCamera();
+  for(const cb of frameCbs) cb(camera);        // …and again for the restored view
   renderer.render(scene, camera);
   return url;
 }
