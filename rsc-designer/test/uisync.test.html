@@ -174,6 +174,11 @@
 <span id="blank">--</span>
 <div id="styleStats" style="display:contents"></div>
 <span id="area">--</span>
+<!-- the material-cost panel: rate fields + the roll-up readout. Both are
+     written by the app, so the skeleton needs them or every cost pin reads
+     an empty document and passes vacuously (the harness rule, hit again). -->
+<div id="costFields" style="display:contents"></div>
+<div id="costReadout" style="display:contents"></div>
 <span id="palPat">--</span>
 <span id="palCnt">--</span>
 <span id="palTot">--</span>
@@ -203,7 +208,8 @@ import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
-import {newProject, linkFor, resolveActiveRow} from '../src/core/project.js';
+import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
+import {COST_DEFAULTS, rateToDisplay, rateFromDisplay, FT2_PER_M2} from '../src/core/cost.js';
 import {collate} from '../src/core/collation.js';
 import {toMM, fmtLen, fmtInputValue} from '../src/core/units.js';
 import {view2d} from '../src/render/dieline2d.js';
@@ -3398,6 +3404,166 @@ await (async () => {
     }
   });
   el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   Material cost — rates x the quantities the chain already solved.
+   The point of every pin here: there is ONE cost, derived with the other
+   chain values, and the panel / the level readout / the Build column are
+   three views of it. A second multiplication anywhere is the bug.
+   ================================================================== */
+await (async () => {
+  setLevel('case'); await settle();
+  el('tab2d').click(); await settle();
+
+  const readout = () => {
+    const out = {};
+    for(const st of document.querySelectorAll('#costReadout .stat'))
+      out[st.querySelector('.lab').textContent] = st.querySelector('.val').textContent;
+    const n = document.querySelector('#costReadout .bnote');
+    out.note = n ? n.textContent : '';
+    return out;
+  };
+  const money = txt => +String(txt).replace(/[$,]/g, '');
+  const rowNow = () => resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+
+  t('cost: the panel is rendered from the chain\'s ONE derivation', () => {
+    const r = readout(), row = rowNow();
+    if(!row.cost || row.cost.packCost == null) throw new Error('no cost on the resolved row');
+    const packLab = Object.keys(r).find(k => /^Material \/ (pack|unit)$/.test(k));
+    if(!packLab) throw new Error(`no per-pack readout (got: ${Object.keys(r).join(', ')})`);
+    // The rendered ROLL-UP against the pack cost the chain derived. Comparing
+    // the two RENDERED figures instead cannot work: the per-pack readout is
+    // quantised to a tenth of a cent, which is coarser than the error a wrong
+    // roll-up multiplier introduces at that magnitude (measured — a x1024
+    // roll-up passed that version of this check). The roll-up is the sharper
+    // instrument, so it is the one read.
+    const per1000Lab = Object.keys(r).find(k => /1000/.test(k));
+    approx(money(r[per1000Lab]), row.cost.packCost*1000, 'the rendered per-1000 is 1000 packs:', 5e-3);
+  });
+
+  t('cost: quantity x rate, with the quantity READ from the chain', () => {
+    // The one absolute anchor. The quantities come off the row — the chain's
+    // own numbers, never re-measured here — and the rates off COST_DEFAULTS.
+    // Every term is checked, so a wrong divisor in any of them fails.
+    const row = rowNow(), c = row.cost;
+    // FIRST: the quantities are the chain's OWN, not ones cost measured for
+    // itself. Checking the cost against row.cartonBoardM2 alone cannot see
+    // this — both sides move together — so the areas are anchored to numbers
+    // that existed before cost did: the Build table's board column for the
+    // case, and the rail's own board-area readout for the carton.
+    eq(row.caseBoardM2, row.boardAreaM2, 'the case area IS the chain\'s board area:');
+    const lvl0 = el('style').value;
+    setLevel('carton');
+    const shownArea = +(el('area').textContent.match(/[\d.]+/) || [])[0];
+    setLevel(lvl0);
+    approx(row.cartonBoardM2, shownArea, 'the carton area IS the blank the rail shows:', 5e-4);
+
+    approx(c.perUnit.carton, row.cartonBoardM2*COST_DEFAULTS.cartonBoardPerM2, 'one carton:', 1e-12);
+    approx(c.perUnit.case, row.caseBoardM2*COST_DEFAULTS.caseBoardPerM2, 'one case:', 1e-12);
+    approx(c.perUnit.film, row.filmKgPerPack*COST_DEFAULTS.filmPerKg, 'film for one pack:', 1e-12);
+    approx(c.perPack.carton, c.perUnit.carton/row.packsPerCarton, 'carton share per pack:', 1e-12);
+    approx(c.perPack.case, c.perUnit.case/(row.cartonsPerCase*row.packsPerCarton), 'case share per pack:', 1e-12);
+    approx(c.perPack.pallet, COST_DEFAULTS.palletPerTrip/row.packsPerPallet, 'pallet share per pack:', 1e-12);
+    // ...and the roll-ups put the pallet trip on exactly once
+    approx(c.perPallet - (c.packCost - c.perPack.pallet)*row.packsPerPallet,
+           COST_DEFAULTS.palletPerTrip, 'one trip per pallet, no more:', 1e-9);
+    // the fixture must actually exercise every term
+    if(c.missing.includes('carton') || c.missing.includes('case') || c.missing.includes('film'))
+      throw new Error(`vacuous fixture: terms missing (${c.missing.join(',')})`);
+  });
+
+  t('cost: the RENDERED readout is that same number, not a second one', () => {
+    const r = readout(), c = rowNow().cost;
+    const packLab = Object.keys(r).find(k => /^Material \/ (pack|unit)$/.test(k));
+    const caseLab = Object.keys(r).find(k => /^Material \/ case$/.test(k));
+    const palLab = Object.keys(r).find(k => /pallet/i.test(k));
+    approx(money(r[packLab]), c.packCost, 'per pack:', 5e-4);
+    approx(money(r[caseLab]), c.perCase, 'per case:', 5e-3);
+    approx(money(r[palLab]), c.perPallet, 'per pallet:', 0.5);
+    // the breakdown names the terms that are actually in the number
+    for(const k of c.terms)
+      if(!r.note.includes(k)) throw new Error(`the breakdown omits the ${k} term: "${r.note}"`);
+  });
+
+  t('cost: the Build column is the rollup for the row it is on', () => {
+    const cols = [...document.querySelectorAll('#bTable th')].map(h => h.textContent.replace(/[\u25be\u25b4]/g, '').trim());
+    const ci = cols.findIndex(h => /1000 packs/.test(h));
+    if(ci < 0) throw new Error(`no cost column (got: ${cols.join(' | ')})`);
+    const trs = [...document.querySelectorAll('#bTable tbody tr')];
+    if(!trs.length) throw new Error('no candidate rows');
+    const sel = trs.find(tr => tr.classList.contains('sel')) || trs[0];
+    const shown = money(sel.querySelectorAll('td')[ci].textContent.replace('\u2605', '').trim());
+    const sorted = build.sortedRows ? null : null;
+    // the row the table highlights is the row every view renders
+    approx(shown, rowNow().cost.per1000Packs, 'column vs the resolved row:', 5e-3);
+  });
+
+  t('cost: ranking by cost genuinely reorders the candidates', () => {
+    // THE point of the column. Rows tied on every count column are not tied
+    // on cost, so a count ranking cannot choose between them and a cost
+    // ranking can. If this ever stops being true the column is decoration.
+    // its OWN fixture: a fresh default project, so the claim is about the
+    // feature rather than about whatever state the previous pin left behind
+    // (measured: on an inherited state only two candidates tied, 1.5% apart,
+    // and the pin read as a failure of the column rather than of the fixture)
+    const rows = candidateCases(newProject(), '1mm');
+    if(rows.length < 4) throw new Error(`only ${rows.length} candidates`);
+    const top = Math.max(...rows.map(r => r.piecesPerPallet || 0));
+    const tied = rows.filter(r => (r.piecesPerPallet || 0) === top);
+    if(tied.length < 2) throw new Error('vacuous fixture: no two candidates tie on pieces/pallet');
+    const costs = tied.map(r => r.cost.per1000Packs);
+    const lo = Math.min(...costs), hi = Math.max(...costs);
+    if(!(hi > lo*1.05))
+      throw new Error(`cost cannot separate the ${tied.length} tied candidates: $${lo.toFixed(2)}..$${hi.toFixed(2)}`);
+  });
+
+  tEdit('cost: a rate override moves every dependent number, and resets back', () => {
+    const before = rowNow().cost.packCost;
+    const beforeShown = readout();
+    const packLab = Object.keys(beforeShown).find(k => /^Material \/ (pack|unit)$/.test(k));
+    const f = el('cost_filmPerKg');
+    if(!f) throw new Error('no film rate field');
+    f.value = String(COST_DEFAULTS.filmPerKg*3); fire(f, 'input');
+    eq(build.project.cost.filmPerKg, COST_DEFAULTS.filmPerKg*3, 'the override is stored canonically:');
+    const after = rowNow().cost;
+    approx(after.perUnit.film, rowNow().filmKgPerPack*COST_DEFAULTS.filmPerKg*3, 'film term follows the rate:', 1e-12);
+    if(!(after.packCost > before)) throw new Error('the pack cost did not follow the rate');
+    approx(money(readout()[packLab]), after.packCost, 'and the RENDERED readout followed:', 5e-4);
+    // reset-to-auto: the key is DELETED, absence being the auto state
+    fire(f, 'change');                       // commit, so the reset link mounts
+    const rst = el('cost_filmPerKg_auto');
+    if(!rst) throw new Error('no reset-to-auto control after an override');
+    rst.click();
+    if('filmPerKg' in build.project.cost)
+      throw new Error('reset must DELETE the key — absence IS the auto state');
+    approx(rowNow().cost.packCost, before, 'and the cost is back where it started:', 1e-12);
+  });
+
+  t('cost: rates store canonically and only the DISPLAY converts', () => {
+    // $/m2 stored, $/ft2 shown in an inch project. A converted number written
+    // back into the project would be the classic two-units-one-field bug.
+    const r = COST_DEFAULTS.cartonBoardPerM2;
+    approx(rateToDisplay(r, 'area', 'mm'), r, 'mm shows the canonical rate:', 1e-12);
+    approx(rateToDisplay(r, 'area', 'in'), r/FT2_PER_M2, 'inches show per ft2:', 1e-12);
+    approx(rateFromDisplay(rateToDisplay(r, 'area', 'in'), 'area', 'in'), r, 'round trip:', 1e-12);
+    // mass and per-each rates have no unit system to follow
+    approx(rateToDisplay(3.2, 'mass', 'in'), 3.2, 'film stays $/kg in inches:', 1e-12);
+    approx(rateToDisplay(12, 'trip', 'in'), 12, 'pallet stays $/trip in inches:', 1e-12);
+    if(Math.abs(FT2_PER_M2 - 10.7639) > 0.001)
+      throw new Error(`the ft2 factor is wrong: ${FT2_PER_M2}`);
+  });
+
+  t('cost: a level absent from the chain contributes no term and says so', () => {
+    // The default chain has no tray, so the tray term must be ABSENT and
+    // named — never a silent zero that reads like a free tray.
+    const c = rowNow().cost;
+    const hasTray = !!(build.project.tray && build.project.tray.enabled);
+    if(hasTray) throw new Error('fixture: the tray is enabled here, this pin needs it off');
+    if('tray' in c.perPack) throw new Error('a chain with no tray must not carry a tray term');
+    if(!c.missing.includes('tray')) throw new Error('the missing tray term is not reported');
+    if(el('cost_trayEach')) throw new Error('the rate panel asks for a tray rate the chain has no use for');
+  });
 })();
 
 /* ==================================================================

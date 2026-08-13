@@ -182,6 +182,34 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   hardcoded -5), because reading the host's zone stamped a sheet generated at
   9pm Eastern with TOMORROW's date, and a document dated in the future is how
   a reader tells two revisions apart.
+- **RESOLVED (cost task): material cost is RATES × the quantities the chain
+  already solved, and nothing else.** `core/cost.js` owns no geometry and
+  measures nothing — `materialCost(quantities, rates)` multiplies, and a
+  quantity it is not handed becomes a NAMED missing term rather than a
+  locally-derived one or a silent zero (a chain with no carton reads "not in
+  this chain: carton", never a free carton). The quantities are added to the
+  row in `decorateRow`, WITH the other derived values, so the rate panel, the
+  per-level readout and the Build column are three views of ONE number; the
+  blank-area expression that feeds both the existing `boardAreaM2` and the new
+  per-level areas was factored into `blankAreaM2()` rather than written twice.
+  ONE computation drives everything: the per-PACK breakdown. Every roll-up is
+  that breakdown times a count, which is why the pallet trip lands exactly once
+  per pallet by construction rather than by a separate rule. Rates are stored
+  CANONICALLY ($/m², $/kg) and only the display converts to $/ft²; absence of a
+  key IS the auto state (`COST_DEFAULTS`), the tray rail's idiom, so there is no
+  isAuto flag to disagree with the value, and an old save file with no `cost`
+  key loads as fully-auto rather than as five frozen overrides. The Build column
+  is per 1000 packs (a pack's board is fractions of a cent and would render as a
+  column of identical zeros) and is the point of the feature: on the default
+  project 18 of 36 candidates TIE at 34560 pieces/pallet — indistinguishable to
+  every existing column — while their cost spans $19.29 to $32.17 per 1000, and
+  the count ranking's own default winner is the dearest of them. Two pins had
+  to be sharpened by mutation: comparing the rendered per-pack figure to the
+  rendered per-1000 could not see a wrong roll-up multiplier (the per-pack
+  readout is quantised to a tenth of a cent, coarser than the error), and
+  checking a cost against the row's own area cannot see cost measuring its own
+  area — the areas are now anchored to numbers that existed BEFORE cost did
+  (the chain's `boardAreaM2`, and the rail's rendered board-area readout).
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.

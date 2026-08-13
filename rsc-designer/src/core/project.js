@@ -11,6 +11,7 @@
 import {fitInto, parentCandidates, solveParent, orientDims} from './containment.js';
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
+import {materialCost} from './cost.js';
 import {styleById} from './styles/index.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
@@ -187,6 +188,12 @@ export function newProject(){
       // contents, which the app can't know); target: required safety factor;
       // doubleStack: two unit loads high in the warehouse (doubles the column).
       stacking: {ect: 32, unitWeightLb: 20, target: 3.0, doubleStack: false}},
+    // MATERIAL RATES — project assumptions, not per-level state, so one flat
+    // bag. Empty = every rate at its default (core/cost.js COST_DEFAULTS);
+    // the presence of a key IS the override, the same auto-with-override
+    // shape the tray's cell dimensions use. Stored canonically ($/m², $/kg),
+    // never in the display unit.
+    cost: {},
     // free print text on the package's print panel — the capability stays
     // wired in the model + save file, but the DEFAULT is empty: with real
     // uploaded artwork a placeholder string would clutter clean output and
@@ -821,6 +828,10 @@ function sealDerived(wrapGeo){
           jawClearance: s.jawClearance, sealFlatLength: s.sealFlatLength};
 }
 
+/** THE blank area of a style geometry, m². One expression, so the candidate
+ *  metric and the per-level cost quantity are provably the same number. */
+export const blankAreaM2 = geo => geo.bbox.maxX*geo.bbox.maxY/1e6;
+
 function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit, outerFits = true){
   const {primaryResult, secondaryVariant, content} = below;
   // the tray stage's own result rides the row, so every consumer (readout,
@@ -858,16 +869,50 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
     // numbers and fillEfficiency NEVER touch cube utilization.
     const film = primaryResult.geo.meta.film;
     row.filmAreaM2 = film.filmAreaM2;
+    // per-PACK film mass is the base figure (massPer1000g is grams per 1000
+    // packs); the per-carton and per-pallet masses are that number times a
+    // count, so the three cannot drift. Cost reads this one too.
+    row.filmKgPerPack = film.massPer1000g/1e6;
     // per-carton film mass retained so a pattern re-selection can rescale
     // filmKgPerPallet from the new cartonsPerPallet without re-deriving
     row.filmKgPerCarton = requestedForPieces != null
-      ? (film.massPer1000g/1000)*requestedForPieces/1000 : null;
+      ? row.filmKgPerPack*requestedForPieces : null;
     row.filmKgPerPallet = row.filmKgPerCarton != null
       ? row.filmKgPerCarton*row.cartonsPerPallet : null;
     row.wrapOuter = primaryResult.geo.outer;
   }else{
-    row.filmAreaM2 = null; row.filmKgPerCarton = null; row.filmKgPerPallet = null; row.wrapOuter = null;
+    row.filmAreaM2 = null; row.filmKgPerPack = null; row.filmKgPerCarton = null;
+    row.filmKgPerPallet = null; row.wrapOuter = null;
   }
+
+  /* ---- material quantities, and the one cost derived from them -----------
+   * Cost is a chain-level derived value, computed here with every other
+   * derived value, so the rate panel, the per-level readouts and the Build
+   * column all read ONE number. Nothing below measures anything: the board
+   * areas come from the already-built geometries through the shared
+   * blankAreaM2, the film mass off the wrap style's own meta, and the counts
+   * off this row. core/cost.js can only multiply.
+   *
+   * WHAT A PACK IS: one unit of the primary level — a wrap, or the bare
+   * collation unit when there is no wrap. `requestedForPieces` is how many of
+   * those a carton holds. Without a carton in the chain the case holds packs
+   * DIRECTLY, and this row's `cartonsPerCase`/`cartonsPerPallet` already count
+   * those packs (the chain re-points the outermost's child), so the pack
+   * counts follow the chain shape rather than assuming a carton exists.
+   */
+  row.cartonBoardM2 = cartonGeo ? blankAreaM2(cartonGeo) : null;
+  row.caseBoardM2 = caseGeo ? blankAreaM2(caseGeo) : null;
+  row.packsPerCarton = cartonGeo ? requestedForPieces : null;
+  row.packsPerPallet = cartonGeo
+    ? (requestedForPieces != null ? requestedForPieces*row.cartonsPerPallet : null)
+    : row.cartonsPerPallet;
+  row.traysPerPack = row.tray ? 1 : 0;
+  row.cost = materialCost({
+    cartonBoardM2: row.cartonBoardM2, caseBoardM2: row.caseBoardM2,
+    filmKgPerPack: row.filmKgPerPack, traysPerPack: row.traysPerPack,
+    packsPerCarton: row.packsPerCarton, cartonsPerCase: row.cartonsPerCase,
+    packsPerPallet: row.packsPerPallet
+  }, project.cost);
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
   row.geo = {case: caseGeo, carton: cartonGeo, wrap: primaryResult ? primaryResult.geo : null};
@@ -984,7 +1029,7 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // the outermost tier
     cavity, caseParams: outerParams,
     outer: outerGeo.outer,
-    boardAreaM2: outerGeo.bbox.maxX*outerGeo.bbox.maxY/1e6,
+    boardAreaM2: blankAreaM2(outerGeo),
     // the pallet
     casesPerLayer: fit.perLayer,
     caseLayers: fit.layers,

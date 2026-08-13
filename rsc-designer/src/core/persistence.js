@@ -152,6 +152,13 @@ function fillProjectDefaults(loadedProject){
   out.links = mergeLinks(loadedProject.links, base.links, report);
   // top-level scalars (printText, …): defaulted if absent, preserved if present
   if(loadedProject.printText === undefined){ report.push('printText'); out.printText = base.printText; }
+  // MATERIAL RATES: absent → empty (older files, and any project that never
+  // touched a rate), present → preserved verbatim. Not merged against
+  // defaults, because for this bag absence IS the auto state — filling a
+  // missing key with its default would turn "auto" into a frozen override
+  // that never follows a later change to the default.
+  out.cost = (loadedProject.cost && typeof loadedProject.cost === 'object')
+    ? clone(loadedProject.cost) : {};
   // artwork map: absent → empty (older files), present → preserved verbatim
   // (the downscaled data URLs ride through untouched, an unknown-field-style
   // passthrough but made explicit since it's a first-class model field now)

@@ -13,6 +13,7 @@
  */
 import {newProject, candidateCases, checkLockedCase, resolveChainShape, describeChain,
         linkFor, defaultCandidate, ROUNDING} from '../core/project.js';
+import {fmtMoney} from '../core/cost.js';
 import {fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
 import {refreshAll} from './notify.js';
@@ -51,17 +52,25 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
  *  the case), and badging one arbitrarily-first row as "the winner" of a
  *  tie that isn't actually a distinguishing comparison would misrepresent
  *  it as one. */
-const BADGE_COLUMNS = {piecesPerPallet: 'max', casesPerPallet: 'max', boardAreaM2: 'min', filmAreaM2: 'min'};
+const BADGE_COLUMNS = {piecesPerPallet: 'max', casesPerPallet: 'max', boardAreaM2: 'min',
+                       filmAreaM2: 'min', costPer1000: 'min'};
 function bestRows(rowList){
   const best = {};
+  // read through the COLUMN's own accessor, the same one the table sorts by,
+  // so a column whose value is not a bare row field (cost lives on row.cost)
+  // can be badged at all — reading r[key] here silently skipped it.
+  const cols = columns();
   for(const key of Object.keys(BADGE_COLUMNS)){
     const mode = BADGE_COLUMNS[key];
+    const col = cols.find(c => c.key === key);
+    const read = col && col.val ? col.val : (r => r[key]);
     let winner = null, allTied = true, firstVal;
     for(const r of rowList){
-      const v = r[key];
+      const v = read(r);
+      if(v === Infinity) continue;
       if(v === null || v === undefined) continue;
       if(firstVal === undefined) firstVal = v; else if(v !== firstVal) allTied = false;
-      if(winner === null || (mode === 'max' ? v > winner[key] : v < winner[key])) winner = r;
+      if(winner === null || (mode === 'max' ? v > read(winner) : v < read(winner))) winner = r;
     }
     best[key] = allTied ? null : winner;
   }
@@ -76,6 +85,10 @@ function outerLink(){
   const outerKey = project.primary ? resolveChainShape(project).outermost : 'tertiary';
   return {outerKey, link: linkFor(project, outerKey)};
 }
+
+/** Has this candidate a complete material cost? The pallet term is the one
+ *  that can go missing on an otherwise valid row (nothing fits the deck). */
+const costable = r => !!(r.cost && r.cost.per1000Packs != null && !r.cost.missing.includes('pallet'));
 
 function columns(){
   const {outerNoun, childNoun} = describeChain(project);
@@ -105,6 +118,21 @@ function columns(){
     {key: 'casesPerPallet', label: `${outerCap}s/pallet`, txt: r => `${r.casesPerPallet} (${r.casesPerLayer}×${r.caseLayers})`},
     {key: 'piecesPerPallet', label: 'Pieces/pallet', txt: r => r.piecesPerPallet !== null && r.piecesPerPallet !== undefined ? r.piecesPerPallet : '—'},
     {key: 'cartonsPerPallet', label: outerKey === 'tertiary' ? `${childCap}s/pallet` : 'Units/pallet', txt: r => r.cartonsPerPallet},
+    // MATERIAL COST, per 1000 packs rather than per pack: a pack's board is
+    // fractions of a cent and would round to a column of identical zeros,
+    // while per-1000 is the unit a purchasing conversation already uses.
+    // Reads row.cost — the chain's one derivation — so this column and the
+    // rate panel can never show different money. Badged 'min': unlike the
+    // count columns, less is better, and THIS is the column's point — a
+    // candidate that uses more board but palletizes better can now be
+    // compared on cost rather than only on count.
+    {key: 'costPer1000', label: '$/1000 packs',
+     // a candidate that palletizes NOTHING has no pallet trip to share and no
+     // packs shipped to share it over, so its material cost is not comparable
+     // with the rest — it reads '—' and sorts last rather than showing a
+     // materials-only figure that looks competitive beside complete ones
+     txt: r => costable(r) ? fmtMoney(r.cost.per1000Packs) : '—',
+     val: r => costable(r) ? r.cost.per1000Packs : Infinity},
     {key: 'coveragePct', label: 'Deck %', txt: r => r.coveragePct},
     {key: 'cubeUtilPct', label: 'Cube %', txt: r => r.cubeUtilPct}
   ];

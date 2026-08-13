@@ -843,6 +843,14 @@
       <div class="stat"><span class="lab">Deck coverage</span><span class="val" id="palCov">--</span></div>
       <div class="rowlabel" id="palRowLabel" style="display:none"></div>
     </div>
+    <!-- MATERIAL COST — rates are project assumptions, not per-level state,
+         so this panel is global and sits with the pallet numbers it rolls up
+         into. The fields are mounted by inputs.mountCost; the readout is
+         written by app.js from the ONE row.cost the chain derived. -->
+    <h2 style="margin-top:6px">Material cost</h2>
+    <div id="costFields" style="display:contents"></div>
+    <div class="readout"><div id="costReadout" style="display:contents"></div></div>
+
     <div class="readout">
       <div class="stat"><span class="lab">Stacking safety (BCT) · bottom box</span><span class="val" id="bctRatio">--</span></div>
       <div class="stat"><span class="lab">Predicted BCT · McKee ECT</span><span class="val" id="bctVal">--</span></div>

@@ -11,6 +11,7 @@
  * g/cm³) keep their own unit and never convert.
  */
 import {toMM, fromMM, fmtInputValue} from '../core/units.js';
+import {RATE_ROWS, COST_DEFAULTS, rateOf, rateToDisplay, rateFromDisplay} from '../core/cost.js';
 import {VERTICAL_CHOICES, verticalToOrientations} from '../core/project.js';
 
 export const el = id => document.getElementById(id);
@@ -766,4 +767,67 @@ export function mountTray(project, m){
     if(navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
     note('Link for this tray — opens the full solid, STEP and AR in Cookie-Tray.');
   });
+}
+
+/* ---------- material cost rates -----------------------------------------
+ * Project ASSUMPTIONS, not per-level state, so one global panel writing one
+ * flat bag (project.cost). Same auto-with-override contract as the tray's
+ * cell dimensions: the field is blank while the rate is at its default (the
+ * default shown as the placeholder), typing stores an override, and the
+ * reset link DELETES the key — absence IS the auto state, so there is no
+ * second flag to disagree with the value.
+ *
+ * The stored rate is always canonical ($/m², $/kg). An inch project shows
+ * board rates per ft², converting only the DISPLAY (core/cost.js owns that
+ * conversion); nothing here writes a converted number into the project.
+ *
+ * `m.rows` is the set of chain levels that actually exist, so a chain with
+ * no tray shows no tray rate — the panel never asks for an assumption about
+ * something the project does not contain.
+ */
+export function mountCost(project, m){
+  const host = el('costFields');
+  if(!host) return;
+  const cost = project.cost || (project.cost = {});
+  const shown = RATE_ROWS.filter(r => !m.rows || m.rows.has(r.needs));
+  if(!shown.length){ host.innerHTML = ''; return; }
+
+  const unitOf = r => r.unit === 'area' ? (unit === 'in' ? '$/ft²' : '$/m²')
+    : r.unit === 'mass' ? '$/kg' : r.unit === 'each' ? '$ each' : '$/trip';
+  const disp = r => rateToDisplay(rateOf(cost, r.key), r.unit, unit);
+  // enough decimals that a converted board rate round-trips visibly rather
+  // than quantising to two places ($0.62/m² is $0.058/ft²)
+  const show = v => String(+v.toFixed(4));
+
+  host.innerHTML = shown.map(r => {
+    const has = typeof cost[r.key] === 'number';
+    return `<div class="field"><label>${r.label} <span class="hint">per unit</span></label>
+      <div class="inp"><input id="cost_${r.key}" type="number" min="0" step="0.01"
+        value="${has ? show(disp(r)) : ''}" placeholder="${show(rateToDisplay(COST_DEFAULTS[r.key], r.unit, unit))}">
+        <span class="unit" id="costu_${r.key}">${unitOf(r)}</span></div>
+      <div class="hint" style="margin-top:4px">${has
+        ? `<button type="button" class="btn btnlink" id="cost_${r.key}_auto">reset to auto</button>`
+        : 'auto — default rate'}</div></div>`;
+  }).join('');
+
+  for(const r of shown){
+    const inp = el(`cost_${r.key}`);
+    inp.addEventListener('input', () => {
+      if(inp.value === '') delete cost[r.key];
+      else cost[r.key] = rateFromDisplay(Math.max(0, +inp.value || 0), r.unit, unit);
+      m.onInput();
+    });
+    // The reset link belongs to the OVERRIDE state, so the panel has to be
+    // rebuilt when that state flips — but never mid-keystroke: remounting on
+    // `input` destroys the field being typed into. On commit, and only when
+    // auto/override actually changed, so an ordinary edit never steals focus.
+    // Without this a freshly-typed rate had no way back to auto until the rail
+    // happened to remount for some other reason.
+    const had = typeof cost[r.key] === 'number';
+    inp.addEventListener('change', () => {
+      if((typeof cost[r.key] === 'number') !== had && m.remount) m.remount();
+    });
+    const rst = el(`cost_${r.key}_auto`);
+    if(rst) rst.addEventListener('click', () => { delete cost[r.key]; m.onInput(); m.remount && m.remount(); });
+  }
 }

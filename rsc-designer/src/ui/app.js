@@ -15,6 +15,7 @@ import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
+import {fmtMoney} from '../core/cost.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
@@ -238,7 +239,8 @@ function refresh2d(){
       stat('Envelope', outerText) +
       stat('Tray height', `${fmtLen(tray.params.overallH, u)} ${u}`) +
       stat('Cells', `${tray.nCells} × ${tray.perCell} = ${tray.total}`) +
-      stat('Cell', `${fmtLen(tray.params.cellLen, u)} × ${fmtLen(tray.params.cellWid, u)} × ${fmtLen(tray.params.cellH, u)} ${u}`);
+      stat('Cell', `${fmtLen(tray.params.cellLen, u)} × ${fmtLen(tray.params.cellWid, u)} × ${fmtLen(tray.params.cellH, u)} ${u}`) +
+      levelUnitCostStat();
     return;
   }
   if(!isStyleLevel()){
@@ -266,7 +268,11 @@ function refresh2d(){
   // carton; reading it should never require doing the compensation
   // arithmetic by hand
   const outerStat = `<div class="stat"><span class="lab">Outer dimensions</span><span class="val">${outerText}</span></div>`;
-  el('styleStats').innerHTML = outerStat + (style.readouts ? style.readouts(g) : []).map(r =>
+  // MATERIAL COST for one of THIS level's units, beside the area/mass it is
+  // computed from — read off row.cost.perUnit, the same one derivation the
+  // roll-up panel and the Build column read. Never multiplied again here.
+  const costStat = levelUnitCostStat();
+  el('styleStats').innerHTML = outerStat + costStat + (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
       r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
   ).join('');
@@ -1211,6 +1217,77 @@ function mountActiveLevel(){
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
   }
+  mountCostRates();
+}
+
+/** The rate panel — GLOBAL, so it mounts alongside whichever level's rail is
+ *  up rather than belonging to one. `rows` is the set of levels the chain
+ *  actually has, so a project with no tray is never asked for a tray rate. */
+function chainCostRows(){
+  const proj = build.project;
+  const rows = new Set(['pallet']);
+  if(isTierEnabled('carton')) rows.add('carton');
+  if(isTierEnabled('case')) rows.add('case');
+  if(proj.primary && proj.primary.wrap) rows.add('film');
+  if(isTierEnabled('tray')) rows.add('tray');
+  return rows;
+}
+/**
+ * The cost roll-up readout. Reads `row.cost` — the ONE cost the chain derived
+ * with every other derived value — and formats it. Nothing here multiplies a
+ * rate: if this function did its own arithmetic there would be two costs, and
+ * the panel and the Build column would be free to disagree.
+ *
+ * Registered with the single recompute notifier, so a rate edit, a level
+ * change and a candidate cycle all refresh it by the same path.
+ */
+/** The active level's own material cost — one carton, one case, one pack's
+ *  film, one tray — as a rail stat, or '' when this level has no material
+ *  term. Reads row.cost.perUnit; the multiplication happened once, in the
+ *  chain, next to the quantity it used. */
+function levelUnitCostStat(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const pu = row && row.cost && row.cost.perUnit;
+  if(!pu) return '';
+  const v = activeLevel === 'carton' ? pu.carton
+    : activeLevel === 'case' ? pu.case
+    : activeLevel === 'wrap' ? pu.film
+    : activeLevel === 'tray' ? pu.tray : null;
+  if(v == null) return '';
+  const noun = activeLevel === 'wrap' ? 'film / pack' : `material / ${LEVELS[activeLevel].label.toLowerCase()}`;
+  return `<div class="stat"><span class="lab">Cost · ${noun}</span><span class="val">${fmtMoney(v)}</span></div>`;
+}
+
+function refreshCost(){
+  const host = el('costReadout');
+  if(!host) return;
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const c = row && row.cost;
+  if(!c || c.packCost == null){
+    host.innerHTML = `<div class="stat"><span class="lab">Material cost</span><span class="val">—</span></div>`;
+    return;
+  }
+  const {outerNoun} = describeChain(build.project);
+  const packNoun = build.project.primary && build.project.primary.wrap ? 'pack' : 'unit';
+  const stat = (lab, val) => `<div class="stat"><span class="lab">${lab}</span><span class="val">${val}</span></div>`;
+  // the breakdown names which terms are actually in the number, so a chain
+  // without a carton reads as "no carton term" rather than a silently cheaper pack
+  const parts = c.terms.map(k => `${k} ${fmtMoney(c.perPack[k])}`).join(' · ');
+  host.innerHTML =
+    stat(`Material / ${packNoun}`, fmtMoney(c.packCost)) +
+    stat(`Material / 1000 ${packNoun}s`, fmtMoney(c.per1000Packs)) +
+    stat(`Material / ${outerNoun}`, fmtMoney(c.perCase)) +
+    stat('Material / pallet (incl. trip)', fmtMoney(c.perPallet)) +
+    `<div class="bnote">Per ${packNoun}: ${parts}` +
+    (c.missing.length ? ` · not in this chain: ${c.missing.join(', ')}` : '') + '</div>';
+}
+
+function mountCostRates(){
+  inputs.mountCost(build.project, {
+    rows: chainCostRows(),
+    remount: () => mountCostRates(),
+    onInput: () => projectChanged()
+  });
 }
 
 const LEVEL_BRAND = {
@@ -2355,6 +2432,7 @@ notify.onRefresh('palletize', refreshPal);
 // dimensional sensitivity re-analyses on every project change (it no-ops
 // unless the pallet level is active, so it costs nothing elsewhere)
 notify.onRefresh('sensitivity', refreshSensitivity);
+notify.onRefresh('cost', refreshCost);
 // the retail shelf reflects the sellable pack's geometry, so it re-fills on
 // every project change too (refreshShelf no-ops unless the Shelf view is up).
 notify.onRefresh('shelf', refreshShelf);
