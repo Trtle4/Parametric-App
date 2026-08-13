@@ -18,9 +18,12 @@ import {getPivot, setCamSpan, kraft, onFrame} from './fold3d.js';
 import {packArtGeometry, packArtMaterials} from './artwork3d.js';
 import {buildSellableCutaway, closedWrapParts, orientQuat} from './hierarchy3d.js';
 
-let shelfGroup = null;
-let shelfArtMat = null;                 // per-build art material+texture, disposed on rebuild
-let shelfCutWalls = [];                 // {mesh, n} of the ONE opened front pack — near walls hidden per frame
+/* BAYS. One bay is the normal shelf; compare mode builds two identical ones
+ * side by side. Keyed by id so a rebuild of one never disposes the other's
+ * geometry or its art texture — which is the whole isolation requirement seen
+ * from the render side. The default id is 'single', so every existing caller
+ * and every existing pin is on exactly the path it was on before. */
+const bays = new Map();                 // id -> {group, artMat, cutWalls}
 let shelfFrameOff = null;               // the shelf's own frame loop, registered once
 const SHOWN_CAP = 4000;            // instancing cap for absurd inputs
 const PACK_GAP = 1.5;              // visual seam between packs
@@ -132,10 +135,17 @@ export function faceUpRoll(frontO, frontAxis, frontUp){
 
 export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts = {}){
   const pivot = getPivot();
-  if(shelfGroup){ pivot.remove(shelfGroup); shelfGroup.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
-  if(shelfArtMat){ if(shelfArtMat.map) shelfArtMat.map.dispose(); shelfArtMat.dispose(); shelfArtMat = null; }
-  shelfCutWalls = [];                             // reset the opened-pack cutaway state each build
-  shelfGroup = new THREE.Group();
+  const bayId = opts.bayId || 'single';
+  const prev = bays.get(bayId);
+  if(prev){
+    pivot.remove(prev.group);
+    prev.group.traverse(o => { if(o.geometry) o.geometry.dispose(); });
+    if(prev.artMat){ if(prev.artMat.map) prev.artMat.map.dispose(); prev.artMat.dispose(); }
+  }
+  const bay = {group: new THREE.Group(), artMat: null, cutWalls: []};
+  bays.set(bayId, bay);
+  const shelfGroup = bay.group;
+  let shelfArtMat = null;
   const W = shelf.width, D = shelf.depth, H = shelf.height, t = SURFACE_T;
 
   // the fixture (base/back/ceiling) is NAMED so a measurement can tell the
@@ -208,7 +218,7 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
         // both to the shopper side. One shared texture across every facing pack.
         pgeo = packArtGeometry(art.am);
         const mats = packArtMaterials(art.canvas, kraft);
-        shelfArtMat = mats[0];
+        shelfArtMat = mats[0]; bay.artMat = shelfArtMat;
         pmat = mats; rot = true;
       }else{
         pgeo = new THREE.BoxGeometry(Math.max(od.l - PACK_GAP, 1), Math.max(od.h - PACK_GAP, 1), Math.max(od.w - PACK_GAP, 1));
@@ -261,9 +271,16 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
     openG.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rotDeg*Math.PI/180));
     openG.position.set(p.x, p.z, p.y);
     shelfGroup.add(openG);
-    shelfCutWalls = walls;
+    bay.cutWalls = walls;
   }
 
+  // BAY LABEL — a canvas plate above the fixture. Compare mode needs the two
+  // bays told apart on screen, and there is no font in the scene to letter
+  // with; a texture is the one way to put a word in a WebGL view without
+  // shipping a typeface. Absent (and therefore bit-identical) for one bay.
+  if(opts.label) shelfGroup.add(bayLabel(opts.label, W, H));
+
+  shelfGroup.position.x = opts.offsetX || 0;            // side-by-side bays
   shelfGroup.position.y = -H/2;                         // centre vertically for orbit
   // The shelf was built with the pack fronts at local -Z and the back wall at
   // +Z, but the ViewCube's FRONT looks down the opposite axis — so a straight
@@ -272,8 +289,49 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
   shelfGroup.rotation.y = Math.PI;
   shelfGroup.visible = visible;
   pivot.add(shelfGroup);
-  setCamSpan(Math.max(W, D, H)*0.95);
+  // the camera has to frame whatever is on stage: one bay, or two plus the gap
+  // between them. The caller knows how many bays it is building, so it says.
+  setCamSpan(opts.camSpan || Math.max(W, D, H)*0.95);
   ensureCutFrame();
+}
+
+/** Dispose every bay whose id is not in `keep` — leaving compare mode disposes
+ *  A and B, entering it disposes the single bay. */
+export function clearShelfBays(keep = []){
+  const pivot = getPivot();
+  for(const [id, bay] of [...bays]){
+    if(keep.includes(id)) continue;
+    pivot.remove(bay.group);
+    bay.group.traverse(o => { if(o.geometry) o.geometry.dispose(); });
+    if(bay.artMat){ if(bay.artMat.map) bay.artMat.map.dispose(); bay.artMat.dispose(); }
+    bays.delete(id);
+  }
+}
+
+/** A bay's name, drawn to a canvas and hung above the fixture. */
+function bayLabel(text, W, H){
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#F3F6F8'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#0F6E77';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  // fit the name to the plate rather than hoping it fits: a slot can be named
+  // anything, and an overflowing label is silently cropped to nonsense
+  // (measured: "B · Design B" rendered as "3 · Design E").
+  let fs = 76;
+  do { g.font = `bold ${fs}px ui-monospace, monospace`; fs -= 4; }
+  while(fs > 18 && g.measureText(text).width > c.width*0.9);
+  g.fillText(text, c.width/2, c.height/2 + 4);
+  const tex = new THREE.CanvasTexture(c);
+  const w = Math.min(W*0.7, 420), h = w*0.25;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({map: tex, transparent: true}));
+  // above the ceiling, facing the shopper (the group's own 180° carries it)
+  m.position.set(0, H + SURFACE_T + h*0.75, -0.1);
+  m.rotation.y = Math.PI;
+  m.name = 'shelfFixture';
+  return m;
 }
 
 // The shopper-facing pack: front row (smallest depth y), then centred across
@@ -299,14 +357,16 @@ const _wp = new THREE.Vector3(), _wn = new THREE.Vector3(), _q = new THREE.Quate
 function ensureCutFrame(){
   if(shelfFrameOff) return;
   shelfFrameOff = onFrame(cam => {
-    if(!shelfGroup || !shelfGroup.visible || !shelfCutWalls.length) return;
-    for(const {mesh, n} of shelfCutWalls){
-      mesh.getWorldPosition(_wp); mesh.getWorldQuaternion(_q);
-      _wn.copy(n).applyQuaternion(_q);
-      _toCam.copy(cam.position).sub(_wp);
-      mesh.visible = _wn.dot(_toCam) <= 0;              // hide walls facing the camera
+    for(const bay of bays.values()){
+      if(!bay.group.visible || !bay.cutWalls.length) continue;
+      for(const {mesh, n} of bay.cutWalls){
+        mesh.getWorldPosition(_wp); mesh.getWorldQuaternion(_q);
+        _wn.copy(n).applyQuaternion(_q);
+        _toCam.copy(cam.position).sub(_wp);
+        mesh.visible = _wn.dot(_toCam) <= 0;            // hide walls facing the camera
+      }
     }
   });
 }
 
-export function showShelf(v){ if(shelfGroup) shelfGroup.visible = v; }
+export function showShelf(v){ for(const bay of bays.values()) bay.group.visible = v; }

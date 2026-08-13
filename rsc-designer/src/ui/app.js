@@ -20,7 +20,7 @@ import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
-import {buildShelf, showShelf, faceUpRoll} from '../render/shelf3d.js';
+import {buildShelf, showShelf, clearShelfBays, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
@@ -76,6 +76,12 @@ const subjectDims = {fold: null, nest: null};
 // swap the face's two dims (across ↔ up; depth unchanged), so its width×height
 // on the shelf changes and the fill (facings/stack/count/occupied) recomputes.
 const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'auto', rot: 0, cutaway: false};
+/* COMPARE STATE — view state, never project state. `project` is a snapshot
+ * deserialized from a save slot: a separate object graph with its own artwork
+ * and its own rates, solved through the same pure core functions and never
+ * through build.js's caches. Nothing here is written by anything but the
+ * compare control. */
+const compare = {on: false, slot: null, project: null, name: ''};
 // the shelf's natural angle IS the shopper's: mostly front-on (looking at the
 // front panels), tilted down slightly and turned a touch to read the depth of
 // the fill. One source for both entry and the ViewCube Home reset.
@@ -320,9 +326,9 @@ function artFor(level, g){
  *  texture source every rendered instance of that pack shares. `flat` maps
  *  (tray) have no 3D tube, so they never texture the 3D. Re-renders the
  *  hierarchy once the image decodes (composeArtCanvas needs it complete). */
-function artCanvasFor(level, geo, onDecode){
+function artCanvasFor(level, geo, onDecode, proj = build.project){
   if(!geo || !geo.meta.artMap || geo.meta.artMap.flat) return null;
-  const a = build.project.artwork && build.project.artwork[level];
+  const a = proj.artwork && proj.artwork[level];
   if(!a || !a.src) return null;
   const img = artImage(a.src, onDecode || (() => { if(view === '3d' && mode3d === 'hier') applyHierarchy(false); }));
   return composeArtCanvas(geo.meta.artMap, a, img, 1024);   // instances are small — 1024 is ample
@@ -560,32 +566,40 @@ function renderBCT(g, stats){
  *  merchandised the shipper: a shrink-wrapped tray of product IS the retail
  *  unit, and nobody puts the case on a shelf. The tray makes that chain
  *  ordinary rather than exotic, which is what exposed it. */
-function shelfSellable(){
-  const proj = build.project;
+function shelfSellable(proj = build.project, key = selKey()){
   const noun = (proj.secondary.enabled !== false) ? 'carton'
              : proj.primary.wrap ? 'wrap'
              : 'case';
-  const row = resolveActiveRow(proj, build.getRounding(), selKey());
-  return {noun, geo: row && row.geo ? row.geo[noun] : null};
+  const row = resolveActiveRow(proj, build.getRounding(), key);
+  return {noun, row, geo: row && row.geo ? row.geo[noun] : null};
 }
 
 const shelfKey = v => +v.toFixed(3);   // stable grouping key for placement coords
 
-function refreshShelf(){
-  if(view !== 'shelf') return;         // only compute while the shelf view is up
-  const {noun, geo} = shelfSellable();
-  el('spUnit').textContent = noun + 's';
-  if(!geo){
-    el('shReadout').innerHTML = 'No sellable pack geometry for this chain.';
-    showShelf(false);
-    return;
-  }
+/**
+ * THE shelf fill for ONE design, in ONE bay.
+ *
+ * Lifted out of refreshShelf so compare mode can call it twice — once per
+ * design — rather than growing a second implementation of the same packing,
+ * orientation and subsetting rules. The single shelf is this function called
+ * once; a comparison is it called twice with different projects. There is no
+ * second fill anywhere.
+ *
+ * Reads ONLY the project it is handed. `proj` is the live project for design A
+ * and a slot-loaded snapshot for design B, and nothing here writes to either.
+ *
+ * @returns {Object|null} everything the renderer and the readout need, or null
+ *   when the chain has no sellable pack geometry at all.
+ */
+function shelfFill(proj, key, onArtDecode){
+  const {noun, row, geo} = shelfSellable(proj, key);
+  if(!geo) return {noun, geo: null, row};
   const cavity = {L: shelf.width, W: shelf.depth, H: shelf.height};
   // artwork on the sellable pack → every facing pack shows it, printed FRONT to
   // the shopper. That pins the orientation to the print front ('LWH', the pack's
   // canonical footprint), overriding the manual front selector so the packed
   // slot matches the textured geometry.
-  const sellCanvas = artCanvasFor(noun, geo, () => { if(view === 'shelf') refreshShelf(); });
+  const sellCanvas = artCanvasFor(noun, geo, onArtDecode, proj);
   const artInfo = sellCanvas ? {am: geo.meta.artMap, canvas: sellCanvas} : null;
   // Whether a PRINTED pack can still be turned to another face depends on where
   // its art lives. A wrap's art rides the real pillow geometry (closedWrapParts
@@ -604,8 +618,6 @@ function refreshShelf(){
   // is the same value, not a second convention.
   const packFront = packFrontOrientation(geo);
   const frontO = (artPinsFront || shelf.front === 'auto') ? packFront : shelf.front;
-  el('shFront').disabled = artPinsFront;
-  el('shFront').title = artPinsFront ? 'Front follows the uploaded artwork' : '';
   // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
   // axis, like turning a framed picture on the wall) — the same face stays
   // toward the shopper, never a side or the back. So the two dims OF THAT FACE
@@ -659,14 +671,43 @@ function refreshShelf(){
   // stays forward and its width×height on the shelf matches odFoot.
   const odFoot = orientDims(geo.outer, fillO);
   const odGeo = orientDims(geo.outer, frontO);
+  return {noun, row, geo, artInfo, artOnBody, artPinsFront, frontO, rotDeg,
+          placements, facings, stack, deep, total, maxF, maxD, maxS, odFoot, odGeo,
+          fits: !!(maxF && maxD && maxS)};
+}
+
+/** The occupancy line both the single readout and the comparison table use. */
+function shelfOccupancy(fill){
+  const u = inputs.getUnit(), f = v => fmtLen(v, u);
   const pct = (a, b) => b > 0 ? Math.round(a/b*100) : 0;
-  const u = inputs.getUnit(), f = v => fmtLen(v, u);   // same unit source as every other readout
-  el('shReadout').innerHTML = (maxF && maxD && maxS)
-    ? `<b>${total}</b> ${noun}${total === 1 ? '' : 's'} on shelf<br>` +
-      `${facings} facings × ${stack} high × ${deep} deep` +
-      `<div class="sp-util">occupies ${f(facings*odFoot.l)} × ${f(deep*odFoot.w)} × ${f(stack*odFoot.h)} ${u} ` +
-      `(${pct(facings*odFoot.l, shelf.width)}% width · ${pct(stack*odFoot.h, shelf.height)}% height · ${pct(deep*odFoot.w, shelf.depth)}% depth)</div>`
-    : `<b>0</b> on shelf<div class="sp-util">the ${noun} does not fit this shelf opening in the chosen orientation</div>`;
+  return {
+    size: `${f(fill.facings*fill.odFoot.l)} × ${f(fill.deep*fill.odFoot.w)} × ${f(fill.stack*fill.odFoot.h)} ${u}`,
+    widthPct: pct(fill.facings*fill.odFoot.l, shelf.width),
+    heightPct: pct(fill.stack*fill.odFoot.h, shelf.height),
+    depthPct: pct(fill.deep*fill.odFoot.w, shelf.depth)
+  };
+}
+
+function refreshShelf(){
+  if(view !== 'shelf') return;         // only compute while the shelf view is up
+  if(compare.on){ refreshCompare(); return; }
+  clearShelfBays(['single']);          // leaving compare disposes A and B
+  const fill = shelfFill(build.project, selKey(), () => { if(view === 'shelf') refreshShelf(); });
+  el('spUnit').textContent = fill.noun + 's';
+  if(!fill.geo){
+    el('shReadout').innerHTML = 'No sellable pack geometry for this chain.';
+    showShelf(false);
+    return;
+  }
+  el('shFront').disabled = fill.artPinsFront;
+  el('shFront').title = fill.artPinsFront ? 'Front follows the uploaded artwork' : '';
+  const occ = shelfOccupancy(fill);
+  el('shReadout').innerHTML = fill.fits
+    ? `<b>${fill.total}</b> ${fill.noun}${fill.total === 1 ? '' : 's'} on shelf<br>` +
+      `${fill.facings} facings × ${fill.stack} high × ${fill.deep} deep` +
+      `<div class="sp-util">occupies ${occ.size} ` +
+      `(${occ.widthPct}% width · ${occ.heightPct}% height · ${occ.depthPct}% depth)</div>`
+    : `<b>0</b> on shelf<div class="sp-util">the ${fill.noun} does not fit this shelf opening in the chosen orientation</div>`;
 
   // Cutaway: open ONLY the shopper-facing pack (its real contents), the rest
   // stay solid printed packs. The bundle carries the pieces/wraps to drill; it
@@ -676,16 +717,101 @@ function refreshShelf(){
   // are built from it too when the sellable pack is a filmed wrap (a pillow,
   // not a box — see shelf3d). Resolving it once means the facings and the
   // opened pack can never describe different packs.
-  const needBundle = shelf.cutaway || artOnBody;
+  const needBundle = shelf.cutaway || fill.artOnBody;
   const bundle = needBundle ? hierarchyBundle() : null;
   // frontAxis travels WITH frontO: the orientation says which axis is the depth
   // axis, the axis alone says nothing about which of that axis's two faces is
   // the display face. Sending only the orientation is what pointed a wrapped
   // tray's open top at the back wall.
-  const shelfOpts = {frontO, frontAxis: geo.meta.frontFace,
-    ...(shelf.cutaway ? {cutaway: true, bundle, noun} : {}),
-    ...(artOnBody ? {wrapBundle: bundle} : {})};
-  buildShelf(odGeo, shelf, placements, true, artInfo, rotDeg, shelfOpts);
+  const shelfOpts = {frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+    ...(shelf.cutaway ? {cutaway: true, bundle, noun: fill.noun} : {}),
+    ...(fill.artOnBody ? {wrapBundle: bundle} : {})};
+  buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, shelfOpts);
+}
+
+/* ---------- compare: two complete designs, two identical bays ------------
+ * A is the live project. B is a SNAPSHOT deserialized out of a save slot —
+ * its own object graph, its own artwork, its own rates — solved through the
+ * same pure core functions and never through build.js's row cache or
+ * selection, which belong to the live project alone. Nothing in this path
+ * writes to the live project, and B is read-only by construction: to change
+ * it you load it, edit it as the active project, and save it back.
+ *
+ * The bays are IDENTICAL: one shelf spec, applied twice. That is what keeps
+ * the two counts directly comparable — each is a full-bay number, not a
+ * half-bay number needing mental doubling.
+ */
+const BAY_GAP = 120;                        // mm of aisle between the two bays
+
+function compareLoad(slotIndex){
+  const st = save.loadFromSlot(slotIndex);
+  if(!st || !st.project) return null;
+  const meta = save.listSlots()[slotIndex - 1];
+  return {project: st.project, name: (meta && meta.name) || `Slot ${slotIndex}`};
+}
+
+/** Design B's fill — resolved from ITS OWN project, with its own row, so no
+ *  part of the live build state is consulted or written. */
+function compareFillB(){
+  if(!compare.project) return null;
+  return shelfFill(compare.project, null, () => { if(view === 'shelf' && compare.on) refreshShelf(); });
+}
+
+function refreshCompare(){
+  clearShelfBays(['A', 'B']);               // entering compare disposes the single bay
+  const fillA = shelfFill(build.project, selKey(), () => { if(view === 'shelf') refreshShelf(); });
+  const fillB = compareFillB();
+  el('spUnit').textContent = fillA.noun + 's';
+  // the front selector applies to BOTH bays (it is shelf-view state, not a
+  // property of either design); 'auto' — the default — lets each design present
+  // by its own declared face, which is the honest merchandising comparison.
+  el('shFront').disabled = fillA.artPinsFront || (fillB && fillB.artPinsFront);
+  el('shFront').title = el('shFront').disabled ? 'Front follows the uploaded artwork' : '';
+
+  const span = Math.max(shelf.width*2 + BAY_GAP, shelf.depth, shelf.height)*0.62;
+  const half = (shelf.width + BAY_GAP)/2;
+  const build1 = (fill, id, offsetX, label) => {
+    if(!fill || !fill.geo) return;
+    const bundle = fill.artOnBody
+      ? (id === 'A' ? hierarchyBundle() : hierarchyBundle(compare.project, fill.row))
+      : null;
+    buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, {
+      frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+      ...(fill.artOnBody ? {wrapBundle: bundle} : {}),
+      bayId: id, offsetX, label, camSpan: span
+    });
+  };
+  // A on the shopper's LEFT, B on the right — reading order. The bay offset is
+  // set on the group's position in the PIVOT's frame, so it is unaffected by
+  // the group's own 180° turn: -x is screen-left from the shopper view
+  // (measured, not assumed — the first draft put A on the right).
+  build1(fillA, 'A', -half, `A · current`);
+  build1(fillB, 'B', +half, `B · ${compare.name}`);
+  showShelf(true);
+  writeCompareReadout(fillA, fillB);
+}
+
+/** The comparison table — the point of the view. Every figure is read from the
+ *  two fills and the two rows; none is recomputed here. */
+function writeCompareReadout(a, b){
+  const cell = f => {
+    if(!f || !f.geo) return {head: '—', lines: ['no sellable pack']};
+    const occ = shelfOccupancy(f);
+    const c = f.row && f.row.cost;
+    return {head: `<b>${f.total}</b> ${f.noun}${f.total === 1 ? '' : 's'}`,
+      lines: [`${f.facings} × ${f.stack} high × ${f.deep} deep`,
+              occ.size,
+              `${occ.widthPct}% width · ${occ.heightPct}% height`,
+              c && c.packCost != null ? `${fmtMoney(c.packCost)} / ${f.noun}` : 'cost —']};
+  };
+  const A = cell(a), B = cell(b);
+  const rows = ['On shelf', 'Facings × stack × deep', 'Occupies', 'Utilisation', 'Material cost'];
+  const va = [A.head, ...A.lines], vb = [B.head, ...B.lines];
+  el('shReadout').innerHTML =
+    `<div class="cmp"><div class="cmp-h cmp-sp">&nbsp;</div>` +
+    `<div class="cmp-h">A · current</div><div class="cmp-h">B · ${compare.name}</div>` +
+    rows.map((r, i) => `<div class="cmp-k">${r}</div><div class="cmp-v">${va[i]}</div><div class="cmp-v">${vb[i]}</div>`).join('') +
+    `</div>`;
 }
 
 /* ---------- active-level selection + mounting ---------- */
@@ -1446,16 +1572,25 @@ function refreshPlacementControls(){
  *  own notify.refreshAll(), so a genuinely-empty, steady-state rows array
  *  (a chain with no valid candidates) would recompute forever instead of
  *  just rendering "nothing fits". */
-function hierarchyBundle(){
-  const proj = build.project;
-  const rows = build.getRows();
-  // default to the freight-optimal row (max cartons/pallet) so the cascade
-  // shows a representative case, not the first enumerated candidate
-  const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
-  // the committed pallet-pattern pick applies here exactly as in
-  // resolveActiveRow (the SAME project.js adjuster) — the rendered pallet
-  // and the readout can never show different arrangements
-  const row = applyPatternSelection(build.getSelected() || best, proj);
+/** @param {Object} [proj] the project to describe — defaults to the live one.
+ *  @param {Object} [rowIn] its already-resolved row; only a project that is NOT
+ *  the live one supplies this, because build.js's row cache and selection
+ *  belong to the live project alone. Passing another project's row through the
+ *  live caches is exactly the contamination compare mode must not cause. */
+function hierarchyBundle(proj = build.project, rowIn = null){
+  let row;
+  if(rowIn){
+    row = applyPatternSelection(rowIn, proj);
+  }else{
+    const rows = build.getRows();
+    // default to the freight-optimal row (max cartons/pallet) so the cascade
+    // shows a representative case, not the first enumerated candidate
+    const best = rows.reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+    // the committed pallet-pattern pick applies here exactly as in
+    // resolveActiveRow (the SAME project.js adjuster) — the rendered pallet
+    // and the readout can never show different arrangements
+    row = applyPatternSelection(build.getSelected() || best, proj);
+  }
   if(!row || !row.arr) return null;
   const {cases, cartons, wraps, pieces} = row.arr;
   // the immediate-child-unit placements: `wraps` (the carton's own inner solve)
@@ -1471,9 +1606,9 @@ function hierarchyBundle(){
   // the shelf's bundle carried no art at all: the very gap that pushed the
   // shelf's printed facings onto their own forked geometry path.
   const art = {
-    carton: artCanvasFor('carton', row.geo.carton),
-    case:   artCanvasFor('case', row.geo.case),
-    wrap:   artCanvasFor('wrap', row.geo.wrap)
+    carton: artCanvasFor('carton', row.geo.carton, null, proj),
+    case:   artCanvasFor('case', row.geo.case, null, proj),
+    wrap:   artCanvasFor('wrap', row.geo.wrap, null, proj)
   };
   return {
     art,
@@ -1779,6 +1914,7 @@ function setView(v){
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
   el('modeShelf').style.display = v === 'shelf' ? 'flex' : 'none';
   el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
+  if(v === 'shelf') refreshCompareControl();   // slots may have changed since last time
   updateArtPanel();
   // the title block is a drawing-sheet overlay — the Build view is a table,
   // not a sheet, so hide it there (it would float over the candidate table).
@@ -1982,6 +2118,47 @@ el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el(
 const setShelfCut = on => { shelf.cutaway = on; el('shSolid').classList.toggle('on', !on); el('shCut').classList.toggle('on', on); if(view === 'shelf') refreshShelf(); };
 el('shSolid').addEventListener('click', () => setShelfCut(false));
 el('shCut').addEventListener('click',   () => setShelfCut(true));
+
+/* ---------- compare: enter/exit, and the slot picker ----------
+ * Deliberately two controls, not a mode system: pick a slot, press Compare;
+ * press it again to go back. Empty slots disable the button rather than
+ * failing on click. */
+function refreshCompareControl(){
+  const sel = el('shCmpSlot'), btn = el('shCompare');
+  const slots = save.listSlots();
+  const cur = compare.on ? String(compare.slot) : (sel.value || '');
+  sel.innerHTML = slots.map(o =>
+    `<option value="${o.index}"${String(o.index) === cur ? ' selected' : ''}${o.name ? '' : ' disabled'}>` +
+    `${o.index}. ${o.name || '(empty)'}</option>`).join('');
+  const filled = slots.filter(o => o.name);
+  if(!filled.length){
+    sel.innerHTML = '<option>no saved designs</option>';
+    sel.disabled = true; btn.disabled = true;
+    btn.title = 'Save a design to a slot first — B is a saved snapshot';
+    return;
+  }
+  sel.disabled = compare.on;                      // B is fixed while comparing
+  if(!slots[+sel.value - 1] || !slots[+sel.value - 1].name) sel.value = String(filled[0].index);
+  btn.disabled = false;
+  btn.title = compare.on ? 'Back to the single shelf' : 'Show this saved design beside the current one';
+  btn.textContent = compare.on ? 'Exit compare' : 'Compare';
+  btn.classList.toggle('on', compare.on);
+}
+el('shCmpSlot').addEventListener('change', refreshCompareControl);
+el('shCompare').addEventListener('click', () => {
+  if(compare.on){
+    compare.on = false; compare.project = null; compare.slot = null; compare.name = '';
+  }else{
+    const i = +el('shCmpSlot').value;
+    const loaded = compareLoad(i);
+    if(!loaded){ showNotice('That slot is empty — save a design to it first.', true); return; }
+    // B is a SNAPSHOT: its own deserialized object graph, never a reference
+    // into the live project, so no edit on either side can reach the other.
+    compare.on = true; compare.slot = i; compare.project = loaded.project; compare.name = loaded.name;
+  }
+  refreshCompareControl();
+  refreshShelf();
+});
 el('m3fold').addEventListener('click', () => { if(!FOLD_VIEW_ENABLED) return; mode3d = 'fold'; apply3dMode(); });
 // hide the Fold toggle while the feature is flagged off (its whole seg row) —
 // the code path stays, only the entry point is removed

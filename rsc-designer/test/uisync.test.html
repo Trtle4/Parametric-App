@@ -146,6 +146,9 @@
   <input id="shFacings" type="text">
   <input id="shStack" type="text">
   <input id="shDeep" type="text">
+  <!-- compare: the slot picker and the enter/exit toggle -->
+  <select id="shCmpSlot"></select>
+  <button id="shCompare" type="button"></button>
   <div id="shReadout"></div>
   <span id="spUnit"></span>
 </div>
@@ -235,7 +238,22 @@ const el = id => document.getElementById(id);
 const uncaught = [];
 window.addEventListener('error', e => uncaught.push(e.message || (e.error && e.error.message) || 'unknown error'));
 const results = [];
-function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+/* t() runs the body SYNCHRONOUSLY, so an async body's throw becomes an
+ * unhandled rejection and the pin reports PASS — a false green that looks
+ * exactly like a passing test, for every assertion in it. Rather than teach
+ * the runner to await (which would reorder every pin), an async body is
+ * refused outright: put the awaits in the enclosing block and keep the pin
+ * synchronous. Four pins in this file were already written that way. */
+function t(name, fn){
+  try{
+    const r = fn();
+    if(r && typeof r.then === 'function'){
+      results.push(`FAIL  ${name}: async pin body — t() cannot await it, so every assertion inside is unchecked`);
+      return;
+    }
+    results.push(`PASS  ${name}`);
+  } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
 function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
 function eq(a, e, msg = ''){ if(a !== e) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
 function fire(node, type){ node.dispatchEvent(new Event(type, {bubbles: true})); }
@@ -1457,7 +1475,7 @@ await (async () => {
   });
 
   /* ---- render + STL (stage 4) ---- */
-  t('tray render: the tray depth builds meshes', async () => {
+  t('tray render: the tray depth builds meshes', () => {
     el('tab3d').click();
     el('d_tray').click();
     if(el('d_tray').disabled) throw new Error('tray depth must be reachable while the tier is on');
@@ -1990,7 +2008,7 @@ await (async () => {
     eq(el('candKey').textContent, `${totN} · ${el('palPat').textContent}`, 'arrow label vs pallet readout:');
   });
 
-  t('pattern cycle: next steps the pattern; readout + index follow live; prev clamps', async () => {
+  t('pattern cycle: next steps the pattern; readout + index follow live; prev clamps', () => {
     // to the top first (a previous test may have left an index)
     for(let i = 0; i < 60 && !el('candPrev').disabled; i++) el('candPrev').click();
     eq(build.getPatternCycleState().pos, 1, 'reset to pattern 1:');
@@ -3403,6 +3421,136 @@ await (async () => {
       el('shFacings').value = facings0; el('shFacings').dispatchEvent(new Event('input'));
     }
   });
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   Shelf compare — two complete designs, two identical bays.
+   The rule under every pin: design B is a SNAPSHOT solved through its own
+   chain, and nothing about it may reach design A. A comparison that moves
+   A's numbers is not a comparison.
+   ================================================================== */
+await (async () => {
+  const CMP_SLOT = 5;                      // a slot the other pins do not use
+  const shelfNums = () => {
+    const t = el('shReadout').textContent.replace(/\s+/g, ' ').trim();
+    return t;
+  };
+  /** A's numbers, from every place the app reports them. */
+  const aNumbers = () => {
+    const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+    return JSON.stringify({
+      cases: row.casesPerPallet, pieces: row.piecesPerPallet, cartons: row.cartonsPerPallet,
+      cost: row.cost.per1000Packs, board: row.boardAreaM2,
+      rows: build.getRows().length, sel: build.getSelectedCandidateKey()
+    });
+  };
+  const cmpCells = () => [...document.querySelectorAll('#shReadout .cmp > div')].map(d => d.textContent.trim());
+  const enter = slot => {
+    el('shCmpSlot').value = String(slot); fire(el('shCmpSlot'), 'change');
+    el('shCompare').click();
+  };
+
+  el('tabShelf').click(); await settle();
+
+  t('compare: with no saved design the control says so instead of failing', () => {
+    for(let i = 1; i <= 5; i++) save.clearSlot(i);
+    el('tabShelf').click();                            // remount the control
+    if(!el('shCompare').disabled) throw new Error('Compare must be disabled with no saved designs');
+    if(!/saved/i.test(el('shCmpSlot').textContent)) throw new Error('the picker should say there is nothing to compare');
+  });
+
+  // save the CURRENT design as B, so both bays describe the same design: any
+  // difference between the columns is then a fault in B's independent path,
+  // not a difference between two designs
+  save.saveToSlot(CMP_SLOT, 'Pinned B', {project: build.project, rounding: build.getRounding(),
+                                         selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+  el('tabShelf').click(); await settle();
+
+  t('compare: both bays render, and B goes through its own solve to the same answer', () => {
+    el('tabShelf').click();
+    const single = shelfNums();
+    enter(CMP_SLOT);
+    const cells = cmpCells();
+    if(!cells.length) throw new Error('no comparison table');
+    // 3 columns x (1 header + 5 rows)
+    if(cells.length !== 18) throw new Error(`comparison table is ${cells.length} cells, expected 18`);
+    // B is the same design as A, deserialized and solved independently, so
+    // every row must agree — a wrong project, a wrong row, or a contaminated
+    // cache would show here
+    for(let i = 3; i < cells.length; i += 3)
+      eq(cells[i + 2], cells[i + 1], `row "${cells[i]}" — B's independent solve vs A:`);
+    if(!/A · current/.test(cells[1])) throw new Error('bay A is not labelled');
+    if(!/Pinned B/.test(cells[2])) throw new Error("bay B is not labelled with its slot's name");
+    el('shCompare').click();                            // exit
+    eq(shelfNums(), single, 'exit restores the single shelf exactly:');
+  });
+
+  t('compare: TWO bays are actually built, and exit disposes the second', () => {
+    // the readout could be right while the scene is wrong; count the fixtures
+    // (base/back/ceiling/label are named 'shelfFixture') on stage
+    // buildShelf adds its group synchronously, so no frame wait is needed —
+    // and must not be used: an async pin body is unchecked (see t()).
+    const fixtures = () => { let n = 0; getPivot().traverse(o => { if(o.name === 'shelfFixture') n++; }); return n; };
+    el('tabShelf').click();
+    const one = fixtures();
+    if(!one) throw new Error('no shelf on stage');
+    enter(CMP_SLOT);
+    const two = fixtures();
+    if(two < one*2) throw new Error(`two bays should roughly double the fixtures: ${one} -> ${two}`);
+    el('shCompare').click();
+    eq(fixtures(), one, 'exit disposes the second bay:');
+  });
+
+  tEdit('compare: A\'s numbers are IDENTICAL before, during and after', () => {
+    // THE isolation pin. B is a separate object graph solved through the same
+    // pure core; if any part of it wrote to the live project or to build.js's
+    // caches, A would move here and nowhere else would notice.
+    //
+    // A HAS TO DIFFER FROM B for this to bite. Measured: with A and B the same
+    // design, a mutation that wrote B's pallet spec straight into the live
+    // project passed this pin — the leak was real and invisible, because the
+    // value leaked in was the value already there. So A's pallet is shortened
+    // first, and the fixture checks that the two really do differ.
+    build.project.pallet.maxH -= 200;
+    build.recompute();
+    const bPallet = save.loadFromSlot(CMP_SLOT).project.pallet.maxH;
+    if(Math.abs(bPallet - build.project.pallet.maxH) < 1)
+      throw new Error('vacuous fixture: A and B share a pallet spec, so a leak could not show');
+    el('tabShelf').click();
+    const before = aNumbers();
+    enter(CMP_SLOT);
+    const during = aNumbers();
+    el('shCompare').click();
+    const after = aNumbers();
+    eq(during, before, "A's numbers during compare:");
+    eq(after, before, "A's numbers after compare:");
+  });
+
+  tEdit('compare: editing A recomputes A only; B holds still', () => {
+    enter(CMP_SLOT);
+    try{
+      const before = cmpCells();
+      // a real edit to the live design, and one that reaches the SHELF: the
+      // carton's own wall clearance grows the carton, which is the pack being
+      // merchandised. (The case's clearance re-solves the chain but leaves the
+      // carton — and therefore the shelf — untouched, which is why the first
+      // version of this pin reported its own fixture as vacuous.)
+      const clr = build.project.secondary.clearance;
+      const was = clr.wall;
+      clr.wall = was + 12;
+      build.recompute();
+      const after = cmpCells();
+      const col = i => after.filter((_, k) => k % 3 === i);
+      if(JSON.stringify(col(1)) === JSON.stringify(before.filter((_, k) => k % 3 === 1)))
+        throw new Error('vacuous fixture: the edit did not change A at all');
+      eq(JSON.stringify(col(2)), JSON.stringify(before.filter((_, k) => k % 3 === 2)),
+         "B's column must not move when A is edited:");
+      clr.wall = was;
+    } finally { el('shCompare').click(); }
+  });
+
+  save.clearSlot(CMP_SLOT);
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

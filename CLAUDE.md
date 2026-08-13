@@ -87,6 +87,13 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   caught their bugs immediately. So: mutation-test every pin. Revert the fix;
   if the pin still passes, it is testing the implementation against itself,
   and the fixture is at fault, not the code.
+- An ASYNC pin body is unchecked. `t()` runs the body synchronously, so an
+  `async () => {}` pin's throw becomes an unhandled rejection and the pin
+  reports PASS — every assertion inside it silently unverified. `t()` now
+  REFUSES an async body (it returns a promise, so the runner can see it) rather
+  than teaching the runner to await, which would reorder every pin. Put the
+  awaits in the enclosing block and keep the pin synchronous. Four pins in
+  uisync were already written that way when the guard was added.
 - Fixture hygiene: a cascade of failures around one real fault is how a suite
   loses its credibility. A pin that inherits state from its neighbours — a
   stale overlay toggle, a left-over 2D view, a depth click that is a no-op
@@ -210,6 +217,29 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   checking a cost against the row's own area cannot see cost measuring its own
   area — the areas are now anchored to numbers that existed BEFORE cost did
   (the chain's `boardAreaM2`, and the rail's rendered board-area readout).
+- **RESOLVED (shelf-compare task): two DESIGNS can be compared, in two
+  IDENTICAL bays.** Every other comparison in the app ranks candidates WITHIN
+  one design; this one puts the current project beside a saved one. Design B is
+  a SNAPSHOT — `save.loadFromSlot` deserializes its own object graph, with its
+  own artwork and its own rates — solved through the same pure core functions
+  and never through build.js's row cache or selection, which belong to the live
+  project alone (`hierarchyBundle(proj, row)` takes the row for exactly that
+  reason). B is read-only: to change it you load it, edit it as the active
+  project, and save it back. The bays are identical because that is what keeps
+  the two counts directly comparable — each is a full-bay number, not a half-bay
+  number needing mental doubling. ONE fill function (`shelfFill`) serves both:
+  the single shelf is it called once, a comparison is it called twice, and there
+  is no second implementation of the packing, orientation or subsetting rules.
+  `shelf3d.js` keys its groups by BAY ID so rebuilding one never disposes the
+  other's geometry or art texture — the isolation rule seen from the render
+  side. The isolation PIN needs A and B to DIFFER: measured, with both bays the
+  same design a mutation that wrote B's pallet spec straight into the live
+  project passed, because the value leaked in was the value already there.
+  Per-side front/rotate controls were deliberately NOT built — the existing
+  shared controls apply to both bays, and 'auto' (the default) lets each design
+  present by its own declared face, which is the honest merchandising
+  comparison; per-side overrides, comparing three designs, and delta
+  highlighting are all noted and unbuilt.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.

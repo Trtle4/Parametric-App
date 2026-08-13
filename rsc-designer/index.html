@@ -375,6 +375,22 @@
   .shelfpanel select{width:112px;text-align:left;cursor:pointer}
   .shelfpanel input:focus, .shelfpanel select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
   .shelfpanel .sp-num{display:flex;align-items:center;gap:5px;justify-content:flex-end}
+  /* the A|B comparison table. Three columns on a rail wide enough for them;
+     at narrow widths the two designs STACK, because a 3-column table in a
+     300px rail renders as three unreadable slivers. */
+  .shelfpanel .cmp{display:grid;grid-template-columns:auto 1fr 1fr;gap:4px 8px;align-items:baseline}
+  .shelfpanel .cmp-h{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--accent);
+    border-bottom:1px solid var(--line);padding-bottom:3px;margin-bottom:2px}
+  .shelfpanel .cmp-k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  .shelfpanel .cmp-v{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+  @media (max-width: 900px){
+    /* two columns, the row label spanning above them. The empty corner cell
+       has to GO, not just empty out: left in the flow it takes the first grid
+       slot and pushes A into column 2 with B wrapping under it. */
+    .shelfpanel .cmp{grid-template-columns:1fr 1fr}
+    .shelfpanel .cmp-sp{display:none}
+    .shelfpanel .cmp-k{grid-column:1 / -1;margin-top:5px}
+  }
   .shelfpanel .sp-num input{width:66px}
   .shelfpanel .sp-num span{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
   .shelfpanel .sp-rot{
@@ -689,6 +705,13 @@
         <input id="shStack" type="number" min="1" step="1" placeholder="auto">
         <label>Rows <span class="sp-hint">deep, back→front</span></label>
         <input id="shDeep" type="number" min="1" step="1" placeholder="auto">
+        <!-- COMPARE: design B comes from a save slot and is read-only. The
+             shelf spec above applies to BOTH bays, which is what keeps the two
+             counts directly comparable (each a full-bay number). -->
+        <label>Compare <span class="sp-hint">B from a slot</span></label>
+        <select id="shCmpSlot"></select>
+        <label></label>
+        <button id="shCompare" type="button" class="sp-rot">Compare</button>
       </div>
       <div class="sp-readout" id="shReadout">—</div>
     </div>
