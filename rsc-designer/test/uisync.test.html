@@ -129,7 +129,7 @@
   <!-- stage background toggle (both toolbars) + the pallet PDF button -->
   <div id="m3bg"><button id="bgGrid" class="on">Grid</button><button id="bgWhite">White</button></div>
   <div id="shBg"><button id="shBgGrid" class="on">Grid</button><button id="shBgWhite">White</button></div>
-  <button id="btnPdf">Pallet PDF</button>
+  <button id="btnPdf">Pallet PDF</button><button id="btnStateSheet" style="display:none">State sheet</button>
 </div>
 <div id="hud"><span id="hud2dKeys"></span></div>
 <div id="hierHud" style="display:none"></div>
@@ -224,6 +224,8 @@ import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
 import {AUX_LAYERS, PERF_INK, auxLayerNames, auxLegendRows, resetAuxWarnings} from '../src/render/auxlayers.js';
 import {perfBodyGeometry, perfLineGeometry, perfFrames3d} from '../src/render/perf3d.js';
+import {composeSheet, cameraByName, layoutGrid, SHEET_CAMERAS, visibleSpan} from '../src/render/sheet.js';
+import {getStageBackground, setStageBackground} from '../src/render/fold3d.js';
 import {openabilityWarning, perfSpecRows} from '../src/core/perf.js';
 import {foldBuilders} from '../src/render/folds/index.js';
 import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerforation, perfFrame,
@@ -4671,6 +4673,210 @@ await (async () => {
   });
 
   setPerf4('tertiary', null); setPerf4('secondary', null);
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= CAPTURE SHEET COMPOSER — a general primitive ==========
+ * Determinism is the property the whole thing rests on, so the pins compare
+ * BYTES, and they compare them across the things a screenshot would follow:
+ * viewport size, active tab, and whatever was rendered before.
+ */
+await (async () => {
+  const pivot = getPivot();
+  const oneScene = () => ({show: () => { hier.show(true); }});
+  const sheetSpec = extra => ({
+    title: 'Determinism', subtitle: 'fixture', footer: 'fixture',
+    grid: {cols: 2}, cell: {w: 220, h: 160},
+    scenes: [{...oneScene(), caption: 'a'}, {...oneScene(), caption: 'b'}],
+    ...extra
+  });
+
+  // the fixture has to have a scene to capture at all
+  setLevel('case'); el('tab3d').click(); await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+
+  const a = await composeSheet(sheetSpec());
+  const bytesA = a.png();
+
+  // ...same again, nothing changed
+  const b = await composeSheet(sheetSpec());
+  const bytesB = b.png();
+
+  // ...with the viewport a different size
+  const wrap = el('cvWrap') || el('canvasWrap') || document.querySelector('#cv') || document.body;
+  const prevW = wrap.style.width, prevH = wrap.style.height;
+  wrap.style.width = '420px'; wrap.style.height = '300px';
+  window.dispatchEvent(new Event('resize'));
+  await waitFrames(() => true); await settle();
+  const c = await composeSheet(sheetSpec());
+  const bytesC = c.png();
+  wrap.style.width = prevW; wrap.style.height = prevH;
+  window.dispatchEvent(new Event('resize'));
+  await settle();
+
+  // ...and from a different tab, with a different view last rendered
+  el('tabShelf').click(); await settle();
+  const d = await composeSheet(sheetSpec());
+  const bytesD = d.png();
+  el('tab3d').click(); await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+
+  t('sheet: the same descriptors give byte-identical output', () => {
+    if(bytesA.length < 2000) throw new Error('the fixture composed nothing to compare');
+    eq(bytesB === bytesA, true, 'a second run differs');
+    eq(bytesC === bytesA, true, 'a different viewport size changed the output');
+    eq(bytesD === bytesA, true, 'a different active tab changed the output');
+    // ...and the sheet's own dimensions are the fixed ones, not the window's
+    eq(a.width, 26*2 + 2*220 + 18, 'sheet width:');
+    eq(a.height, 26*2 + 78 + 160 + 34 + 30, 'sheet height:');
+  });
+
+  t('sheet: a named camera resolves the same after the user orbits', () => {
+    const before = JSON.stringify(cameraByName('home'));
+    const live = getOrbit();
+    try{
+      setOrbit(live.rotX + 1.1, live.rotY - 0.7, 2.4);
+      eq(JSON.stringify(cameraByName('home')), before, 'home moved with the live view:');
+      eq(JSON.stringify(cameraByName('plan')), JSON.stringify(cameraByName('plan')), 'plan is stable:');
+      // an unknown name is refused, not quietly framed some other way
+      let threw = false;
+      try{ cameraByName('nosuchcamera'); }catch(e){ threw = /unknown camera/.test(e.message); }
+      if(!threw) throw new Error('an unknown camera name was accepted');
+      // ...and a literal override is honoured
+      eq(cameraByName({rotX: 9}).rotX, 9, 'override:');
+    } finally { setOrbit(live.rotX, live.rotY, live.d === undefined ? 1.35 : live.d); }
+  });
+
+  // the async guards, awaited properly (t() bodies stay synchronous)
+  let mismatchMsg = '', emptyMsg = '';
+  try{ await composeSheet(sheetSpec({captions: ['only one']})); }catch(e){ mismatchMsg = e.message; }
+  try{ await composeSheet({scenes: []}); }catch(e){ emptyMsg = e.message; }
+  t('sheet: mismatched captions and empty scene lists are refused', () => {
+    if(!/2 scenes but 1 captions/.test(mismatchMsg)) throw new Error(`no mismatch guard: "${mismatchMsg}"`);
+    if(!/no scenes/.test(emptyMsg)) throw new Error(`no empty guard: "${emptyMsg}"`);
+  });
+
+  t('sheet: any grid composes — 1xN, Nx1 and irregular', () => {
+    const s = n => Array.from({length: n}, () => ({}));
+    eq(layoutGrid(s(4), 1).rows, 4, 'Nx1 rows:');
+    eq(layoutGrid(s(4), 1).cells.map(c => c.c).join(''), '0000', 'Nx1 columns:');
+    eq(layoutGrid(s(4), 4).rows, 1, '1xN rows:');
+    eq(layoutGrid(s(4), 4).cells.map(c => c.c).join(''), '0123', '1xN columns:');
+    eq(layoutGrid(s(4), 2).rows, 2, '2x2 rows:');
+    // irregular: a double-wide cell first, then three singles
+    const irr = layoutGrid([{w: 2}, {}, {}, {}], 3);
+    eq(irr.rows, 2, 'irregular rows:');
+    eq(JSON.stringify(irr.cells.map(c => [c.r, c.c, c.w])),
+       JSON.stringify([[0,0,2],[0,2,1],[1,0,1],[1,1,1]]), 'irregular placement:');
+    // a span wider than the grid is clamped rather than dropped
+    eq(layoutGrid([{w: 9}], 2).cells[0].w, 2, 'clamped span:');
+  });
+
+  // NON-INTERFERENCE: composing must leave the live view exactly as it was.
+  //
+  // THE FIXTURE HAS TO EXHIBIT THE CONDITION. Measured twice: with only the
+  // hierarchy visible, a composer that never restored visibility left exactly
+  // the state it found — because the scene turns that same group back on. And
+  // with the stage already white (a pallet PDF earlier in this file leaves it
+  // so), a composer that forgot to restore the background was indetectable.
+  // So a BYSTANDER is made visible that no scene shows, and the background is
+  // set to a known value first.
+  const bystander = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  pivot.add(bystander); bystander.visible = true;
+  setStageBackground('grid');
+  const orbBefore = JSON.stringify(getOrbit());
+  const visBefore = pivot.children.map(o => o.visible).join(',');
+  const bgBefore = getStageBackground();
+  await composeSheet(sheetSpec());
+  const orbAfter = JSON.stringify(getOrbit());
+  const visAfter = pivot.children.map(o => o.visible).join(',');
+  const bgAfter = getStageBackground();
+  pivot.remove(bystander); bystander.geometry.dispose(); bystander.material.dispose();
+  t('sheet: composing leaves the live camera, scene and stage untouched', () => {
+    if(!visBefore.includes('true')) throw new Error('the fixture had nothing visible, so this proves nothing');
+    if(bgBefore !== 'grid') throw new Error('the fixture could not establish a non-white stage');
+    eq(orbAfter, orbBefore, 'the live orbit moved:');
+    eq(visAfter, visBefore, 'the visible objects changed:');
+    eq(bgAfter, bgBefore, 'the stage background was left white:');
+  });
+
+  // SCOPED CAPTURE. The pivot holds every view's group at once, so a capture
+  // that did not blank first picks up another tab's leftovers — measured, it
+  // did exactly that to two pins in the perforation work. A marker object is
+  // left VISIBLE in the pivot and must not reach the sheet.
+  const marker = new THREE.Mesh(
+    new THREE.BoxGeometry(1e5, 1e5, 1e5),
+    new THREE.MeshBasicMaterial({color: 0xff0000, depthTest: false}));
+  marker.renderOrder = 999;
+  pivot.add(marker);
+  let redFrac = -1;
+  try{
+    const scoped = await composeSheet(sheetSpec());
+    const g2 = scoped.canvas.getContext('2d');
+    const px = g2.getImageData(0, 0, scoped.width, scoped.height).data;
+    let red = 0, total = 0;
+    for(let i = 0; i < px.length; i += 4){
+      total++;
+      if(px[i] > 150 && px[i + 1] < 90 && px[i + 2] < 90) red++;
+    }
+    redFrac = red/total;
+  } finally {
+    pivot.remove(marker); marker.geometry.dispose(); marker.material.dispose();
+  }
+  t('sheet: a capture contains only the scene it was asked for', () => {
+    if(redFrac < 0) throw new Error('the scoped capture did not run');
+    if(!(redFrac < 0.001))
+      throw new Error(`a foreign object left visible in the pivot reached the sheet (${(redFrac*100).toFixed(1)}% of it)`);
+  });
+
+  // THE SPAN IS THE SCENE'S, and it counts instances. A framing distance that
+  // followed the last builder's camSpan made the same descriptors compose
+  // differently depending on which tab was open before (measured). And an
+  // InstancedMesh's geometry bounds describe ONE unit, so a pallet of 48
+  // instanced cases would measure as one case.
+  const probeGroup = new THREE.Group();
+  const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(10, 10, 10),
+    new THREE.MeshBasicMaterial(), 2);
+  const mm = new THREE.Matrix4();
+  inst.setMatrixAt(0, mm.makeTranslation(-500, 0, 0));
+  inst.setMatrixAt(1, mm.makeTranslation(500, 0, 0));
+  inst.instanceMatrix.needsUpdate = true;
+  probeGroup.add(inst);
+  pivot.add(probeGroup);
+  const wasVis = pivot.children.map(o => o.visible);
+  pivot.children.forEach(o => { o.visible = false; });
+  probeGroup.visible = true;
+  const spanInstanced = visibleSpan(pivot);
+  probeGroup.visible = false;
+  const spanBlank = visibleSpan(pivot);
+  pivot.children.forEach((o, i) => { if(i < wasVis.length) o.visible = wasVis[i]; });
+  pivot.remove(probeGroup); inst.geometry.dispose(); inst.material.dispose();
+  t('sheet: the span measures the visible scene, instances included', () => {
+    // two 10 mm cubes 1000 mm apart: 1010, not 10
+    approx(spanInstanced, 1010, 'instanced span:', 0.01);
+    eq(spanBlank, 0, 'nothing visible measures nothing:');
+  });
+
+  // NO CALLER KNOWLEDGE. The composer is a primitive: it must not name a
+  // feature. Read its own source. Mutation: having it read `perf` fails here.
+  const src = await (await fetch('../src/render/sheet.js')).text();
+  t('sheet: the composer names no caller', () => {
+    if(src.length < 1000) throw new Error('could not read the composer source');
+    const body = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    for(const word of ['perf', 'exploded', 'shelf', 'carton', 'pallet', 'dieline'])
+      if(new RegExp(word, 'i').test(body))
+        throw new Error(`the composer refers to "${word}" outside a comment`);
+  });
+
+  // AND IT EMBEDS. The jpeg() record is the shape export/palletpdf.js already
+  // takes, so a sheet reaches a document with no second path built later.
+  const embed = (await composeSheet(sheetSpec())).jpeg();
+  t('sheet: the output embeds in the PDF pipeline as it stands', () => {
+    eq(Object.keys(embed).sort().join(','), 'data,h,w', 'record shape:');
+    if(!/^data:image\/jpeg;base64,/.test(embed.data)) throw new Error('not a JPEG data URL');
+    eq(embed.w, a.width, 'width:'); eq(embed.h, a.height, 'height:');
+  });
+
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

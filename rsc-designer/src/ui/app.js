@@ -14,6 +14,7 @@ import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {auxLegendRows} from '../render/auxlayers.js';
 import {isDisplayGeo, openabilityWarning, perfSpecRows} from '../core/perf.js';
+import {composeSheet, saveSheet} from '../render/sheet.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
@@ -1504,6 +1505,10 @@ function updateExportButtonsState(){
     : flex ? 'No die for a flexible style — export the artwork template instead' : '';
   el('btnArt').style.display = flex ? '' : 'none';
   el('btnSpec').style.display = flex ? '' : 'none';
+  // the state sheet only means something for a container that HAS two states
+  const perfKey = LEVELS[activeLevel].perfKey;
+  const perfed = !!(perfKey && build.project[perfKey].perf && build.project[perfKey].perf.enabled);
+  el('btnStateSheet').style.display = perfed ? '' : 'none';
   setStateChip(disabledTier ? 'muted' : flex ? 'warn' : 'valid',
     disabledTier ? 'Tier disabled' : flex ? 'Flexible — export artwork' : 'Ready to export');
 }
@@ -2494,6 +2499,62 @@ function exportPalletPdf(){
     saveBlob(bytes, filename);
 }
 el('btnPdf').addEventListener('click', exportPalletPdf);
+
+/* ---------- state sheet: the capture composer's first caller ---------------
+ * render/sheet.js is a GENERAL primitive — deterministic camera, offscreen
+ * render, composed sheet — and knows nothing about perforation. All this
+ * function does is describe two scenes to it: "show the pack as it ships" and
+ * "show it in display state". An exploded case view or a shelf comparison
+ * describes its own scenes to the same function.
+ *
+ * Each scene's `show` sets the state and rebuilds; the sheet blanks the pivot
+ * around each one, so a capture can only contain what that scene turned on.
+ * The perforation state is snapshotted and handed back in `onRestore`, which
+ * the composer runs in a `finally` — the live view has to come back exactly
+ * as it was whether the sheet succeeds or throws.
+ */
+export async function stateSheet(){
+  const lvl = LEVELS[activeLevel], key = lvl.perfKey;
+  if(!key || !build.project[key].perf || !build.project[key].perf.enabled) return null;
+  const noun = lvl.label.toLowerCase();
+  const before = JSON.parse(JSON.stringify(build.project[key].perf));
+  // SOLID, not cutaway: the sheet is about the two states of the pack itself,
+  // and a cutaway shows the contents in both. Set through the same override
+  // the Solid/Cutaway control writes, and put back in onRestore.
+  const prevSolid = solidOverride;
+  const setState = st => {
+    build.project[key].perf = {...build.project[key].perf, state: st};
+    solidOverride = true;
+    build.recompute(selKey());
+    applyHierarchy(false);
+  };
+  const g = activeGeometry();
+  const sheet = await composeSheet({
+    title: `${lvl.label} — perforation states`,
+    subtitle: g ? `${activeStyle().name} · ${fmtLen(g.outer.L, inputs.getUnit())} × ` +
+      `${fmtLen(g.outer.W, inputs.getUnit())} × ${fmtLen(g.outer.H, inputs.getUnit())} ${inputs.getUnit()}` : '',
+    footer: `Parametric packaging designer · ${dateStamp()}`,
+    grid: {cols: 2},
+    scenes: [
+      {caption: `As shipped — intact, the tear drawn on the surface`, camera: 'home',
+       show: () => setState('closed')},
+      {caption: `Display state — everything above the tear removed`, camera: 'home',
+       show: () => setState('display')}
+    ],
+    onRestore: () => {
+      build.project[key].perf = before;
+      solidOverride = prevSolid;
+      build.recompute(selKey());
+      if(view === '3d') apply3dMode(); else if(view === 'shelf') refreshShelf(); else hier.show(false);
+    }
+  });
+  // cancelable so a test can read the composed sheet instead of downloading
+  if(document.dispatchEvent(new CustomEvent('statesheet:composed',
+      {cancelable: true, detail: {sheet, noun}})))
+    saveSheet(sheet, `${noun}_perforation_states.png`);
+  return sheet;
+}
+el('btnStateSheet').addEventListener('click', () => { stateSheet(); });
 
 // 2D zoom & pan
 const wrap2 = el('svgWrap');

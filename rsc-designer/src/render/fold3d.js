@@ -85,6 +85,7 @@ export const getPivot = () => pivot;
 export const getCamera = () => camera;
 export const getDomElement = () => renderer && renderer.domElement;
 export const setCamSpan = v => { camSpan = v; };
+export const getCamSpan = () => camSpan;
 
 // per-frame callbacks (e.g. hierarchy cutaway faces track the orbiting camera)
 const frameCbs = new Set();
@@ -357,7 +358,7 @@ export function setOrbit(rx, ry, d){ rotX = rx; rotY = ry; dist = d; resetPan();
  *  camera to every frame. Read-only: nothing outside this module writes
  *  rotX/rotY directly, so there is exactly one orbit state, never a second
  *  copy that could drift from what the main view is actually showing. */
-export const getOrbit = () => ({rotX, rotY});
+export const getOrbit = () => ({rotX, rotY, dist});
 
 let tween = null;   // {fromX, fromY, toX, toY, t0, dur}
 /** Animate the orbit to (rx, ry) over `dur` ms instead of jumping — used by
