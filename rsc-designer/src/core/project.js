@@ -13,6 +13,7 @@ import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
 import {materialCost} from './cost.js';
 import {styleById} from './styles/index.js';
+import {withPerfAux} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
 /**
@@ -140,6 +141,11 @@ export function newProject(){
       // (top) is a first-class Build input, layers stack directly (betweenZ 0)
       clearance: {wall: 1.5, between: 0, bottom: 0, top: 0, betweenZ: 0},
       openTop: styleOpenTopDefault('a6120'),         // false: a6120 is closed
+      // PERFORATION — a capability applied to this container, not to its
+      // style. Absence IS the off state (the `cost` rate bag's idiom), so an
+      // older save file loads unperforated rather than with five frozen
+      // settings, and core/perf.js's normalizePerf fills the rest.
+      perf: {},
       // false = this tier is skipped: its own parent's child re-points to
       // whatever is next enabled below it. At least one of secondary/
       // tertiary must stay enabled — see resolveChainShape.
@@ -150,6 +156,7 @@ export function newProject(){
       params: {...styleDefaults('fefco201')},        // L/W/H overwritten when solved
       options: styleOptionDefaults('fefco201'),      // {outerFlaps:'L'} — the 3D-fold major-panel choice
       allowedOrientations: ['LWH', 'WLH'],           // cases upright on the pallet
+      perf: {},                                      // see project.secondary.perf
       clearance: {wall: 0, between: 0},
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
@@ -915,7 +922,17 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   }, project.cost);
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
-  row.geo = {case: caseGeo, carton: cartonGeo, wrap: primaryResult ? primaryResult.geo : null};
+  // The perforation rides the geometry as `aux`, attached HERE and nowhere
+  // else: levelGeometry() reads row.geo, so the 2D dieline, the DXF and the
+  // artwork template are three readers of one decorated object rather than
+  // three places that each remember to ask perf.js. withPerfAux returns the
+  // SAME geometry when the level is unperforated, so an unperforated blank is
+  // untouched — not a copy that merely compares equal.
+  row.geo = {
+    case:   withPerfAux(caseGeo,   project.tertiary && project.tertiary.perf),
+    carton: withPerfAux(cartonGeo, project.secondary && project.secondary.perf),
+    wrap:   primaryResult ? primaryResult.geo : null
+  };
   // The immediate child-unit placements inside the carton, and the collation
   // pieces inside one such unit, are retained WHETHER OR NOT a wrap is present.
   // Without a wrap the child unit is the bare collation envelope (no film) and

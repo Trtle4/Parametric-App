@@ -222,6 +222,16 @@ import {inlineTokens} from '../src/export/png.js';
 import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
+import {AUX_LAYERS, PERF_INK, auxLayerNames, auxLegendRows, resetAuxWarnings} from '../src/render/auxlayers.js';
+import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerfAux, perfFrame} from '../src/core/perf.js';
+import {draw2d} from '../src/render/dieline2d.js';
+import {buildDXF} from '../src/export/dxf.js';
+import {buildArtworkSVG} from '../src/export/artwork.js';
+import {levelGeometry} from '../src/core/project.js';
+import {artRect, defaultFit, artImageSVG} from '../src/render/artwork.js';
+import {trayGeometry} from '../src/core/styles/tray.js';
+import {flowwrap} from '../src/core/styles/flowwrap.js';
+import {shrinkBundle} from '../src/core/styles/shrinkbundle.js';
 
 // app.js is a wiring module with side effects only (no useful exports) —
 // importing it boots the real app against the DOM above, exactly like
@@ -3871,6 +3881,284 @@ await (async () => {
         'the walls in the print view were hidden for a camera nobody was using');
   });
 
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= PERFORATION — 2D dieline, DXF, template ==================
+ * Step 2 RENDERS AND EXPORTS what core/perf.js produced; it computes nothing.
+ * So every pin here reads what the app actually DREW or WROTE — the rendered
+ * SVG, the DXF bytes, the template markup — never a recomputed expectation.
+ */
+await (async () => {
+  // the two levels that can carry a perforation, and the project key each is
+  // edited through. The wrap is deliberately absent: it has no perf field.
+  const PERF_LEVELS = [['case', 'tertiary'], ['carton', 'secondary']];
+
+  /** Read the DXF back as {layer: [entity, ...]} — what the file SAYS, not
+   *  what we think we asked for. */
+  function dxfEntities(dxf){
+    const L = dxf.split('\r\n'), out = {};
+    for(let i = 0; i < L.length - 15; i++){
+      if(L[i] !== '0' || L[i + 1] !== 'LINE' || L[i + 2] !== '8') continue;
+      const layer = L[i + 3];
+      (out[layer] = out[layer] || []).push(L.slice(i + 4, i + 16).join('|'));
+    }
+    return out;
+  }
+  const svgNow = () => el('svg').innerHTML;
+  const perfGroup = () => el('svg').querySelector('g[data-aux="PERF"]');
+  const legendText = () => el('hud2dKeys').textContent;
+  /** Every rendered x on the PERF layer, and every rendered x on a VERTICAL
+   *  crease — both read out of the DOM the app just painted. */
+  const renderedPerfX = () => [...(perfGroup() ? perfGroup().querySelectorAll('polyline') : [])]
+    .flatMap(n => n.getAttribute('points').trim().split(/\s+/).map(p => +p.split(',')[0]));
+  const renderedCreaseX = () => [...el('svg').querySelectorAll('line')]
+    .filter(n => (n.getAttribute('stroke') || '').includes('--crease') &&
+                 Math.abs(+n.getAttribute('x1') - +n.getAttribute('x2')) < 1e-6)
+    .map(n => +n.getAttribute('x1'));
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+
+  const setPerf = (levelKey, presetId) => {
+    const geo = geoAt(levelKey === 'tertiary' ? 'case' : 'carton');
+    build.project[levelKey].perf = presetId
+      ? applyPerfPreset(presetId, geo, {enabled: true, state: 'display'})
+      : {};
+    build.recompute(build.getSelectedCandidateKey());
+  };
+
+  for(const [level, key] of PERF_LEVELS){
+    setLevel(level); el('tab2d').click(); await settle();
+    const geo0 = geoAt(level);
+    const svg0 = svgNow(), dxf0 = buildDXF(geo0, 'mm'), legend0 = legendText();
+    setPerf(key, 'angled-flat'); await settle();
+    // `.perf`, NOT the level. A Level also carries `enabled` (the tier flag),
+    // so normalizePerf(level) quietly yields a VALID default perforation.
+    // Written that way, this pin compared the DXF against a path built from
+    // the wrong object and PASSED ON LUCK — the preset it used happens to emit
+    // the same five segments as that default. Measured while capturing the
+    // entity counts; corrected here, and the preset is now one whose counts
+    // differ (25 against 5), so the wrong object can no longer agree.
+    const geoOn = geoAt(level), perfOn = build.project[key].perf;
+    const svgOn = svgNow(), dxfOn = buildDXF(geoOn, 'mm'), legendOn = legendText();
+    setPerf(key, null); await settle();
+    const geo1 = geoAt(level);
+    const svg1 = svgNow(), dxf1 = buildDXF(geo1, 'mm'), legend1 = legendText();
+
+    t(`perf ${level}: turning it on changes the render and the DXF`, () => {
+      if(svgOn === svg0) throw new Error('the dieline did not change');
+      if(dxfOn === dxf0) throw new Error('the DXF did not change');
+    });
+    // BYTE identity, not equivalence. Anchored to the bytes the app produced
+    // BEFORE perf was ever switched on in this session.
+    t(`perf ${level}: off again is byte-identical, dieline and DXF`, () => {
+      eq(geo1.aux, undefined, 'aux must be absent:');
+      if(svg1 !== svg0) throw new Error('dieline bytes differ after off');
+      if(dxf1 !== dxf0) throw new Error('DXF bytes differ after off');
+      eq(legend1, legend0, 'legend text:');
+    });
+    // LAYER PURITY: perf adds a layer and touches nothing else. The CUT and
+    // CREASE entity sets are compared against the perf-OFF file, so a
+    // renderer that nudged a crease to make room would fail.
+    t(`perf ${level}: CUT and CREASE entities are untouched by perf`, () => {
+      const a = dxfEntities(dxf0), b = dxfEntities(dxfOn);
+      eq(JSON.stringify(b.CUT), JSON.stringify(a.CUT), 'CUT entities:');
+      eq(JSON.stringify(b.CREASE), JSON.stringify(a.CREASE), 'CREASE entities:');
+      eq(a.PERF, undefined, 'no PERF with perf off:');
+      eq(b.PERF.length, buildPerfPath(geoOn, perfOn).segments.length, 'PERF entity count:');
+      eq(Object.keys(b).sort().join(','), 'CREASE,CUT,PERF', 'layers present:');
+    });
+    // LAYER PURITY ON THE RENDER TOO, not just in the DXF. Strip the aux
+    // groups out of the perforated dieline and what is left must be the
+    // unperforated one, BYTE for byte — so a renderer that nudged a crease
+    // or re-scaled the sheet to make room for the tear line fails here.
+    // Mutation: shifting the crease layer by 0.5 when aux is present passes
+    // every other pin in this file (the DXF is untouched, and the perf-off
+    // render never sees the branch) and fails only this one.
+    t(`perf ${level}: the rest of the dieline is byte-identical under the tear line`, () => {
+      const stripped = svgOn.replace(/<g\b[^>]*\bdata-aux=[^>]*>[\s\S]*?<\/g>/g, '');
+      if(stripped === svgOn) throw new Error('no aux group found to strip');
+      if(stripped !== svg0) throw new Error('the drawing under the perf layer moved');
+    });
+    // LEGEND GATING, from the app's own HUD.
+    t(`perf ${level}: the legend gains exactly the layer that is present`, () => {
+      if(!legendOn.includes(AUX_LAYERS.PERF.label)) throw new Error(`legend lacks the perf row: "${legendOn}"`);
+      if(legendOn.includes(AUX_LAYERS.SCORE_HALF.label))
+        throw new Error('legend claims a layer the blank does not carry');
+      if(legend0.includes(AUX_LAYERS.PERF.label)) throw new Error('perf row present with perf off');
+    });
+
+    setPerf(key, 'angled'); await settle();
+    // FLAP SPAN, read off the RENDER: the leftmost perforated x must sit left
+    // of the leftmost vertical crease, i.e. out on the joint flap. Both
+    // numbers come out of the DOM the app painted.
+    t(`perf ${level}: the drawn path crosses the manufacturer's joint flap`, () => {
+      const px = renderedPerfX(), cx = renderedCreaseX();
+      if(!px.length) throw new Error('no PERF lines rendered');
+      if(!cx.length) throw new Error('no vertical creases found to compare against');
+      const minP = Math.min(...px), minC = Math.min(...cx);
+      if(!(minP < minC - 0.01))
+        throw new Error(`perf starts at ${minP.toFixed(2)}, first crease at ${minC.toFixed(2)} — flap not crossed`);
+    });
+    // DRAW ORDER: a tear line under the cut reads as absent.
+    t(`perf ${level}: the perf layer paints after the cut outline`, () => {
+      const html = svgNow();
+      const cut = html.indexOf('<polygon'), perf = html.indexOf('data-aux="PERF"');
+      if(cut < 0 || perf < 0) throw new Error('cut or perf missing from the render');
+      if(!(perf > cut)) throw new Error('perf is painted before the cut outline');
+    });
+    setPerf(key, null); await settle();
+  }
+
+  // ---- the exporter owns no tolerance -------------------------------------
+  // Vary the BUILDER's chord tolerance and watch the DXF entity count follow.
+  // If it doesn't, the exporter is fitting curves of its own, which is the
+  // one-polygonisation rule broken.
+  setLevel('case'); await settle();
+  const gCaseLive = geoAt('case');
+  const gCartonLive = geoAt('carton');
+  const perfRound = applyPerfPreset('angled-flat', gCaseLive, {enabled: true, state: 'display'});
+  // the tolerance pin needs a CURVE, not just fillets: a shallow fillet is
+  // held at the minimum-segment floor, where a coarser tolerance changes
+  // nothing. The s-curve sides are sampled without a floor.
+  const perfCurved = applyPerfPreset('open-front', gCaseLive, {enabled: true, state: 'display'});
+  t('perf: the DXF entity count follows the BUILDER\'s chord tolerance', () => {
+    const count = tol => dxfEntities(buildDXF({...gCaseLive, aux: perfAux(gCaseLive, perfCurved, {chordTol: tol})}, 'mm')).PERF.length;
+    const fine = count(0.01), mid = count(PERF_CHORD_TOL), coarse = count(1.2);
+    if(!(fine > mid && mid > coarse))
+      throw new Error(`exporter is not transcribing: ${fine} / ${mid} / ${coarse} at 0.01 / ${PERF_CHORD_TOL} / 1.2 mm`);
+    // and each one is exactly what the builder handed over — no re-fitting
+    eq(mid, buildPerfPath(gCaseLive, perfCurved).segments.length, 'entity count vs builder segments:');
+  });
+
+  // ---- the renderer is generic, not a perf renderer ------------------------
+  // A layer WITH a map entry and a layer WITHOUT one, neither of them perf.
+  const probe = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const bandY = gCaseLive.bbox.maxY*0.5;
+  const band = [[gCaseLive.bbox.minX, bandY, gCaseLive.bbox.maxX, bandY]];
+  t('aux renderer: a KNOWN non-perf layer renders and gets its own legend row', () => {
+    const geo = {...gCaseLive, aux: {SCORE_HALF: band}};
+    draw2d(probe, geo, 'mm', '', null);
+    const g = probe.querySelector('g[data-aux="SCORE_HALF"]');
+    if(!g) throw new Error('SCORE_HALF was not drawn');
+    eq(g.querySelectorAll('polyline').length, 1, 'run count:');
+    eq(g.getAttribute('stroke'), AUX_LAYERS.SCORE_HALF.color, 'stroke from the map:');
+    if(probe.querySelector('g[data-aux="PERF"]')) throw new Error('a perf layer appeared from nowhere');
+    eq(auxLegendRows(geo).length, 1, 'legend rows:');
+    eq(auxLegendRows(geo)[0][2], AUX_LAYERS.SCORE_HALF.label, 'legend label:');
+  });
+  t('aux renderer: an UNSTYLED layer still renders, loudly, and warns once', () => {
+    resetAuxWarnings();
+    const warns = [];
+    const real = console.warn;
+    console.warn = (...a) => warns.push(a.join(' '));
+    try{
+      const geo = {...gCaseLive, aux: {WIDGET_SLOT: band}};
+      draw2d(probe, geo, 'mm', '', null);
+      draw2d(probe, geo, 'mm', '', null);            // twice: still one warning
+      const g = probe.querySelector('g[data-aux="WIDGET_SLOT"]');
+      if(!g) throw new Error('an unstyled layer was silently dropped — the failure this hook exists to avoid');
+      eq(g.getAttribute('stroke'), '#FF00A0', 'fallback ink:');
+      eq(auxLegendRows(geo)[0][2], 'WIDGET_SLOT (unstyled)', 'legend names it:');
+      eq(warns.length, 1, `warned ${warns.length} times:`);
+      if(!/WIDGET_SLOT/.test(warns[0])) throw new Error(`warning does not name the layer: ${warns[0]}`);
+      if(/perf/i.test(warns[0])) throw new Error('the generic path mentions perf');
+    } finally { console.warn = real; }
+  });
+  t('aux renderer: no aux, no group and no legend row', () => {
+    draw2d(probe, gCaseLive, 'mm', '', null);
+    if(probe.querySelector('g[data-aux]')) throw new Error('an aux group with no aux');
+    eq(auxLegendRows(gCaseLive).length, 0, 'legend rows:');
+    eq(auxLayerNames({EMPTY: []}).length, 0, 'an empty layer is not present');
+  });
+
+  // A DASH PATTERN RESTARTS AT EVERY ELEMENT. A polygonised curve drawn as one
+  // <line> per segment renders SOLID — measured on the 236-segment "Front
+  // removed" preset, which came out as a continuous green rule and stopped
+  // reading as a perforation at all. The renderer must chain a contiguous
+  // path into ONE stroked run. Mutation: emitting a line per segment gives
+  // 236 elements here instead of 1.
+  t('aux renderer: a contiguous path is ONE stroked run, so the dash survives', () => {
+    const curvy = applyPerfPreset('open-front', gCaseLive, {enabled: true});
+    const path = buildPerfPath(gCaseLive, curvy);
+    if(!(path.segments.length > 100)) throw new Error(`expected a polygonised curve, got ${path.segments.length} segments`);
+    draw2d(probe, withPerfAux(gCaseLive, curvy), 'mm', '', null);
+    const g = probe.querySelector('g[data-aux="PERF"]');
+    eq(g.querySelectorAll('line').length, 0, 'no per-segment lines:');
+    eq(g.querySelectorAll('polyline').length, 1, 'runs for one continuous tear:');
+    // and the run really carries every point, not a simplified subset
+    eq(g.querySelector('polyline').getAttribute('points').trim().split(/\s+/).length,
+       path.segments.length + 1, 'points in the run:');
+    // a layer whose segments do NOT chain still draws them all
+    const split = {...gCaseLive, aux: {SCORE_HALF: [[0, 10, 50, 10], [200, 10, 250, 10]]}};
+    draw2d(probe, split, 'mm', '', null);
+    eq(probe.querySelector('g[data-aux="SCORE_HALF"]').querySelectorAll('polyline').length, 2, 'disjoint runs:');
+  });
+
+  // ---- artwork template: the tear is a GUIDE ------------------------------
+  t('template: the perf guide is exported, named, and marked do-not-print', () => {
+    const tplOff = buildArtworkSVG(gCaseLive, 'mm');
+    const tplOn = buildArtworkSVG(withPerfAux(gCaseLive, perfRound), 'mm');
+    if(tplOff.includes(PERF_INK)) throw new Error('perf ink in the template with perf off');
+    if(!tplOn.includes(PERF_INK)) throw new Error('perf guide missing from the template');
+    if(!tplOn.includes('DO NOT PRINT ACROSS')) throw new Error('the guide is not marked as a guide');
+    if(!tplOn.includes(AUX_LAYERS.PERF.label.toLowerCase())) throw new Error('header legend does not name it');
+    // the guide is stroked as runs, not per-segment, for the same reason the
+    // dieline is: a dash pattern restarts at every element, and the template's
+    // guide idiom IS a dashed line
+    const curvy = withPerfAux(gCaseLive, applyPerfPreset('open-front', gCaseLive, {enabled: true}));
+    const tplCurvy = buildArtworkSVG(curvy, 'mm');
+    eq((tplCurvy.match(/<polyline/g) || []).length, 1, 'guide runs:');
+    // it is lettered over the FRONT panel, which sits at a different girth
+    // position per style — taken from artMap, so both levels letter the
+    // PRINTED panel rather than whichever panel happens to sit at x3.
+    for(const geo of [gCaseLive, gCartonLive]){
+      const f = perfFrame(geo), front = geo.meta.artMap.faces.find(x => x.panel === 'front');
+      const tpl = buildArtworkSVG(withPerfAux(geo, applyPerfPreset('angled', geo, {enabled: true})), 'mm');
+      const m = tpl.match(/<text x="([\d.]+)"[^>]*>PERF — GUIDE/);
+      if(!m) throw new Error(`${geo.meta.style}: guide label missing`);
+      const mid = (front.u0 + front.u1)/2, margin = Math.max(geo.bbox.maxX, geo.bbox.maxY)*0.08 + 20;
+      approx(+m[1], mid + margin, `${geo.meta.style} label over the front panel:`, 0.6);
+      eq(f.panels[2].name, 'front', 'girth index of the front:');
+    }
+  });
+  t('template: the guide is not in the artwork, and the round trip is unchanged', () => {
+    const on = withPerfAux(gCaseLive, perfRound);
+    // the art the app maps onto the pack is the uploaded image and nothing
+    // else — no template furniture rides along with it
+    const art = {...defaultFit(), src: 'data:image/png;base64,iVBORw0KGgo='};
+    const svg = artImageSVG(art, gCaseLive.bbox.maxX, gCaseLive.bbox.maxY, x => x, y => y, 'probeClip');
+    if(svg.includes(PERF_INK)) throw new Error('perf ink reached the printed artwork');
+    // and registration is identical with perf on and off: the canvas is the
+    // blank, which a tear line does not resize
+    eq(JSON.stringify(artRect(art, on.bbox.maxX, on.bbox.maxY)),
+       JSON.stringify(artRect(art, gCaseLive.bbox.maxX, gCaseLive.bbox.maxY)), 'art placement:');
+    eq(JSON.stringify(on.meta.artMap.canvas), JSON.stringify(gCaseLive.meta.artMap.canvas), 'template canvas:');
+  });
+
+  // ---- not applicable ------------------------------------------------------
+  t('perf: the styles with no girth emit no aux and claim no legend row', () => {
+    const enabled = {enabled: true, state: 'display', cornerH: [10, 10, 10, 10], radius: 0};
+    const others = [
+      ['tray', trayGeometry({L: 139, W: 99, H: 25, caliper: 1.5, glueTab: 12})],
+      ['flowwrap', flowwrap({L: 141, W: 47, H: 24, filmThickness: 0.03, finSeal: 6, endSealWidth: 10,
+                             internalAngle: 45, externalAngle: 0, finFace: 'bottom'})],
+      ['shrinkbundle', shrinkBundle({L: 200, W: 150, H: 100, filmThickness: 0.05, shrinkAllowance: 8})]
+    ];
+    for(const [id, geo] of others){
+      eq(perfAux(geo, enabled), null, `${id} aux:`);
+      eq(withPerfAux(geo, enabled), geo, `${id} geometry must come back the SAME object:`);
+      eq(auxLegendRows(geo).length, 0, `${id} legend rows:`);
+    }
+  });
+  // ...and the wrap level, in the app, has no perf field to switch on at all
+  setLevel('wrap'); el('tab2d').click(); await settle();
+  t('perf: the wrap level shows no perforation legend row', () => {
+    eq(build.project.primary.perf, undefined, 'the wrap carries no perf field:');
+    if(legendText().includes(AUX_LAYERS.PERF.label)) throw new Error('wrap legend claims a perforation');
+  });
+
+  build.project.tertiary.perf = {}; build.project.secondary.perf = {};
+  build.recompute(build.getSelectedCandidateKey());
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

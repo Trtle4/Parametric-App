@@ -9,6 +9,13 @@
  * layer references is defined in the LTYPE table; the LAYER count is
  * computed from the layers actually present, never hardcoded.
  *
+ * THIS EXPORTER TRANSCRIBES; IT NEVER POLYGONISES. R12 has no ARC entity in
+ * this writer, but the curve fitting is not its job to redo: whoever produced
+ * the segments owns the chord tolerance (core/perf.js does, for PERF), and
+ * this file emits one LINE per segment it is handed. A second tolerance here
+ * would be a second opinion about the same curve. The pin that holds it varies
+ * the builder's tolerance and watches the DXF entity count follow.
+ *
  * Number formatting: a SINGLE fmt() used for every coordinate. toFixed
  * guarantees fixed-decimal output (never exponential), values below EPS snap
  * to exactly 0 (kills float noise like 7.1e-15 that aborts parsers), and

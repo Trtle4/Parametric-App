@@ -25,6 +25,10 @@
        distinct; kraft is the board material. Left untouched by the
        design-system chrome palette. */
     --cut:#E5484D; --crease:#3E63DD; --kraft:#C69C6D;
+    /* Aux die layers (PERF, SCORE_HALF) are NOT tokens: render/auxlayers.js
+       holds their colours as literals, because the same values have to reach
+       the standalone artwork template SVG, which has no stylesheet. One
+       definition there beats a token here that a downloaded file cannot see. */
     /* ---- compatibility aliases: the SVG/canvas render code emits
        var(--muted)/var(--card)/var(--line2)/var(--focus); keep them
        resolving to the new token set so one source stays authoritative. */

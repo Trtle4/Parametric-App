@@ -39,6 +39,12 @@
  * the two ends of the blank. So a path built once in folded panel space maps
  * to the blank without a per-style branch and without a discontinuity.
  *
+ * THE PATH CROSSES THE JOINT FLAP TOO. The flap is glued behind the panel at
+ * the far end of the girth; unperforated, that glued lap holds the two halves
+ * of the pack together and nothing opens. Its run is found geometrically —
+ * everything left of the first panel, clipped to the style's own cut outline
+ * because every joint flap here is chamfered — never from a glue parameter.
+ *
  * THE PATH IS BUILT IN FOLDED PANEL SPACE (s along the panel from its start
  * corner, h above the body's bottom crease) and mapped to the blank at the
  * end. Nothing here places a coordinate in blank space by hand.
@@ -72,8 +78,19 @@ export const PERF_STATES = Object.freeze(['closed', 'display']);
 
 /** Max sagitta, mm, when a curve or a fillet is polygonised. The DXF exporter
  *  writes LINE entities only — see export/dxf.js — so every arc in this module
- *  is chords, and this is how far a chord may sit from the true arc. */
-export const PERF_CHORD_TOL = 0.05;
+ *  is chords, and this is how far a chord may sit from the true arc.
+ *
+ *  THE ONLY POLYGONISATION IN THE CODEBASE IS HERE. Consumers transcribe the
+ *  points this module produces; none of them re-tolerances, and a pin asserts
+ *  the DXF entity count moves with this number rather than being fixed by the
+ *  exporter. `buildPerfPath` takes an override so a test can vary it without
+ *  editing the module. */
+export const PERF_CHORD_TOL = 0.1;
+
+/** Chords per arc, floor. A radius small enough that one chord would meet the
+ *  tolerance still has to LOOK round: three chords across a right angle reads
+ *  as a chamfer, not a fillet. */
+export const PERF_MIN_ARC_SEGMENTS = 4;
 
 /** Stepped transitions: at least two treads, and a cap so a typo cannot emit
  *  a thousand risers. */
@@ -241,10 +258,10 @@ const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 /** Chords needed to hold an arc of `sweep` radians at radius `r` within
  *  `tol` of the true curve. sagitta = r(1 − cos(Δ/2)). */
 function arcSegments(r, sweep, tol){
-  if(!(r > 0) || !(sweep > 0)) return 1;
-  if(tol >= r) return 1;
+  if(!(r > 0) || !(sweep > 0)) return PERF_MIN_ARC_SEGMENTS;
+  if(tol >= r) return PERF_MIN_ARC_SEGMENTS;
   const dMax = 2*Math.acos(1 - tol/r);
-  return Math.max(1, Math.ceil(sweep/dMax));
+  return Math.max(PERF_MIN_ARC_SEGMENTS, Math.ceil(sweep/dMax));
 }
 
 /** Samples needed to hold a curve of bounded second derivative within `tol`.
@@ -286,7 +303,7 @@ function dropCollinear(pts){
  * corner to `width` at its end corner, h above the body's bottom crease.
  * The two corner heights are inputs, never derived here.
  */
-function profilePoints(spec, hA, hB, width, H){
+function profilePoints(spec, hA, hB, width, H, tol){
   if(spec.mode === 'full')    return dedupe([[0, hA], [0, H], [width, H], [width, hB]]);
   if(spec.mode === 'removed') return dedupe([[0, hA], [0, 0], [width, 0], [width, hB]]);
 
@@ -308,7 +325,7 @@ function profilePoints(spec, hA, hB, width, H){
     // scurve base is t²(3−2t): |base''| ≤ 6. bow is 4t(1−t): |''| = 8.
     const dh = Math.abs(hB - hA);
     const d2 = ((spec.transition === 'scurve' ? 6*dh : 0) + 8*Math.abs(spec.bow))/(span*span);
-    const n = curveSamples(span, d2, PERF_CHORD_TOL);
+    const n = curveSamples(span, d2, tol);
     for(let k = 0; k <= n; k++){
       const t = k/n;
       const base = spec.transition === 'scurve' ? t*t*(3 - 2*t) : t;
@@ -369,6 +386,52 @@ export function filletPolyline(pts, r, tol = PERF_CHORD_TOL){
   return dedupe(out);
 }
 
+/* ------------------------------------------------------- the joint flap --- */
+
+/**
+ * Where the blank's cut outline sits at a given height, to the LEFT of `xMax`.
+ *
+ * The manufacturer's joint flap is a tongue on one end of the blank, and it is
+ * CHAMFERED on every style here — so "the flap runs to x = 0" is true at
+ * mid-height and wrong near the top and bottom creases. Rather than assume a
+ * width, scan the cut polygon the style already published. Returns null when
+ * the outline has no crossing there (no flap, or a height outside it).
+ */
+function outlineLeftOf(cut, y, xMax){
+  let best = null;
+  for(let i = 0; i < cut.length; i++){
+    const a = cut[i], b = cut[(i + 1) % cut.length];
+    if((a[1] > y) === (b[1] > y)) continue;               // no crossing at this y
+    const x = a[0] + (b[0] - a[0])*((y - a[1])/(b[1] - a[1]));
+    if(x < xMax - EPS && (best === null || x < best)) best = x;
+  }
+  return best;
+}
+
+/**
+ * The tear line's continuation across the manufacturer's joint flap.
+ *
+ * The flap is glued BEHIND the panel at the far end of the girth, so the two
+ * layers sit face to face at the same corner. If the flap were not perforated
+ * the glued lap would hold the two halves of the pack together and nothing
+ * would open. Its height is the wrap corner's retained height — the same
+ * `cornerH` entry the two panels meeting there read, so there is still exactly
+ * one number for that corner.
+ *
+ * The flap is found geometrically (everything on the blank to the left of the
+ * first panel), never by style id and never from a glue parameter.
+ */
+function jointFlapRun(geo, frame, cornerH){
+  const minU = Math.min(...frame.panels.map(p => p.u0));
+  if(minU - geo.bbox.minX <= EPS) return null;            // no flap on this blank
+  const start = frame.panels.find(p => p.u0 === minU);
+  const h = cornerH[start.fromCorner];
+  const y = start.v0 + h;
+  const xL = outlineLeftOf(geo.cut, y, minU);
+  if(xL === null || minU - xL <= EPS) return null;
+  return {corner: start.fromCorner, h, y, x0: xL, x1: minU, width: minU - xL};
+}
+
 /* ----------------------------------------------------------------- path --- */
 
 /**
@@ -386,18 +449,19 @@ export function filletPolyline(pts, r, tol = PERF_CHORD_TOL){
  * @param {Object} perfIn  project.perf (normalized here regardless)
  * @returns {null|Object}  null when perf is off or the style cannot carry it
  */
-export function buildPerfPath(geo, perfIn){
+export function buildPerfPath(geo, perfIn, opts){
   const f = perfFrame(geo);
   if(!f) return null;
   const perf = normalizePerf(perfIn, geo);
   if(!perf.enabled) return null;
+  const tol = (opts && opts.chordTol > 0) ? opts.chordTol : PERF_CHORD_TOL;
 
   const H = f.H;
   const panels = f.panels.map(fp => {
     const spec = perf.panels[fp.name];
     const hA = perf.cornerH[fp.fromCorner], hB = perf.cornerH[fp.toCorner];
-    const raw = profilePoints(spec, hA, hB, fp.width, H);
-    const pts = dropCollinear(filletPolyline(raw, perf.radius));
+    const raw = profilePoints(spec, hA, hB, fp.width, H, tol);
+    const pts = dropCollinear(filletPolyline(raw, perf.radius, tol));
     return {
       name: fp.name, index: fp.index, face: fp.face, mode: spec.mode,
       width: fp.width, u0: fp.u0, u1: fp.u1, v0: fp.v0,
@@ -409,7 +473,20 @@ export function buildPerfPath(geo, perfIn){
 
   const edges = [];
   let tearLength = 0;
-  for(const p of panels){
+  // the joint flap first, so the path reads left to right across the blank
+  const flap = jointFlapRun(geo, f, perf.cornerH);
+  if(flap){
+    const onFold = Math.abs(flap.h) <= EPS || Math.abs(flap.h - H) <= EPS;
+    edges.push({panel: 'joint', a: [flap.x0, flap.y], b: [flap.x1, flap.y], onFold});
+    tearLength += flap.width;
+  }
+  // EDGES ARE EMITTED IN BLANK ORDER, not girth order. The two differ on the
+  // case (its girth walk starts mid-blank), and a consumer that strokes the
+  // path — the dieline joins contiguous segments into one run so the dash
+  // pattern survives a curve — would see it broken into pieces for no reason
+  // other than the order they arrived in. The girth order stays on `panels`,
+  // which is where the geometry is read from.
+  for(const p of [...panels].sort((a, b) => a.u0 - b.u0)){
     for(let i = 0; i < p.blank.length - 1; i++){
       const a = p.blank[i], b = p.blank[i + 1];
       const s0 = p.pts[i], s1 = p.pts[i + 1];
@@ -424,9 +501,9 @@ export function buildPerfPath(geo, perfIn){
 
   return {
     H, radius: perf.radius, state: perf.state, spec: perf.spec,
-    chordTol: PERF_CHORD_TOL,
+    chordTol: tol,
     cornerH: perf.cornerH.slice(),
-    panels, edges,
+    panels, flap, edges,
     segments: edges.map(e => [e.a[0], e.a[1], e.b[0], e.b[1]]),
     tearLength
   };
@@ -436,9 +513,17 @@ export function buildPerfPath(geo, perfIn){
  *  render/dieline2d.js will. Null when there is nothing to add, so a geometry
  *  with perf off carries no `aux` key at all and its DXF is byte-identical to
  *  the one it produced before this module existed. */
-export function perfAux(geo, perf){
-  const path = buildPerfPath(geo, perf);
+export function perfAux(geo, perf, opts){
+  const path = buildPerfPath(geo, perf, opts);
   return path && path.segments.length ? {PERF: path.segments} : null;
+}
+
+/** A geometry with its level's perforation attached as `aux`. The SAME object
+ *  back when there is no perforation, so a geometry that has never been
+ *  perforated is untouched — not a copy that merely compares equal. */
+export function withPerfAux(geo, perf, opts){
+  const aux = geo ? perfAux(geo, perf, opts) : null;
+  return aux ? {...geo, aux: {...(geo.aux || {}), ...aux}} : geo;
 }
 
 /* -------------------------------------------------------------- presets --- */

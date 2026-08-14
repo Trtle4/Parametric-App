@@ -14,6 +14,7 @@
  * margins, which stay absent by design.
  */
 import {fmtLen} from '../core/units.js';
+import {auxLayerNames, auxLayerStyle, chainSegments} from '../render/auxlayers.js';
 
 /** A '+' registration cross with a ring, centred at (cx,cy) in svg coords. */
 function regMark(cx, cy, r, sw){
@@ -47,6 +48,45 @@ export function buildArtworkSVG(geo, unit){
   for(const r of geo.meta.refLines || [])
     s += `<line x1="${r[0] + m}" y1="${y(r[1])}" x2="${r[2] + m}" y2="${y(r[3])}" stroke="#8593a1" stroke-width="${fs/8}" stroke-dasharray="${fs} ${fs/2}"/>`;
 
+  // AUX DIE LAYERS AS NON-PRINTING GUIDES. A tear line is not decoration to a
+  // designer: copy that spans it is cut in half the moment the pack goes to
+  // its display state, and half the branding disappears. So every layer the
+  // blank carries is drawn here in the template's guide idiom — the layer's
+  // own ink, dashed, thin — alongside the fold references, and named in the
+  // header legend. It is a GUIDE: it is not part of the artwork the designer
+  // paints, and nothing reads it back on reupload (the app never parses an
+  // uploaded image; the round trip is unchanged by anything drawn here).
+  //
+  // Generic, like the 2D renderer: no layer is named. The label is placed on
+  // the FRONT panel, found through artMap.faces — the print panel sits at a
+  // different girth position per style (x3..x4 on the cartons, x1..x2 on the
+  // case), so reading it from a position would letter the wrong panel.
+  for(const name of auxLayerNames(geo.aux)){
+    const st = auxLayerStyle(name);
+    const dash = st.dash && st.dash.length ? st.dash.map(d => (d*fs/6).toFixed(2)).join(' ') : '';
+    s += `<g stroke="${st.color}" stroke-width="${fs/7}" fill="none"` +
+         (dash ? ` stroke-dasharray="${dash}"` : '') + `>`;
+    // one polyline per run, not one line per segment: a dash pattern restarts
+    // at every element, so a polygonised curve drawn segment-by-segment comes
+    // out solid — see chainSegments.
+    for(const run of chainSegments(geo.aux[name]))
+      s += `<polyline points="${run.map(pt => `${(pt[0] + m).toFixed(2)},${y(pt[1]).toFixed(2)}`).join(' ')}"/>`;
+    s += `</g>`;
+    // letter it once, over the front panel, at the height the layer runs there
+    const front = am && am.faces ? am.faces.find(f => f.panel === 'front') : null;
+    if(front){
+      const mid = (front.u0 + front.u1)/2;
+      let ly = null;
+      for(const seg of geo.aux[name]){
+        const lo = Math.min(seg[0], seg[2]), hi = Math.max(seg[0], seg[2]);
+        if(mid >= lo && mid <= hi) ly = (seg[1] + seg[3])/2;
+      }
+      if(ly !== null)
+        s += `<text x="${mid + m}" y="${y(ly) - fs*0.35}" font-family="monospace" font-size="${fs*0.55}" ` +
+             `fill="${st.color}" text-anchor="middle">${name} — GUIDE, DO NOT PRINT ACROSS</text>`;
+    }
+  }
+
   // orientation: an up-arrow ("TOP") on each panel pointing the way the meta
   // says is up (artMap.up = 'v' → +v = up the web), defined once in the style.
   // Reassures the designer their art is not laid upside down.
@@ -69,7 +109,7 @@ export function buildArtworkSVG(geo, unit){
        regMark(m, m + H, rr, rsw) + regMark(m + W, m + H, rr, rsw);
 
   // film running-direction arrow along the bottom margin (the repeat axis)
-  if(am){
+  if(am && am.product){
     const ry = m + H + m*0.42, rx0 = m + am.product.x0, rx1 = m + am.product.x1;
     s += `<line x1="${rx0}" y1="${ry}" x2="${rx1}" y2="${ry}" stroke="#6b7682" stroke-width="${fs/9}"/>` +
       `<path d="M ${rx1} ${ry} L ${rx1 - fs*0.7} ${ry - fs*0.4} L ${rx1 - fs*0.7} ${ry + fs*0.4} Z" fill="#6b7682"/>` +
@@ -85,6 +125,14 @@ export function buildArtworkSVG(geo, unit){
     : `${(geo.meta.style || 'carton').toUpperCase()} artwork template · blank ${fmtLen(W, unit)} × ${fmtLen(H, unit)} ${unit}`;
   s += `<text x="${m}" y="${m*0.55}" font-family="monospace" font-size="${fs*0.8}" fill="#6b7682">` +
     `${lead} · seal zones red · bleed amber · dashed = fold reference · ▲ = up · ⊕ = registration</text>`;
+  // aux layers get their OWN line rather than being appended to the header:
+  // the header already ran the full width of the sheet, and appending pushed
+  // it off the right edge (measured on the FEFCO 201 template).
+  const auxNames = auxLayerNames(geo.aux);
+  if(auxNames.length)
+    s += `<text x="${m}" y="${m*0.55 + fs}" font-family="monospace" font-size="${fs*0.8}" fill="#6b7682">` +
+      auxNames.map(n => `${n} = ${auxLayerStyle(n).label.toLowerCase()}, a GUIDE — not artwork, do not print across it`).join(' · ') +
+      `</text>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W + 2*m} ${H + 2*m}">` +
     `<rect width="100%" height="100%" fill="#ffffff"/>${s}</svg>`;

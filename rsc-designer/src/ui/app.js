@@ -12,6 +12,7 @@ import {toMM, fromMM, fmtLen, fmtInputValue} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
+import {auxLegendRows} from '../render/auxlayers.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
@@ -263,6 +264,7 @@ function refresh2d(){
     return;
   }
   const {w, h} = draw2d(el('svg'), g, u, build.project.printText, artFor(activeLevel, g));
+  update2dTabLabel();          // the legend is a claim about THIS render's layers
   const areaU = u === 'mm' ? 'm²' : 'ft²';
   const wq = fromMM(w, u), hq = fromMM(h, u);
   const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
@@ -1083,7 +1085,13 @@ function update2dTabLabel(){
     : lvl.kind === 'style' ? (activeStyle().structure === 'flexible' ? 'Blank' : 'Dieline')
     : 'Dieline';
   el('tab2d').textContent = `2D ${word}`;
-  el('hud2dKeys').innerHTML = (LEGEND_2D[lvl.kind] || []).map(([c, style, label]) =>
+  // AUX LAYERS append themselves. No layer is named here: auxLegendRows reads
+  // the SAME style map render/auxlayers.js draws from, and returns a row only
+  // for a layer actually PRESENT in this geometry's `aux`. So a legend can
+  // neither claim a line the blank does not carry nor describe one the
+  // renderer drew differently.
+  const rows = (LEGEND_2D[lvl.kind] || []).concat(auxLegendRows(activeGeometry()));
+  el('hud2dKeys').innerHTML = rows.map(([c, style, label]) =>
     `<span class="k"><span class="swatch" style="border-top-color:${c};border-top-style:${style}"></span>${label}</span>`
   ).join('');
 }

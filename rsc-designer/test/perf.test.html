@@ -14,6 +14,7 @@
    DXF the exporter produced before this module existed. */
 import {
   PERF_PANELS, PERF_CORNERS, PERF_MODES, PERF_TRANSITIONS, PERF_CHORD_TOL,
+  PERF_MIN_ARC_SEGMENTS,
   PERF_PRESETS, PERF_SPEC_DEFAULT,
   perfFrame, canPerforate, perfUnavailableReason, defaultPerf, normalizePerf,
   buildPerfPath, perfAux, filletPolyline, applyPerfPreset, isDisplayState,
@@ -188,17 +189,116 @@ t('the blank path is continuous across every crease', () => {
   }
 });
 
-// A level tear all round is exactly the girth: no fillets, no flats, two
-// points a panel. The length is anchored to 2(L+W) from the PARAMS.
-t('a level tear is the girth, in eight points', () => {
+// A level tear all round is exactly the girth plus the joint flap: no
+// fillets, no flats, two points a panel. The girth is anchored to 2(L+W) from
+// the PARAMS and the flap to the style's own glue width.
+t('a level tear is the girth plus the joint flap', () => {
+  const glueOf = {fefco201: CASE_P.glue, a6120: CARTON_P.glueTab, sealend: SEAL_P.glueTab};
   for(const [id, geo, p] of RIGID){
     const H = perfFrame(geo).H;
     const path = buildPerfPath(geo, onPerf(geo, {cornerH: [H/2, H/2, H/2, H/2], radius: 0}));
     for(const pan of path.panels) eq(pan.pts.length, 2, `${id} ${pan.name} point count:`);
-    near(path.tearLength, 2*(p.L + p.W), 1e-9, `${id} tear length:`);
-    eq(path.edges.length, 4, `${id} edge count:`);
+    near(path.tearLength, 2*(p.L + p.W) + glueOf[id], 1e-9, `${id} tear length:`);
+    eq(path.edges.length, 5, `${id} edge count (girth + flap):`);
     ok(path.edges.every(e => !e.onFold), `${id} a mid-height tear rides no crease`);
   }
+});
+
+// THE JOINT FLAP. It is glued behind the far panel, so unperforated it holds
+// the pack shut. Anchored to the style's own glue parameter and to the wrap
+// corner's height — both of which exist independently of perf.js. Mutation:
+// dropping the flap run fails; taking its height from a neighbouring corner
+// fails; running it to x=0 regardless of the chamfer fails the clipped case.
+t('the path crosses the manufacturer\'s joint flap', () => {
+  const glueOf = {fefco201: CASE_P.glue, a6120: CARTON_P.glueTab, sealend: SEAL_P.glueTab};
+  for(const [id, geo] of RIGID){
+    const f = perfFrame(geo), H = f.H;
+    const cornerH = [0.9, 0.25, 0.6, 0.4].map(k => k*H);
+    const path = buildPerfPath(geo, onPerf(geo, {cornerH, radius: 0}));
+    ok(path.flap, `${id} should have a joint flap run`);
+    // the flap butts against the first panel on the blank, at that panel's
+    // own start corner height — one number for that corner, three layers
+    const first = [...path.panels].sort((a, b) => a.u0 - b.u0)[0];
+    near(path.flap.x1, first.u0, 1e-9, `${id} flap meets the first panel:`);
+    near(path.flap.h, cornerH[first.fromCorner], 1e-9, `${id} flap height = its corner:`);
+    near(path.flap.y, first.blank[0][1], 1e-9, `${id} flap joins the panel path:`);
+    // at mid height the flap is the full glue width; the chamfers are clear
+    near(path.flap.width, glueOf[id], 1e-9, `${id} flap width:`);
+    ok(path.flap.x0 >= geo.bbox.minX - 1e-9, `${id} flap stays on the blank`);
+    ok(path.edges.some(e => e.panel === 'joint'), `${id} flap edge emitted`);
+  }
+});
+
+// EDGES COME OUT IN BLANK ORDER, forming ONE chain from the joint flap to the
+// far edge. The girth order and the blank order differ on the case, and a
+// consumer that strokes the path (the dieline joins contiguous segments so a
+// dash pattern survives a curve) would see it broken into pieces. Checked as
+// a chain — each edge's start is the previous edge's end — so a reordering
+// shows up immediately. Mutation: emitting in girth order splits the case
+// into three runs and fails.
+t('edges are emitted as one contiguous chain across the blank', () => {
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    const path = buildPerfPath(geo, onPerf(geo, {
+      cornerH: [0.85*H, 0.85*H, 0.3*H, 0.3*H], radius: 6,
+      panels: {back: {}, right: {transition: 'scurve'}, front: {}, left: {transition: 'scurve'}}
+    }));
+    for(let i = 1; i < path.edges.length; i++){
+      const prev = path.edges[i - 1].b, cur = path.edges[i].a;
+      near(cur[0], prev[0], 1e-9, `${id} chain break at edge ${i} (x):`);
+      near(cur[1], prev[1], 1e-9, `${id} chain break at edge ${i} (y):`);
+    }
+    // ...and it runs from the joint flap to the far edge of the blank
+    near(path.edges[0].a[0], path.flap.x0, 1e-9, `${id} chain starts on the flap:`);
+    const lastX = path.edges[path.edges.length - 1].b[0];
+    near(lastX, Math.max(...path.panels.map(p => p.u1)), 1e-9, `${id} chain ends at the last panel:`);
+  }
+});
+
+// A flap whose corner sits ON a body crease needs no perforation, and gets
+// none: the flap is attached to the panel at that corner, so if that panel is
+// retained whole the flap stays with it, and if it tears away the flap goes
+// with it. Falls out of clipping the run to the cut outline — there is no
+// crossing to find at the extreme — rather than from a special case.
+t('a flap at the very top or bottom of the body carries no tear', () => {
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    const p = buildPerfPath(geo, onPerf(geo, {
+      cornerH: [H, H, 0, 0], radius: 0,
+      panels: {back: {mode: 'full'}, right: {transition: 'scurve'},
+               front: {mode: 'removed'}, left: {transition: 'scurve'}}
+    }));
+    eq(p.flap, null, `${id} flap at a crease:`);
+    ok(!p.edges.some(e => e.panel === 'joint'), `${id} no joint edge emitted`);
+    // and the rest of the path is still one chain
+    for(let i = 1; i < p.edges.length; i++){
+      near(p.edges[i].a[0], p.edges[i - 1].b[0], 1e-9, `${id} chain break at ${i}:`);
+      near(p.edges[i].a[1], p.edges[i - 1].b[1], 1e-9, `${id} chain break at ${i}:`);
+    }
+  }
+});
+
+// Near the top or bottom crease the flap is CHAMFERED, so its run is shorter
+// than the glue width. Read off the style's own cut outline, which is where
+// the chamfer is declared. Mutation: running the flap to bbox.minX passes the
+// mid-height pin above and fails here, drawing perf off the blank.
+t('the flap run is clipped to the chamfered outline', () => {
+  const geo = gCarton, f = perfFrame(geo), H = f.H;
+  const low = 2;                                   // 2 mm above the bottom crease
+  const path = buildPerfPath(geo, onPerf(geo, {cornerH: [low, low, low, low], radius: 0}));
+  ok(path.flap, 'flap present');
+  ok(path.flap.width < CARTON_P.glueTab - 1e-6,
+     `chamfer must shorten the run: ${path.flap.width} vs ${CARTON_P.glueTab}`);
+  // and it lands ON the cut outline, not inside or outside it
+  const y = path.flap.y;
+  let onEdge = false;
+  for(let i = 0; i < geo.cut.length; i++){
+    const a = geo.cut[i], b = geo.cut[(i + 1) % geo.cut.length];
+    if((a[1] > y) === (b[1] > y)) continue;
+    const x = a[0] + (b[0] - a[0])*((y - a[1])/(b[1] - a[1]));
+    if(Math.abs(x - path.flap.x0) < 1e-9) onEdge = true;
+  }
+  ok(onEdge, 'flap start must sit on the cut outline');
 });
 
 /* ================================================================= clamps */
@@ -338,6 +438,39 @@ t('fillets are polygonised inside the chord tolerance', () => {
   // the tangent points are where a radius-R fillet meets the legs
   near(out[1][0], 100 - R, 1e-9, 'entry tangent:');
   eq(filletPolyline(corner, 0), corner, 'radius 0 is a no-op:');
+});
+
+// An arc has a segment FLOOR as well as a tolerance: a small radius that one
+// chord would satisfy still has to read as round rather than as a chamfer.
+t('every arc gets at least the minimum segment count', () => {
+  for(const r of [0.4, 1, 3, 25]){
+    const out = filletPolyline([[0, 0], [100, 0], [100, 100]], r);
+    const interior = out.length - 2;               // the two leg ends aside
+    ok(interior >= PERF_MIN_ARC_SEGMENTS + 1,
+       `r=${r}: ${interior} arc points for a ${PERF_MIN_ARC_SEGMENTS}-segment floor`);
+  }
+});
+
+// THE TOLERANCE IS THE BUILDER'S, and it is a real input rather than a
+// constant baked into a consumer: raising it must coarsen the path. This is
+// the pin the DXF side leans on — if the exporter were re-tolerancing, its
+// entity count would not follow this number.
+t('the chord tolerance is an input, and the path follows it', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const perf = onPerf(geo, {
+    cornerH: [0.85*H, 0.85*H, 0.25*H, 0.25*H], radius: 18,
+    panels: {back: {}, right: {flatA: 40, flatB: 20, transition: 'scurve'}, front: {}, left: {flatA: 20, flatB: 40}}
+  });
+  const fine = buildPerfPath(geo, perf, {chordTol: 0.02});
+  const dflt = buildPerfPath(geo, perf);
+  const coarse = buildPerfPath(geo, perf, {chordTol: 0.8});
+  eq(dflt.chordTol, PERF_CHORD_TOL, 'default tolerance:');
+  ok(fine.segments.length > dflt.segments.length,
+     `finer must emit more: ${fine.segments.length} vs ${dflt.segments.length}`);
+  ok(coarse.segments.length < dflt.segments.length,
+     `coarser must emit fewer: ${coarse.segments.length} vs ${dflt.segments.length}`);
+  // and the coarse one is still a path, not a collapse
+  ok(coarse.segments.length >= 4*PERF_MIN_ARC_SEGMENTS, `coarse floor: ${coarse.segments.length}`);
 });
 
 // A fillet may never eat more than half a segment, or two adjacent fillets
