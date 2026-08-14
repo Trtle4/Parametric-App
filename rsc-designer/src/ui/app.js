@@ -13,7 +13,7 @@ import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {auxLegendRows} from '../render/auxlayers.js';
-import {isDisplayGeo} from '../core/perf.js';
+import {isDisplayGeo, openabilityWarning, perfSpecRows} from '../core/perf.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
@@ -131,6 +131,7 @@ const LEVELS = {
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            setOpenTop: (p, v) => { p.secondary.openTop = v; },
+           perfKey: 'secondary',
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
@@ -140,6 +141,7 @@ const LEVELS = {
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
            styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
            setOpenTop: (p, v) => { p.tertiary.openTop = v; },
+           perfKey: 'tertiary',   // the project key carrying this level's perforation
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
@@ -281,7 +283,16 @@ function refresh2d(){
   // computed from — read off row.cost.perUnit, the same one derivation the
   // roll-up panel and the Build column read. Never multiplied again here.
   const costStat = levelUnitCostStat();
-  el('styleStats').innerHTML = outerStat + costStat + (style.readouts ? style.readouts(g) : []).map(r =>
+  // OPENABILITY. Warn, never block: an asymmetric or unusual build is
+  // legitimate, and a pack that will not open is a design error to show, not
+  // a state to forbid. Nothing on any write path consults this.
+  const warn = openabilityWarning(g, (LEVELS[activeLevel].perfKey && build.project[LEVELS[activeLevel].perfKey].perf) || null);
+  const warnStat = warn
+    ? `<div class="stat" data-warn="openability" style="grid-column:1/-1">` +
+      `<span class="lab" style="color:var(--warn)">⚠ ${warn.title}</span>` +
+      `<span class="val" style="font-size:11px;line-height:1.5;font-weight:400">${warn.detail}</span></div>`
+    : '';
+  el('styleStats').innerHTML = outerStat + costStat + warnStat + (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
       r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
   ).join('');
@@ -2446,6 +2457,24 @@ function exportPalletPdf(){
       ['Outside dimensions', dims(row.geo.case.outer)],
       ['Per pallet', `${row.casesPerPallet}`]
     ]});
+  }
+  // PERFORATION — one block, text only, nothing here feeds a calculation.
+  // Emitted only when a level actually carries one, so an unperforated
+  // project's sheet is byte-identical to the one it produced before perf
+  // existed. Rows come from core/perf.js already formatted, so the sheet
+  // cannot round a number differently from the readout, and the openability
+  // warning rides along: a spec sheet that reads clean for a pack that will
+  // not open is worse than no spec sheet.
+  const perfLevels = [['case', 'tertiary'], ['carton', 'secondary']]
+    .filter(([lvl, key]) => row.geo[lvl] && row.geo[lvl].perf);
+  if(perfLevels.length){
+    const rows = [];
+    for(const [lvl, key] of perfLevels){
+      const pre = perfLevels.length > 1 ? `${lvl[0].toUpperCase()}${lvl.slice(1)} · ` : '';
+      for(const [k, v] of perfSpecRows(row.geo[lvl], build.project[key].perf, q => `${fmtLen(q, u)} ${u}`))
+        rows.push([pre + k, v]);
+    }
+    sections.push({label: 'Perforation', rows});
   }
   sections.push({label: 'Pallet', rows: [
     ['Load (on deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(row.loadH*nLoads)} ${u}`],

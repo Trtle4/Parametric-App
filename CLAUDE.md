@@ -517,3 +517,25 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   frame loop, and reading in the same synchronous turn is a race the
   fixture loses under load. The acceptance test is running every pin ALONE
   in its own page load: that must stay at 0 failures.
+- **Confirm the specimen, not just the instrument.** "Calibrate, don't assume"
+  says check that your measurement works. This says check that there is
+  something to MEASURE. An instrument in perfect order, pointed at nothing,
+  reports the same clean pass as a fixed bug — and three of one session's four
+  escapes were that one shape, not four different mistakes.
+  - A pin ASSERTS ITS FIXTURE EXHIBITS THE CONDITION, and refuses to run if it
+    does not. The rigidity pin drove the fold builders with a preset that
+    trimmed no crease on the case, so a builder reading `geo.crease` for its
+    wall height passed; it now throws if the perforated and unperforated
+    creases come back equal. The DXF layer-purity pin compared against a path
+    built from the LEVEL rather than `level.perf` — and a `Level` also carries
+    `enabled`, so `normalizePerf` quietly returned a valid default whose five
+    segments happened to match the preset under test; it now uses a preset
+    whose counts differ (25 against 5), so the wrong object cannot agree.
+  - A pin that CALLS THE BUILDER tests the builder, and says nothing about
+    whether the app calls it. Two display-state pins invoked
+    `perfBodyGeometry` directly and passed while wiring mutations made both
+    the hierarchy shell and the shelf facings ignore display state entirely.
+    To test the wiring, read the RENDERED TREE — and scope it to VISIBLE
+    objects, because the pivot holds every view's group at once and toggles
+    visibility: an unscoped count saw the 3D tab's leftovers while the shelf
+    was on screen and reported a torn facing that was not there.

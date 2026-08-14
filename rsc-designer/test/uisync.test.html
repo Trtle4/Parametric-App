@@ -224,11 +224,13 @@ import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
 import {AUX_LAYERS, PERF_INK, auxLayerNames, auxLegendRows, resetAuxWarnings} from '../src/render/auxlayers.js';
 import {perfBodyGeometry, perfLineGeometry, perfFrames3d} from '../src/render/perf3d.js';
+import {openabilityWarning, perfSpecRows} from '../src/core/perf.js';
 import {foldBuilders} from '../src/render/folds/index.js';
 import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerforation, perfFrame,
         normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT} from '../src/core/perf.js';
 import {draw2d} from '../src/render/dieline2d.js';
 import {buildDXF} from '../src/export/dxf.js';
+import {wrap as pdfWrap, textWidth as pdfTextWidth, SECTION_COL_W, winAnsi} from '../src/export/palletpdf.js';
 import {buildArtworkSVG} from '../src/export/artwork.js';
 import {levelGeometry} from '../src/core/project.js';
 import {artRect, defaultFit, artImageSVG} from '../src/render/artwork.js';
@@ -4293,15 +4295,29 @@ await (async () => {
     // geo.crease for its wall height passed, because that level's creases were
     // never touched. A rigidity pin whose fixture leaves the crease intact is
     // not a rigidity pin.
-    for(const [lvl, key, preset] of [['case', 'tertiary', 'open-front'], ['carton', 'secondary', 'open-front']]){
+    // A `full` back at mid height on BOTH levels — the configuration the
+    // crease split exists for, rather than a preset. Measured twice: a preset
+    // that trims nothing on the case let a mutation making fefco201's fold
+    // builder read geo.crease pass, and the revised `open-front` (back
+    // profiled, front removed at the lip) trims nothing either now that its
+    // corners already sit at minRetainedH. A rigidity pin whose fixture
+    // leaves the crease intact is not a rigidity pin.
+    const setFullBack = (key, lvl, state) => {
+      const geo = geoAt(lvl), H = perfFrame(geo).H;
+      build.project[key].perf = normalizePerf({enabled: true, state, radius: 0,
+        cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+        panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}}, geo);
+      build.recompute(build.getSelectedCandidateKey());
+    };
+    for(const [lvl, key] of [['case', 'tertiary'], ['carton', 'secondary']]){
       setPerf3(key, null, 'closed');
       const plain = geoAt(lvl), sigPlain = foldSig(plain);
-      setPerf3(key, preset, 'closed');
+      setFullBack(key, lvl, 'closed');
       const ship = geoAt(lvl);
       if(JSON.stringify(ship.crease) === JSON.stringify(plain.crease))
         throw new Error(`${lvl}: the fixture did not trim a crease, so rigidity is untested`);
       eq(foldSig(ship), sigPlain, `${lvl} shipping topology:`);
-      setPerf3(key, preset, 'display');
+      setFullBack(key, lvl, 'display');
       eq(foldSig(geoAt(lvl)), sigPlain, `${lvl} display topology (the BLANK is the same blank):`);
       setPerf3(key, null, 'closed');
     }
@@ -4413,6 +4429,248 @@ await (async () => {
     }
   });
 
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ============ PERFORATION — openability warning and spec sheet ============
+ * The warning is a REPORT, not a gate, and the spec sheet is TEXT. So the
+ * pins read the app's own readout and the app's own PDF bytes, and check that
+ * nothing computed moves.
+ */
+await (async () => {
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+  const setPerf4 = (levelKey, perf) => {
+    build.project[levelKey].perf = perf || {};
+    build.recompute(build.getSelectedCandidateKey());
+  };
+  const fullBack = (levelKey, lvl) => {
+    const geo = geoAt(lvl), H = perfFrame(geo).H;
+    return normalizePerf({enabled: true, state: 'closed', radius: 0,
+      cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+      panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}}, geo);
+  };
+
+  /** The PDF the app actually wrote, as a latin-1 string. */
+  const grabPdf = () => {
+    let got = null;
+    const grab = e => { e.preventDefault(); got = e.detail; };
+    document.addEventListener('palletpdf:generated', grab);
+    try{ el('btnPdf').click(); }
+    finally{ document.removeEventListener('palletpdf:generated', grab); }
+    return got ? Array.from(got.bytes, b => String.fromCharCode(b)).join('') : '';
+  };
+  /** The CONTENT streams, in page order, resolved through the page tree —
+   *  not by pattern-matching every stream in the file, which also catches the
+   *  JPEGs (a binary image happily contains the bytes "BT"). */
+  const streams = pdf => {
+    const body = n => (new RegExp(`\\n${n} 0 obj\\n([\\s\\S]*?)\\nendobj`).exec(pdf) || [])[1] || '';
+    const kids = /\/Kids \[([^\]]*)\]/.exec(pdf);
+    if(!kids) return [];
+    return kids[1].trim().split(/\s+0 R\s*/).filter(Boolean).map(Number).map(pn => {
+      const cn = /\/Contents (\d+) 0 R/.exec(body(pn));
+      if(!cn) return '';
+      const st = /stream\n([\s\S]*)\nendstream/.exec(body(+cn[1]));
+      return st ? st[1] : '';
+    });
+  };
+
+  setLevel('case'); el('tab2d').click(); await settle();
+
+  // THE READOUT WARNS, and only when the pack will not open. Read off the
+  // rendered rail, not off the function — the function is pinned in
+  // perf.test.html; this is about whether the app shows it.
+  const warnNode = () => el('styleStats').querySelector('[data-warn="openability"]');
+  setPerf4('tertiary', null); await settle();
+  const warnOff = !!warnNode();
+  setPerf4('tertiary', applyPerfPreset('angled', geoAt('case'), {enabled: true})); await settle();
+  const warnOk = !!warnNode();
+  setPerf4('tertiary', fullBack('tertiary', 'case')); await settle();
+  const warnBad = warnNode() && warnNode().textContent;
+  t('openability: the rail warns for a pack that will not open, and not otherwise', () => {
+    eq(warnOff, false, 'no perforation, no warning:');
+    eq(warnOk, false, 'a preset that opens must not warn:');
+    if(!warnBad) throw new Error('a full back on a 201 must warn on the rail');
+    if(!/will not separate/.test(warnBad)) throw new Error(`unexpected wording: ${warnBad}`);
+    if(!/major flap/.test(warnBad)) throw new Error('the warning must name the part that stays');
+    if(!/tape/.test(warnBad)) throw new Error('the warning must name what joins the lid');
+  });
+
+  // WARN, NEVER BLOCK — at the app level. The warned configuration is still
+  // solved, still drawn, still exported.
+  t('openability: the warned configuration is still solved and still exported', () => {
+    const g = geoAt('case');
+    if(!(g && g.aux && g.aux.PERF.length > 0)) throw new Error('the perforation is not on the geometry');
+    const dxf = buildDXF(g, 'mm');
+    if(!/\r\n2\r\nPERF\r\n/.test(dxf)) throw new Error('the DXF refused a warned configuration');
+    if(!(el('blank').textContent || '').length) throw new Error('the level readout went blank');
+  });
+
+  // THE SPEC SHEET. Perf off must be byte-identical to the sheet the app
+  // produced before perforation existed; the PDF embeds JPEG captures, so the
+  // comparison is over the text objects, which is where sections live.
+  const textOf = pdf => (pdf.match(/BT[\s\S]*?ET/g) || []).join('\n');
+  setPerf4('tertiary', null); setPerf4('secondary', null); await settle();
+  const rawPlain = grabPdf(); const pdfPlain = textOf(rawPlain);
+  setPerf4('tertiary', applyPerfPreset('angled', geoAt('case'), {enabled: true})); await settle();
+  const pdfPerf = textOf(grabPdf());
+  setPerf4('tertiary', fullBack('tertiary', 'case')); await settle();
+  const rawWarn = grabPdf(); const pdfWarn = textOf(rawWarn);
+  setPerf4('tertiary', null); await settle();
+  const pdfAgain = textOf(grabPdf());
+
+  t('spec: with no perforation the sheet is unchanged, on and off again', () => {
+    if(!pdfPlain.length) throw new Error('no PDF text captured — the export did not run');
+    if(/PERFORATION/.test(pdfPlain)) throw new Error('an unperforated sheet mentions perforation');
+    eq(pdfAgain, pdfPlain, 'the sheet returns to exactly what it was:');
+  });
+  t('spec: a perforated level adds one block, naming its own numbers', () => {
+    if(!/PERFORATION/.test(pdfPerf)) throw new Error('the perforation block is missing');
+    if(pdfPerf === pdfPlain) throw new Error('the sheet did not change');
+    // one block, not one per row
+    eq((pdfPerf.match(/PERFORATION/g) || []).length, 1, 'block count:');
+    for(const frag of ['Perforated', 'Rule', 'Minimum', 'Tear'])
+      if(!pdfPerf.includes(frag)) throw new Error(`the block is missing "${frag}"`);
+  });
+  // AND IT IS LEGIBLE. A row value used to be assumed short enough for the
+  // column and ran straight off the page when it wasn't — an openability
+  // warning is a sentence. Measured with the renderer's own metrics against
+  // the renderer's own column width, so a line that passes here is a line
+  // that fits when it is drawn. Mutation: dropping the wrap leaves the
+  // warning as one text run wider than the column.
+  t('spec: a long value is wrapped to the column it is drawn in', () => {
+    const long = 'Panels back are retained to full height, so the back panel\'s major flap ' +
+      'stays on the base while the rest of the closure leaves with the lid.';
+    const lines = pdfWrap(long, SECTION_COL_W, 10);
+    if(lines.length < 3) throw new Error(`expected a wrapped sentence, got ${lines.length} line(s)`);
+    for(const ln of lines){
+      const w = pdfTextWidth(ln, 10);
+      if(w > SECTION_COL_W) throw new Error(`"${ln}" is ${w.toFixed(1)}pt in a ${SECTION_COL_W}pt column`);
+    }
+    if(pdfTextWidth(long, 10) <= SECTION_COL_W)
+      throw new Error('the fixture string fits unwrapped, so this pin proves nothing');
+    // the measure must describe what is DRAWN: a transliterated arrow is two
+    // characters wide, and measuring the source instead under-counts every
+    // line that carries one
+    approx(pdfTextWidth('a \u2192 b', 10), pdfTextWidth('a -> b', 10), 'transliterated width:', 0.01);
+    // ...and NOTHING the sheet actually drew in that column overflows it.
+    // Read out of the content stream: each text run carries its own font
+    // size and its own x, so a run in the section column can be measured
+    // with the renderer's metrics at the size it was drawn. Counting "runs
+    // containing the warning's words" is not enough — other rows say
+    // "retained" too, and the count stayed above the threshold with the wrap
+    // removed. Measured; corrected.
+    const SECTION_X = 396;                       // dx = M + isoW + 20
+    let widest = 0, worst = '';
+    for(const blk of pdfWarn.match(/BT[\s\S]*?ET/g) || []){
+      const sz = /\/F\d (\d+(?:\.\d+)?) Tf/.exec(blk);
+      const tm = /1 0 0 1 (-?\d+(?:\.\d+)?) /.exec(blk);
+      const tj = /\((.*)\) Tj/.exec(blk);
+      if(!sz || !tm || !tj) continue;
+      if(Math.abs(+tm[1] - SECTION_X) > 1) continue;       // not the section column
+      const w = pdfTextWidth(tj[1].replace(/\\([()\\])/g, '$1'), +sz[1]);
+      if(w > widest){ widest = w; worst = tj[1]; }
+    }
+    if(!widest) throw new Error('no section-column text found — the fixture read the wrong PDF');
+    if(widest > SECTION_COL_W)
+      throw new Error(`"${worst}" is ${widest.toFixed(1)}pt in a ${SECTION_COL_W}pt column`);
+  });
+
+  // THE COLUMN HAS A FLOOR, and the sheet respects it. The section column
+  // shares its x-range with the bottom-right image, so a block that outgrew
+  // it drew over a photograph and over its caption — the first perforation
+  // block did exactly that. Read out of the file: every text run in that
+  // column on page 1, against the top of the image below it, both taken from
+  // the content stream's own operators.
+  t('spec: a long block continues on a second page instead of over the image', () => {
+    const rawPlainPages = streams(rawPlain).length, rawWarnPages = streams(rawWarn).length;
+    eq(rawPlainPages, 1, 'a short sheet stays one page:');
+    if(rawWarnPages !== 2) throw new Error(`expected a continuation page, got ${rawWarnPages}`);
+    const p1 = streams(rawWarn)[0];
+    // the bottom-right image: "w 0 0 h x y cm" then "/Im3 Do"
+    const im = /([\d.]+) 0 0 ([\d.]+) ([\d.]+) ([\d.]+) cm\n\/Im3 Do/.exec(p1);
+    if(!im) throw new Error('could not find the cutaway image in the page stream');
+    const imTop = +im[4] + +im[2];                     // PDF y is up
+    let lowest = Infinity;
+    for(const blk of p1.match(/BT[\s\S]*?ET/g) || []){
+      const tm = /1 0 0 1 (-?[\d.]+) (-?[\d.]+) Tm/.exec(blk);
+      if(!tm || Math.abs(+tm[1] - 396) > 1) continue;   // not the section column
+      lowest = Math.min(lowest, +tm[2]);
+    }
+    if(lowest === Infinity) throw new Error('no section-column text on page 1');
+    if(lowest < imTop) throw new Error(`a section row sits at y=${lowest} over an image whose top is ${imTop}`);
+    // and the block really did land on page 2
+    if(/PERFORATION/.test(p1)) throw new Error('the block stayed on page 1');
+    if(!/PERFORATION/.test(streams(rawWarn)[1])) throw new Error('the block is on neither page');
+  });
+
+  // THE FILE IS VALID, and its text is encodable. /WinAnsiEncoding is declared
+  // and the file is written a byte at a time, so a code point above U+00FF is
+  // TRUNCATED into a different glyph — an arrow came out as a right quote.
+  t('spec: the PDF is a valid two-page file with encodable text', () => {
+    // PDF arrays are space separated; a comma made every reader reject the
+    // file with "non-page object in page tree", and one page needs no
+    // separator so it was invisible until the second one existed.
+    const kids = /\/Kids \[([^\]]*)\]/.exec(rawWarn);
+    if(!kids) throw new Error('no page tree');
+    if(kids[1].includes(',')) throw new Error(`Kids is not a PDF array: [${kids[1]}]`);
+    const refs = kids[1].trim().split(/\s+0 R\s*/).filter(Boolean).map(Number);
+    eq(refs.length, 2, 'two kids:');
+    for(const n of refs){
+      const obj = new RegExp(`\\n${n} 0 obj\\n([\\s\\S]*?)\\nendobj`).exec(rawWarn);
+      if(!obj) throw new Error(`object ${n} is missing`);
+      if(!/\/Type \/Page\b/.test(obj[1])) throw new Error(`object ${n} is not a page: ${obj[1].slice(0, 60)}`);
+    }
+    // The DRAWN text, not the helper: the sheet's Panels row states two
+    // heights with an arrow between them, and the file must carry it as the
+    // spelled-out form. Checking only that every code point fits a byte
+    // proves nothing — the writer masks with & 0xff, so it always does, and
+    // that is exactly how an arrow became a right quote (0x2192 & 0xff).
+    const drawn = (streams(rawWarn).join('\n').match(/\((.*)\) Tj/g) || []).join('\n');
+    if(!/->/.test(drawn)) throw new Error('the arrow was not spelled out in the drawn text');
+    if(/\u0092|\u2192|\u26a0/.test(drawn)) throw new Error('a truncated or unencodable glyph reached the file');
+    // and the em dash IS in WinAnsi, so it survives as its own byte
+    if(!/\u0097/.test(drawn)) throw new Error('the em dash lost its WinAnsi byte');
+    // the transliteration, directly
+    eq(winAnsi('a \u2192 b'), 'a -> b', 'arrow:');
+    eq(winAnsi('\u26a0 warn'), '! warn', 'warning mark:');
+    eq(winAnsi('a \u2014 b'), 'a \x97 b', 'em dash maps to its WinAnsi byte:');
+    eq(winAnsi('1 \u00d7 2 \u00b7 3'), '1 \u00d7 2 \u00b7 3', 'latin-1 passes through:');
+    eq(winAnsi('\u4e2d'), '?', 'unmappable becomes a visible gap:');
+  });
+
+  t('spec: an active warning reaches the sheet', () => {
+    if(!/separate/.test(pdfWarn)) throw new Error('the openability warning is not on the sheet');
+    if(/separate/.test(pdfPerf)) throw new Error('a pack that opens carries a warning');
+  });
+
+  // NOTHING ON THE BLOCK FEEDS A CALCULATION. Change the cut/tie spec — the
+  // one field that is pure text — and no computed output may move: not the
+  // blank, not the area, not the cost, not the pallet count, not the DXF.
+  t('spec: no spec-sheet value feeds a calculation', () => {
+    const base = applyPerfPreset('angled', geoAt('case'), {enabled: true});
+    setPerf4('tertiary', base);
+    const g0 = geoAt('case');
+    const before = {
+      blank: [g0.bbox.maxX, g0.bbox.maxY], outer: {...g0.outer},
+      dxf: buildDXF(g0, 'mm').length,
+      row: JSON.stringify(resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey()).cost)
+    };
+    setPerf4('tertiary', normalizePerf({...base, spec: {cut: 22, tie: 9}}, g0));
+    const g1 = geoAt('case');
+    const after = {
+      blank: [g1.bbox.maxX, g1.bbox.maxY], outer: {...g1.outer},
+      dxf: buildDXF(g1, 'mm').length,
+      row: JSON.stringify(resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey()).cost)
+    };
+    // the TEXT moved...
+    const rows = perfSpecRows(g1, build.project.tertiary.perf);
+    if(!(rows.find(r => r[0] === 'Rule') || [])[1].includes('22'))
+      throw new Error('the spec text did not follow the edit, so this pin proves nothing');
+    // ...and nothing computed did
+    eq(JSON.stringify(after), JSON.stringify(before), 'a computed value moved:');
+  });
+
+  setPerf4('tertiary', null); setPerf4('secondary', null);
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

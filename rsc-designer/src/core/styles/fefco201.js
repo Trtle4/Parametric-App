@@ -90,6 +90,31 @@ export function fefco201(p){
         {from: 0, to: F, v: F}, {from: F, to: F + H, v: H}, {from: F + H, to: yt2, v: F}
       ],
       print: {x0: x1, x1: x2, y0: yb1, y1: yt1},   // first length panel
+      // TOP CLOSURE, declared for the openability check (core/perf.js). The
+      // question a tear asks of a closure is: if this panel is RETAINED to
+      // full height, does its top flap hold the lid down?
+      //
+      // An RSC closes minors-in, majors-over, one strip of tape along the
+      // centre seam. A retained MAJOR is taped to the other major, which goes
+      // with the lid — the lid is tethered. A retained MINOR is only lain on
+      // by the majors, which lift straight off it, so it holds nothing.
+      //
+      // Panel indices are the artMap girth walk (0 back, 1 right, 2 front,
+      // 3 left), so perf and this list index the same walls.
+      //
+      // LIMITATION, stated rather than hidden: which pair is the major is the
+      // `outerFlaps` OPTION, and options do not reach the geometry builder.
+      // This declares the standard/default build (length panels outer). With
+      // outerFlaps: 'W' the roles swap and this list would be wrong.
+      closure: {
+        top: [
+          {panel: 0, part: 'major flap', holdsLid: true},
+          {panel: 1, part: 'minor flap', holdsLid: false},
+          {panel: 2, part: 'major flap', holdsLid: true},
+          {panel: 3, part: 'minor flap', holdsLid: false}
+        ],
+        lidJoin: 'the tape along the centre seam'
+      },
       // ARTWORK MAP — same upright-tube convention as the cartons (extrude
       // along H, girth around the four body walls, FRONT at +Z). The RSC panel
       // run is [glue | front L | side W | back L | side W]; the print panel

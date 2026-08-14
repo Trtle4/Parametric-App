@@ -645,6 +645,108 @@ export function withPerforation(geo, perf, opts){
 /** True when this geometry should RENDER as opened for display. */
 export const isDisplayGeo = geo => !!(geo && geo.perf && geo.perf.state === 'display');
 
+/* ---------------------------------------------------------- spec sheet --- */
+
+/**
+ * The perforation block for the spec sheet: rows of [label, value], and
+ * nothing else. TEXT ONLY — no consumer of this feeds a calculation, and the
+ * values are formatted here rather than by the sheet so the sheet cannot
+ * round one of them differently from the readout.
+ *
+ * Returns a "not perforated" row rather than nothing, because a spec sheet
+ * that is silent about perforation reads the same whether the pack has none
+ * or the sheet forgot to say.
+ *
+ * @param {Function} [fmt]  length formatter (mm -> display string)
+ */
+export function perfSpecRows(geo, perfIn, fmt = v => `${(+v).toFixed(1)} mm`){
+  const path = geo ? buildPerfPath(geo, perfIn) : null;
+  if(!path) return [['Perforated', 'No']];
+  const modeOf = p => p.mode === 'profiled'
+    ? `${fmt(p.hA)} → ${fmt(p.hB)}`
+    : `${p.mode}, ${fmt(Math.max(...p.pts.map(v => v[1])))} retained`;
+  const rows = [
+    ['Perforated', `Yes — ${path.state === 'display' ? 'shown in display state' : 'shown as shipped'}`],
+    ['Rule', perfSpecLabel(path.spec)],
+    ['Minimum retained height', fmt(path.minRetainedH)],
+    ['Retained corner heights', PERF_CORNERS.map((n, i) => `${n} ${fmt(path.cornerH[i])}`).join(' · ')],
+    // ONE row for the panels, not four. "Panels affected" is one fact; four
+    // rows of it pushed the sheet's section column into the image below it.
+    ['Panels', path.panels.map(p => `${p.name} ${modeOf(p)}`).join(' · ')],
+    ['Tear length', fmt(path.tearLength)]
+  ];
+  const warn = openabilityWarning(geo, perfIn);
+  if(warn) rows.push(['⚠ ' + warn.title, warn.detail]);
+  return rows;
+}
+
+/* --------------------------------------------------------- openability --- */
+
+/**
+ * WILL THE LID ACTUALLY COME OFF?
+ *
+ * A tear that runs all the way round still leaves the pack shut if part of
+ * the CLOSURE stays behind. Retain a panel to its full height and its top
+ * flap stays on the base — and on most closures that flap is bonded to the
+ * flaps going with the lid, so the lid is tethered to the thing it is
+ * supposed to leave.
+ *
+ * WHICH flap holds and which merely rests is a fact about the CLOSURE, not
+ * about perforation, so each style declares it (`meta.closure.top`) and this
+ * function only reads. The three shipped closures genuinely differ, and
+ * generalising from any one of them gives the wrong answer for the others:
+ *
+ *   FEFCO 201  minors in, majors over, taped across the centre seam. A
+ *              retained MAJOR is taped to the one leaving; a retained MINOR
+ *              is only lain on, and the majors lift straight off it.
+ *   A6120      the lid IS the front panel's tuck; the back has no top flap
+ *              at all. Only a retained tuck panel blocks.
+ *   Seal end   the seal flap is GLUED over the major and both dust flaps, so
+ *              all four are one bonded piece and any of them holds.
+ *
+ * WARN, NEVER BLOCK. Asymmetric and unusual builds are legitimate; a pack
+ * that will not open is a design error to show the user, not a state to
+ * forbid. Nothing here is called from a write path.
+ *
+ * The BOTTOM closure is not at risk: `minRetainedH` keeps every tear above
+ * the base crease, so a bottom flap always stays with the base, which is
+ * where it belongs.
+ *
+ * @returns {null|{panels:string[], parts:string[], title:string, detail:string}}
+ */
+export function openabilityWarning(geo, perfIn, opts){
+  const path = geo ? buildPerfPath(geo, perfIn, opts) : null;
+  if(!path) return null;
+  const cl = geo.meta && geo.meta.closure;
+  // a style that declares no closure gets no opinion — silence beats a guess
+  if(!cl || !Array.isArray(cl.top)) return null;
+
+  const held = [];
+  for(const fl of cl.top){
+    if(!fl.holdsLid) continue;
+    const pan = path.panels[fl.panel];
+    if(!pan) continue;
+    if(Math.max(...pan.pts.map(p => p[1])) >= path.H - EPS)
+      held.push({panel: pan.name, part: fl.part});
+  }
+  if(!held.length) return null;
+
+  const list = held.map(h => `the ${h.panel} panel's ${h.part}`);
+  const joined = list.length === 1 ? list[0]
+    : list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1];
+  return {
+    panels: held.map(h => h.panel),
+    parts: held.map(h => h.part),
+    title: 'The lid will not separate',
+    detail: `${held.length === 1 ? 'Panel' : 'Panels'} ${held.map(h => h.panel).join(', ')} ` +
+      `${held.length === 1 ? 'is' : 'are'} retained to full height, so ${joined} ` +
+      `${held.length === 1 ? 'stays' : 'stay'} on the base while the rest of the closure leaves with the lid. ` +
+      `${cl.lidJoin.charAt(0).toUpperCase()}${cl.lidJoin.slice(1)} still joins them, so the lid is held. ` +
+      `Tear the panel a few millimetres below its top crease instead of retaining it whole — ` +
+      `the crease still folds during erection and the flap leaves with the lid.`
+  };
+}
+
 /* -------------------------------------------------------------- presets --- */
 
 /**
@@ -693,10 +795,18 @@ export const PERF_PRESETS = Object.freeze([
   },
   {
     id: 'open-front', name: 'Front removed',
-    hint: 'The whole front panel comes away; the back stays full height.',
+    hint: 'The whole front panel comes away; the back stays at full height.',
+    // THE BACK IS PROFILED, NOT `full`. Retaining it whole keeps its top flap
+    // on the base, and on two of the three shipped closures that flap is
+    // taped or glued to the ones leaving with the lid — so the pack tears all
+    // the way round and still does not open. Asking for the very top instead
+    // lets the write-time clamp put the tear at H - minRetainedH: the crease
+    // still folds during erection, the flap leaves with the lid, and the
+    // retained back is 3 mm shorter than a passer-by could measure. `full`
+    // stays available to anyone who wants it, with the warning attached.
     build: (H) => ({
       cornerH: [H, H, 0, 0], radius: 0.08*H,
-      panels: {back: {mode: 'full'}, right: {transition: 'scurve'},
+      panels: {back: {}, right: {transition: 'scurve'},
                front: {mode: 'removed'}, left: {transition: 'scurve'}}
     })
   }

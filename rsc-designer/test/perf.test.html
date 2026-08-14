@@ -18,7 +18,8 @@ import {
   PERF_PRESETS, PERF_SPEC_DEFAULT,
   perfFrame, canPerforate, perfUnavailableReason, defaultPerf, normalizePerf,
   buildPerfPath, perfAux, filletPolyline, applyPerfPreset, isDisplayState,
-  perfSpecLabel, withPerforation, trimCreases, isDisplayGeo
+  perfSpecLabel, withPerforation, trimCreases, isDisplayGeo,
+  openabilityWarning, perfSpecRows, PERF_MIN_RETAINED_DEFAULT
 } from '../src/core/perf.js';
 import {fefco201} from '../src/core/styles/fefco201.js';
 import {a6120} from '../src/core/styles/a6120.js';
@@ -780,6 +781,140 @@ t('the resolved geometry carries its state and its path', () => {
   ok(!isDisplayGeo(shipping) && isDisplayGeo(display), 'display gate');
   eq(display.perf.path.segments.length, display.aux.PERF.length, 'one path, one layer:');
   eq(display.perf.minRetainedH, 3, 'the lip travels too:');
+});
+
+/* =========================================================== openability */
+
+// EVERY STYLE, EVERY PANEL. The three shipped closures genuinely differ, and
+// the pin states each one explicitly rather than deriving a rule — the whole
+// point of the survey is that generalising from one is wrong. Anchored to the
+// PHYSICS as surveyed, not to the declaration: if a style's `closure` block
+// changed, this fails, which is what it is for.
+//   FEFCO 201  taped centre seam: the two MAJOR flaps (the length panels)
+//              hold; the minors are only lain on and lift straight off.
+//   A6120      the lid IS the front tuck; the back has no top flap at all,
+//              and the dust flaps are passive.
+//   Seal end   the seal flap is GLUED over all three, so any of the four
+//              holds.
+t('openability: retaining a panel warns exactly where the closure holds', () => {
+  const expect = {
+    fefco201: {back: true,  right: false, front: true,  left: false},
+    a6120:    {back: false, right: false, front: true,  left: false},
+    sealend:  {back: true,  right: true,  front: true,  left: true}
+  };
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    for(const name of PERF_PANELS){
+      const panels = {back: {}, right: {}, front: {}, left: {}};
+      panels[name] = {mode: 'full'};
+      const perf = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H], panels});
+      const w = openabilityWarning(geo, perf);
+      eq(!!w, expect[id][name], `${id}: full ${name} panel warns?`);
+      if(w){
+        ok(w.detail.includes(name), `${id}/${name}: the warning must name the panel`);
+        ok(/flap|panel/.test(w.detail), `${id}/${name}: the warning must name the part`);
+        ok(!/invalid|illegal|error/i.test(w.detail), `${id}/${name}: worded for an engineer, not a validator`);
+      }
+    }
+    // ...and a girth with nothing retained to full height never warns
+    ok(!openabilityWarning(geo, onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]})),
+       `${id}: an all-profiled tear must not warn`);
+  }
+});
+
+// EVERY SHIPPED PRESET OPENS, on every applicable style. This is the pin that
+// caught `open-front` shipping with a `full` back: it warned on the 201 and
+// the seal end and not on the a6120, which is exactly what the closures
+// predict. Mutation: putting `mode: 'full'` back on that preset's back panel
+// fails on two of the three styles.
+t('openability: every shipped preset opens, on every style', () => {
+  for(const [id, geo] of RIGID) for(const preset of PERF_PRESETS){
+    const w = openabilityWarning(geo, applyPerfPreset(preset.id, geo, {enabled: true}));
+    ok(!w, `${id}/${preset.id}: ${w ? w.detail : ''}`);
+  }
+  // and the revised `open-front` still retains the back as high as it legally
+  // can — the clamp, not `full`, is what keeps it tall
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H, p = applyPerfPreset('open-front', geo, null);
+    near(p.cornerH[0], H - PERF_MIN_RETAINED_DEFAULT, 1e-9, `${id} back corner:`);
+    eq(p.panels.back.mode, 'profiled', `${id} back mode:`);
+  }
+});
+
+// WARN, NEVER BLOCK. A configuration that will not open is still written,
+// still solved, still exported — the warning is a report, not a gate.
+t('openability: a warning never blocks a write', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const perf = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+    panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
+  ok(openabilityWarning(geo, perf), 'the fixture must warn, or this proves nothing');
+  eq(perf.panels.back.mode, 'full', 'the mode is stored as written:');
+  const g = withPerforation(geo, perf);
+  ok(g.aux.PERF.length > 0, 'the path is still built');
+  ok(g.crease.length > 0, 'the die is still resolved');
+  eq(buildPerfPath(geo, perf).panels.length, 4, 'every panel still solved');
+});
+
+// A style that declares no closure gets NO OPINION. Silence beats a guess:
+// the check reads a published fact and has no fallback rule to fall back on.
+t('openability: a style with no declared closure is not second-guessed', () => {
+  const bare = {...gCase, meta: {...gCase.meta}};
+  delete bare.meta.closure;
+  const H = perfFrame(bare).H;
+  eq(openabilityWarning(bare, onPerf(bare, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+    panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}})), null, 'no closure, no claim:');
+  // every shipped rigid style DOES declare one, so the silence is never used
+  for(const [id, geo] of RIGID){
+    ok(geo.meta.closure && Array.isArray(geo.meta.closure.top), `${id} declares a closure`);
+    ok(geo.meta.closure.lidJoin, `${id} names what joins the lid`);
+  }
+});
+
+/* ============================================================ spec sheet */
+
+// TEXT ONLY. Every value on the block is a string, and none of them is read
+// back by anything that computes. Mutation: having a consumer parse a spec
+// row would have to get past this.
+t('spec: the perforation block is text, and says so when there is none', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  eq(perfSpecRows(geo, defaultPerf(geo)), [['Perforated', 'No']], 'unperforated block:');
+  const perf = onPerf(geo, {state: 'display', cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H]});
+  const rows = perfSpecRows(geo, perf);
+  for(const r of rows){
+    eq(r.length, 2, 'a row is [label, value]:');
+    eq(typeof r[0], 'string', 'label type:'); eq(typeof r[1], 'string', 'value type:');
+  }
+  const label = k => (rows.find(r => r[0] === k) || [])[1];
+  ok(/display state/.test(label('Perforated')), `state: ${label('Perforated')}`);
+  eq(label('Rule'), perfSpecLabel(perf.spec), 'the rule text is the ONE label:');
+  ok(label('Minimum retained height').includes('3'), `lip: ${label('Minimum retained height')}`);
+  ok(label('Retained corner heights').includes('back-left'), 'corners are named');
+  // ONE row for the panels, not four: "panels affected" is one fact, and four
+  // rows of it pushed the pallet sheet's section column into the image below.
+  for(const n of PERF_PANELS) ok(label('Panels').includes(n), `${n} named in the panels row`);
+  ok(!rows.some(r => /^Panel — /.test(r[0])), 'no per-panel rows');
+  ok(label('Tear length'), 'tear length present');
+});
+
+// AN ACTIVE WARNING APPEARS ON THE SHEET. A spec sheet that reads clean for a
+// pack that will not open is worse than no spec sheet.
+t('spec: an active openability warning is on the block', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const bad = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+    panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
+  const good = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]});
+  const has = perf => perfSpecRows(geo, perf).some(r => /will not separate/.test(r[0] + r[1]));
+  ok(has(bad), 'the warning must reach the sheet');
+  ok(!has(good), 'a pack that opens must not carry one');
+});
+
+// The block FORMATS with the caller's unit formatter, so the sheet cannot
+// round a number differently from the readout it sits beside.
+t('spec: lengths come through the caller\'s formatter', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const rows = perfSpecRows(geo, onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]}), v => `<<${v.toFixed(3)}>>`);
+  const lip = rows.find(r => r[0] === 'Minimum retained height')[1];
+  eq(lip, '<<3.000>>', 'the formatter is used verbatim:');
 });
 
 /* ================================================================ presets */

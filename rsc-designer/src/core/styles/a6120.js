@@ -109,6 +109,27 @@ export function a6120(p){
         {from: yt, to: yt+T, v: T}, {from: yt+T, to: yt+T+TT, v: TT}
       ],
       print: {x0: x3, x1: x4, y0: yb, y1: yt},   // front panel body
+      // TOP CLOSURE, for the openability check (core/perf.js). The reverse
+      // tuck's lid is the FRONT panel's tuck panel folded over the two dust
+      // flaps, its tab tucked down inside the back wall. The BACK panel has
+      // no top flap at all — its top edge is a plain cut, which is the whole
+      // point of the reversal.
+      //
+      // So a retained back holds nothing (there is nothing there to hold
+      // with), and a retained dust flap holds nothing either: the tuck panel
+      // merely rests on the dust flaps and lifts off them. Only a retained
+      // TUCK PANEL blocks — it stays attached to the base, lying across the
+      // opening the lid has to come up through.
+      //
+      // Indices are the artMap girth walk (0 back, 1 right, 2 front, 3 left).
+      closure: {
+        top: [
+          {panel: 1, part: 'dust flap', holdsLid: false},
+          {panel: 2, part: 'tuck panel', holdsLid: true},
+          {panel: 3, part: 'dust flap', holdsLid: false}
+        ],
+        lidJoin: 'the tuck panel folded over the dust flaps'
+      },
       // ARTWORK MAP — same shape the flow wrap publishes, so the shared
       // template/upload/map system clads the carton without a per-style path.
       // The carton is a tube stood UPRIGHT: extrude along H (height, world Y),
