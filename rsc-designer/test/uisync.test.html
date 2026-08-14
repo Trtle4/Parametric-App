@@ -3759,13 +3759,46 @@ await (async () => {
   });
 
   // ---- the PDF: intercept the export event, read the actual bytes ----
+  // ...and record the LENS each shot is taken through. captureOrbitPNG runs
+  // the per-frame hooks against its own capture camera before rendering, so a
+  // hook is the one place a test can see the camera a capture actually used.
+  const shots = [];
+  const offLens = onFrame(cam => shots.push({fov: cam.fov, dist: cam.position.length()}));
   let pdf = null;
   const grab = e => { e.preventDefault(); pdf = e.detail; };
   document.addEventListener('palletpdf:generated', grab);
   try{ el('btnPdf').click(); }
-  finally{ document.removeEventListener('palletpdf:generated', grab); }
+  finally{ document.removeEventListener('palletpdf:generated', grab); offLens(); }
   const pdfText = pdf ? Array.from(pdf.bytes, b => String.fromCharCode(b)).join('') : '';
   const pxAfter = await cornerPixel();
+
+  t('pallet PDF: the PLAN view is shot through a long lens, so the pallet is in it', () => {
+    // THE defect: at the normal 38° lens a 1.4m load seen from overhead is
+    // magnified against the deck a metre below it and covers a pallet only 3%
+    // wider than itself. Measured by hiding the deck meshes and diffing the
+    // capture: the deck contributed ZERO pixels at 38°, and 6285 at 2.2°. So
+    // the plan is taken through a narrow lens, which compresses the divergence
+    // toward the orthographic projection a plan view is supposed to be.
+    if(!shots.length) throw new Error('no capture camera was seen — the frame hook did not run');
+    const narrow = shots.filter(s2 => s2.fov < 10);
+    if(!narrow.length)
+      throw new Error(`no shot used a long lens; fovs seen: ${[...new Set(shots.map(s2 => s2.fov))].join(', ')}`);
+    // ...and the FRAMING is unchanged by it: a narrow lens without the matching
+    // distance compensation would simply zoom in and crop the load out.
+    // tan(fov/2)*distance is the visible half-extent at the subject plane, and
+    // it must match the wide shots' — that relation IS the compensation.
+    const T = f => Math.tan(f*Math.PI/360);
+    const wide = shots.filter(s2 => s2.fov > 30);
+    if(!wide.length) throw new Error('no normal-lens shot to compare the framing against');
+    const extent = s2 => T(s2.fov)*s2.dist;
+    const w0 = Math.max(...wide.map(extent)), n0 = Math.max(...narrow.map(extent));
+    if(!(n0 > w0*0.5 && n0 < w0*1.6))
+      throw new Error(`the long lens changed the framing: visible extent ${n0.toFixed(0)} vs ${w0.toFixed(0)} — ` +
+        'the distance compensation is missing or wrong');
+    // the fixture only means anything if the lens really is much narrower
+    const nf = Math.min(...narrow.map(s2 => s2.fov)), wf = Math.max(...wide.map(s2 => s2.fov));
+    if(!(wf/nf > 4)) throw new Error(`vacuous fixture: lenses too similar (${wf}° vs ${nf}°)`);
+  });
 
   t('pallet PDF: one portrait letter page, three views, the readouts\' own numbers', () => {
     // Reads the EXPORTED bytes (the content stream is uncompressed for exactly
@@ -3791,9 +3824,13 @@ await (async () => {
     if(!pdfText.includes(`(${odStr})`))
       throw new Error(`case outside dims "${odStr}" not on the sheet`);
 
-    // the date, generated today
-    const now = new Date();
-    const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    // The date, from the app's OWN stamper. This used to build "today" out of
+    // the host clock, which is the very defect core/stamp.js exists to fix: on
+    // a UTC machine between 8pm and midnight Eastern the two disagree, and the
+    // pin failed for being right (measured, at 00:0x UTC on the 14th against a
+    // sheet correctly stamped the 13th). What the zone DOES is pinned on fixed
+    // instants beside stamp.js; this only asserts the sheet uses it.
+    const iso = dateStamp();
     if(!pdfText.includes(iso)) throw new Error(`generation date ${iso} not on the sheet`);
     // units line follows the app setting
     if(!pdfText.includes(`(All dimensions in ${u})`)) throw new Error('units line missing or wrong');

@@ -2350,19 +2350,39 @@ function exportPalletPdf(){
   // the plan view small in the middle of its panel); the cutaway sits a
   // touch tighter than the iso because a single case fills its panel poorly
   // at pallet framing.
-  const shot = (depth, solid, rx, ry, w, h, distOf) => {
+  const shot = (depth, solid, rx, ry, w, h, distOf, fovDeg) => {
     fold.captureOrbitPNG(rx, ry, 1.35, 8, 8);
     const res = hier.buildHierarchy(bundle, depth, {}, solid);
     const d = distOf ? distOf(res) : 1.35;
-    return {data: fold.captureOrbitPNG(rx, ry, d, w, h, 0.92), w, h};
+    return {data: fold.captureOrbitPNG(rx, ry, d, w, h, 0.92, fovDeg), w, h};
   };
+  /* THE PLAN VIEW is a plan OF THE PALLET, so the pallet has to be in it.
+   * Two things were stopping that, and both are here:
+   *
+   *  1. PERSPECTIVE. At the normal 38° lens a 1.4m load seen from overhead is
+   *     magnified against the deck a metre below it, and covers a pallet only
+   *     3% wider than itself completely — measured, the deck contributed ZERO
+   *     pixels to this panel. PLAN_FOV narrows the lens (the capture scales
+   *     the distance to keep the framing), which compresses that divergence
+   *     toward the orthographic projection a plan is supposed to be.
+   *  2. FRAMING. The old factor sized the frame to the deck edge-to-edge, so
+   *     even once visible the deck's own border would sit exactly on the frame
+   *     edge. PLAN_MARGIN leaves room, and the target now accounts for the
+   *     PANEL's aspect: which axis binds depends on whether the deck is wider
+   *     or deeper than the panel, and a deep-and-narrow pallet would have been
+   *     cropped by the old max(L, W). */
+  const PLAN_W = 1032, PLAN_H = 920;
+  const PLAN_FOV = 2.2;                 // degrees — a long lens, not a new camera
+  const PLAN_MARGIN = 1.16;             // room around the deck, so its edge is inside the frame
+  const PLAN_FILL = 0.78;               // the factor that frames a footprint edge-to-edge
+  const planTarget = Math.max(pal.L, pal.W*(PLAN_W/PLAN_H));
   const HOME = fold.HOME_ORBIT;
   let images;
   try{
     images = {
       iso: shot('pallet', true, HOME.rotX, HOME.rotY, 1344, 1200),  // ~290 dpi placed
-      top: shot('pallet', true, Math.PI/2, 0, 1032, 920,
-                res => 0.78*Math.max(pal.L, pal.W)/(res.span || 1)),
+      top: shot('pallet', true, Math.PI/2, 0, PLAN_W, PLAN_H,
+                res => PLAN_FILL*PLAN_MARGIN*planTarget/(res.span || 1), PLAN_FOV),
       cut: shot(bundle.caseGeo ? 'case' : 'carton', false, HOME.rotX, HOME.rotY, 1032, 920,
                 () => 0.85)
     };
@@ -2407,7 +2427,7 @@ function exportPalletPdf(){
 
   const bytes = buildPalletPdf({
     dateStr: dateStamp(), unit: u, images,
-    captions: {iso: 'Pallet · isometric', top: 'Layer pattern · top',
+    captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan',
                cut: `${outerNoun} cutaway`},
     sections
   });

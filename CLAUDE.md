@@ -240,6 +240,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   present by its own declared face, which is the honest merchandising
   comparison; per-side overrides, comparing three designs, and delta
   highlighting are all noted and unbuilt.
+- **The pallet PDF's PLAN view is shot through a LONG LENS, and that is what
+  puts the pallet in it.** A plan of a pallet has to contain the pallet, and it
+  did not: at the renderer's normal 38° lens a 1.4m load seen from overhead is
+  magnified against the deck a metre below it (the near plane of a perspective
+  frustum is simply wider), so the top layer covered a deck only 3% wider than
+  itself completely. Measured by hiding the 22 deck meshes and diffing the
+  capture: the deck contributed ZERO pixels at 38°, and 6285 at 2.2°. Framing
+  was NOT the cause and reframing alone never fixed it. `captureOrbitPNG` takes
+  an optional `fovDeg` and scales the distance by `tan(fov0/2)/tan(fov/2)`, so
+  the subject fills the frame exactly as before and only the perspective
+  compresses — toward the orthographic projection a plan is supposed to be. The
+  pin reads the camera each capture actually used (the per-frame hooks run
+  against the capture camera, which is the one place a test can see it) and
+  checks BOTH halves: a narrow lens was used, and `tan(fov/2)·distance` — the
+  visible extent — still matches the wide shots', because a narrow lens without
+  the compensation just zooms in and crops. Its framing target also accounts
+  for the PANEL's aspect now; the old `max(L, W)` would have cropped a pallet
+  deeper than it is wide.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.

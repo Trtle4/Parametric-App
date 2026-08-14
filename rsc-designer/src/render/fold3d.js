@@ -415,13 +415,30 @@ export const getStageBackground = () => stageBg;
  *  so the animation loop never sees the capture state. Background is
  *  whatever setStageBackground says (the caller sets 'white' around a print
  *  capture — the same mechanism as the toggle, not a second one). */
-export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92){
+/**
+ * @param {number} [fovDeg] a NARROWER lens for this shot, with the distance
+ *   scaled to keep the framing identical — a telephoto, in the photographic
+ *   sense. It exists for the PLAN view: at the normal 38° a load 1.4m tall
+ *   seen from overhead is magnified against the deck a metre below it (the
+ *   near plane of a perspective frustum is simply wider), so the top layer
+ *   covers a pallet only 3% wider than itself and the pallet is not in the
+ *   picture at all — measured, the deck contributed ZERO pixels. Narrowing
+ *   the lens compresses that divergence toward the orthographic projection a
+ *   plan view is supposed to be. The distance compensation is the standard
+ *   relation tan(fov0/2)/tan(fov/2), so the subject fills the frame exactly
+ *   as before and only the perspective changes.
+ */
+export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92, fovDeg = 0){
   if(!renderer || !scene || !camera) return null;
-  const prev = {rotX, rotY, dist,
+  const prev = {rotX, rotY, dist, fov: camera.fov,
                 pan: panTarget ? {x: panTarget.x, y: panTarget.y, z: panTarget.z} : null,
                 pr: renderer.getPixelRatio()};
   const size = new THREE.Vector2(); renderer.getSize(size);
-  rotX = rx; rotY = ry; dist = d;
+  const T = a => Math.tan(a*Math.PI/360);      // tan of half the fov
+  // clamp so the compensated distance stays inside the camera's far plane
+  const fov = fovDeg > 0 ? Math.max(1.6, Math.min(camera.fov, fovDeg)) : 0;
+  rotX = rx; rotY = ry; dist = fov ? d*T(prev.fov)/T(fov) : d;
+  if(fov) camera.fov = fov;
   if(panTarget) panTarget.set(0, 0, 0);        // a print view is centred, never panned
   renderer.setPixelRatio(1);
   renderer.setSize(w, h, false);
@@ -437,7 +454,7 @@ export function captureOrbitPNG(rx, ry, d, w, h, quality = 0.92){
   for(const cb of frameCbs) cb(camera);
   renderer.render(scene, camera);
   const url = renderer.domElement.toDataURL('image/jpeg', quality);
-  rotX = prev.rotX; rotY = prev.rotY; dist = prev.dist;
+  rotX = prev.rotX; rotY = prev.rotY; dist = prev.dist; camera.fov = prev.fov;
   if(panTarget && prev.pan) panTarget.set(prev.pan.x, prev.pan.y, prev.pan.z);
   renderer.setPixelRatio(prev.pr);
   renderer.setSize(size.x, size.y, false);
