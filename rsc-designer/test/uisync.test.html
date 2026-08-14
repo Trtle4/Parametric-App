@@ -223,7 +223,10 @@ import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
 import {AUX_LAYERS, PERF_INK, auxLayerNames, auxLegendRows, resetAuxWarnings} from '../src/render/auxlayers.js';
-import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerfAux, perfFrame} from '../src/core/perf.js';
+import {perfBodyGeometry, perfLineGeometry, perfFrames3d} from '../src/render/perf3d.js';
+import {foldBuilders} from '../src/render/folds/index.js';
+import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerforation, perfFrame,
+        normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT} from '../src/core/perf.js';
 import {draw2d} from '../src/render/dieline2d.js';
 import {buildDXF} from '../src/export/dxf.js';
 import {buildArtworkSVG} from '../src/export/artwork.js';
@@ -4078,10 +4081,17 @@ await (async () => {
   // path into ONE stroked run. Mutation: emitting a line per segment gives
   // 236 elements here instead of 1.
   t('aux renderer: a contiguous path is ONE stroked run, so the dash survives', () => {
-    const curvy = applyPerfPreset('open-front', gCaseLive, {enabled: true});
+    // an all-profiled girth: the tear really is one continuous line, so one
+    // run is the correct answer. (A `full` panel breaks it deliberately — see
+    // the pin below.)
+    const H = perfFrame(gCaseLive).H;
+    const curvy = normalizePerf({enabled: true, radius: 14,
+      cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H],
+      panels: {back: {}, right: {transition: 'scurve'}, front: {bow: -0.12*H}, left: {transition: 'scurve'}}
+    }, gCaseLive);
     const path = buildPerfPath(gCaseLive, curvy);
     if(!(path.segments.length > 100)) throw new Error(`expected a polygonised curve, got ${path.segments.length} segments`);
-    draw2d(probe, withPerfAux(gCaseLive, curvy), 'mm', '', null);
+    draw2d(probe, withPerforation(gCaseLive, curvy), 'mm', '', null);
     const g = probe.querySelector('g[data-aux="PERF"]');
     eq(g.querySelectorAll('line').length, 0, 'no per-segment lines:');
     eq(g.querySelectorAll('polyline').length, 1, 'runs for one continuous tear:');
@@ -4097,7 +4107,7 @@ await (async () => {
   // ---- artwork template: the tear is a GUIDE ------------------------------
   t('template: the perf guide is exported, named, and marked do-not-print', () => {
     const tplOff = buildArtworkSVG(gCaseLive, 'mm');
-    const tplOn = buildArtworkSVG(withPerfAux(gCaseLive, perfRound), 'mm');
+    const tplOn = buildArtworkSVG(withPerforation(gCaseLive, perfRound), 'mm');
     if(tplOff.includes(PERF_INK)) throw new Error('perf ink in the template with perf off');
     if(!tplOn.includes(PERF_INK)) throw new Error('perf guide missing from the template');
     if(!tplOn.includes('DO NOT PRINT ACROSS')) throw new Error('the guide is not marked as a guide');
@@ -4105,7 +4115,11 @@ await (async () => {
     // the guide is stroked as runs, not per-segment, for the same reason the
     // dieline is: a dash pattern restarts at every element, and the template's
     // guide idiom IS a dashed line
-    const curvy = withPerfAux(gCaseLive, applyPerfPreset('open-front', gCaseLive, {enabled: true}));
+    const H = perfFrame(gCaseLive).H;
+    const curvy = withPerforation(gCaseLive, normalizePerf({enabled: true, radius: 14,
+      cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H],
+      panels: {back: {}, right: {transition: 'scurve'}, front: {}, left: {transition: 'scurve'}}
+    }, gCaseLive));
     const tplCurvy = buildArtworkSVG(curvy, 'mm');
     eq((tplCurvy.match(/<polyline/g) || []).length, 1, 'guide runs:');
     // it is lettered over the FRONT panel, which sits at a different girth
@@ -4113,7 +4127,7 @@ await (async () => {
     // PRINTED panel rather than whichever panel happens to sit at x3.
     for(const geo of [gCaseLive, gCartonLive]){
       const f = perfFrame(geo), front = geo.meta.artMap.faces.find(x => x.panel === 'front');
-      const tpl = buildArtworkSVG(withPerfAux(geo, applyPerfPreset('angled', geo, {enabled: true})), 'mm');
+      const tpl = buildArtworkSVG(withPerforation(geo, applyPerfPreset('angled', geo, {enabled: true})), 'mm');
       const m = tpl.match(/<text x="([\d.]+)"[^>]*>PERF — GUIDE/);
       if(!m) throw new Error(`${geo.meta.style}: guide label missing`);
       const mid = (front.u0 + front.u1)/2, margin = Math.max(geo.bbox.maxX, geo.bbox.maxY)*0.08 + 20;
@@ -4122,7 +4136,7 @@ await (async () => {
     }
   });
   t('template: the guide is not in the artwork, and the round trip is unchanged', () => {
-    const on = withPerfAux(gCaseLive, perfRound);
+    const on = withPerforation(gCaseLive, perfRound);
     // the art the app maps onto the pack is the uploaded image and nothing
     // else — no template furniture rides along with it
     const art = {...defaultFit(), src: 'data:image/png;base64,iVBORw0KGgo='};
@@ -4146,7 +4160,7 @@ await (async () => {
     ];
     for(const [id, geo] of others){
       eq(perfAux(geo, enabled), null, `${id} aux:`);
-      eq(withPerfAux(geo, enabled), geo, `${id} geometry must come back the SAME object:`);
+      eq(withPerforation(geo, enabled), geo, `${id} geometry must come back the SAME object:`);
       eq(auxLegendRows(geo).length, 0, `${id} legend rows:`);
     }
   });
@@ -4159,6 +4173,246 @@ await (async () => {
 
   build.project.tertiary.perf = {}; build.project.secondary.perf = {};
   build.recompute(build.getSelectedCandidateKey());
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ============ PERFORATION — display state, rigidity, BCT ==================
+ * Step 3 RENDERS the step-1 path and GATES a number on it. Nothing here may
+ * derive a height, a curve or a silhouette of its own, so the pins compare
+ * the rendered mesh against the path itself and the BCT text against the
+ * number the app produced before perf existed.
+ */
+await (async () => {
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+  const setPerf3 = (levelKey, presetId, state) => {
+    const geo = geoAt(levelKey === 'tertiary' ? 'case' : 'carton');
+    build.project[levelKey].perf = presetId
+      ? applyPerfPreset(presetId, geo, {enabled: true, state}) : {};
+    build.recompute(build.getSelectedCandidateKey());
+  };
+  /** Every vertex of a BufferGeometry as [x,y,z] triples. */
+  const verts = g => {
+    const a = g.getAttribute('position'), out = [];
+    for(let i = 0; i < a.count; i++) out.push([a.getX(i), a.getY(i), a.getZ(i)]);
+    return out;
+  };
+
+  setLevel('case'); el('tab2d').click(); await settle();
+  const gPlain = geoAt('case');
+
+  // THE DISPLAY BODY IS THE STEP-1 PATH, not a re-derivation. Every point of
+  // every panel's profile must appear as a vertex of the mesh — checked
+  // exactly, on a BOWED front and S-CURVED sides where any independently
+  // derived silhouette would land somewhere else. Mutation: building the wall
+  // top as a straight line between the two corner heights keeps the corners
+  // right and fails everywhere between them.
+  t('perf 3D: the display body is built from the drawn path, point for point', () => {
+    const H = perfFrame(gPlain).H;
+    const perf = normalizePerf({enabled: true, state: 'display', radius: 12,
+      cornerH: [0.8*H, 0.8*H, 0.35*H, 0.35*H],
+      panels: {back: {}, right: {transition: 'scurve'}, front: {bow: -0.12*H}, left: {transition: 'stepped', steps: 4}}
+    }, gPlain);
+    const geo = withPerforation(gPlain, perf);
+    const mesh = perfBodyGeometry(geo);
+    if(!mesh) throw new Error('no display body built');
+    const V = verts(mesh), sec = geo.meta.artMap.section, yBody = -geo.inner.H/2;
+    let checked = 0;
+    for(const p of geo.perf.path.panels){
+      const a = sec[p.fromCorner], b = sec[p.toCorner];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const d = [(b[0] - a[0])/len, (b[1] - a[1])/len];
+      for(const [s, h] of p.pts){
+        const x = a[0] + d[0]*s, z = a[1] + d[1]*s, y = yBody + h;
+        // the wall has thickness, so the point exists on the inner face and
+        // again t outward; either is proof the mesh went through it
+        const hit = V.some(v => Math.abs(v[1] - y) < 1e-4 &&
+          Math.hypot(v[0] - x, v[2] - z) < (geo.outer.L - geo.inner.L)/2 + 1e-3);
+        if(!hit) throw new Error(`${p.name}: profile point (${s.toFixed(2)}, ${h.toFixed(2)}) is not on the mesh`);
+        checked++;
+      }
+    }
+    if(checked < 30) throw new Error(`only ${checked} profile points — the fixture is too simple to discriminate`);
+  });
+
+  // ...and it follows the BUILDER'S chord tolerance, which is the same pin the
+  // DXF side leans on. A 3D that re-polygonised would not move with it.
+  t('perf 3D: the silhouette follows the builder\'s chord tolerance', () => {
+    const H = perfFrame(gPlain).H;
+    const mk = tol => {
+      const perf = normalizePerf({enabled: true, state: 'display', radius: 14,
+        cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H],
+        panels: {back: {}, right: {transition: 'scurve'}, front: {}, left: {transition: 'scurve'}}
+      }, gPlain);
+      return withPerforation(gPlain, perf, {chordTol: tol});
+    };
+    const fine = perfBodyGeometry(mk(0.02)), coarse = perfBodyGeometry(mk(1.2));
+    const nf = fine.getAttribute('position').count, nc = coarse.getAttribute('position').count;
+    if(!(nf > nc*1.5))
+      throw new Error(`3D is not following the tolerance: ${nf} vertices at 0.02 mm, ${nc} at 1.2 mm`);
+    // and each one carries exactly the points its own path has
+    eq(nf > 0 && nc > 0, true, 'both built:');
+  });
+
+  // RIGIDITY. Trimming `geo.crease` must not unhinge the corner: the crease
+  // array answers "what rule does the diemaker set", and fold topology is
+  // built independently from inner dims and meta. Pinned on the RENDERED fold
+  // scene — same hinge count, same hinge positions, with and without the
+  // perforation — and on the closed body being ONE continuous shell.
+  // Mutation: using the display body in shipping state, or splitting a wall at
+  // cornerH, fails both halves.
+  // RIGIDITY, pinned at the SOURCE of fold topology rather than at a view.
+  // `geo.crease` answers "what rule does the diemaker set"; what rotates about
+  // what is answered independently by render/folds/*.js from inner dims and
+  // meta. Shortening a crease must therefore change nothing about the erected
+  // pack — the corner above cornerH stays rigid in shipping state — and the
+  // way to hold that is to drive the fold builders with a perforated geometry
+  // and an unperforated one and compare every hinge and every wall.
+  // Mutation: having a builder read geo.crease to place its walls or hinges
+  // fails immediately; so does splitting a wall at cornerH.
+  const foldSig = geo => {
+    const rec = [];
+    const ctx = {
+      t: 1, kraft: null, kraft2: null,
+      makeFlap: (hinge, axis, closedAngle) => {
+        rec.push(`FLAP ${hinge.map(v => v.toFixed(3)).join(',')} ${axis} ${closedAngle.toFixed(4)}`);
+        const g = new THREE.Group(); g.userData = {axis, closedAngle, phase: 0}; return g;
+      },
+      makeTextMaterial: () => null
+    };
+    const built = foldBuilders[geo.meta.style](geo, '', {}, ctx);
+    for(const part of built.parts){
+      const p = part.geometry && part.geometry.parameters || {};
+      rec.push(`PART ${part.position.toArray().map(v => v.toFixed(3)).join(',')} ` +
+               `${[p.width, p.height, p.depth].map(v => (v || 0).toFixed(3)).join('x')}`);
+    }
+    return rec.sort().join(' | ');
+  };
+  t('perf: the perforation changes no hinge and no wall of the erected pack', () => {
+    // BOTH levels use a preset that really trims — measured: with a preset that
+    // trims nothing on the case, a mutation making fefco201's fold builder read
+    // geo.crease for its wall height passed, because that level's creases were
+    // never touched. A rigidity pin whose fixture leaves the crease intact is
+    // not a rigidity pin.
+    for(const [lvl, key, preset] of [['case', 'tertiary', 'open-front'], ['carton', 'secondary', 'open-front']]){
+      setPerf3(key, null, 'closed');
+      const plain = geoAt(lvl), sigPlain = foldSig(plain);
+      setPerf3(key, preset, 'closed');
+      const ship = geoAt(lvl);
+      if(JSON.stringify(ship.crease) === JSON.stringify(plain.crease))
+        throw new Error(`${lvl}: the fixture did not trim a crease, so rigidity is untested`);
+      eq(foldSig(ship), sigPlain, `${lvl} shipping topology:`);
+      setPerf3(key, preset, 'display');
+      eq(foldSig(geoAt(lvl)), sigPlain, `${lvl} display topology (the BLANK is the same blank):`);
+      setPerf3(key, null, 'closed');
+    }
+    if(!foldSig(geoAt('case'))) throw new Error('the fold builders produced nothing to compare');
+  });
+  t('perf 3D: the shipping body is intact, with the tear as a surface line', () => {
+    setPerf3('tertiary', 'angled', 'closed');            // this pin's own precondition
+    const geo = geoAt('case');
+    eq(isDisplayGeo(geo), false, 'shipping is not a display geometry:');
+    // the body is the closed shell, not the profiled one
+    if(perfBodyGeometry(geo) === null) throw new Error('the path is missing entirely');
+    const line = perfLineGeometry(geo);
+    if(!line) throw new Error('no surface line for a shipping perforation');
+    // the line rides OUTSIDE the wall, so it can never read as a gap
+    const t0 = (geo.outer.L - geo.inner.L)/2;
+    const V = verts(line);
+    const maxX = Math.max(...V.map(v => Math.abs(v[0])));
+    if(!(maxX > geo.inner.L/2 + t0*0.9))
+      throw new Error(`the line sits inside the board: ${maxX} vs wall at ${geo.inner.L/2 + t0}`);
+    setPerf3('tertiary', null, 'closed');
+  });
+
+  // BCT GATING. Display suppresses the number and says why; shipping is
+  // bit-identical to what the app produced before perf touched anything.
+  const bctText = () => el('bctRatio').textContent + ' | ' + el('bctVal').textContent;
+  setPerf3('tertiary', null, 'closed'); await settle();
+  const bctPlain = bctText();
+  setPerf3('tertiary', 'angled', 'closed'); await settle();
+  const bctShip = bctText();
+  setPerf3('tertiary', 'angled', 'display'); await settle();
+  const bctDisp = el('bctRatio').textContent, bctNote = el('bctNote').textContent;
+  t('perf BCT: display state reports not applicable, and says why', () => {
+    if(!/not applicable/i.test(bctDisp)) throw new Error(`expected a refusal, got "${bctDisp}"`);
+    if(/\d\s*:\s*1/.test(bctDisp)) throw new Error('a ratio survived into display state');
+    if(!/McKee/.test(bctNote)) throw new Error('the refusal does not say why');
+    if(!/closed box/.test(bctNote)) throw new Error('the refusal does not name the assumption it breaks');
+    eq(el('bctVal').textContent, '--', 'the BCT value is cleared too:');
+  });
+  t('perf BCT: shipping state is unchanged by the perforation', () => {
+    eq(bctShip, bctPlain, 'shipping BCT:');
+    if(!/\d+\.\d+ : 1/.test(bctShip)) throw new Error(`the fixture produced no baseline ratio: "${bctShip}"`);
+  });
+
+  // THE WIRING, read off the SCENE. Calling the builder proves the builder
+  // works and nothing about whether the app calls it — measured: mutations
+  // that made the hierarchy shell and the shelf facings both ignore display
+  // state passed a pin written that way. These count the tagged geometry that
+  // is actually in the rendered tree.
+  // VISIBLE ones only. The pivot holds every view's group at once and toggles
+  // visibility, so an unscoped count sees the 3D tab's leftovers while the
+  // shelf is on screen — which is how this pin first reported a torn facing
+  // that was not on screen at all.
+  const visible = o => { for(let n = o; n; n = n.parent) if(!n.visible) return false; return true; };
+  const displayMeshes = () => {
+    let n = 0;
+    getPivot().traverse(o => {
+      if(o.geometry && o.geometry.userData && o.geometry.userData.perfDisplay && visible(o)) n++;
+    });
+    return n;
+  };
+  setPerf3('tertiary', 'angled', 'display'); await settle();
+  el('tab3d').click(); await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+  const hierDisplay = displayMeshes();
+  setPerf3('tertiary', 'angled', 'closed'); await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+  const hierShipping = displayMeshes();
+  t('perf 3D: the hierarchy renders the display body, and only in display state', () => {
+    if(hierDisplay < 1) throw new Error('display state rendered no torn body');
+    eq(hierShipping, 0, 'shipping state must render none:');
+  });
+
+  // The SHELF renders display state when the container is set to it.
+  setPerf3('tertiary', null, 'closed');
+  setPerf3('secondary', 'angled', 'display'); await settle();
+  el('tabShelf').click(); await settle();
+  await waitFrames(() => displayMeshes() > 0);
+  const shelfDisplay = displayMeshes();
+  setPerf3('secondary', 'angled', 'closed'); await settle();
+  await waitFrames(() => displayMeshes() === 0);
+  const shelfShipping = displayMeshes();
+  t('perf 3D: the shelf shows the pack in display state', () => {
+    if(shelfDisplay < 1) throw new Error('the shelf drew no torn facings in display state');
+    eq(shelfShipping, 0, 'shipping facings must be intact:');
+  });
+  t('perf 3D: the torn facing is the retained pack, not a full-height one', () => {
+    setPerf3('secondary', 'angled', 'display');
+    const carton = geoAt('carton');
+    eq(isDisplayGeo(carton), true, 'the sellable pack is in display state:');
+    const body = perfBodyGeometry(carton);
+    if(!body) throw new Error('no display body for the shelf pack');
+    const topY = Math.max(...verts(body).map(v => v[1]));
+    const full = carton.outer.H/2;
+    if(!(topY < full - 1))
+      throw new Error(`the shelf pack still reaches full height: ${topY.toFixed(2)} vs ${full.toFixed(2)}`);
+    approx(topY, -carton.inner.H/2 + Math.max(...carton.perf.path.cornerH), 'retained height:', 0.01);
+    setPerf3('secondary', null, 'closed');
+  });
+
+  // Perf OFF: no display body, no line, and the BCT is the plain number.
+  setPerf3('secondary', null, 'closed'); setPerf3('tertiary', null, 'closed'); await settle();
+  t('perf 3D: with no perforation there is no display body and no line', () => {
+    for(const lvl of ['case', 'carton']){
+      const g = geoAt(lvl);
+      eq(g.perf, undefined, `${lvl} carries no perf:`);
+      eq(perfBodyGeometry(g), null, `${lvl} display body:`);
+      eq(perfLineGeometry(g), null, `${lvl} surface line:`);
+      eq(isDisplayGeo(g), false, `${lvl} display gate:`);
+    }
+  });
+
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

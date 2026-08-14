@@ -17,6 +17,8 @@
 import {getPivot, setCamSpan, kraft, onFrame} from './fold3d.js';
 import {packArtGeometry, packArtMaterials} from './artwork3d.js';
 import {buildSellableCutaway, closedWrapParts, orientQuat} from './hierarchy3d.js';
+import {perfBodyGeometry, perfSurfaceLine} from './perf3d.js';
+import {isDisplayGeo} from '../core/perf.js';
 
 /* BAYS. One bay is the normal shelf; compare mode builds two identical ones
  * side by side. Keyed by id so a rebuild of one never disposes the other's
@@ -211,7 +213,24 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
       }
     }else{
       let pgeo, pmat, rot = false;
-      if(printed){
+      // DISPLAY STATE on the shelf: the facings are the torn pack, not the
+      // closed one — that is the whole point of a shelf-ready design, and it
+      // is what the shopper sees. Built from the same path as the dieline, in
+      // the same canonical frame the art tube uses, so the front-face and
+      // rotate controls apply unchanged.
+      const displayGeo = opts.packGeo && isDisplayGeo(opts.packGeo) ? opts.packGeo : null;
+      const displayBody = displayGeo ? perfBodyGeometry(displayGeo) : null;
+      if(displayBody){
+        pgeo = displayBody;
+        if(printed){
+          const mats = packArtMaterials(art.canvas, kraft);
+          shelfArtMat = mats[0]; bay.artMat = shelfArtMat;
+          pmat = mats;
+        }else{
+          pmat = [packMats, packMats];
+        }
+        rot = true;                                // same +Z-front frame as the art tube
+      }else if(printed){
         // printed pack: the shared closed art body. packArtGeometry's FRONT is
         // +Z; the shelf's front (frontMat) is local -Z, so rotate each pack 180°
         // about the vertical to match — then the group's own 180° (below) carries

@@ -13,6 +13,7 @@ import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {auxLegendRows} from '../render/auxlayers.js';
+import {isDisplayGeo} from '../core/perf.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
@@ -519,6 +520,21 @@ function clearBCT(){
 }
 function renderBCT(g, stats){
   const st = build.project.pallet.stacking || {};
+  // McKee ASSUMES A CLOSED BOX. A container in display state has no lid and a
+  // profiled front, so the formula does not describe it — and a plausible
+  // wrong stacking number is worse than none, because nobody re-checks a
+  // number that looked reasonable. No derate, no interpolation, no invented
+  // display-state formula: the number is suppressed and says why.
+  if(isDisplayGeo(g)){
+    clearBCT();
+    el('bctRatio').textContent = 'not applicable — display state';
+    el('bctRatio').style.color = 'var(--ink-3)';
+    el('bctNote').innerHTML = '<strong>Not applicable.</strong> McKee assumes a closed box. ' +
+      'This container is perforated for display, so it has no lid and no continuous front panel. ' +
+      'Set the perforation back to shipping state for a stacking estimate.';
+    el('bctNote').style.color = 'var(--ink-3)';
+    return;
+  }
   // the load-bearing bottom box is the OUTERMOST tier on the pallet — the case
   // normally, the carton once the case is disabled (project.tertiary is then
   // off, so reading it would misjudge the style). Identical for the default
@@ -725,7 +741,10 @@ function refreshShelf(){
   // axis, the axis alone says nothing about which of that axis's two faces is
   // the display face. Sending only the orientation is what pointed a wrapped
   // tray's open top at the back wall.
-  const shelfOpts = {frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+  // the sellable pack's RESOLVED geometry travels with the fill, so a shelf
+  // renders display state when that container is set to it — one source, the
+  // same object the dieline and the DXF read.
+  const shelfOpts = {frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace, packGeo: fill.geo,
     ...(shelf.cutaway ? {cutaway: true, bundle, noun: fill.noun} : {}),
     ...(fill.artOnBody ? {wrapBundle: bundle} : {})};
   buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, shelfOpts);
@@ -778,7 +797,7 @@ function refreshCompare(){
       ? (id === 'A' ? hierarchyBundle() : hierarchyBundle(compare.project, fill.row))
       : null;
     buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, {
-      frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+      frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace, packGeo: fill.geo,
       ...(fill.artOnBody ? {wrapBundle: bundle} : {}),
       bayId: id, offsetX, label, camSpan: span
     });

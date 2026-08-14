@@ -11,6 +11,9 @@
  *  dimension the packer or exporter sees — that math uses raw caliper. */
 const RENDER_MIN_THICKNESS = 0.6; // mm
 
+import {perfDisplayBody, perfSurfaceLine} from './perf3d.js';
+import {isDisplayGeo} from '../core/perf.js';
+
 let renderer, scene, camera, pivot, boxGroup, raf, folding = false, foldT = 0;
 let dragging = false, lastX = 0, lastY = 0, rotX = -0.5, rotY = 0.7, dist = 1;
 let camSpan = 250;
@@ -269,14 +272,30 @@ export function buildBox(build, geo, printText, options){
   // Skipped entirely for an OPEN structure: its erected panels stay the form.
   boxClosedParts = [];
   if(!openStructure){
-    const rr = Math.min(t*1.6, Math.min(L, W, H)*0.1);
-    const shell = new THREE.Mesh(roundedBoxGeo(L + t, H + t, W + t, rr, 3), kraft);
-    shell.position.y = H/2;
-    boxClosedParts.push(shell);
-    const decal = new THREE.Mesh(new THREE.PlaneGeometry(L*0.92, H*0.92), makeTextMaterial(L, H, true, printText));
-    decal.position.set(0, H/2, (W + t)/2 + Math.max(t*0.1, 0.25));
-    boxClosedParts.push(decal);
-    (built.closedExtras || []).forEach(o => boxClosedParts.push(o));
+    // A pack in DISPLAY state does not fold up into a closed carton: the fold
+    // sequence still shows it being erected, and what it lands on is the torn
+    // body — walls carrying the SAME profile the dieline drew. The rounded
+    // shell and its print decal belong to the closed pack, so neither is
+    // built. The style's own closedExtras (flap seams on a lid that is no
+    // longer there) go with them.
+    const display = isDisplayGeo(geo) ? perfDisplayBody(geo, kraft) : null;
+    if(display){
+      display.position.y = H/2;                 // boxGroup sits at -H/2; centre it back
+      boxClosedParts.push(display);
+    }else{
+      const rr = Math.min(t*1.6, Math.min(L, W, H)*0.1);
+      const shell = new THREE.Mesh(roundedBoxGeo(L + t, H + t, W + t, rr, 3), kraft);
+      shell.position.y = H/2;
+      boxClosedParts.push(shell);
+      const decal = new THREE.Mesh(new THREE.PlaneGeometry(L*0.92, H*0.92), makeTextMaterial(L, H, true, printText));
+      decal.position.set(0, H/2, (W + t)/2 + Math.max(t*0.1, 0.25));
+      boxClosedParts.push(decal);
+      (built.closedExtras || []).forEach(o => boxClosedParts.push(o));
+      // SHIPPING state with a perforation: the closed pack carries the tear as
+      // a surface line — a line, not a cut, not a gap.
+      const line = geo.perf ? perfSurfaceLine(geo) : null;
+      if(line){ line.position.y = H/2; boxClosedParts.push(line); }
+    }
     boxClosedParts.forEach(o => {o.visible = false; boxGroup.add(o);});
   }
 

@@ -13,7 +13,7 @@ import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
 import {materialCost} from './cost.js';
 import {styleById} from './styles/index.js';
-import {withPerfAux} from './perf.js';
+import {withPerforation} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 
 /**
@@ -922,15 +922,17 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   }, project.cost);
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
-  // The perforation rides the geometry as `aux`, attached HERE and nowhere
-  // else: levelGeometry() reads row.geo, so the 2D dieline, the DXF and the
-  // artwork template are three readers of one decorated object rather than
-  // three places that each remember to ask perf.js. withPerfAux returns the
-  // SAME geometry when the level is unperforated, so an unperforated blank is
-  // untouched — not a copy that merely compares equal.
+  // The perforation is RESOLVED onto the geometry HERE and nowhere else:
+  // levelGeometry() reads row.geo, so the 2D dieline, the DXF, the artwork
+  // template and the 3D are four readers of one decorated object rather than
+  // four places that each remember to ask perf.js. It carries the PERF layer,
+  // the SHORTENED creases (never two rules at one coordinate) and the path
+  // itself. withPerforation returns the SAME geometry when the level is
+  // unperforated, so an unperforated blank is untouched — not a copy that
+  // merely compares equal.
   row.geo = {
-    case:   withPerfAux(caseGeo,   project.tertiary && project.tertiary.perf),
-    carton: withPerfAux(cartonGeo, project.secondary && project.secondary.perf),
+    case:   withPerforation(caseGeo,   project.tertiary && project.tertiary.perf),
+    carton: withPerforation(cartonGeo, project.secondary && project.secondary.perf),
     wrap:   primaryResult ? primaryResult.geo : null
   };
   // The immediate child-unit placements inside the carton, and the collation

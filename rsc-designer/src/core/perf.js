@@ -96,6 +96,18 @@ export const PERF_MIN_ARC_SEGMENTS = 4;
  *  a thousand risers. */
 export const PERF_STEP_RANGE = Object.freeze({min: 2, max: 24});
 
+/** The lip a tear leaves above the panel's base crease, mm.
+ *
+ *  A tear ON that crease would need the edge to FOLD during erection and
+ *  SEPARATE at point of sale. It cannot do both, and a diemaker handed a
+ *  crease and a perf at one coordinate has to guess which to set — ambiguous
+ *  output is the defect, not the overlap. So the tear is forbidden from
+ *  reaching either body crease by a clamp, not by a render-time nudge:
+ *  `cornerH` is held inside [minRetainedH, H - minRetainedH], and `removed`
+ *  means the tear runs at `minRetainedH`, leaving a lip. That is what real
+ *  packs do anyway — a zero-height wall gives the tear no material to run in. */
+export const PERF_MIN_RETAINED_DEFAULT = 3;
+
 /** Perforation specification — the cut/tie pattern of the rule itself. It is
  *  metadata (the line is drawn as a line; the DXF PERF layer carries the
  *  DASHED linetype), carried here so one number reaches the spec sheet. */
@@ -200,8 +212,13 @@ export function normalizePerf(perfIn, geo){
   const f = perfFrame(geo);
   const H = f ? f.H : 0;
 
+  // the lip, first: it bounds every other height. Capped at 0.4 H so the two
+  // bounds it creates can never cross on a shallow container.
+  const minRetainedH = f ? clamp(num(p.minRetainedH, PERF_MIN_RETAINED_DEFAULT), 0, H*0.4) : 0;
+  const loH = minRetainedH, hiH = H - minRetainedH;
+
   const cornerIn = Array.isArray(p.cornerH) ? p.cornerH : [];
-  const cornerH = [0, 1, 2, 3].map(i => clamp(num(cornerIn[i], H*0.40), 0, H));
+  const cornerH = [0, 1, 2, 3].map(i => clamp(num(cornerIn[i], H*0.40), loH, hiH));
 
   // a fillet can be no larger than half the shortest thing it has to sit in
   const radius = f ? clamp(num(p.radius, 0), 0, Math.min(H, f.minWidth)/2) : 0;
@@ -224,7 +241,7 @@ export function normalizePerf(perfIn, geo){
     // the profile is base + bow·4t(1−t); base never leaves [min(hA,hB),
     // max(hA,hB)] and 4t(1−t) never exceeds 1, so this bound keeps the whole
     // curve inside the panel without having to evaluate it.
-    const bow = clamp(num(src.bow, 0), -Math.min(hA, hB), H - Math.max(hA, hB));
+    const bow = clamp(num(src.bow, 0), loH - Math.min(hA, hB), hiH - Math.max(hA, hB));
     const steps = clamp(Math.round(num(src.steps, 3)), PERF_STEP_RANGE.min, PERF_STEP_RANGE.max);
     panels[name] = {mode, flatA, flatB, transition, bow, steps};
   }
@@ -238,7 +255,7 @@ export function normalizePerf(perfIn, geo){
   return {
     enabled: !!p.enabled,
     state: PERF_STATES.includes(p.state) ? p.state : 'closed',
-    cornerH, radius, panels, spec
+    minRetainedH, cornerH, radius, panels, spec
   };
 }
 
@@ -303,9 +320,13 @@ function dropCollinear(pts){
  * corner to `width` at its end corner, h above the body's bottom crease.
  * The two corner heights are inputs, never derived here.
  */
-function profilePoints(spec, hA, hB, width, H, tol){
+function profilePoints(spec, hA, hB, width, H, tol, minH){
+  // `full` rides the TOP crease and `removed` the lip: both are the boundary
+  // of the retained region, which is what the 3D reads. Whether either run is
+  // a RULE the diemaker sets is a separate question, answered where the edges
+  // are emitted — a full panel's top run is the existing crease, not a perf.
   if(spec.mode === 'full')    return dedupe([[0, hA], [0, H], [width, H], [width, hB]]);
-  if(spec.mode === 'removed') return dedupe([[0, hA], [0, 0], [width, 0], [width, hB]]);
+  if(spec.mode === 'removed') return dedupe([[0, hA], [0, minH], [width, minH], [width, hB]]);
 
   const s0 = spec.flatA, s1 = width - spec.flatB, span = s1 - s0;
   const pts = [[0, hA]];
@@ -460,7 +481,7 @@ export function buildPerfPath(geo, perfIn, opts){
   const panels = f.panels.map(fp => {
     const spec = perf.panels[fp.name];
     const hA = perf.cornerH[fp.fromCorner], hB = perf.cornerH[fp.toCorner];
-    const raw = profilePoints(spec, hA, hB, fp.width, H, tol);
+    const raw = profilePoints(spec, hA, hB, fp.width, H, tol, perf.minRetainedH);
     const pts = dropCollinear(filletPolyline(raw, perf.radius, tol));
     return {
       name: fp.name, index: fp.index, face: fp.face, mode: spec.mode,
@@ -492,21 +513,106 @@ export function buildPerfPath(geo, perfIn, opts){
       const s0 = p.pts[i], s1 = p.pts[i + 1];
       const vertical = Math.abs(a[0] - b[0]) <= EPS;
       const horizontal = Math.abs(a[1] - b[1]) <= EPS;
-      const onCrease = (vertical && (Math.abs(s0[0]) <= EPS || Math.abs(s0[0] - p.width) <= EPS))
-                    || (horizontal && (Math.abs(s0[1]) <= EPS || Math.abs(s0[1] - H) <= EPS));
-      edges.push({panel: p.name, a, b, onFold: onCrease});
+      // A HORIZONTAL RUN ON A BODY CREASE IS NOT A PERFORATION. A `full`
+      // panel's top run IS the top crease, where the closure flaps fold: the
+      // panel is retained whole, so nothing tears across it and the only real
+      // rules it contributes are the two risers that release its neighbours.
+      // Emitting a perf there would hand the diemaker two rules at one
+      // coordinate — the defect this whole resolution exists to prevent. The
+      // point stays on `panels[].pts`, which is the retained region's
+      // BOUNDARY and what the 3D reads; only the RULE is withheld.
+      const onBodyCrease = horizontal && (Math.abs(s0[1]) <= EPS || Math.abs(s0[1] - H) <= EPS);
+      if(onBodyCrease) continue;
+      // a vertical run rides a panel fold. That one is resolved the other
+      // way — the crease is SHORTENED (see trimCreases) — because above it
+      // the two panels genuinely have to separate.
+      const onFold = vertical && (Math.abs(s0[0]) <= EPS || Math.abs(s0[0] - p.width) <= EPS);
+      edges.push({panel: p.name, a, b, onFold});
       tearLength += dist(a, b);
     }
   }
 
   return {
     H, radius: perf.radius, state: perf.state, spec: perf.spec,
+    minRetainedH: perf.minRetainedH,
     chordTol: tol,
     cornerH: perf.cornerH.slice(),
     panels, flap, edges,
     segments: edges.map(e => [e.a[0], e.a[1], e.b[0], e.b[1]]),
     tearLength
   };
+}
+
+/* ------------------------------------------------- crease resolution --- */
+
+/** Subtract a set of 1D cut spans from a 1D span, returning what survives. */
+function subtractSpans(a, b, cuts, eps){
+  let spans = [[Math.min(a, b), Math.max(a, b)]];
+  for(const [c0, c1] of cuts){
+    const next = [];
+    for(const [lo, hi] of spans){
+      if(c1 <= lo + eps || c0 >= hi - eps){ next.push([lo, hi]); continue; }
+      if(c0 > lo + eps) next.push([lo, c0]);
+      if(c1 < hi - eps) next.push([c1, hi]);
+    }
+    spans = next;
+  }
+  return spans.filter(([lo, hi]) => hi - lo > eps);
+}
+
+/**
+ * THE RULING: never two rules at one coordinate.
+ *
+ * A diemaker handed a CREASE and a PERF at the same place has to guess which
+ * to set, and ambiguous output is the defect — the overlap is only how it
+ * shows up. Two cases, two resolutions, and this is the second one.
+ *
+ * Where the tear runs VERTICALLY along a girth corner, the crease is
+ * SHORTENED to the span the perf does not occupy. That is not a drawing
+ * convenience: over that span the two panels genuinely have to separate (a
+ * full side beside a profiled front is retained on one side of the fold and
+ * removed on the other), and a creasing rule there would be wrong. Below it —
+ * or above it, when a panel is removed and its lip stays — both sides are
+ * retained together and the fold is required, so the crease stays.
+ *
+ * The rule is read off the PATH, never off the mode: whatever vertical run
+ * the path contains is what the crease gives up. `full` beside `profiled`
+ * yields crease-below/perf-above, `removed` yields crease/perf/crease, and a
+ * plain profiled girth yields no vertical run at all and no trimming — which
+ * is right, because there the tear passes straight through the corner and the
+ * lid above it is still a tube that had to fold.
+ *
+ * Horizontal creases are handled too, for completeness; the write-time
+ * `minRetainedH` clamp means a tear can no longer reach one.
+ */
+export function trimCreases(crease, edges, eps = 1e-6){
+  if(!Array.isArray(crease) || !crease.length || !edges || !edges.length) return crease;
+  const vert = [], horz = [];
+  for(const e of edges){
+    if(Math.abs(e.a[0] - e.b[0]) <= eps) vert.push(e);
+    else if(Math.abs(e.a[1] - e.b[1]) <= eps) horz.push(e);
+  }
+  const out = [];
+  let changed = false;
+  for(const c of crease){
+    const isVert = Math.abs(c[0] - c[2]) <= eps;
+    const isHorz = Math.abs(c[1] - c[3]) <= eps;
+    // an oblique crease has no oblique perf to collide with in this model
+    if(!isVert && !isHorz){ out.push(c); continue; }
+    const along = isVert ? 1 : 0;                    // the axis the crease runs on
+    const across = isVert ? 0 : 1;                   // the axis it sits at
+    const cuts = (isVert ? vert : horz)
+      .filter(e => Math.abs(e.a[across] - c[across]) <= eps)
+      .map(e => [Math.min(e.a[along], e.b[along]), Math.max(e.a[along], e.b[along])]);
+    if(!cuts.length){ out.push(c); continue; }
+    const spans = subtractSpans(c[along], c[along + 2], cuts, eps);
+    if(spans.length === 1 && Math.abs(spans[0][0] - Math.min(c[along], c[along + 2])) <= eps
+       && Math.abs(spans[0][1] - Math.max(c[along], c[along + 2])) <= eps){ out.push(c); continue; }
+    changed = true;
+    for(const [lo, hi] of spans)
+      out.push(isVert ? [c[0], lo, c[0], hi] : [lo, c[1], hi, c[1]]);
+  }
+  return changed ? out : crease;
 }
 
 /** The `geo.aux` contribution — the hook export/dxf.js already consumes and
@@ -518,13 +624,26 @@ export function perfAux(geo, perf, opts){
   return path && path.segments.length ? {PERF: path.segments} : null;
 }
 
-/** A geometry with its level's perforation attached as `aux`. The SAME object
- *  back when there is no perforation, so a geometry that has never been
- *  perforated is untouched — not a copy that merely compares equal. */
-export function withPerfAux(geo, perf, opts){
-  const aux = geo ? perfAux(geo, perf, opts) : null;
-  return aux ? {...geo, aux: {...(geo.aux || {}), ...aux}} : geo;
+/**
+ * A geometry with its level's perforation RESOLVED onto it: the PERF layer in
+ * `aux`, the coincident crease spans given up, and the path itself on
+ * `geo.perf` so the 3D reads the same points the 2D drew rather than deriving
+ * its own. The SAME object back when there is no perforation, so a geometry
+ * that has never been perforated is untouched — not a copy that compares equal.
+ */
+export function withPerforation(geo, perf, opts){
+  const path = geo ? buildPerfPath(geo, perf, opts) : null;
+  if(!path || !path.segments.length) return geo;
+  return {
+    ...geo,
+    crease: trimCreases(geo.crease, path.edges),
+    aux: {...(geo.aux || {}), PERF: path.segments},
+    perf: {state: path.state, spec: path.spec, minRetainedH: path.minRetainedH, path}
+  };
 }
+
+/** True when this geometry should RENDER as opened for display. */
+export const isDisplayGeo = geo => !!(geo && geo.perf && geo.perf.state === 'display');
 
 /* -------------------------------------------------------------- presets --- */
 

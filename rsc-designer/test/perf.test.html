@@ -18,7 +18,7 @@ import {
   PERF_PRESETS, PERF_SPEC_DEFAULT,
   perfFrame, canPerforate, perfUnavailableReason, defaultPerf, normalizePerf,
   buildPerfPath, perfAux, filletPolyline, applyPerfPreset, isDisplayState,
-  perfSpecLabel
+  perfSpecLabel, withPerforation, trimCreases, isDisplayGeo
 } from '../src/core/perf.js';
 import {fefco201} from '../src/core/styles/fefco201.js';
 import {a6120} from '../src/core/styles/a6120.js';
@@ -255,26 +255,44 @@ t('edges are emitted as one contiguous chain across the blank', () => {
   }
 });
 
-// A flap whose corner sits ON a body crease needs no perforation, and gets
-// none: the flap is attached to the panel at that corner, so if that panel is
-// retained whole the flap stays with it, and if it tears away the flap goes
-// with it. Falls out of clipping the run to the cut outline — there is no
-// crossing to find at the extreme — rather than from a special case.
-t('a flap at the very top or bottom of the body carries no tear', () => {
+// THE MIN-RETAINED CLAMP, at WRITE time. A corner written at the very top or
+// bottom comes back inside the lip, so no tear can ever land on a body crease
+// — the horizontal half of the no-coincident-rules ruling, enforced on the
+// STORED object rather than nudged at render time. Mutation: clamping cornerH
+// to [0,H] as before puts the tear on the crease and fails.
+t('cornerH is clamped inside the retained lip at write time', () => {
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    const p = normalizePerf({enabled: true, cornerH: [H*99, H, 0, -50]}, geo);
+    eq(p.minRetainedH, 3, `${id} default lip:`);
+    for(const h of p.cornerH)
+      ok(h >= 3 - 1e-9 && h <= H - 3 + 1e-9, `${id} cornerH ${h} outside [3, ${H - 3}]`);
+    // a written lip is honoured, and capped so its two bounds cannot cross
+    eq(normalizePerf({enabled: true, minRetainedH: 12}, geo).minRetainedH, 12, `${id} written lip:`);
+    const wild = normalizePerf({enabled: true, minRetainedH: H*10}, geo);
+    ok(wild.minRetainedH <= H*0.4 + 1e-9, `${id} lip capped: ${wild.minRetainedH}`);
+    ok(wild.cornerH.every(h => h >= wild.minRetainedH - 1e-9 && h <= H - wild.minRetainedH + 1e-9),
+       `${id} corners still inside a large lip`);
+  }
+});
+
+// `removed` leaves a LIP, not a zero-height wall: the tear runs minRetainedH
+// above the base crease. A tear ON that crease would need the edge to fold
+// during erection and separate at point of sale, and a zero-height wall gives
+// the tear no material to run in either. Mutation: running `removed` at 0
+// fails here and again in the no-coincident-rules pin.
+t('removed leaves a lip above the base, not a zero-height wall', () => {
   for(const [id, geo] of RIGID){
     const H = perfFrame(geo).H;
     const p = buildPerfPath(geo, onPerf(geo, {
       cornerH: [H, H, 0, 0], radius: 0,
-      panels: {back: {mode: 'full'}, right: {transition: 'scurve'},
-               front: {mode: 'removed'}, left: {transition: 'scurve'}}
+      panels: {back: {mode: 'full'}, right: {}, front: {mode: 'removed'}, left: {}}
     }));
-    eq(p.flap, null, `${id} flap at a crease:`);
-    ok(!p.edges.some(e => e.panel === 'joint'), `${id} no joint edge emitted`);
-    // and the rest of the path is still one chain
-    for(let i = 1; i < p.edges.length; i++){
-      near(p.edges[i].a[0], p.edges[i - 1].b[0], 1e-9, `${id} chain break at ${i}:`);
-      near(p.edges[i].a[1], p.edges[i - 1].b[1], 1e-9, `${id} chain break at ${i}:`);
-    }
+    const front = p.panels.find(x => x.name === 'front');
+    near(Math.min(...front.pts.map(v => v[1])), p.minRetainedH, 1e-9, `${id} lip height:`);
+    ok(front.pts.every(v => v[1] >= p.minRetainedH - 1e-9), `${id} nothing below the lip`);
+    // the flap still tears, because its corner is no longer on a crease
+    ok(p.flap, `${id} joint flap run present`);
   }
 });
 
@@ -351,14 +369,18 @@ t('bow is clamped to the headroom above the higher corner', () => {
   const hi = 0.7*H, lo = 0.2*H;
   const p = normalizePerf({enabled: true, cornerH: [hi, lo, lo, lo],
     panels: {back: {bow: 999}, right: {}, front: {}, left: {}}}, geo);
-  near(p.panels.back.bow, H - hi, 1e-9, 'bow up:');
+  // the ceiling is the LIP-bounded one, not H: a bow may no more reach the
+  // top crease than a corner may
+  near(p.panels.back.bow, H - p.minRetainedH - hi, 1e-9, 'bow up:');
   const q = normalizePerf({enabled: true, cornerH: [hi, lo, lo, lo],
     panels: {back: {bow: -999}, right: {}, front: {}, left: {}}}, geo);
-  near(q.panels.back.bow, -lo, 1e-9, 'bow down:');
-  // the resulting curve touches the ceiling and does not cross it
+  near(q.panels.back.bow, p.minRetainedH - lo, 1e-9, 'bow down:');
+  // the resulting curve touches that ceiling and does not cross it
   const path = buildPerfPath(geo, p);
   const back = path.panels.find(x => x.name === 'back');
-  ok(Math.max(...back.pts.map(v => v[1])) <= H + 1e-9, 'curve stays under the top');
+  ok(Math.max(...back.pts.map(v => v[1])) <= H - p.minRetainedH + 1e-9, 'curve stays under the lip');
+  ok(Math.min(...buildPerfPath(geo, q).panels.find(x => x.name === 'back').pts.map(v => v[1]))
+     >= p.minRetainedH - 1e-9, 'curve stays above the lip');
 });
 
 /* ================================================================= curves */
@@ -553,39 +575,30 @@ t('flats summing to the full width give a vertical step', () => {
 
 /* ================================================================== modes */
 
-// full / removed ride the body's own creases, and say so. `onFold` is the
-// fact the 2D and DXF consumers need in order to decide whether to REPLACE
-// the crease there — perf.js reports it rather than silently dropping the
-// segment, because a panel that tears away has to be perforated where it
-// meets its neighbour, not creased.
-t('full rides the top crease, removed the bottom, both flagged onFold', () => {
-  const geo = gCase, H = perfFrame(geo).H;
-  const path = buildPerfPath(geo, onPerf(geo, {
-    cornerH: [H, H, 0, 0], radius: 0,
-    panels: {back: {mode: 'full'}, right: {}, front: {mode: 'removed'}, left: {}}
-  }));
-  const back = path.panels.find(p => p.name === 'back');
-  const front = path.panels.find(p => p.name === 'front');
-  eq(back.pts.map(p => +p[1].toFixed(6)), [H, H].map(v => +v.toFixed(6)), 'full back sits at H:');
-  eq(front.pts.map(p => +p[1].toFixed(6)), [0, 0], 'removed front sits at 0:');
-  ok(path.edges.filter(e => e.panel === 'back').every(e => e.onFold), 'back edge on the top crease');
-  ok(path.edges.filter(e => e.panel === 'front').every(e => e.onFold), 'front edge on the bottom crease');
-  ok(path.edges.filter(e => e.panel === 'right').every(e => !e.onFold), 'the ramp is free of creases');
-});
-
-// With corners BELOW the top, a full panel has to climb to the crease and
-// back — two risers on the vertical folds, both flagged.
-t('a full panel between low corners climbs at the corners', () => {
+// A FULL PANEL'S TOP RUN IS THE TOP CREASE, so it is not a rule. The panel is
+// retained whole; nothing tears across it, and the only rules it contributes
+// are the two risers that release its neighbours. The point stays on
+// `panels[].pts` — the BOUNDARY of the retained region, which the 3D reads —
+// while the RULE is withheld. Mutation: emitting the top run puts a PERF and
+// a CREASE at one coordinate and fails the no-coincident-rules pin below.
+t('a full panel contributes risers, not a rule along the top crease', () => {
   const geo = gCase, H = perfFrame(geo).H;
   const path = buildPerfPath(geo, onPerf(geo, {
     cornerH: [0.4*H, 0.4*H, 0.4*H, 0.4*H], radius: 0,
     panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}
   }));
   const back = path.panels.find(p => p.name === 'back');
-  eq(back.pts.map(p => +p[1].toFixed(6)), [0.4*H, H, H, 0.4*H].map(v => +v.toFixed(6)), 'riser, top, riser:');
-  const risers = path.edges.filter(e => e.panel === 'back' && Math.abs(e.a[0] - e.b[0]) < 1e-9);
-  eq(risers.length, 2, 'riser count:');
-  ok(risers.every(e => e.onFold), 'risers sit on the vertical creases');
+  // the boundary climbs to the crease and back — that IS the retained shape
+  eq(back.pts.map(p => +p[1].toFixed(6)), [0.4*H, H, H, 0.4*H].map(v => +v.toFixed(6)), 'boundary:');
+  // ...but the rules are only the two risers
+  const edges = path.edges.filter(e => e.panel === 'back');
+  eq(edges.length, 2, 'rules on a full panel:');
+  ok(edges.every(e => Math.abs(e.a[0] - e.b[0]) < 1e-9), 'both vertical');
+  ok(edges.every(e => e.onFold), 'both on a panel fold');
+  for(const e of edges){
+    near(Math.min(e.a[1], e.b[1]) - back.v0, 0.4*H, 1e-9, 'riser starts at cornerH:');
+    near(Math.max(e.a[1], e.b[1]) - back.v0, H, 1e-9, 'riser ends at the top:');
+  }
 });
 
 /* ==================================================================== DXF */
@@ -638,6 +651,137 @@ t('every PERF coordinate is inside the blank bbox', () => {
   }
 });
 
+/* ==================================================== crease resolution */
+
+/** Do two axis-aligned segments overlap along their shared line? Length-zero
+ *  contact at a single point is not an overlap — two rules meeting end to end
+ *  is exactly what the split is supposed to produce. */
+function overlaps(p, q, eps = 1e-6){
+  const vert = a => Math.abs(a[0] - a[2]) <= eps, horz = a => Math.abs(a[1] - a[3]) <= eps;
+  if(vert(p) && vert(q)){
+    if(Math.abs(p[0] - q[0]) > eps) return false;
+    const lo = Math.max(Math.min(p[1], p[3]), Math.min(q[1], q[3]));
+    const hi = Math.min(Math.max(p[1], p[3]), Math.max(q[1], q[3]));
+    return hi - lo > eps;
+  }
+  if(horz(p) && horz(q)){
+    if(Math.abs(p[1] - q[1]) > eps) return false;
+    const lo = Math.max(Math.min(p[0], p[2]), Math.min(q[0], q[2]));
+    const hi = Math.min(Math.max(p[0], p[2]), Math.max(q[0], q[2]));
+    return hi - lo > eps;
+  }
+  return false;                                   // perpendicular: a crossing, not a coincidence
+}
+
+// THE PIN THE WHOLE RULING EXISTS FOR. A diemaker handed a CREASE and a PERF
+// at one coordinate has to guess which to set. Checked exhaustively — every
+// crease against every perf segment, on every style, at every preset, plus
+// the four modes in combination. Mutation: not trimming the crease fails on
+// the presets with a full or a removed panel; running `removed` at 0 fails on
+// the base crease.
+t('no CREASE and PERF segment ever share a coordinate', () => {
+  const cases = [
+    ...PERF_PRESETS.map(p => [p.id, geo => applyPerfPreset(p.id, geo, {enabled: true})]),
+    ['full+profiled', geo => onPerf(geo, {cornerH: [0.6, 0.6, 0.35, 0.35].map(k => k*perfFrame(geo).H),
+      panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}})],
+    ['removed+profiled', geo => onPerf(geo, {cornerH: [0.8, 0.8, 0.5, 0.5].map(k => k*perfFrame(geo).H),
+      panels: {back: {}, right: {}, front: {mode: 'removed'}, left: {}}})],
+    ['all removed but back', geo => onPerf(geo, {cornerH: [0.9, 0.9, 0.9, 0.9].map(k => k*perfFrame(geo).H),
+      panels: {back: {mode: 'full'}, right: {mode: 'removed'}, front: {mode: 'removed'}, left: {mode: 'removed'}}})],
+    ['everything full', geo => onPerf(geo, {cornerH: [0.5, 0.5, 0.5, 0.5].map(k => k*perfFrame(geo).H),
+      panels: {back: {mode: 'full'}, right: {mode: 'full'}, front: {mode: 'full'}, left: {mode: 'full'}}})]
+  ];
+  for(const [id, geo] of RIGID) for(const [name, mk] of cases){
+    const g = withPerforation(geo, mk(geo));
+    ok(g.aux && g.aux.PERF && g.aux.PERF.length, `${id}/${name}: no PERF emitted`);
+    for(const c of g.crease) for(const pf of g.aux.PERF)
+      if(overlaps(c, pf))
+        throw new Error(`${id}/${name}: CREASE ${JSON.stringify(c)} and PERF ${JSON.stringify(pf)} coincide`);
+  }
+});
+
+// THE SPLIT, stated precisely: a full side beside a profiled front. The corner
+// CREASE ends exactly at cornerH and the PERF continues from there to the top,
+// meeting at one point and overlapping nowhere. Anchored to the ORIGINAL
+// crease, so a trim that shortened the wrong end, or overshot, fails.
+t('the corner crease splits at cornerH, and the perf continues above it', () => {
+  for(const [id, geo] of RIGID){
+    const f = perfFrame(geo), H = f.H, hC = 0.45*H;
+    const perf = onPerf(geo, {cornerH: [hC, hC, hC, hC], radius: 0,
+      panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
+    const g = withPerforation(geo, perf);
+    const back = f.panels.find(p => p.name === 'back');
+    // the two corners the back panel meets its neighbours at
+    for(const x of [back.u0, back.u1]){
+      const before = geo.crease.filter(c => Math.abs(c[0] - x) <= 1e-9 && Math.abs(c[0] - c[2]) <= 1e-9);
+      const after  = g.crease.filter(c => Math.abs(c[0] - x) <= 1e-9 && Math.abs(c[0] - c[2]) <= 1e-9);
+      eq(before.length, 1, `${id} x=${x}: one crease before:`);
+      eq(after.length, 1, `${id} x=${x}: one crease after:`);
+      // full height before; base -> cornerH after
+      near(Math.min(...before.flatMap(c => [c[1], c[3]])), back.v0, 1e-9, `${id} crease base:`);
+      near(Math.max(...before.flatMap(c => [c[1], c[3]])), back.v0 + H, 1e-9, `${id} crease top before:`);
+      near(Math.max(...after.flatMap(c => [c[1], c[3]])), back.v0 + hC, 1e-9, `${id} crease top after:`);
+      near(Math.min(...after.flatMap(c => [c[1], c[3]])), back.v0, 1e-9, `${id} crease base kept:`);
+      // and the perf picks up exactly where the crease stopped
+      const riser = g.aux.PERF.filter(s => Math.abs(s[0] - x) <= 1e-9 && Math.abs(s[0] - s[2]) <= 1e-9);
+      eq(riser.length, 1, `${id} x=${x}: one riser:`);
+      near(Math.min(riser[0][1], riser[0][3]), back.v0 + hC, 1e-9, `${id} riser meets the crease:`);
+      near(Math.max(riser[0][1], riser[0][3]), back.v0 + H, 1e-9, `${id} riser reaches the top:`);
+    }
+    // the two corners with no separation keep their full-height crease
+    const front = f.panels.find(p => p.name === 'front');
+    for(const x of [front.u0, front.u1]){
+      const after = g.crease.filter(c => Math.abs(c[0] - x) <= 1e-9 && Math.abs(c[0] - c[2]) <= 1e-9);
+      near(Math.max(...after.flatMap(c => [c[1], c[3]])) - Math.min(...after.flatMap(c => [c[1], c[3]])), H, 1e-9,
+           `${id} untrimmed corner at ${x}:`);
+    }
+  }
+});
+
+// A removed panel splits its corner into TWO creases: the lip below stays
+// folded, the lid above is still a tube that had to fold, and only the span
+// between them separates. Mutation: trimming from cornerH to the base instead
+// of to the lip loses the lip's fold and fails.
+t('a removed panel leaves a crease below the lip and above cornerH', () => {
+  const geo = gCase, f = perfFrame(geo), H = f.H, hC = 0.7*H;
+  const perf = onPerf(geo, {cornerH: [hC, hC, hC, hC], radius: 0,
+    panels: {back: {}, right: {}, front: {mode: 'removed'}, left: {}}});
+  const g = withPerforation(geo, perf);
+  const front = f.panels.find(p => p.name === 'front');
+  for(const x of [front.u0, front.u1]){
+    const after = g.crease.filter(c => Math.abs(c[0] - x) <= 1e-9 && Math.abs(c[0] - c[2]) <= 1e-9)
+      .map(c => [Math.min(c[1], c[3]) - front.v0, Math.max(c[1], c[3]) - front.v0])
+      .sort((a, b) => a[0] - b[0]);
+    eq(after.length, 2, `x=${x}: two crease spans:`);
+    near(after[0][0], 0, 1e-9, 'lip crease starts at the base:');
+    near(after[0][1], perf.minRetainedH, 1e-9, 'lip crease ends at the lip:');
+    near(after[1][0], hC, 1e-9, 'lid crease starts at cornerH:');
+    near(after[1][1], H, 1e-9, 'lid crease reaches the top:');
+  }
+});
+
+// Perf OFF changes nothing about the die. Anchored to the style's own arrays.
+t('perf off leaves crease, cut and aux exactly as the style built them', () => {
+  for(const [id, geo] of RIGID){
+    const g = withPerforation(geo, defaultPerf(geo));
+    ok(g === geo, `${id} must be the SAME object back`);
+    eq(trimCreases(geo.crease, []), geo.crease, `${id} no edges, no trim:`);
+    ok(!isDisplayGeo(geo), `${id} unperforated is not a display geometry`);
+  }
+});
+
+// The state travels ON the geometry, so every renderer reads one source.
+t('the resolved geometry carries its state and its path', () => {
+  const geo = gCase;
+  const shipping = withPerforation(geo, onPerf(geo, {state: 'closed'}));
+  const display = withPerforation(geo, onPerf(geo, {state: 'display'}));
+  eq(shipping.perf.state, 'closed');
+  eq(display.perf.state, 'display');
+  ok(!isDisplayGeo(shipping) && isDisplayGeo(display), 'display gate');
+  eq(display.perf.path.segments.length, display.aux.PERF.length, 'one path, one layer:');
+  eq(display.perf.minRetainedH, 3, 'the lip travels too:');
+});
+
 /* ================================================================ presets */
 
 // Five presets, all buildable on both levels, and all DIFFERENT. The
@@ -667,13 +811,23 @@ t('five presets, each distinct, each valid on carton and case', () => {
 // The presets are fractions of the container's own size, so the same entry
 // serves a 180 mm carton and a 160 mm case. Checked by ratio, on both.
 t('presets scale with the container', () => {
-  for(const id of ['angled', 'open-front']){
+  // an UNCLAMPED preset is pure fractions, so the same entry serves a 180 mm
+  // carton and a 160 mm case identically
+  for(const id of ['angled', 'angled-flat', 'bowed', 'tray']){
     const ratios = RIGID.map(([, geo]) => {
       const H = perfFrame(geo).H;
       return applyPerfPreset(id, geo, null).cornerH.map(h => +(h/H).toFixed(6));
     });
     eq(ratios[1], ratios[0], `${id} carton vs case:`);
     eq(ratios[2], ratios[0], `${id} sealend vs case:`);
+  }
+  // `open-front` asks for the very top and the very bottom, and the LIP is an
+  // absolute 3 mm — so it lands on the clamp, not on a fraction, and the
+  // ratios legitimately differ by height. That is the clamp doing its job:
+  // the preset does not get to put a tear on a crease.
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H, p = applyPerfPreset('open-front', geo, null);
+    eq(p.cornerH.map(h => +h.toFixed(6)), [H - 3, H - 3, 3, 3].map(v => +v.toFixed(6)), `${id} clamped to the lip:`);
   }
 });
 

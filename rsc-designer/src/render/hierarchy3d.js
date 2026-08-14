@@ -13,6 +13,8 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
+import {perfDisplayBody, perfSurfaceLine} from './perf3d.js';
+import {isDisplayGeo} from '../core/perf.js';
 import {buildTray3d} from './tray3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
@@ -1039,13 +1041,31 @@ function soloClosed(geo, artInfo){
   // never a closed box. Checked first so it holds even if art were present
   // (the tray's art is flat-mapped, not a 3D tube, so there is no closed body).
   if(isOpenTop(geo)) return openTrayBox(geo.outer, geo.inner, board);
-  if(artInfo && artInfo.am && artInfo.canvas){
+  const printed = artInfo && artInfo.am && artInfo.canvas;
+  // DISPLAY STATE: everything above the tear is gone and the retained walls
+  // carry the profile — built from the SAME path the dieline drew. Checked
+  // before the closed bodies below, because a pack in display state is not a
+  // closed pack at all.
+  if(isDisplayGeo(geo)){
+    let mats = board;
+    if(printed){ mats = packArtMaterials(artInfo.canvas, board); artResources.push(mats[0]); }
+    const body = perfDisplayBody(geo, mats);
+    if(body) return body;
+  }
+  const g = new THREE.Group();
+  if(printed){
     const mats = packArtMaterials(artInfo.canvas, board);
     artResources.push(mats[0]);
-    return new THREE.Mesh(packArtGeometry(artInfo.am), mats);
+    g.add(new THREE.Mesh(packArtGeometry(artInfo.am), mats));
+  }else{
+    const o = geo.outer, rr = Math.min(o.L, o.W, o.H)*0.03;
+    g.add(new THREE.Mesh(roundedBoxGeo(o.L, o.H, o.W, rr, 2), board));
   }
-  const o = geo.outer, rr = Math.min(o.L, o.W, o.H)*0.03;
-  return new THREE.Mesh(roundedBoxGeo(o.L, o.H, o.W, rr, 2), board);
+  // SHIPPING STATE with a perforation: the pack is intact and the tear is a
+  // surface LINE on it — never a cut and never a gap.
+  const line = geo.perf ? perfSurfaceLine(geo) : null;
+  if(line) g.add(line);
+  return g.children.length === 1 ? g.children[0] : g;
 }
 
 // generic: a container tier holding children, one opened, the rest closed.
@@ -1061,9 +1081,21 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   // standing proud / seen through the open top), NOT a cutaway. Everything else
   // (a cutaway open tray, or any closed container being opened) gets the cutaway
   // box whose near walls hide as the camera orbits.
+  // DISPLAY STATE first: a perforated container shown for display has no lid
+  // and a profiled front, so neither a closed box nor a cutaway describes it —
+  // it IS the opened shell. Its near walls are not hidden as the camera
+  // orbits, and do not need to be: there is no top to see past.
+  const displayShell = isDisplayGeo(geo) ? perfDisplayBody(geo, tier.mat) : null;
   if(isShrinkBundle(geo)){ /* no rigid shell */ }
+  else if(displayShell) g.add(displayShell);
   else if(opts.solid && isOpenTop(geo)) g.add(openTrayBox(geo.outer, geo.inner, tier.mat));
-  else g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
+  else {
+    g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
+    // SHIPPING state with a perforation: the tear is a surface line on an
+    // intact container.
+    const line = geo.perf ? perfSurfaceLine(geo) : null;
+    if(line) g.add(line);
+  }
 
   // Solid mode FILLS the container — every child shown, none drilled to product
   // (drilling is the cutaway). openIdx -1 excludes nothing and skips the recurse.
