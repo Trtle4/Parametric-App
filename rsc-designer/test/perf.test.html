@@ -1,0 +1,585 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>perforation tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/perf.js — the perforation path builder.
+   The module under test is DOM-free; this page is only a runner.
+
+   Every pin here was MUTATION-TESTED: the note above a pin says what was
+   broken to prove the pin can fail. A pin that recomputes what the code
+   computes is a restatement, not a test (CLAUDE.md), so the pins below
+   anchor to numbers that exist independently of perf.js — the style's own
+   panel run (x1..x5), the analytic curve a sampler is meant to follow, the
+   DXF the exporter produced before this module existed. */
+import {
+  PERF_PANELS, PERF_CORNERS, PERF_MODES, PERF_TRANSITIONS, PERF_CHORD_TOL,
+  PERF_PRESETS, PERF_SPEC_DEFAULT,
+  perfFrame, canPerforate, perfUnavailableReason, defaultPerf, normalizePerf,
+  buildPerfPath, perfAux, filletPolyline, applyPerfPreset, isDisplayState,
+  perfSpecLabel
+} from '../src/core/perf.js';
+import {fefco201} from '../src/core/styles/fefco201.js';
+import {a6120} from '../src/core/styles/a6120.js';
+import {sealend} from '../src/core/styles/sealend.js';
+import {trayGeometry} from '../src/core/styles/tray.js';
+import {flowwrap} from '../src/core/styles/flowwrap.js';
+import {shrinkBundle} from '../src/core/styles/shrinkbundle.js';
+import {buildDXF} from '../src/export/dxf.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor && fn.constructor.name === 'AsyncFunction')
+    { results.push(`FAIL  ${name}: async pin body — its throw would be an unhandled rejection`); return; }
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function ok(cond, msg){ if(!cond) throw new Error(msg); }
+function near(a, b, tol, msg = ''){
+  if(!(Math.abs(a - b) <= tol)) throw new Error(`${msg} expected ${b} ±${tol}, got ${a}`);
+}
+function eq(actual, expected, msg = ''){
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
+}
+
+/* ---------- fixtures: real geometry from the real styles ---------- */
+const CASE_P   = {L: 300, W: 200, H: 160, caliper: 3, glue: 35, slot: 6};
+const CARTON_P = {L: 120, W: 60, H: 180, caliper: 0.45, glueTab: 12, dustDepth: 37.5, tuckDepth: 59.55, tuckTab: 16};
+const SEAL_P   = {L: 190, W: 65, H: 280, caliper: 0.5, glueTab: 12, dustDepth: 40, overlap: 10, cornerStyle: 'chamfer'};
+const gCase   = fefco201(CASE_P);
+const gCarton = a6120(CARTON_P);
+const gSeal   = sealend(SEAL_P);
+const RIGID = [['fefco201', gCase, CASE_P], ['a6120', gCarton, CARTON_P], ['sealend', gSeal, SEAL_P]];
+
+const onPerf = (geo, over) => normalizePerf({...defaultPerf(geo), enabled: true, ...over}, geo);
+
+/* ================================================================== frame */
+
+// The scope claim: only the rigid tube styles publish a girth. Mutation:
+// dropping the `am.flat` guard in perfFrame lets the tray through and fails.
+t('perfFrame: rigid tube styles only', () => {
+  for(const [id, geo] of RIGID) ok(canPerforate(geo), `${id} should perforate`);
+  const flat = [
+    ['tray',    trayGeometry({L: 139, W: 99, H: 25, caliper: 1.5, glueTab: 12})],
+    ['flowwrap', flowwrap({L: 100, W: 50, H: 20, filmThickness: 0.03, finSeal: 6, endSealWidth: 12,
+                           internalAngle: 45, externalAngle: 0, finFace: 'bottom'})],
+    ['shrink',  shrinkBundle({L: 200, W: 150, H: 100, filmThickness: 0.05, shrinkAllowance: 8})]
+  ];
+  for(const [id, geo] of flat){
+    ok(geo && !canPerforate(geo), `${id} must NOT perforate`);
+    ok(/not applicable/.test(perfUnavailableReason(geo)), `${id} reason: ${perfUnavailableReason(geo)}`);
+  }
+});
+
+// Panel identity is anchored to the STYLE'S OWN panel run (x1..x5 computed
+// here from the params, not read back from perf.js). The two levels index
+// their blank differently — front is the 2nd L-panel on a carton and the 1st
+// on the case — and the pin states both explicitly, so a builder that indexed
+// panels by blank position instead of by the artMap walk would fail on one of
+// them. Mutation: indexing panels by sorted u0 passes on a6120/sealend and
+// fails on fefco201.
+t('panel indexing follows the artMap girth, not blank position', () => {
+  const runs = {
+    fefco201: (p => { const x1 = p.glue, x2 = x1 + p.L, x3 = x2 + p.W, x4 = x3 + p.L, x5 = x4 + p.W;
+      return {back: [x3, x4], right: [x4, x5], front: [x1, x2], left: [x2, x3]}; })(CASE_P),
+    a6120: (p => { const x1 = p.glueTab, x2 = x1 + p.L, x3 = x2 + p.W, x4 = x3 + p.L, x5 = x4 + p.W;
+      return {back: [x1, x2], right: [x2, x3], front: [x3, x4], left: [x4, x5]}; })(CARTON_P),
+    sealend: (p => { const x1 = p.glueTab, x2 = x1 + p.L, x3 = x2 + p.W, x4 = x3 + p.L, x5 = x4 + p.W;
+      return {back: [x1, x2], right: [x2, x3], front: [x3, x4], left: [x4, x5]}; })(SEAL_P)
+  };
+  for(const [id, geo, p] of RIGID){
+    const f = perfFrame(geo);
+    eq(f.panels.map(x => x.name), [...PERF_PANELS], `${id} girth order:`);
+    eq(f.H, p.H, `${id} panel height:`);
+    for(const pan of f.panels){
+      eq([pan.u0, pan.u1], runs[id][pan.name], `${id} ${pan.name} blank range:`);
+      eq(pan.width, pan.name === 'back' || pan.name === 'front' ? p.L : p.W, `${id} ${pan.name} width:`);
+    }
+    // corner i is section vertex i, and panel i spans corner i -> i+1
+    eq(f.panels.map(x => [x.fromCorner, x.toCorner]), [[0,1],[1,2],[2,3],[3,0]], `${id} corner spans:`);
+  }
+  eq([...PERF_CORNERS], ['back-left', 'back-right', 'front-right', 'front-left']);
+});
+
+// The frame names the walls the app's own 3D frame names: front at +Z, right
+// at +X. Read straight off the section the style publishes — that is the ONE
+// declaration render/folds/*.js builds its walls in too.
+t('corner names match the published section (front +Z, right +X)', () => {
+  for(const [id, geo, p] of RIGID){
+    const sec = geo.meta.artMap.section;
+    const corner = i => ({x: sec[i][0], z: sec[i][1]});
+    // c0 back-left, c1 back-right, c2 front-right, c3 front-left
+    eq(corner(0), {x: -p.L/2, z: -p.W/2}, `${id} c0 back-left:`);
+    eq(corner(1), {x:  p.L/2, z: -p.W/2}, `${id} c1 back-right:`);
+    eq(corner(2), {x:  p.L/2, z:  p.W/2}, `${id} c2 front-right:`);
+    eq(corner(3), {x: -p.L/2, z:  p.W/2}, `${id} c3 front-left:`);
+    // and the panel between two corners is the wall spanning them
+    eq(geo.meta.artMap.faces[0].panel, 'back');
+    eq(geo.meta.artMap.faces[2].panel, 'front');
+  }
+});
+
+// A style that declared its faces in a different order must be REFUSED, not
+// silently perforated on the wrong walls. Mutation: drop the panel-name guard
+// in perfFrame and this returns a frame.
+t('a girth in an unknown order is refused, not guessed', () => {
+  const bad = JSON.parse(JSON.stringify({meta: gCarton.meta, structure: 'rigid'}));
+  bad.meta.artMap.faces = [bad.meta.artMap.faces[2], ...bad.meta.artMap.faces.slice(0, 2), bad.meta.artMap.faces[3]];
+  ok(perfFrame(bad) === null, 'reordered faces should be refused');
+  // and the case the `flat` guard is actually there for: the per-wall tray UV
+  // builder noted in CLAUDE.md would give the tray a `faces` array while its
+  // walls still run four different ways in the flat. Faces alone must not be
+  // enough. Mutation: dropping the `am.flat` guard passes every other pin in
+  // this file (no shipped style has both keys) and fails only here.
+  const flatWithFaces = JSON.parse(JSON.stringify({meta: gCarton.meta, structure: 'rigid'}));
+  flatWithFaces.meta.artMap.flat = true;
+  ok(perfFrame(flatWithFaces) === null, 'a flat map with faces must still be refused');
+});
+
+/* =============================================================== the path */
+
+// THE SINGLE-SOURCE CLAIM. Two panels meeting at a corner must read the same
+// retained height, and it must be cornerH[i] — not something either panel
+// derived. Anchored to the INPUT array, so a builder that let a panel end
+// wherever its own profile happened to land fails. Mutation: making a
+// profiled panel end at its own start height (hB = hA) fails at every corner.
+t('every corner reads cornerH, from both of its panels', () => {
+  const heights = [0.9, 0.25, 0.6, 0.1];
+  for(const [id, geo] of RIGID){
+    const f = perfFrame(geo), H = f.H;
+    const cornerH = heights.map(k => k*H);
+    const path = buildPerfPath(geo, onPerf(geo, {cornerH, radius: 0}));
+    for(const pan of path.panels){
+      near(pan.pts[0][1], cornerH[pan.fromCorner], 1e-9, `${id} ${pan.name} start h:`);
+      near(pan.pts[pan.pts.length - 1][1], cornerH[pan.toCorner], 1e-9, `${id} ${pan.name} end h:`);
+      near(pan.pts[0][0], 0, 1e-9, `${id} ${pan.name} start s:`);
+      near(pan.pts[pan.pts.length - 1][0], pan.width, 1e-9, `${id} ${pan.name} end s:`);
+    }
+    // ...and each corner is visited by exactly the two panels that share it
+    for(let c = 0; c < 4; c++){
+      const touching = path.panels.filter(p => p.fromCorner === c || p.toCorner === c);
+      eq(touching.length, 2, `${id} corner ${c} panel count:`);
+    }
+  }
+});
+
+// The tear line must be CONTINUOUS ON THE BLANK, which is the whole reason
+// the girth walk is used instead of blank order. Checked against the blank
+// coordinates, so a wrong u-mapping (reversing s within a panel, say) shows
+// up as a jump. Mutation: mapping x = u1 - s instead of u0 + s fails here on
+// all three styles.
+t('the blank path is continuous across every crease', () => {
+  for(const [id, geo] of RIGID){
+    const path = buildPerfPath(geo, onPerf(geo, {cornerH: [0.8, 0.3, 0.55, 0.45].map(k => k*perfFrame(geo).H)}));
+    const byU = [...path.panels].sort((a, b) => a.u0 - b.u0);
+    for(let i = 0; i < byU.length - 1; i++){
+      const end = byU[i].blank[byU[i].blank.length - 1], start = byU[i + 1].blank[0];
+      near(end[0], start[0], 1e-9, `${id} blank x at crease ${i}:`);
+      near(end[1], start[1], 1e-9, `${id} blank y at crease ${i}:`);
+    }
+    // the four panels tile the body run end to end, no gap and no overlap
+    for(let i = 0; i < byU.length - 1; i++) near(byU[i].u1, byU[i + 1].u0, 1e-9, `${id} panel tiling:`);
+    // the remaining join is the ONE manufacturer's joint, and the two ends
+    // of the blank are the same physical corner, so they carry one height
+    const first = byU[0], last = byU[byU.length - 1];
+    const hFirst = first.blank[0][1] - first.v0, hLast = last.blank[last.blank.length - 1][1] - last.v0;
+    near(hFirst, hLast, 1e-9, `${id} glue-joint corner height:`);
+  }
+});
+
+// A level tear all round is exactly the girth: no fillets, no flats, two
+// points a panel. The length is anchored to 2(L+W) from the PARAMS.
+t('a level tear is the girth, in eight points', () => {
+  for(const [id, geo, p] of RIGID){
+    const H = perfFrame(geo).H;
+    const path = buildPerfPath(geo, onPerf(geo, {cornerH: [H/2, H/2, H/2, H/2], radius: 0}));
+    for(const pan of path.panels) eq(pan.pts.length, 2, `${id} ${pan.name} point count:`);
+    near(path.tearLength, 2*(p.L + p.W), 1e-9, `${id} tear length:`);
+    eq(path.edges.length, 4, `${id} edge count:`);
+    ok(path.edges.every(e => !e.onFold), `${id} a mid-height tear rides no crease`);
+  }
+});
+
+/* ================================================================= clamps */
+
+// CLAMPS AT WRITE TIME. Every one of these is checked on the STORED object,
+// then again on the built path, because a clamp that only held at render time
+// would leave an illegal number in the save file. Mutation: removing the bow
+// clamp puts points outside [0,H]; removing the flat clamp puts s past the
+// panel; removing the cornerH clamp puts a corner above the box.
+t('write-time clamps keep the stored perf legal', () => {
+  const geo = gCarton, H = perfFrame(geo).H, f = perfFrame(geo);
+  const wild = normalizePerf({
+    enabled: true, state: 'sideways',
+    cornerH: [-500, 1e6, NaN, undefined],
+    radius: 1e6,
+    panels: {
+      back:  {mode: 'exploded', flatA: 1e6, flatB: 1e6, transition: 'spiral', bow: 1e6, steps: 900},
+      right: {flatA: -50, flatB: -50, steps: -3},
+      front: {bow: -1e6},
+      left:  {}
+    },
+    spec: {cut: -4, tie: 1e9}
+  }, geo);
+
+  eq(wild.state, 'closed', 'unknown state falls back:');
+  for(const h of wild.cornerH) ok(h >= 0 && h <= H, `cornerH ${h} in [0,${H}]`);
+  ok(wild.radius <= Math.min(H, f.minWidth)/2 + 1e-9, `radius ${wild.radius} capped`);
+  eq(wild.panels.back.mode, 'profiled', 'unknown mode falls back:');
+  eq(wild.panels.back.transition, 'straight', 'unknown transition falls back:');
+  ok(wild.panels.back.steps <= 24 && wild.panels.right.steps >= 2, 'steps clamped');
+  ok(wild.spec.cut >= 0.5 && wild.spec.tie <= 20, 'spec clamped');
+  for(const name of PERF_PANELS){
+    const pan = wild.panels[name], w = f.panels.find(x => x.name === name).width;
+    ok(pan.flatA >= 0 && pan.flatB >= 0 && pan.flatA + pan.flatB <= w + 1e-9,
+       `${name} flats ${pan.flatA}+${pan.flatB} <= ${w}`);
+  }
+  // and the path built from it stays inside every panel
+  const path = buildPerfPath(geo, wild);
+  for(const pan of path.panels) for(const [s, h] of pan.pts){
+    ok(s >= -1e-9 && s <= pan.width + 1e-9, `${pan.name} s=${s} outside [0,${pan.width}]`);
+    ok(h >= -1e-9 && h <= H + 1e-9, `${pan.name} h=${h} outside [0,${H}]`);
+  }
+});
+
+// The bow clamp is the one that is easy to get wrong, because the bound
+// depends on BOTH corner heights. Checked at the extreme: a bow written past
+// the ceiling must land ON the ceiling, not through it and not at zero.
+t('bow is clamped to the headroom above the higher corner', () => {
+  const geo = gCarton, H = perfFrame(geo).H;
+  const hi = 0.7*H, lo = 0.2*H;
+  const p = normalizePerf({enabled: true, cornerH: [hi, lo, lo, lo],
+    panels: {back: {bow: 999}, right: {}, front: {}, left: {}}}, geo);
+  near(p.panels.back.bow, H - hi, 1e-9, 'bow up:');
+  const q = normalizePerf({enabled: true, cornerH: [hi, lo, lo, lo],
+    panels: {back: {bow: -999}, right: {}, front: {}, left: {}}}, geo);
+  near(q.panels.back.bow, -lo, 1e-9, 'bow down:');
+  // the resulting curve touches the ceiling and does not cross it
+  const path = buildPerfPath(geo, p);
+  const back = path.panels.find(x => x.name === 'back');
+  ok(Math.max(...back.pts.map(v => v[1])) <= H + 1e-9, 'curve stays under the top');
+});
+
+/* ================================================================= curves */
+
+// The instrument first: measure how far a polyline sits from the analytic
+// curve it samples, and prove the measure can FAIL by feeding it a
+// deliberately coarse sampling. A tolerance check that cannot fail is the
+// false-green this codebase has been bitten by four times.
+const maxDeviation = (pts, fn) => {
+  let worst = 0;
+  for(let i = 0; i < pts.length - 1; i++){
+    const a = pts[i], b = pts[i + 1];
+    for(let k = 1; k < 8; k++){
+      const s = a[0] + (b[0] - a[0])*(k/8);
+      const chord = a[1] + (b[1] - a[1])*(k/8);
+      worst = Math.max(worst, Math.abs(chord - fn(s)));
+    }
+  }
+  return worst;
+};
+t('deviation instrument: a coarse sampling of a known curve is caught', () => {
+  const fn = s => 40*Math.sin(Math.PI*s/100);
+  const coarse = [0, 50, 100].map(s => [s, fn(s)]);
+  const fine = Array.from({length: 201}, (_, i) => [i*0.5, fn(i*0.5)]);
+  ok(maxDeviation(coarse, fn) > 1, `coarse must read large, got ${maxDeviation(coarse, fn)}`);
+  ok(maxDeviation(fine, fn) < PERF_CHORD_TOL, `fine must read small, got ${maxDeviation(fine, fn)}`);
+});
+
+// The s-curve and the bow are sampled to the SAME tolerance the fillets are
+// polygonised to — one number governs every curve in the path. Compared
+// against the analytic profile, which exists independently of the sampler.
+t('scurve + bow are sampled within the chord tolerance', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const hA = 0.85*H, hB = 0.2*H;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [hA, hA, hB, hB], radius: 0,
+    panels: {back: {}, right: {transition: 'scurve', bow: 0.1*H}, front: {}, left: {}}
+  }));
+  const pan = path.panels.find(p => p.name === 'right'), w = pan.width;
+  const analytic = s => {
+    const t = s/w;
+    return hA + (hB - hA)*t*t*(3 - 2*t) + 0.1*H*4*t*(1 - t);
+  };
+  const dev = maxDeviation(pan.pts, analytic);
+  ok(dev <= PERF_CHORD_TOL, `s-curve deviation ${dev} > ${PERF_CHORD_TOL}`);
+  ok(pan.pts.length > 4, `a curve should need more than a ramp's points, got ${pan.pts.length}`);
+});
+
+// Fillets are POLYGONISED because export/dxf.js writes LINE entities only.
+// The pin measures the emitted chords against the true circle, so a wrong
+// segment count or a wrong radius shows up. Mutation: halving the segment
+// count in arcSegments fails.
+t('fillets are polygonised inside the chord tolerance', () => {
+  const R = 20;
+  const corner = [[0, 0], [100, 0], [100, 100]];
+  const out = filletPolyline(corner, R);
+  ok(out.length > 3, `expected an arc, got ${out.length} points`);
+  // the arc's centre for this right angle is (100-R, R)
+  const C = [100 - R, R];
+  let worstIn = 0, onArc = 0;
+  for(const p of out){
+    const onA = Math.abs(p[0] - 100) > 1e-9 && Math.abs(p[1]) > 1e-9;
+    if(!onA) continue;
+    onArc++;
+    worstIn = Math.max(worstIn, Math.abs(Math.hypot(p[0] - C[0], p[1] - C[1]) - R));
+  }
+  ok(onArc >= 2, `expected interior arc points, got ${onArc}`);
+  near(worstIn, 0, 1e-9, 'arc points must lie ON the circle:');
+  // the chords between them stay within tolerance of the circle
+  let sag = 0;
+  for(let i = 0; i < out.length - 1; i++){
+    const m = [(out[i][0] + out[i + 1][0])/2, (out[i][1] + out[i + 1][1])/2];
+    const d = Math.hypot(m[0] - C[0], m[1] - C[1]);
+    if(d < R) sag = Math.max(sag, R - d);
+  }
+  ok(sag <= PERF_CHORD_TOL, `chord sagitta ${sag} > ${PERF_CHORD_TOL}`);
+  // the tangent points are where a radius-R fillet meets the legs
+  near(out[1][0], 100 - R, 1e-9, 'entry tangent:');
+  eq(filletPolyline(corner, 0), corner, 'radius 0 is a no-op:');
+});
+
+// A fillet may never eat more than half a segment, or two adjacent fillets
+// would swallow the vertex between them and the path would fold back.
+t('an oversized radius is absorbed, not overrun', () => {
+  const zig = [[0, 0], [10, 0], [10, 10], [20, 10]];
+  const out = filletPolyline(zig, 1000);
+  for(let i = 0; i < out.length - 1; i++)
+    ok(out[i + 1][0] >= out[i][0] - 1e-9, `x must not reverse at ${i}`);
+  ok(out.every(p => p[0] >= -1e-9 && p[0] <= 20 + 1e-9 && p[1] >= -1e-9 && p[1] <= 10 + 1e-9),
+     'fillets stay inside the original hull');
+});
+
+// A radius rounds the breaks INSIDE a panel and never the vertical corners:
+// a fillet developed across a fold would move the retained height at that
+// corner, and the retained height is the single source everything else reads.
+// Mutation: filleting the girth as one polyline across panel boundaries moves
+// the corner heights and fails the first half of this pin.
+t('a radius rounds inside a panel and never moves a corner', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const cornerH = [0.85*H, 0.85*H, 0.3*H, 0.3*H];
+  const shape = {back: {}, right: {flatA: 45, flatB: 25}, front: {}, left: {flatA: 25, flatB: 45}};
+  const sharp = buildPerfPath(geo, onPerf(geo, {cornerH, radius: 0, panels: shape}));
+  const round = buildPerfPath(geo, onPerf(geo, {cornerH, radius: 15, panels: shape}));
+  for(const pan of round.panels){
+    near(pan.pts[0][1], cornerH[pan.fromCorner], 1e-9, `${pan.name} start unmoved:`);
+    near(pan.pts[pan.pts.length - 1][1], cornerH[pan.toCorner], 1e-9, `${pan.name} end unmoved:`);
+  }
+  const arced = round.panels.filter(p => p.pts.length > sharp.panels.find(q => q.name === p.name).pts.length);
+  eq(arced.map(p => p.name).sort(), ['left', 'right'], 'only the panels with interior breaks gain arcs:');
+});
+
+/* ============================================================ transitions */
+
+// A stepped transition is emitted as exact vertices, not sampled: `steps`
+// treads, the first at one corner height and the last at the other.
+t('stepped emits n treads, first at hA and last at hB', () => {
+  const geo = gCase, H = perfFrame(geo).H, hA = 0.8*H, hB = 0.2*H, n = 5;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [hA, hA, hB, hB], radius: 0,
+    panels: {back: {}, right: {transition: 'stepped', steps: n}, front: {}, left: {}}
+  }));
+  const pan = path.panels.find(p => p.name === 'right');
+  const levels = [...new Set(pan.pts.map(p => +p[1].toFixed(9)))].sort((a, b) => b - a);
+  eq(levels.length, n, 'tread count:');
+  near(levels[0], hA, 1e-9, 'first tread:');
+  near(levels[n - 1], hB, 1e-9, 'last tread:');
+  for(let k = 1; k < n; k++) near(levels[k - 1] - levels[k], (hA - hB)/(n - 1), 1e-9, `riser ${k}:`);
+});
+
+// Flats are measured ALONG the panel from its start corner, and the flat
+// segments really are flat. Mutation: swapping flatA and flatB fails, because
+// the pin checks which END each flat is at.
+t('flats run from the corners, at the corner heights', () => {
+  const geo = gCase, H = perfFrame(geo).H, hA = 0.8*H, hB = 0.3*H;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [hA, hA, hB, hB], radius: 0,
+    panels: {back: {}, right: {flatA: 40, flatB: 15}, front: {}, left: {}}
+  }));
+  const pan = path.panels.find(p => p.name === 'right');
+  eq(pan.pts.length, 4, 'flat, ramp, flat:');
+  eq(pan.pts.map(p => +p[0].toFixed(6)), [0, 40, pan.width - 15, pan.width], 's positions:');
+  eq(pan.pts.map(p => +p[1].toFixed(6)), [hA, hA, hB, hB].map(v => +v.toFixed(6)), 'heights:');
+});
+
+// Flats that together fill the panel are legal and mean a vertical step, not
+// a divide-by-zero.
+t('flats summing to the full width give a vertical step', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const w = perfFrame(geo).panels.find(p => p.name === 'right').width;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H], radius: 0,
+    panels: {back: {}, right: {flatA: w*0.6, flatB: w*0.4}, front: {}, left: {}}
+  }));
+  const pan = path.panels.find(p => p.name === 'right');
+  ok(pan.pts.every(p => isFinite(p[0]) && isFinite(p[1])), 'no NaN');
+  near(pan.pts[1][0], w*0.6, 1e-9, 'step position:');
+  near(pan.pts[2][0], w*0.6, 1e-9, 'step is vertical:');
+});
+
+/* ================================================================== modes */
+
+// full / removed ride the body's own creases, and say so. `onFold` is the
+// fact the 2D and DXF consumers need in order to decide whether to REPLACE
+// the crease there — perf.js reports it rather than silently dropping the
+// segment, because a panel that tears away has to be perforated where it
+// meets its neighbour, not creased.
+t('full rides the top crease, removed the bottom, both flagged onFold', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [H, H, 0, 0], radius: 0,
+    panels: {back: {mode: 'full'}, right: {}, front: {mode: 'removed'}, left: {}}
+  }));
+  const back = path.panels.find(p => p.name === 'back');
+  const front = path.panels.find(p => p.name === 'front');
+  eq(back.pts.map(p => +p[1].toFixed(6)), [H, H].map(v => +v.toFixed(6)), 'full back sits at H:');
+  eq(front.pts.map(p => +p[1].toFixed(6)), [0, 0], 'removed front sits at 0:');
+  ok(path.edges.filter(e => e.panel === 'back').every(e => e.onFold), 'back edge on the top crease');
+  ok(path.edges.filter(e => e.panel === 'front').every(e => e.onFold), 'front edge on the bottom crease');
+  ok(path.edges.filter(e => e.panel === 'right').every(e => !e.onFold), 'the ramp is free of creases');
+});
+
+// With corners BELOW the top, a full panel has to climb to the crease and
+// back — two risers on the vertical folds, both flagged.
+t('a full panel between low corners climbs at the corners', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const path = buildPerfPath(geo, onPerf(geo, {
+    cornerH: [0.4*H, 0.4*H, 0.4*H, 0.4*H], radius: 0,
+    panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}
+  }));
+  const back = path.panels.find(p => p.name === 'back');
+  eq(back.pts.map(p => +p[1].toFixed(6)), [0.4*H, H, H, 0.4*H].map(v => +v.toFixed(6)), 'riser, top, riser:');
+  const risers = path.edges.filter(e => e.panel === 'back' && Math.abs(e.a[0] - e.b[0]) < 1e-9);
+  eq(risers.length, 2, 'riser count:');
+  ok(risers.every(e => e.onFold), 'risers sit on the vertical creases');
+});
+
+/* ==================================================================== DXF */
+
+// BYTE-IDENTITY. The DXF a style produced before perf.js existed must come
+// back unchanged when perf is off — not "equivalent", identical. Anchored to
+// the geometry's own bytes with no aux at all.
+t('perf off: geo.aux is absent and the DXF is byte-identical', () => {
+  for(const [id, geo] of RIGID){
+    const before = buildDXF(geo, 'mm');
+    ok(perfAux(geo, defaultPerf(geo)) === null, `${id} disabled perf must add no aux`);
+    ok(perfAux(geo, undefined) === null, `${id} absent perf must add no aux`);
+    const withAux = {...geo, aux: perfAux(geo, defaultPerf(geo)) || undefined};
+    eq(buildDXF(withAux, 'mm'), before, `${id} DXF changed with perf off:`);
+    ok(!/PERF/.test(before), `${id} baseline DXF must not mention PERF`);
+  }
+});
+
+// Perf on: a PERF layer with exactly one LINE per edge, and the layer count
+// the exporter writes is computed from the layers present.
+t('perf on: one PERF LINE per edge, layer declared', () => {
+  const geo = gCase, H = perfFrame(geo).H;
+  const perf = onPerf(geo, {cornerH: [0.8*H, 0.8*H, 0.3*H, 0.3*H], radius: 12,
+    panels: {back: {}, right: {flatA: 40, flatB: 20}, front: {}, left: {flatA: 20, flatB: 40}}});
+  const path = buildPerfPath(geo, perf);
+  const dxf = buildDXF({...geo, aux: perfAux(geo, perf)}, 'mm');
+  ok(/\r\n2\r\nPERF\r\n/.test(dxf), 'PERF layer table entry');
+  const lines = dxf.split('\r\n');
+  let perfLines = 0;
+  for(let i = 0; i < lines.length - 3; i++)
+    if(lines[i] === '0' && lines[i + 1] === 'LINE' && lines[i + 2] === '8' && lines[i + 3] === 'PERF') perfLines++;
+  eq(perfLines, path.segments.length, 'PERF entity count:');
+  ok(path.segments.length > 8, `a filleted path needs more than the girth, got ${path.segments.length}`);
+  ok(!/[eE][-+]?\d/.test(dxf.split('SECTION')[3] || ''), 'no exponential coordinates');
+  // the layer count the exporter declares must include PERF
+  const lt = lines.indexOf('LAYER');
+  ok(lt > 0, 'LAYER table present');
+});
+
+// Every PERF coordinate lies inside the blank. A tear line outside the die is
+// nonsense, and it is exactly what a wrong u-mapping produces.
+t('every PERF coordinate is inside the blank bbox', () => {
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    const path = buildPerfPath(geo, onPerf(geo, {cornerH: [0.9*H, 0.1*H, 0.5*H, 0.7*H], radius: 5}));
+    for(const s of path.segments) for(const [x, y] of [[s[0], s[1]], [s[2], s[3]]]){
+      ok(x >= geo.bbox.minX - 1e-9 && x <= geo.bbox.maxX + 1e-9, `${id} x=${x} outside blank`);
+      ok(y >= geo.bbox.minY - 1e-9 && y <= geo.bbox.maxY + 1e-9, `${id} y=${y} outside blank`);
+    }
+  }
+});
+
+/* ================================================================ presets */
+
+// Five presets, all buildable on both levels, and all DIFFERENT. The
+// distinctness check is the mutation guard: a preset that silently fell back
+// to the default would still build a valid path, and only a comparison
+// between presets can see it.
+t('five presets, each distinct, each valid on carton and case', () => {
+  eq(PERF_PRESETS.length, 5, 'preset count:');
+  for(const [id, geo] of RIGID){
+    const seen = new Set();
+    for(const preset of PERF_PRESETS){
+      const perf = applyPerfPreset(preset.id, geo, {enabled: true, state: 'display', spec: {...PERF_SPEC_DEFAULT}});
+      ok(perf && perf.enabled, `${id}/${preset.id} should apply`);
+      eq(perf.state, 'display', `${id}/${preset.id} keeps the state:`);
+      const path = buildPerfPath(geo, perf);
+      ok(path && path.segments.length > 0, `${id}/${preset.id} should draw`);
+      const key = JSON.stringify(path.panels.map(p => p.pts.map(v => v.map(n => +n.toFixed(4)))));
+      ok(!seen.has(key), `${id}/${preset.id} duplicates another preset`);
+      seen.add(key);
+    }
+    ok(applyPerfPreset('nonesuch', geo, null) === null, `${id} unknown preset id`);
+  }
+  ok(applyPerfPreset('tray', trayGeometry({L: 139, W: 99, H: 25, caliper: 1.5, glueTab: 12}), null) === null,
+     'a preset cannot be applied to a style with no girth');
+});
+
+// The presets are fractions of the container's own size, so the same entry
+// serves a 180 mm carton and a 160 mm case. Checked by ratio, on both.
+t('presets scale with the container', () => {
+  for(const id of ['angled', 'open-front']){
+    const ratios = RIGID.map(([, geo]) => {
+      const H = perfFrame(geo).H;
+      return applyPerfPreset(id, geo, null).cornerH.map(h => +(h/H).toFixed(6));
+    });
+    eq(ratios[1], ratios[0], `${id} carton vs case:`);
+    eq(ratios[2], ratios[0], `${id} sealend vs case:`);
+  }
+});
+
+/* ================================================================== state */
+
+t('display state is one reader', () => {
+  ok(!isDisplayState(null));
+  ok(!isDisplayState({enabled: false, state: 'display'}), 'disabled perf is not a display state');
+  ok(!isDisplayState({enabled: true, state: 'closed'}));
+  ok(isDisplayState({enabled: true, state: 'display'}));
+  eq(perfSpecLabel({cut: 8, tie: 1.5}), '8.0 mm cut / 1.5 mm tie');
+});
+
+// A tear line removes no material: the cut perimeter and the blank extents
+// are untouched by perforation, so board area — and therefore cost — cannot
+// move. Anchored to the geometry's own bbox/cut, which existed before perf.
+t('perforation removes no material: cut and bbox untouched', () => {
+  for(const [id, geo] of RIGID){
+    const H = perfFrame(geo).H;
+    const before = JSON.stringify({cut: geo.cut, crease: geo.crease, bbox: geo.bbox});
+    const perf = onPerf(geo, {cornerH: [H, 0, 0.5*H, 0.9*H], radius: 9});
+    buildPerfPath(geo, perf);
+    perfAux(geo, perf);
+    eq(JSON.stringify({cut: geo.cut, crease: geo.crease, bbox: geo.bbox}), before, `${id} geometry mutated:`);
+  }
+});
+
+// normalizePerf must never mutate what it is handed — it is called on every
+// keystroke and on load, and a mutating clamp would edit the save file.
+t('normalizePerf is pure', () => {
+  const input = {enabled: true, cornerH: [1e6, -5, 10, 10], panels: {back: {bow: 1e6}}};
+  const snap = JSON.stringify(input);
+  normalizePerf(input, gCarton);
+  eq(JSON.stringify(input), snap, 'input mutated:');
+});
+
+/* ---------- report ---------- */
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
