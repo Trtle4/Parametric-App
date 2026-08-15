@@ -87,6 +87,11 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   caught their bugs immediately. So: mutation-test every pin. Revert the fix;
   if the pin still passes, it is testing the implementation against itself,
   and the fixture is at fault, not the code.
+- A pin asserting an invariant the code enforces by construction can never
+  fail. "Every code point fits a byte" is unfalsifiable when the writer masks
+  with `& 0xff` — the PDF writer's byte-truncation bug (`export/palletpdf.js`)
+  would have passed a pin shaped that way. Assert the observable behaviour —
+  what the drawn string contains — not the guarantee.
 - An ASYNC pin body is unchecked. `t()` runs the body synchronously, so an
   `async () => {}` pin's throw becomes an unhandled rejection and the pin
   reports PASS — every assertion inside it silently unverified. `t()` now
@@ -539,3 +544,29 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
     objects, because the pivot holds every view's group at once and toggles
     visibility: an unscoped count saw the 3D tab's leftovers while the shelf
     was on screen and reported a torn facing that was not there.
+- **Latent: a single-`shelfRoot` restructure of `shelf3d.js` crashed the
+  headless renderer.** Tried during the shelf-compare amendments and
+  reverted (the per-bay grouping it would have replaced was a floor, not a
+  cap — it bought nothing). The crash itself was never diagnosed: ~50-60s
+  into a run, no JS error, heap flat at ~35MB, reproduced five times, gone
+  on revert. Heap flat while the process dies points GPU-side (geometry or
+  texture disposal under the merged structure), not a JS object-count leak.
+  Cheap probe before anyone tries this restructure again: rebuild a single
+  shelf bay 200x in a loop on the CURRENT (per-bay) structure. Survives, and
+  the fragility was specific to the reverted single-root arrangement — safe
+  to retry with more care. Doesn't survive, and there's a real disposal leak
+  in the current code, found for five minutes of work instead of discovered
+  mid-feature.
+- **Untested: whether JPEG smears a thin dashed line the way it doesn't
+  smear a flat board edge.** The capture-sheet composer's determinism check
+  measured JPEG against flat board colour and straight box edges (an
+  exploded-view survey) and found no meaningful smear — but that content is
+  exactly what JPEG's DCT handles best. It says nothing about a 1.5-2px
+  green dash-dot perforation line on tan board, which is a much smaller,
+  higher-frequency mark, and chroma subsampling hits colour edges harder
+  than luminance ones. This project has already broken a dashed line once
+  this way (the SVG perf line rendering solid because a dash pattern
+  restarts at every element — a different mechanism, same failure shape:
+  a fine repeating mark reads as a solid rule). Next time the perforation
+  state sheet regenerates, crop the dash region at actual embed size and
+  look — don't assume the flat-board measurement covers it.
