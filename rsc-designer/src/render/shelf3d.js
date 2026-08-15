@@ -227,7 +227,13 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
           shelfArtMat = mats[0]; bay.artMat = shelfArtMat;
           pmat = mats;
         }else{
-          pmat = [packMats, packMats];
+          // TWO material slots, not two ARRAYS. `packMats` is the six-face
+          // list a BoxGeometry needs; the display body has two groups (walls,
+          // floor), so nesting the list gave every group an array where a
+          // material belongs and the facings rendered as nothing at all.
+          // Caught by the first compare capture — the pin that reads the
+          // rendered tree only counted the tagged geometry, which was there.
+          pmat = [kraft, kraft];
         }
         rot = true;                                // same +Z-front frame as the art tube
       }else if(printed){
@@ -313,6 +319,17 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
   setCamSpan(opts.camSpan || Math.max(W, D, H)*0.95);
   ensureCutFrame();
 }
+
+/**
+ * A bay by id — for a caller that needs to show, hide or place ONE of them.
+ *
+ * The capture composer blanks every pivot child before a scene shows itself,
+ * so a scene that wants one bay simply turns that bay on and leaves the other
+ * off. Blanking is a floor, not a cap: what a capture contains is exactly what
+ * `show()` turned on, whether that is one group or several. Bays therefore
+ * stay separate pivot children, and a caller that needs one addresses it here.
+ */
+export const shelfBay = id => bays.get(id) || null;
 
 /** Dispose every bay whose id is not in `keep` — leaving compare mode disposes
  *  A and B, entering it disposes the single bay. */

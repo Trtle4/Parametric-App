@@ -23,7 +23,7 @@ import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
-import {buildShelf, showShelf, clearShelfBays, faceUpRoll} from '../render/shelf3d.js';
+import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
@@ -824,21 +824,37 @@ function refreshCompare(){
   writeCompareReadout(fillA, fillB);
 }
 
+/** Whether a side merchandises as a shelf-ready pack, and how far down its
+ *  front is torn. An SRP pack and a plain case present completely differently,
+ *  so a comparison without this is misleading. READ from the resolved
+ *  geometry's own path — the same points the dieline drew — never re-derived,
+ *  and the panel is found by NAME in the girth walk, never by position. */
+function shelfReadyText(geo){
+  const p = geo && geo.perf;
+  if(!p) return 'not perforated';
+  if(p.state !== 'display') return 'perforated — shown as shipped';
+  const front = p.path.panels.find(x => x.name === 'front');
+  if(!front) return 'display state';
+  const u = inputs.getUnit();
+  return `display · front retains ${fmtLen(Math.max(...front.pts.map(v => v[1])), u)} ${u}`;
+}
+
 /** The comparison table — the point of the view. Every figure is read from the
  *  two fills and the two rows; none is recomputed here. */
 function writeCompareReadout(a, b){
   const cell = f => {
-    if(!f || !f.geo) return {head: '—', lines: ['no sellable pack']};
+    if(!f || !f.geo) return {head: '—', lines: ['no sellable pack', '', '', '', '']};
     const occ = shelfOccupancy(f);
     const c = f.row && f.row.cost;
     return {head: `<b>${f.total}</b> ${f.noun}${f.total === 1 ? '' : 's'}`,
       lines: [`${f.facings} × ${f.stack} high × ${f.deep} deep`,
               occ.size,
               `${occ.widthPct}% width · ${occ.heightPct}% height`,
-              c && c.packCost != null ? `${fmtMoney(c.packCost)} / ${f.noun}` : 'cost —']};
+              c && c.packCost != null ? `${fmtMoney(c.packCost)} / ${f.noun}` : 'cost —',
+              shelfReadyText(f.geo)]};
   };
   const A = cell(a), B = cell(b);
-  const rows = ['On shelf', 'Facings × stack × deep', 'Occupies', 'Utilisation', 'Material cost'];
+  const rows = ['On shelf', 'Facings × stack × deep', 'Occupies', 'Utilisation', 'Material cost', 'Shelf-ready'];
   const va = [A.head, ...A.lines], vb = [B.head, ...B.lines];
   el('shReadout').innerHTML =
     `<div class="cmp"><div class="cmp-h cmp-sp">&nbsp;</div>` +
@@ -2186,7 +2202,64 @@ function refreshCompareControl(){
   btn.title = compare.on ? 'Back to the single shelf' : 'Show this saved design beside the current one';
   btn.textContent = compare.on ? 'Exit compare' : 'Compare';
   btn.classList.toggle('on', compare.on);
+  el('shCmpSheet').style.display = compare.on ? '' : 'none';
 }
+
+/* ---------- compare export: the capture composer's second caller ----------
+ * A 1x2 sheet, one scene per bay, captions from the two designs' own names,
+ * and the comparison readout carried in the title and footer — the thing a
+ * review meeting takes away with it.
+ *
+ * SCOPING: the composer blanks every pivot child before a scene shows itself,
+ * so each scene here turns on exactly its own bay and leaves the other off.
+ * Blanking is a floor, not a cap — what a capture contains is what `show()`
+ * turned on — so two bays as two pivot children is not a problem for it, and
+ * a pin reads the bays' visibility AT CAPTURE TIME to hold that.
+ *
+ * Each bay is also moved to the origin for its own capture: the camera orbits
+ * the origin, and a bay left at its aisle offset would sit off-centre in its
+ * cell. Offsets and visibility are both put back in `onRestore`.
+ *
+ * The composer needed no change to serve this. Its span derivation measures
+ * the visible scene, and the two bays are identical fixtures, so the two cells
+ * come out at one scale without being told to.
+ */
+async function compareSheet(){
+  if(!compare.on) return null;
+  const A = shelfBay('A'), B = shelfBay('B');
+  if(!A || !B) return null;
+  const offs = {A: A.group.position.x, B: B.group.position.x};
+  const only = id => () => {
+    A.group.visible = id === 'A'; B.group.visible = id === 'B';
+    A.group.position.x = 0; B.group.position.x = 0;
+  };
+  const fillA = shelfFill(build.project, selKey(), () => {});
+  const fillB = compareFillB();
+  const line = f => !f || !f.geo ? 'no sellable pack'
+    : `${f.total} ${f.noun}${f.total === 1 ? '' : 's'} · ${f.facings}×${f.stack}×${f.deep} · ` +
+      `${f.row && f.row.cost && f.row.cost.packCost != null ? fmtMoney(f.row.cost.packCost) : '—'}/${f.noun} · ` +
+      shelfReadyText(f.geo);
+  const sheet = await composeSheet({
+    title: 'Shelf comparison',
+    subtitle: `Identical bays · ${fmtLen(shelf.width, inputs.getUnit())} × ` +
+      `${fmtLen(shelf.depth, inputs.getUnit())} × ${fmtLen(shelf.height, inputs.getUnit())} ${inputs.getUnit()}`,
+    footer: `A · current — ${line(fillA)}     |     B · ${compare.name} — ${line(fillB)}`,
+    grid: {cols: 2},
+    scenes: [
+      {caption: `A · current`, camera: 'front', show: only('A')},
+      {caption: `B · ${compare.name}`, camera: 'front', show: only('B')}
+    ],
+    onRestore: () => {
+      A.group.visible = true; B.group.visible = true;
+      A.group.position.x = offs.A; B.group.position.x = offs.B;
+    }
+  });
+  if(document.dispatchEvent(new CustomEvent('comparesheet:composed',
+      {cancelable: true, detail: {sheet}})))
+    saveSheet(sheet, `shelf_compare_${compare.name.replace(/[^\w-]+/g, '_')}.png`);
+  return sheet;
+}
+el('shCmpSheet').addEventListener('click', () => { compareSheet(); });
 el('shCmpSlot').addEventListener('change', refreshCompareControl);
 el('shCompare').addEventListener('click', () => {
   if(compare.on){

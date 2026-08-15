@@ -149,6 +149,7 @@
   <!-- compare: the slot picker and the enter/exit toggle -->
   <select id="shCmpSlot"></select>
   <button id="shCompare" type="button"></button>
+  <button id="shCmpSheet" type="button" style="display:none"></button>
   <div id="shReadout"></div>
   <span id="spUnit"></span>
 </div>
@@ -211,6 +212,7 @@ import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
+import {shelfBay} from '../src/render/shelf3d.js';
 import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
 import {COST_DEFAULTS, rateToDisplay, rateFromDisplay, FT2_PER_M2} from '../src/core/cost.js';
 import {collate} from '../src/core/collation.js';
@@ -3488,18 +3490,24 @@ await (async () => {
     el('tabShelf').click();
     const single = shelfNums();
     enter(CMP_SLOT);
-    const cells = cmpCells();
-    if(!cells.length) throw new Error('no comparison table');
-    // 3 columns x (1 header + 5 rows)
-    if(cells.length !== 18) throw new Error(`comparison table is ${cells.length} cells, expected 18`);
-    // B is the same design as A, deserialized and solved independently, so
-    // every row must agree — a wrong project, a wrong row, or a contaminated
-    // cache would show here
-    for(let i = 3; i < cells.length; i += 3)
-      eq(cells[i + 2], cells[i + 1], `row "${cells[i]}" — B's independent solve vs A:`);
-    if(!/A · current/.test(cells[1])) throw new Error('bay A is not labelled');
-    if(!/Pinned B/.test(cells[2])) throw new Error("bay B is not labelled with its slot's name");
-    el('shCompare').click();                            // exit
+    // LEAVE COMPARE WHATEVER HAPPENS. Without this, an assertion below threw
+    // with compare still on and the NEXT pin's Compare click exited instead of
+    // entering — it then measured one bay and reported a scene fault that was
+    // not there. A cascade around one real failure is how a suite loses its
+    // credibility (CLAUDE.md), and this file has now seen it twice.
+    try{
+      const cells = cmpCells();
+      if(!cells.length) throw new Error('no comparison table');
+      // 3 columns x (1 header + 6 rows)
+      if(cells.length !== 21) throw new Error(`comparison table is ${cells.length} cells, expected 21`);
+      // B is the same design as A, deserialized and solved independently, so
+      // every row must agree — a wrong project, a wrong row, or a contaminated
+      // cache would show here
+      for(let i = 3; i < cells.length; i += 3)
+        eq(cells[i + 2], cells[i + 1], `row "${cells[i]}" — B's independent solve vs A:`);
+      if(!/A · current/.test(cells[1])) throw new Error('bay A is not labelled');
+      if(!/Pinned B/.test(cells[2])) throw new Error("bay B is not labelled with its slot's name");
+    } finally { if(el('shCompare').classList.contains('on')) el('shCompare').click(); }
     eq(shelfNums(), single, 'exit restores the single shelf exactly:');
   });
 
@@ -3524,24 +3532,56 @@ await (async () => {
     // pure core; if any part of it wrote to the live project or to build.js's
     // caches, A would move here and nowhere else would notice.
     //
-    // A HAS TO DIFFER FROM B for this to bite. Measured: with A and B the same
-    // design, a mutation that wrote B's pallet spec straight into the live
-    // project passed this pin — the leak was real and invisible, because the
-    // value leaked in was the value already there. So A's pallet is shortened
-    // first, and the fixture checks that the two really do differ.
+    // A HAS TO DIFFER FROM B ON EVERY ROW for this to bite. Measured: with A
+    // and B the same design, a mutation that wrote B's pallet spec straight
+    // into the live project passed — the leak was real and invisible, because
+    // the value leaked in was the value already there. Shortening A's pallet
+    // was not enough either: it moves no SHELF row, so five of the six columns
+    // still matched. So A is given a bigger carton (which moves the count, the
+    // arrangement, the occupancy, the utilisation and the cost) AND a display
+    // perforation (which moves the shelf-ready row), and the fixture refuses
+    // to run unless all six really differ.
     build.project.pallet.maxH -= 200;
-    build.recompute();
+    // the PRODUCT drives the carton, which is the pack being merchandised: one
+    // more piece across resizes it, and every geometric row follows.
+    build.project.primary.collation.nx += 1;
+    build.recompute(null);
+    const cartonGeo = levelGeometry(build.project, 'carton', build.getRounding(), build.getSelectedCandidateKey());
+    build.project.secondary.perf = applyPerfPreset('angled', cartonGeo, {enabled: true, state: 'display'});
+    build.recompute(null);
     const bPallet = save.loadFromSlot(CMP_SLOT).project.pallet.maxH;
     if(Math.abs(bPallet - build.project.pallet.maxH) < 1)
       throw new Error('vacuous fixture: A and B share a pallet spec, so a leak could not show');
     el('tabShelf').click();
     const before = aNumbers();
     enter(CMP_SLOT);
-    const during = aNumbers();
-    el('shCompare').click();
-    const after = aNumbers();
-    eq(during, before, "A's numbers during compare:");
-    eq(after, before, "A's numbers after compare:");
+    try{
+      // the fixture, asserted: every comparison row must separate the two
+      const cells = cmpCells();
+      if(cells.length !== 21) throw new Error(`comparison table is ${cells.length} cells, expected 21`);
+      const same = [];
+      for(let i = 3; i < cells.length; i += 3) if(cells[i + 1] === cells[i + 2]) same.push(cells[i]);
+      if(same.length)
+        throw new Error(`vacuous fixture: A and B agree on ${same.join(', ')} — a leak in those rows could not show`);
+      // the shelf-ready row states A's FRONT retained height, read off the
+      // resolved path. Mutation: reading panels[0] (the back) or never
+      // reporting display state keeps A and B different, so the vacuity check
+      // above passes — only a pin on the VALUE catches either.
+      const geoA = levelGeometry(build.project, 'carton', build.getRounding(), build.getSelectedCandidateKey());
+      const frontA = geoA.perf.path.panels.find(x => x.name === 'front');
+      const backA = geoA.perf.path.panels.find(x => x.name === 'back');
+      const hFront = Math.max(...frontA.pts.map(v => v[1]));
+      const hBack = Math.max(...backA.pts.map(v => v[1]));
+      if(Math.abs(hFront - hBack) < 1)
+        throw new Error('vacuous fixture: front and back retain the same height, so a wrong panel would not show');
+      const readyRow = cells[cells.indexOf('Shelf-ready') + 1];
+      if(!/display/.test(readyRow)) throw new Error(`A is in display state but the row says "${readyRow}"`);
+      if(!readyRow.includes(fmtLen(hFront, 'mm')))
+        throw new Error(`the row should state the FRONT retained height ${fmtLen(hFront, 'mm')}: "${readyRow}"`);
+      const during = aNumbers();
+      eq(during, before, "A's numbers during compare:");
+    } finally { if(el('shCompare').classList.contains('on')) el('shCompare').click(); }
+    eq(aNumbers(), before, "A's numbers after compare:");
   });
 
   tEdit('compare: editing A recomputes A only; B holds still', () => {
@@ -3565,6 +3605,74 @@ await (async () => {
          "B's column must not move when A is edited:");
       clr.wall = was;
     } finally { el('shCompare').click(); }
+  });
+
+  // AMENDMENT 1: the export goes through the capture composer. One scene per
+  // bay, captions from the two designs' own names, the readout in the chrome.
+  //
+  // AMENDMENT 2 asked for the two bays to be ONE scene, on the reasoning that
+  // the composer's blanking assumes a single visible scene. Measured, that
+  // premise does not hold: blanking is a FLOOR, not a cap — a capture contains
+  // exactly what `show()` turned on, one pivot child or several — so each
+  // scene here simply turns on its own bay. (The single-root restructure was
+  // built and reverted: it destabilised the headless run, and it bought
+  // nothing the descriptor could not say for itself. Reported.)
+  //
+  // The scoping is pinned where it actually happens: the bays' visibility is
+  // sampled AT CAPTURE TIME, through fold3d's per-frame hook, which runs
+  // against the capture camera.
+  el('tabShelf').click(); enter(CMP_SLOT); await settle();
+  let cmpSheet = null, cmpErr = '';
+  const seenVis = [];
+  // sample only the CAPTURE frames: the hook also runs on every live frame,
+  // where both bays are legitimately visible. The capture camera is the one
+  // with the sheet cell's aspect, which is how a frame can be told apart.
+  const CELL_ASPECT = 660/460;
+  const offVis = onFrame(cam => {
+    if(!cam || Math.abs(cam.aspect - CELL_ASPECT) > 0.01) return;
+    const a = shelfBay('A'), b = shelfBay('B');
+    if(a && b) seenVis.push(`${a.group.visible ? 'A' : ''}${b.group.visible ? 'B' : ''}`);
+  });
+  const cmpBefore = {orbit: JSON.stringify(getOrbit())};
+  const grabCmp = e => { e.preventDefault(); cmpSheet = e.detail.sheet; };
+  document.addEventListener('comparesheet:composed', grabCmp);
+  try{ el('shCmpSheet').click(); await waitFrames(() => !!cmpSheet, 8000); }
+  catch(e){ cmpErr = e.message; }
+  finally{ document.removeEventListener('comparesheet:composed', grabCmp); offVis(); }
+  const bayPosAfter = ['A', 'B'].map(id => { const b = shelfBay(id); return b ? b.group.position.x : null; });
+  const bayVisAfter = ['A', 'B'].map(id => { const b = shelfBay(id); return b ? b.group.visible : null; });
+  if(el('shCompare').classList.contains('on')) el('shCompare').click();
+
+  t('compare: the export is a 1x2 capture sheet, not a screenshot', () => {
+    if(cmpErr) throw new Error(cmpErr);
+    if(!cmpSheet) throw new Error('no comparesheet:composed event — the export did not run');
+    // 1x2 at the composer's own cell size: two cells across, one row down
+    eq(cmpSheet.width, 26*2 + 2*660 + 18, 'sheet width — two cells:');
+    eq(cmpSheet.height, 26*2 + 78 + 460 + 34 + 30, 'sheet height — one row:');
+    // and it embeds where the PDF pipeline already takes images
+    const rec = cmpSheet.jpeg();
+    if(!/^data:image\/jpeg;base64,/.test(rec.data)) throw new Error('not an embeddable record');
+    eq(rec.w, cmpSheet.width, 'embed width:');
+  });
+
+  t('compare: each capture contains ONE bay, sampled at capture time', () => {
+    if(!cmpSheet) throw new Error('the export did not run, so this proves nothing');
+    if(seenVis.length < 2)
+      throw new Error(`the frame hook saw ${seenVis.length} capture frames, expected at least 2`);
+    if(seenVis.some(v => v === 'AB'))
+      throw new Error('both bays were visible for a capture — the two cells would be identical');
+    if(!seenVis.includes('A') || !seenVis.includes('B'))
+      throw new Error(`each bay must get its own capture; saw ${[...new Set(seenVis)].join(',') || 'nothing'}`);
+  });
+
+  t('compare: the export puts both bays back where it found them', () => {
+    if(!cmpSheet) throw new Error('the export did not run, so this proves nothing');
+    // each bay is moved to the origin for its own capture, because the camera
+    // orbits the origin and a bay left at its aisle offset renders off-centre
+    if(bayPosAfter[0] === bayPosAfter[1])
+      throw new Error(`both bays came back at ${bayPosAfter[0]} — the aisle offset was not restored`);
+    eq(bayVisAfter.join(','), 'true,true', 'both bays visible again:');
+    eq(JSON.stringify(getOrbit()), cmpBefore.orbit, 'the live orbit moved:');
   });
 
   save.clearSlot(CMP_SLOT);
@@ -4404,6 +4512,31 @@ await (async () => {
   t('perf 3D: the shelf shows the pack in display state', () => {
     if(shelfDisplay < 1) throw new Error('the shelf drew no torn facings in display state');
     eq(shelfShipping, 0, 'shipping facings must be intact:');
+  });
+
+  // ...AND IT IS DRAWABLE. Counting tagged geometry proves the right builder
+  // ran, not that the result renders: the facings were handed `[packMats,
+  // packMats]` — two ARRAYS where two materials belong, because packMats is
+  // the six-face list a BoxGeometry needs — and drew nothing at all while this
+  // count stayed correct. Found by looking at the first compare capture.
+  setPerf3('secondary', 'angled', 'display'); await settle();
+  el('tabShelf').click(); await settle();
+  await waitFrames(() => displayMeshes() > 0);
+  const facingMats = [];
+  getPivot().traverse(o => {
+    if(o.geometry && o.geometry.userData && o.geometry.userData.perfDisplay && visible(o))
+      facingMats.push({groups: (o.geometry.groups || []).length,
+                       mats: Array.isArray(o.material) ? o.material.length : 1,
+                       nested: Array.isArray(o.material) && o.material.some(m => Array.isArray(m))});
+  });
+  setPerf3('secondary', null, 'closed'); await settle();
+  t('perf 3D: a torn facing has a real material for every group', () => {
+    if(!facingMats.length) throw new Error('no torn facing on the shelf to inspect');
+    for(const f of facingMats){
+      if(f.nested) throw new Error('a material slot holds an array — the facing cannot draw');
+      if(f.groups > 1 && f.mats < f.groups)
+        throw new Error(`${f.groups} geometry groups but ${f.mats} material(s)`);
+    }
   });
   t('perf 3D: the torn facing is the retained pack, not a full-height one', () => {
     setPerf3('secondary', 'angled', 'display');
