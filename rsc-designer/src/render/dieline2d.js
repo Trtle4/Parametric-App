@@ -5,6 +5,7 @@
  */
 import {fmtLen} from '../core/units.js';
 import {artImageSVG} from './artwork.js';
+import {auxLayersSVG} from './auxlayers.js';
 
 const esc = s => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
@@ -148,6 +149,13 @@ export function draw2d(svg, g, unit, printText, art){
   const overall = `
     <text x="${(fx(0) + fx(w))/2}" y="${(fy(0) + m*0.68).toFixed(1)}" fill="var(--muted)" font-family="var(--mono)" font-size="${dimFS}" text-anchor="middle">blank ${fmt(w)} × ${fmt(h)} ${unit}</text>`;
 
+  // Auxiliary die layers (geo.aux) — GENERIC. This renderer names no layer:
+  // it walks whatever `aux` carries and reads each one's stroke, weight and
+  // draw order from render/auxlayers.js, which is also what the legend reads.
+  // Drawn AFTER the cut polygon, because a tear line hidden under the cut it
+  // crosses reads as absent.
+  const auxSVG = auxLayersSVG(g.aux, fx, fy, strokeW);
+
   // uploaded artwork sits UNDERNEATH the panel outlines/labels so registration
   // is visibly correct. The blank canvas is the bbox (0..w × 0..h) — the same
   // canvas the template exported and the designer painted on — so a template-
@@ -162,6 +170,7 @@ export function draw2d(svg, g, unit, printText, art){
     ${zones}
     ${creases}
     <polygon points="${pts}" fill="rgba(229,72,77,0.04)" stroke="var(--cut)" stroke-width="${strokeW}" stroke-linejoin="round"/>
+    ${auxSVG}
     ${refs}
     ${labels}${zoneLabels}${printTxt}${dims}${overall}`;
 

@@ -87,6 +87,11 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   caught their bugs immediately. So: mutation-test every pin. Revert the fix;
   if the pin still passes, it is testing the implementation against itself,
   and the fixture is at fault, not the code.
+- A pin asserting an invariant the code enforces by construction can never
+  fail. "Every code point fits a byte" is unfalsifiable when the writer masks
+  with `& 0xff` — the PDF writer's byte-truncation bug (`export/palletpdf.js`)
+  would have passed a pin shaped that way. Assert the observable behaviour —
+  what the drawn string contains — not the guarantee.
 - An ASYNC pin body is unchecked. `t()` runs the body synchronously, so an
   `async () => {}` pin's throw becomes an unhandled rejection and the pin
   reports PASS — every assertion inside it silently unverified. `t()` now
@@ -240,6 +245,24 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   present by its own declared face, which is the honest merchandising
   comparison; per-side overrides, comparing three designs, and delta
   highlighting are all noted and unbuilt.
+- **The pallet PDF's PLAN view is shot through a LONG LENS, and that is what
+  puts the pallet in it.** A plan of a pallet has to contain the pallet, and it
+  did not: at the renderer's normal 38° lens a 1.4m load seen from overhead is
+  magnified against the deck a metre below it (the near plane of a perspective
+  frustum is simply wider), so the top layer covered a deck only 3% wider than
+  itself completely. Measured by hiding the 22 deck meshes and diffing the
+  capture: the deck contributed ZERO pixels at 38°, and 6285 at 2.2°. Framing
+  was NOT the cause and reframing alone never fixed it. `captureOrbitPNG` takes
+  an optional `fovDeg` and scales the distance by `tan(fov0/2)/tan(fov/2)`, so
+  the subject fills the frame exactly as before and only the perspective
+  compresses — toward the orthographic projection a plan is supposed to be. The
+  pin reads the camera each capture actually used (the per-frame hooks run
+  against the capture camera, which is the one place a test can see it) and
+  checks BOTH halves: a narrow lens was used, and `tan(fov/2)·distance` — the
+  visible extent — still matches the wide shots', because a narrow lens without
+  the compensation just zooms in and crops. Its framing target also accounts
+  for the PANEL's aspect now; the old `max(L, W)` would have cropped a pallet
+  deeper than it is wide.
 - **Orientation flip parity**: `Orientation` strings capture axis mapping
   only, not up/down flips — "inverted" occupies identical space to upright
   in the solver. Recorded in the Build UI but geometrically inert.
@@ -499,3 +522,70 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   frame loop, and reading in the same synchronous turn is a race the
   fixture loses under load. The acceptance test is running every pin ALONE
   in its own page load: that must stay at 0 failures.
+- **Confirm the specimen, not just the instrument.** "Calibrate, don't assume"
+  says check that your measurement works. This says check that there is
+  something to MEASURE. An instrument in perfect order, pointed at nothing,
+  reports the same clean pass as a fixed bug — and three of one session's four
+  escapes were that one shape, not four different mistakes.
+  - A pin ASSERTS ITS FIXTURE EXHIBITS THE CONDITION, and refuses to run if it
+    does not. The rigidity pin drove the fold builders with a preset that
+    trimmed no crease on the case, so a builder reading `geo.crease` for its
+    wall height passed; it now throws if the perforated and unperforated
+    creases come back equal. The DXF layer-purity pin compared against a path
+    built from the LEVEL rather than `level.perf` — and a `Level` also carries
+    `enabled`, so `normalizePerf` quietly returned a valid default whose five
+    segments happened to match the preset under test; it now uses a preset
+    whose counts differ (25 against 5), so the wrong object cannot agree.
+  - A pin that CALLS THE BUILDER tests the builder, and says nothing about
+    whether the app calls it. Two display-state pins invoked
+    `perfBodyGeometry` directly and passed while wiring mutations made both
+    the hierarchy shell and the shelf facings ignore display state entirely.
+    To test the wiring, read the RENDERED TREE — and scope it to VISIBLE
+    objects, because the pivot holds every view's group at once and toggles
+    visibility: an unscoped count saw the 3D tab's leftovers while the shelf
+    was on screen and reported a torn facing that was not there.
+- **Latent: a single-`shelfRoot` restructure of `shelf3d.js` crashed the
+  headless renderer.** Tried during the shelf-compare amendments and
+  reverted (the per-bay grouping it would have replaced was a floor, not a
+  cap — it bought nothing). The crash itself was never diagnosed: ~50-60s
+  into a run, no JS error, heap flat at ~35MB, reproduced five times, gone
+  on revert. Heap flat while the process dies points GPU-side (geometry or
+  texture disposal under the merged structure), not a JS object-count leak.
+  Cheap probe before anyone tries this restructure again: rebuild a single
+  shelf bay 200x in a loop on the CURRENT (per-bay) structure. Survives, and
+  the fragility was specific to the reverted single-root arrangement — safe
+  to retry with more care. Doesn't survive, and there's a real disposal leak
+  in the current code, found for five minutes of work instead of discovered
+  mid-feature.
+- **Untested: whether JPEG smears a thin dashed line the way it doesn't
+  smear a flat board edge.** The capture-sheet composer's determinism check
+  measured JPEG against flat board colour and straight box edges (an
+  exploded-view survey) and found no meaningful smear — but that content is
+  exactly what JPEG's DCT handles best. It says nothing about a 1.5-2px
+  green dash-dot perforation line on tan board, which is a much smaller,
+  higher-frequency mark, and chroma subsampling hits colour edges harder
+  than luminance ones. This project has already broken a dashed line once
+  this way (the SVG perf line rendering solid because a dash pattern
+  restarts at every element — a different mechanism, same failure shape:
+  a fine repeating mark reads as a solid rule). Next time the perforation
+  state sheet regenerates, crop the dash region at actual embed size and
+  look — don't assume the flat-board measurement covers it.
+- **RESOLVED (openability-guard task): an option scoped to one consumer
+  needs re-scoping when a second consumer starts reading the same fact.**
+  `outerFlaps` was correctly scoped as fold-only cosmetics — on a standard
+  0201 all four flaps are half the width, so swapping which pair is outer
+  leaves the blank identical, and that was true of every consumer that
+  existed. The perforation work promoted it to a fact with consequences
+  (`openabilityWarning` reads `meta.closure.top`, which fefco201 only
+  asserts for the `outerFlaps: 'L'` build), and nothing forced a re-read of
+  the original scoping — so the closure declaration silently disagreed with
+  the live fold render under `outerFlaps: 'W'`, false-clear on the
+  unopenable configuration and false-warn on the safe one. A correct
+  scoping decision can expire silently. Interim fix (`core/perf.js`,
+  `OUTERFLAPS_ASSERTED_STYLES`, marked TEMPORARY): the caller now confirms
+  which build is live, and ABSENCE OF THAT CONFIRMATION READS AS
+  NOT-EVALUATED, never as "assume the default" — an optional argument that
+  quietly defaults to the standard build reintroduces the identical failure
+  one level up. The real fix — thread `options` into the geometry build
+  chain and DERIVE `closure.top` from `outerFlaps` instead of asserting it —
+  is still open; this only closes the silent-wrong-answer gap until then.

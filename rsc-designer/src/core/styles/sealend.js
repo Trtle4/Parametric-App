@@ -119,6 +119,23 @@ export function sealend(p){
       // ARTWORK MAP — identical tube convention to a6120 (upright carton:
       // extrude along H, girth around back|side|front|side, FRONT at +Z). Same
       // shared template/upload/map system, fed by this style's own panel run.
+      // TOP CLOSURE, for the openability check (core/perf.js). Four flaps at
+      // each end, and the SEAL flap is GLUED down over the major flap and
+      // both dust flaps — so unlike the RSC's tape (which joins only the two
+      // majors) or the tuck end's friction fit, every one of the four is
+      // bonded into one piece. Retain any of them and that bond holds the
+      // lid to the base.
+      //
+      // Indices are the artMap girth walk (0 back, 1 right, 2 front, 3 left).
+      closure: {
+        top: [
+          {panel: 0, part: 'major flap', holdsLid: true},
+          {panel: 1, part: 'dust flap', holdsLid: true},
+          {panel: 2, part: 'seal flap', holdsLid: true},
+          {panel: 3, part: 'dust flap', holdsLid: true}
+        ],
+        lidJoin: 'the glued seal flap'
+      },
       artMap: {
         canvas: {w: x5, h: yt + ext},
         up: 'v',

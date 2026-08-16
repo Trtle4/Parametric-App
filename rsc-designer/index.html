@@ -25,6 +25,10 @@
        distinct; kraft is the board material. Left untouched by the
        design-system chrome palette. */
     --cut:#E5484D; --crease:#3E63DD; --kraft:#C69C6D;
+    /* Aux die layers (PERF, SCORE_HALF) are NOT tokens: render/auxlayers.js
+       holds their colours as literals, because the same values have to reach
+       the standalone artwork template SVG, which has no stylesheet. One
+       definition there beats a token here that a downloaded file cannot see. */
     /* ---- compatibility aliases: the SVG/canvas render code emits
        var(--muted)/var(--card)/var(--line2)/var(--focus); keep them
        resolving to the new token set so one source stays authoritative. */
@@ -621,6 +625,7 @@
     <button class="btn" id="btnPng2d" title="Download the 2D dieline/blank as a PNG">2D PNG</button>
     <button class="btn" id="btnPng3d" title="Switch to the 3D view to capture the camera">3D PNG</button>
     <button class="btn" id="btnPdf" title="One-page pallet summary — three views + key dimensions, portrait letter">Pallet PDF</button>
+    <button class="btn" id="btnStateSheet" style="display:none" title="Shipping and display state, side by side, at a fixed size">State sheet</button>
     <span class="hsep"></span>
     <button class="btn" id="btnSaveFile">Save</button>
     <button class="btn" id="btnLoadFile">Load</button>
@@ -712,6 +717,7 @@
         <select id="shCmpSlot"></select>
         <label></label>
         <button id="shCompare" type="button" class="sp-rot">Compare</button>
+        <button id="shCmpSheet" type="button" class="sp-rot" style="display:none" title="Both bays, side by side, at a fixed size">Compare PNG</button>
       </div>
       <div class="sp-readout" id="shReadout">—</div>
     </div>

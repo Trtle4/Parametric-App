@@ -12,6 +12,9 @@ import {toMM, fromMM, fmtLen, fmtInputValue} from '../core/units.js';
 import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
+import {auxLegendRows} from '../render/auxlayers.js';
+import {isDisplayGeo, openabilityWarning, perfSpecRows} from '../core/perf.js';
+import {composeSheet, saveSheet} from '../render/sheet.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
@@ -20,7 +23,7 @@ import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
-import {buildShelf, showShelf, clearShelfBays, faceUpRoll} from '../render/shelf3d.js';
+import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
 import {showNest, showProduct} from '../render/nest3d.js';
@@ -129,6 +132,7 @@ const LEVELS = {
   carton: {label: 'Carton', kind: 'style', tier: 'secondary', geoLevel: 'carton',
            styleIdOf: p => p.secondary.styleId, setStyleId: (p, id) => { p.secondary.styleId = id; },
            setOpenTop: (p, v) => { p.secondary.openTop = v; },
+           perfKey: 'secondary',
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
@@ -138,6 +142,7 @@ const LEVELS = {
   case:   {label: 'Case',   kind: 'style', tier: 'tertiary', geoLevel: 'case',
            styleIdOf: p => p.tertiary.styleId, setStyleId: (p, id) => { p.tertiary.styleId = id; },
            setOpenTop: (p, v) => { p.tertiary.openTop = v; },
+           perfKey: 'tertiary',   // the project key carrying this level's perforation
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
@@ -263,6 +268,7 @@ function refresh2d(){
     return;
   }
   const {w, h} = draw2d(el('svg'), g, u, build.project.printText, artFor(activeLevel, g));
+  update2dTabLabel();          // the legend is a claim about THIS render's layers
   const areaU = u === 'mm' ? 'm²' : 'ft²';
   const wq = fromMM(w, u), hq = fromMM(h, u);
   const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
@@ -278,7 +284,21 @@ function refresh2d(){
   // computed from — read off row.cost.perUnit, the same one derivation the
   // roll-up panel and the Build column read. Never multiplied again here.
   const costStat = levelUnitCostStat();
-  el('styleStats').innerHTML = outerStat + costStat + (style.readouts ? style.readouts(g) : []).map(r =>
+  // OPENABILITY. Warn, never block: an asymmetric or unusual build is
+  // legitimate, and a pack that will not open is a design error to show, not
+  // a state to forbid. Nothing on any write path consults this.
+  // The live `outerFlaps` build option rides along too — a style whose
+  // closure declaration is only asserted for its default build (fefco201)
+  // needs it to tell a real verdict from "not evaluated"; see perf.js.
+  const perfLevel = LEVELS[activeLevel].perfKey && build.project[LEVELS[activeLevel].perfKey];
+  const warn = openabilityWarning(g, (perfLevel && perfLevel.perf) || null,
+    {outerFlaps: perfLevel && perfLevel.options && perfLevel.options.outerFlaps});
+  const warnStat = warn
+    ? `<div class="stat" data-warn="openability" style="grid-column:1/-1">` +
+      `<span class="lab" style="color:var(--warn)">⚠ ${warn.title}</span>` +
+      `<span class="val" style="font-size:11px;line-height:1.5;font-weight:400">${warn.detail}</span></div>`
+    : '';
+  el('styleStats').innerHTML = outerStat + costStat + warnStat + (style.readouts ? style.readouts(g) : []).map(r =>
     `<div class="stat"><span class="lab">${r.label}</span><span class="val">${
       r.len !== undefined ? `${fmtLen(r.len, u)} ${u}` : r.text}</span></div>`
   ).join('');
@@ -517,6 +537,21 @@ function clearBCT(){
 }
 function renderBCT(g, stats){
   const st = build.project.pallet.stacking || {};
+  // McKee ASSUMES A CLOSED BOX. A container in display state has no lid and a
+  // profiled front, so the formula does not describe it — and a plausible
+  // wrong stacking number is worse than none, because nobody re-checks a
+  // number that looked reasonable. No derate, no interpolation, no invented
+  // display-state formula: the number is suppressed and says why.
+  if(isDisplayGeo(g)){
+    clearBCT();
+    el('bctRatio').textContent = 'not applicable — display state';
+    el('bctRatio').style.color = 'var(--ink-3)';
+    el('bctNote').innerHTML = '<strong>Not applicable.</strong> McKee assumes a closed box. ' +
+      'This container is perforated for display, so it has no lid and no continuous front panel. ' +
+      'Set the perforation back to shipping state for a stacking estimate.';
+    el('bctNote').style.color = 'var(--ink-3)';
+    return;
+  }
   // the load-bearing bottom box is the OUTERMOST tier on the pallet — the case
   // normally, the carton once the case is disabled (project.tertiary is then
   // off, so reading it would misjudge the style). Identical for the default
@@ -723,7 +758,10 @@ function refreshShelf(){
   // axis, the axis alone says nothing about which of that axis's two faces is
   // the display face. Sending only the orientation is what pointed a wrapped
   // tray's open top at the back wall.
-  const shelfOpts = {frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+  // the sellable pack's RESOLVED geometry travels with the fill, so a shelf
+  // renders display state when that container is set to it — one source, the
+  // same object the dieline and the DXF read.
+  const shelfOpts = {frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace, packGeo: fill.geo,
     ...(shelf.cutaway ? {cutaway: true, bundle, noun: fill.noun} : {}),
     ...(fill.artOnBody ? {wrapBundle: bundle} : {})};
   buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, shelfOpts);
@@ -776,7 +814,7 @@ function refreshCompare(){
       ? (id === 'A' ? hierarchyBundle() : hierarchyBundle(compare.project, fill.row))
       : null;
     buildShelf(fill.odGeo, shelf, fill.placements, true, fill.artInfo, fill.rotDeg, {
-      frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace,
+      frontO: fill.frontO, frontAxis: fill.geo.meta.frontFace, packGeo: fill.geo,
       ...(fill.artOnBody ? {wrapBundle: bundle} : {}),
       bayId: id, offsetX, label, camSpan: span
     });
@@ -791,21 +829,37 @@ function refreshCompare(){
   writeCompareReadout(fillA, fillB);
 }
 
+/** Whether a side merchandises as a shelf-ready pack, and how far down its
+ *  front is torn. An SRP pack and a plain case present completely differently,
+ *  so a comparison without this is misleading. READ from the resolved
+ *  geometry's own path — the same points the dieline drew — never re-derived,
+ *  and the panel is found by NAME in the girth walk, never by position. */
+function shelfReadyText(geo){
+  const p = geo && geo.perf;
+  if(!p) return 'not perforated';
+  if(p.state !== 'display') return 'perforated — shown as shipped';
+  const front = p.path.panels.find(x => x.name === 'front');
+  if(!front) return 'display state';
+  const u = inputs.getUnit();
+  return `display · front retains ${fmtLen(Math.max(...front.pts.map(v => v[1])), u)} ${u}`;
+}
+
 /** The comparison table — the point of the view. Every figure is read from the
  *  two fills and the two rows; none is recomputed here. */
 function writeCompareReadout(a, b){
   const cell = f => {
-    if(!f || !f.geo) return {head: '—', lines: ['no sellable pack']};
+    if(!f || !f.geo) return {head: '—', lines: ['no sellable pack', '', '', '', '']};
     const occ = shelfOccupancy(f);
     const c = f.row && f.row.cost;
     return {head: `<b>${f.total}</b> ${f.noun}${f.total === 1 ? '' : 's'}`,
       lines: [`${f.facings} × ${f.stack} high × ${f.deep} deep`,
               occ.size,
               `${occ.widthPct}% width · ${occ.heightPct}% height`,
-              c && c.packCost != null ? `${fmtMoney(c.packCost)} / ${f.noun}` : 'cost —']};
+              c && c.packCost != null ? `${fmtMoney(c.packCost)} / ${f.noun}` : 'cost —',
+              shelfReadyText(f.geo)]};
   };
   const A = cell(a), B = cell(b);
-  const rows = ['On shelf', 'Facings × stack × deep', 'Occupies', 'Utilisation', 'Material cost'];
+  const rows = ['On shelf', 'Facings × stack × deep', 'Occupies', 'Utilisation', 'Material cost', 'Shelf-ready'];
   const va = [A.head, ...A.lines], vb = [B.head, ...B.lines];
   el('shReadout').innerHTML =
     `<div class="cmp"><div class="cmp-h cmp-sp">&nbsp;</div>` +
@@ -1083,7 +1137,13 @@ function update2dTabLabel(){
     : lvl.kind === 'style' ? (activeStyle().structure === 'flexible' ? 'Blank' : 'Dieline')
     : 'Dieline';
   el('tab2d').textContent = `2D ${word}`;
-  el('hud2dKeys').innerHTML = (LEGEND_2D[lvl.kind] || []).map(([c, style, label]) =>
+  // AUX LAYERS append themselves. No layer is named here: auxLegendRows reads
+  // the SAME style map render/auxlayers.js draws from, and returns a row only
+  // for a layer actually PRESENT in this geometry's `aux`. So a legend can
+  // neither claim a line the blank does not carry nor describe one the
+  // renderer drew differently.
+  const rows = (LEGEND_2D[lvl.kind] || []).concat(auxLegendRows(activeGeometry()));
+  el('hud2dKeys').innerHTML = rows.map(([c, style, label]) =>
     `<span class="k"><span class="swatch" style="border-top-color:${c};border-top-style:${style}"></span>${label}</span>`
   ).join('');
 }
@@ -1466,6 +1526,10 @@ function updateExportButtonsState(){
     : flex ? 'No die for a flexible style — export the artwork template instead' : '';
   el('btnArt').style.display = flex ? '' : 'none';
   el('btnSpec').style.display = flex ? '' : 'none';
+  // the state sheet only means something for a container that HAS two states
+  const perfKey = LEVELS[activeLevel].perfKey;
+  const perfed = !!(perfKey && build.project[perfKey].perf && build.project[perfKey].perf.enabled);
+  el('btnStateSheet').style.display = perfed ? '' : 'none';
   setStateChip(disabledTier ? 'muted' : flex ? 'warn' : 'valid',
     disabledTier ? 'Tier disabled' : flex ? 'Flexible — export artwork' : 'Ready to export');
 }
@@ -2143,7 +2207,64 @@ function refreshCompareControl(){
   btn.title = compare.on ? 'Back to the single shelf' : 'Show this saved design beside the current one';
   btn.textContent = compare.on ? 'Exit compare' : 'Compare';
   btn.classList.toggle('on', compare.on);
+  el('shCmpSheet').style.display = compare.on ? '' : 'none';
 }
+
+/* ---------- compare export: the capture composer's second caller ----------
+ * A 1x2 sheet, one scene per bay, captions from the two designs' own names,
+ * and the comparison readout carried in the title and footer — the thing a
+ * review meeting takes away with it.
+ *
+ * SCOPING: the composer blanks every pivot child before a scene shows itself,
+ * so each scene here turns on exactly its own bay and leaves the other off.
+ * Blanking is a floor, not a cap — what a capture contains is what `show()`
+ * turned on — so two bays as two pivot children is not a problem for it, and
+ * a pin reads the bays' visibility AT CAPTURE TIME to hold that.
+ *
+ * Each bay is also moved to the origin for its own capture: the camera orbits
+ * the origin, and a bay left at its aisle offset would sit off-centre in its
+ * cell. Offsets and visibility are both put back in `onRestore`.
+ *
+ * The composer needed no change to serve this. Its span derivation measures
+ * the visible scene, and the two bays are identical fixtures, so the two cells
+ * come out at one scale without being told to.
+ */
+async function compareSheet(){
+  if(!compare.on) return null;
+  const A = shelfBay('A'), B = shelfBay('B');
+  if(!A || !B) return null;
+  const offs = {A: A.group.position.x, B: B.group.position.x};
+  const only = id => () => {
+    A.group.visible = id === 'A'; B.group.visible = id === 'B';
+    A.group.position.x = 0; B.group.position.x = 0;
+  };
+  const fillA = shelfFill(build.project, selKey(), () => {});
+  const fillB = compareFillB();
+  const line = f => !f || !f.geo ? 'no sellable pack'
+    : `${f.total} ${f.noun}${f.total === 1 ? '' : 's'} · ${f.facings}×${f.stack}×${f.deep} · ` +
+      `${f.row && f.row.cost && f.row.cost.packCost != null ? fmtMoney(f.row.cost.packCost) : '—'}/${f.noun} · ` +
+      shelfReadyText(f.geo);
+  const sheet = await composeSheet({
+    title: 'Shelf comparison',
+    subtitle: `Identical bays · ${fmtLen(shelf.width, inputs.getUnit())} × ` +
+      `${fmtLen(shelf.depth, inputs.getUnit())} × ${fmtLen(shelf.height, inputs.getUnit())} ${inputs.getUnit()}`,
+    footer: `A · current — ${line(fillA)}     |     B · ${compare.name} — ${line(fillB)}`,
+    grid: {cols: 2},
+    scenes: [
+      {caption: `A · current`, camera: 'front', show: only('A')},
+      {caption: `B · ${compare.name}`, camera: 'front', show: only('B')}
+    ],
+    onRestore: () => {
+      A.group.visible = true; B.group.visible = true;
+      A.group.position.x = offs.A; B.group.position.x = offs.B;
+    }
+  });
+  if(document.dispatchEvent(new CustomEvent('comparesheet:composed',
+      {cancelable: true, detail: {sheet}})))
+    saveSheet(sheet, `shelf_compare_${compare.name.replace(/[^\w-]+/g, '_')}.png`);
+  return sheet;
+}
+el('shCmpSheet').addEventListener('click', () => { compareSheet(); });
 el('shCmpSlot').addEventListener('change', refreshCompareControl);
 el('shCompare').addEventListener('click', () => {
   if(compare.on){
@@ -2350,19 +2471,39 @@ function exportPalletPdf(){
   // the plan view small in the middle of its panel); the cutaway sits a
   // touch tighter than the iso because a single case fills its panel poorly
   // at pallet framing.
-  const shot = (depth, solid, rx, ry, w, h, distOf) => {
+  const shot = (depth, solid, rx, ry, w, h, distOf, fovDeg) => {
     fold.captureOrbitPNG(rx, ry, 1.35, 8, 8);
     const res = hier.buildHierarchy(bundle, depth, {}, solid);
     const d = distOf ? distOf(res) : 1.35;
-    return {data: fold.captureOrbitPNG(rx, ry, d, w, h, 0.92), w, h};
+    return {data: fold.captureOrbitPNG(rx, ry, d, w, h, 0.92, fovDeg), w, h};
   };
+  /* THE PLAN VIEW is a plan OF THE PALLET, so the pallet has to be in it.
+   * Two things were stopping that, and both are here:
+   *
+   *  1. PERSPECTIVE. At the normal 38° lens a 1.4m load seen from overhead is
+   *     magnified against the deck a metre below it, and covers a pallet only
+   *     3% wider than itself completely — measured, the deck contributed ZERO
+   *     pixels to this panel. PLAN_FOV narrows the lens (the capture scales
+   *     the distance to keep the framing), which compresses that divergence
+   *     toward the orthographic projection a plan is supposed to be.
+   *  2. FRAMING. The old factor sized the frame to the deck edge-to-edge, so
+   *     even once visible the deck's own border would sit exactly on the frame
+   *     edge. PLAN_MARGIN leaves room, and the target now accounts for the
+   *     PANEL's aspect: which axis binds depends on whether the deck is wider
+   *     or deeper than the panel, and a deep-and-narrow pallet would have been
+   *     cropped by the old max(L, W). */
+  const PLAN_W = 1032, PLAN_H = 920;
+  const PLAN_FOV = 2.2;                 // degrees — a long lens, not a new camera
+  const PLAN_MARGIN = 1.16;             // room around the deck, so its edge is inside the frame
+  const PLAN_FILL = 0.78;               // the factor that frames a footprint edge-to-edge
+  const planTarget = Math.max(pal.L, pal.W*(PLAN_W/PLAN_H));
   const HOME = fold.HOME_ORBIT;
   let images;
   try{
     images = {
       iso: shot('pallet', true, HOME.rotX, HOME.rotY, 1344, 1200),  // ~290 dpi placed
-      top: shot('pallet', true, Math.PI/2, 0, 1032, 920,
-                res => 0.78*Math.max(pal.L, pal.W)/(res.span || 1)),
+      top: shot('pallet', true, Math.PI/2, 0, PLAN_W, PLAN_H,
+                res => PLAN_FILL*PLAN_MARGIN*planTarget/(res.span || 1), PLAN_FOV),
       cut: shot(bundle.caseGeo ? 'case' : 'carton', false, HOME.rotX, HOME.rotY, 1032, 920,
                 () => 0.85)
     };
@@ -2400,6 +2541,28 @@ function exportPalletPdf(){
       ['Per pallet', `${row.casesPerPallet}`]
     ]});
   }
+  // PERFORATION — one block, text only, nothing here feeds a calculation.
+  // Emitted only when a level actually carries one, so an unperforated
+  // project's sheet is byte-identical to the one it produced before perf
+  // existed. Rows come from core/perf.js already formatted, so the sheet
+  // cannot round a number differently from the readout, and the openability
+  // warning rides along: a spec sheet that reads clean for a pack that will
+  // not open is worse than no spec sheet.
+  const perfLevels = [['case', 'tertiary'], ['carton', 'secondary']]
+    .filter(([lvl, key]) => row.geo[lvl] && row.geo[lvl].perf);
+  if(perfLevels.length){
+    const rows = [];
+    for(const [lvl, key] of perfLevels){
+      const pre = perfLevels.length > 1 ? `${lvl[0].toUpperCase()}${lvl.slice(1)} · ` : '';
+      // same `outerFlaps` confirmation the rail passes — a spec sheet that
+      // reads clean because the argument didn't reach it is the defect this
+      // guard exists to prevent.
+      const opts = {outerFlaps: build.project[key].options && build.project[key].options.outerFlaps};
+      for(const [k, v] of perfSpecRows(row.geo[lvl], build.project[key].perf, q => `${fmtLen(q, u)} ${u}`, opts))
+        rows.push([pre + k, v]);
+    }
+    sections.push({label: 'Perforation', rows});
+  }
   sections.push({label: 'Pallet', rows: [
     ['Load (on deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(row.loadH*nLoads)} ${u}`],
     ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(nLoads*(deckH + row.loadH))} ${u}`]
@@ -2407,7 +2570,7 @@ function exportPalletPdf(){
 
   const bytes = buildPalletPdf({
     dateStr: dateStamp(), unit: u, images,
-    captions: {iso: 'Pallet · isometric', top: 'Layer pattern · top',
+    captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan',
                cut: `${outerNoun} cutaway`},
     sections
   });
@@ -2418,6 +2581,62 @@ function exportPalletPdf(){
     saveBlob(bytes, filename);
 }
 el('btnPdf').addEventListener('click', exportPalletPdf);
+
+/* ---------- state sheet: the capture composer's first caller ---------------
+ * render/sheet.js is a GENERAL primitive — deterministic camera, offscreen
+ * render, composed sheet — and knows nothing about perforation. All this
+ * function does is describe two scenes to it: "show the pack as it ships" and
+ * "show it in display state". An exploded case view or a shelf comparison
+ * describes its own scenes to the same function.
+ *
+ * Each scene's `show` sets the state and rebuilds; the sheet blanks the pivot
+ * around each one, so a capture can only contain what that scene turned on.
+ * The perforation state is snapshotted and handed back in `onRestore`, which
+ * the composer runs in a `finally` — the live view has to come back exactly
+ * as it was whether the sheet succeeds or throws.
+ */
+export async function stateSheet(){
+  const lvl = LEVELS[activeLevel], key = lvl.perfKey;
+  if(!key || !build.project[key].perf || !build.project[key].perf.enabled) return null;
+  const noun = lvl.label.toLowerCase();
+  const before = JSON.parse(JSON.stringify(build.project[key].perf));
+  // SOLID, not cutaway: the sheet is about the two states of the pack itself,
+  // and a cutaway shows the contents in both. Set through the same override
+  // the Solid/Cutaway control writes, and put back in onRestore.
+  const prevSolid = solidOverride;
+  const setState = st => {
+    build.project[key].perf = {...build.project[key].perf, state: st};
+    solidOverride = true;
+    build.recompute(selKey());
+    applyHierarchy(false);
+  };
+  const g = activeGeometry();
+  const sheet = await composeSheet({
+    title: `${lvl.label} — perforation states`,
+    subtitle: g ? `${activeStyle().name} · ${fmtLen(g.outer.L, inputs.getUnit())} × ` +
+      `${fmtLen(g.outer.W, inputs.getUnit())} × ${fmtLen(g.outer.H, inputs.getUnit())} ${inputs.getUnit()}` : '',
+    footer: `Parametric packaging designer · ${dateStamp()}`,
+    grid: {cols: 2},
+    scenes: [
+      {caption: `As shipped — intact, the tear drawn on the surface`, camera: 'home',
+       show: () => setState('closed')},
+      {caption: `Display state — everything above the tear removed`, camera: 'home',
+       show: () => setState('display')}
+    ],
+    onRestore: () => {
+      build.project[key].perf = before;
+      solidOverride = prevSolid;
+      build.recompute(selKey());
+      if(view === '3d') apply3dMode(); else if(view === 'shelf') refreshShelf(); else hier.show(false);
+    }
+  });
+  // cancelable so a test can read the composed sheet instead of downloading
+  if(document.dispatchEvent(new CustomEvent('statesheet:composed',
+      {cancelable: true, detail: {sheet, noun}})))
+    saveSheet(sheet, `${noun}_perforation_states.png`);
+  return sheet;
+}
+el('btnStateSheet').addEventListener('click', () => { stateSheet(); });
 
 // 2D zoom & pan
 const wrap2 = el('svgWrap');
