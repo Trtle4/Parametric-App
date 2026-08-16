@@ -49,6 +49,14 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   just the default angle) and check at real rendered size (not just
   zoomed in for your own inspection). Four separate ViewCube fixes shipped
   broken for exactly this reason before this rule was written.
+- Two legitimate shapes for style inputs. Data knowable at build time goes
+  into `geometry(params, options)` and is computed once, inside the style.
+  Data that depends on a solved chain — `shrink` needing the proud stack
+  height — is applied to `meta` after `geometry()` returns. The
+  discriminator is availability at build time, not convenience. Applying
+  build-time-knowable data after the fact scatters style knowledge into a
+  second file; deferring chain-dependent data into `geometry()` is
+  impossible. `outerFlaps` is the first kind, `shrink` the second.
 
 ## Tests
 
