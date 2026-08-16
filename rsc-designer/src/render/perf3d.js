@@ -72,6 +72,26 @@ function extendProfile(pts, over){
 }
 
 /**
+ * The display body's real bounding height — floor to the tallest point the
+ * profile actually reaches (a bowed panel can rise past its own corner
+ * endpoints, so this reads every point, not just `cornerH`). A caller
+ * exploding a display-state shell needs THIS, not `geo.outer.H`: the
+ * retained tray is far shorter than the closed container it came from, and
+ * an explode gap sized for the full height sends a torn-open tray flying
+ * many multiples of its own visible size away from its contents.
+ *
+ * @param {import('../core/types.js').Geometry} geo
+ * @returns {number}  mm, or `geo.outer.H` when there's no resolved profile
+ *   to measure (not a display body at all — same fallback the caller had).
+ */
+export function displayBodyExtentY(geo){
+  const path = geo && geo.perf && geo.perf.path;
+  if(!path || !Array.isArray(path.panels)) return geo.outer.H;
+  const maxH = Math.max(0, ...path.panels.flatMap(p => p.pts.map(pt => pt[1])));
+  return maxH + (geo.outer.H - geo.inner.H)/2;
+}
+
+/**
  * The retained body of a pack in display state: four profiled walls and a
  * floor, in the pack's canonical local frame.
  *

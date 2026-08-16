@@ -44,6 +44,30 @@
   directly), and asserts every displayed value the app owns still equals
   the project after each edit — not just right after a mount.
 -->
+<!--
+  MOBILE FIXTURE. Every other pin in this file runs against the bare
+  skeleton above, which — as its own comment elsewhere in this file says —
+  deliberately loads no layout CSS: only :root tokens, for text metrics and
+  var(--x) resolution. That is exactly why a reachability pin run only
+  against it can never see a wrap, a clip, or an @media-hidden control: the
+  CSS that does that clipping was never in the document to begin with. The
+  perforation reachability pins passed while State sheet and exploded were
+  unreachable on a phone for precisely this reason — desktop-shaped proof,
+  nothing about a 390px screen.
+
+  This iframe loads the REAL index.html — real CSS, real @media breakpoints,
+  its own independent app.js boot — at 390x600: a genuine phone width and a
+  post-browser-chrome height (Safari/Chrome's own toolbars eat ~150-250px of
+  a ~800px device before the page ever sees it; testing at the full,
+  chrome-less device height is the same mistake in miniature, and is exactly
+  why an earlier manual check of this file's two header buttons at 390x844
+  reported them reachable when 390x600 does not). Parked off-screen so it
+  never overlaps the visible suite, but never display:none — an @media query
+  needs real layout to evaluate against, and a non-rendered iframe computes
+  none.
+-->
+<iframe id="mobileFixture" src="../index.html"
+        style="position:fixed;left:-9999px;top:0;width:390px;height:600px;border:0"></iframe>
 <div id="loadNotice" style="display:none"></div>
 <div id="chainString"></div>
 <div class="brand">
@@ -249,7 +273,8 @@ import {MIN_FAITHFUL_DECK_H} from '../src/render/palletmesh.js';
 import {artImage} from '../src/render/artwork.js';
 import {LEGEND} from '../src/render/hierarchy3d.js';
 import {AUX_LAYERS, PERF_INK, auxLayerNames, auxLegendRows, resetAuxWarnings} from '../src/render/auxlayers.js';
-import {perfBodyGeometry, perfLineGeometry, perfFrames3d} from '../src/render/perf3d.js';
+import {perfBodyGeometry, perfLineGeometry, perfFrames3d, displayBodyExtentY} from '../src/render/perf3d.js';
+import {rankOffsets, shellOffset} from '../src/render/explode.js';
 import {composeSheet, cameraByName, layoutGrid, SHEET_CAMERAS, visibleSpan} from '../src/render/sheet.js';
 import {getStageBackground, setStageBackground} from '../src/render/fold3d.js';
 import {openabilityWarning, perfSpecRows} from '../src/core/perf.js';
@@ -4592,6 +4617,119 @@ await (async () => {
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 
+/* ============ PERFORATION x EXPLODED — the cross-feature gap ==============
+ * Perf and exploded were each pinned thoroughly, at length, and never
+ * together. A display-state shell's Y explode offset used `geo.outer.H` —
+ * the closed container's full height — when the retained tray it actually
+ * draws is far shorter; the gap sized off the wrong dimension sent the tray
+ * many multiples of its own visible size away from the contents that never
+ * moved, at any nonzero factor. This checks the RENDERED SCENE — mesh
+ * bounding boxes, not `explodeTier`'s return value — because the earlier
+ * bugs this file's other cross-checks caught were all "the builder is
+ * right and the app never calls it right" in one shape or another.
+ */
+await (async () => {
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+  const setPerf5 = (levelKey, presetId, state) => {
+    const geo = geoAt(levelKey === 'tertiary' ? 'case' : 'carton');
+    build.project[levelKey].perf = presetId
+      ? applyPerfPreset(presetId, geo, {enabled: true, state}) : {};
+    build.recompute(build.getSelectedCandidateKey());
+  };
+
+  setLevel('case'); el('tab2d').click(); await settle();
+  setPerf5('secondary', null, 'closed');       // carton perf off — keep the case the one variable
+  setPerf5('tertiary', 'angled', 'display');   // case: perforated, DISPLAY state
+  await settle();
+  el('tab3d').click(); await settle();
+  el('d_case').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+
+  // Every carton instance's own world Y centre + its own Y extent (its outer
+  // H in whatever orientation it is placed), and the shell's own world Y —
+  // read straight off the rendered scene. Per-instance Box3/matrix, the same
+  // idiom the pallet-deck pins above use (setFromObject alone only sees the
+  // untransformed prototype for an InstancedMesh).
+  const cartonYs = () => {
+    const out = [];
+    getPivot().updateMatrixWorld(true);
+    getPivot().traverse(o => {
+      if(!(o.isInstancedMesh && o.userData && o.userData.tierName === 'carton')) return;
+      o.geometry.computeBoundingBox();
+      const gb = o.geometry.boundingBox, M = new THREE.Matrix4();
+      for(let i = 0; i < o.count; i++){
+        o.getMatrixAt(i, M);
+        const b = gb.clone().applyMatrix4(M.clone().premultiply(o.matrixWorld));
+        out.push({y: (b.min.y + b.max.y)/2, extentY: b.max.y - b.min.y});
+      }
+    });
+    return out;
+  };
+  const trayY = () => {
+    let y = null;
+    getPivot().updateMatrixWorld(true);
+    getPivot().traverse(o => { if(o.geometry && o.geometry.userData && o.geometry.userData.perfDisplay && o.visible) y = o.position.y; });
+    return y;
+  };
+
+  // FIXTURE PRECONDITION: a shell and content actually rendered, and the
+  // retained tray is genuinely much shorter than the closed container it
+  // came from — the exact shape the bug needs to be visible at all.
+  const cartons0 = cartonYs(), trayY0 = trayY();
+  const fullH = geoAt('case').outer.H, retainedH = displayBodyExtentY(geoAt('case'));
+  if(!cartons0.length) throw new Error('no carton content rendered — fixture is broken, not the feature');
+  if(trayY0 === null) throw new Error('no display-body shell rendered — fixture is broken, not the feature');
+  if(!(retainedH < fullH*0.9)) throw new Error(`fixture proves nothing: retained height ${retainedH.toFixed(1)} is not meaningfully shorter than the closed height ${fullH.toFixed(1)}`);
+
+  t('display x exploded, factor 0: the shell has not moved — factor zero is identity here too', () => {
+    eq(trayY(), trayY0, 'shell Y:');
+  });
+
+  // ISOLATE Y: 'y (vertical)' only, so the shell's world-Y position IS
+  // `ex.shell.y` alone — no X/Z cross-talk to confound the comparison below.
+  el('m3explodeAxis').value = 'y'; fire(el('m3explodeAxis'), 'change'); await settle();
+  el('m3explodeToggle').click(); await settle();
+  el('m3explodeFactor').value = 100; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => trayY() !== trayY0);
+  const trayY1 = trayY();
+
+  // What the app's OWN, unmodified formula (explode.js) predicts for the
+  // shell's Y offset, fed the REAL content ranks read off the scene —
+  // computed TWO ways: with the dimension the fix uses (the retained tray's
+  // own real height) and with the dimension the bug used (`geo.outer.H`,
+  // the full closed height). This is "run the wrong implementation against
+  // the fixture" (CLAUDE.md): if the buggy prediction did not differ from
+  // the correct one here, this pin could not tell a fixed shell from a
+  // broken one.
+  const positions = cartons0.map(c => c.y), unit = Math.max(...cartons0.map(c => c.extentY));
+  const ranks = rankOffsets(positions);
+  const predictedFixed = shellOffset(ranks, unit, retainedH, 1);
+  const predictedBuggy = shellOffset(ranks, unit, fullH, 1);
+  t('display x exploded, factor 1: the buggy and fixed predictions actually differ, or this pin proves nothing', () => {
+    if(Math.abs(predictedBuggy - predictedFixed) < 5)
+      throw new Error(`fixture too weak: buggy (${predictedBuggy.toFixed(1)}) and fixed (${predictedFixed.toFixed(1)}) predictions barely differ`);
+  });
+  t('display x exploded, factor 1: the shell moves by a gap sized to the RETAINED tray, not the full closed height', () => {
+    const observed = trayY1 - trayY0;
+    // Tolerance is generous relative to the reading, not the effect: the
+    // scene reads bounding boxes (corner-overlap padding, line lift) while
+    // the prediction reads solved outer dims, a few mm of drift on a ~300mm
+    // offset — still two orders of magnitude tighter than the >150mm gap
+    // between the fixed and buggy predictions this fixture requires above.
+    approx(observed, predictedFixed, 'observed shell Y offset vs the retained-height prediction:', 15);
+    if(Math.abs(observed - predictedBuggy) < Math.abs(observed - predictedFixed))
+      throw new Error(`observed offset ${observed.toFixed(1)} is closer to the BUGGY (full-height) prediction ${predictedBuggy.toFixed(1)} than the fixed one ${predictedFixed.toFixed(1)} — the packs are not sitting in the retained tray`);
+  });
+
+  el('m3explodeFactor').value = 0; fire(el('m3explodeFactor'), 'input');
+  el('m3explodeToggle').click(); await settle();
+  el('m3explodeAxis').value = 'all'; fire(el('m3explodeAxis'), 'change'); await settle();
+  setPerf5('tertiary', null, 'closed');
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
 /* ============ PERFORATION — openability warning and spec sheet ============
  * The warning is a REPORT, not a gate, and the spec sheet is TEXT. So the
  * pins read the app's own readout and the app's own PDF bytes, and check that
@@ -5191,6 +5329,104 @@ await (async () => {
       }
     } finally { setStyle(origStyle); await settle(); }
   }
+
+  // AT THE WIDTH THE USER DOES IT. Same assertions, same levels, same
+  // styles — against the mobile fixture's real CSS at 390x600 instead of
+  // this document's CSS-free skeleton. CLAUDE.md: "a feature is not done
+  // until a pin drives it the way a user does — at the width the user
+  // does it."
+  const mframe = document.getElementById('mobileFixture');
+  await new Promise(resolve => {
+    const ready = () => mframe.contentDocument && mframe.contentDocument.getElementById('style')
+      && mframe.contentDocument.getElementById('style').options.length > 0;
+    if(ready()) return resolve();
+    mframe.addEventListener('load', async () => {
+      const start = Date.now();
+      while(!ready() && Date.now() - start < 8000) await new Promise(r => setTimeout(r, 50));
+      resolve();
+    }, {once: true});
+  });
+  const mdoc = () => mframe.contentDocument;
+  const mel = id => mdoc().getElementById(id);
+  const mcs = node => mframe.contentWindow.getComputedStyle(node);
+  const mfire = (node, type) => node.dispatchEvent(new Event(type, {bubbles: true}));
+  const msettle = () => new Promise(r => setTimeout(r, 80));   // a real app + real recompute, not a bare microtask
+  const mSetLevel = level => { mel('style').value = level; mfire(mel('style'), 'change'); };
+  const mSetStyle = id => { mel('levelStyleSel').value = id; mfire(mel('levelStyleSel'), 'change'); };
+  // "reachable" means on-screen, not merely `display !== 'none'` — a
+  // control positioned or clipped off the viewport reads display:block and
+  // would pass a display-only check while still being unreachable.
+  const onScreen = node => {
+    const r = node.getBoundingClientRect();
+    return r.width > 0 && r.height > 0
+      && r.top >= 0 && r.left >= 0
+      && r.bottom <= mframe.contentWindow.innerHeight && r.right <= mframe.contentWindow.innerWidth;
+  };
+
+  for(const [level] of PERF_LEVELS2){
+    mSetLevel(level); await msettle();
+    const origStyle = mel('levelStyleSel').value;
+    try{
+      for(const styleId of APPLICABLE[level]){
+        if(![...mel('levelStyleSel').options].map(o => o.value).includes(styleId)) continue;
+        mSetStyle(styleId); await msettle();
+        t(`perforation reachability at 390px: ${level}/${styleId} shows the enable control`, () => {
+          if(mcs(mel('perfPanel')).display === 'none') throw new Error('perfPanel is hidden');
+          if(mcs(mel('perfBody')).display === 'none') throw new Error('perfBody is hidden — reads as unsupported, not reachable');
+          const box = mel('perfEnable');
+          if(mcs(box).display === 'none' || box.offsetParent === null) throw new Error('the enable checkbox is not visible');
+        });
+      }
+    } finally { mSetStyle(origStyle); await msettle(); }
+  }
+
+  // STATE SHEET / EXPLODED SHEET at 390px. Both are export buttons in the
+  // header — gated, respectively, on the active level carrying an enabled
+  // perforation and on the active level being carton/case/pallet. Neither
+  // gate is width-dependent, so once satisfied the only remaining question
+  // is layout: is the button actually on screen, not just `display:block`.
+  mSetLevel('case'); await msettle();
+  mSetStyle('fefco201'); await msettle();
+  if(!mel('perfEnable').checked){ mel('perfEnable').click(); await msettle(); }
+  t('State sheet at 390px: reachable once its gate (an enabled perforation) is satisfied', () => {
+    if(mcs(mel('btnStateSheet')).display === 'none') throw new Error('still display:none after satisfying the gate');
+    if(!onScreen(mel('btnStateSheet'))) throw new Error('rendered but off-screen/clipped at 390px');
+  });
+  t('Exploded sheet at 390px: reachable at the default level (case is in EXPLODE_LEVELS)', () => {
+    if(mcs(mel('btnExplodedSheet')).display === 'none') throw new Error('display:none at a level EXPLODE_LEVELS includes');
+    if(!onScreen(mel('btnExplodedSheet'))) throw new Error('rendered but off-screen/clipped at 390px');
+  });
+  if(mel('perfEnable').checked){ mel('perfEnable').click(); await msettle(); }
+
+  // THE EXPLODE TOGGLE ITSELF, at the depth that actually stressed it: the
+  // toolbar floats absolutely inside `.stage`, which clips (overflow:hidden,
+  // needed to mask the canvas at its own edges) — at 390x600 with Pallet
+  // depth's extra cycle-arrow row, the toolbar's own content is taller than
+  // the room .stage has. Mutate the CSS fix (drop `.mode3d`'s `bottom`/
+  // `overflow-y:auto` at the mobile breakpoint) and this is what catches it.
+  mel('tab3d').click(); await msettle();
+  mel('d_pallet').click(); await msettle();
+  t('Explode toggle at 390px, Pallet depth: the toolbar is never clipped by .stage, and any overflow is scrollable, not lost', () => {
+    const stage = mdoc().querySelector('.stage'), toolbar = mel('mode3d');
+    const sr = stage.getBoundingClientRect(), tr = toolbar.getBoundingClientRect();
+    // .mode3d's OWN box must fit inside .stage's clip region — a box that
+    // exceeds it is silently cut off by .stage's overflow:hidden, exactly
+    // the mechanism that lost the Grid/White row before the CSS fix.
+    if(tr.bottom > sr.bottom + 0.5)
+      throw new Error(`toolbar bottom (${tr.bottom.toFixed(0)}) exceeds .stage's clip region (${sr.bottom.toFixed(0)}) — rows below the edge are clipped, not scrollable`);
+    // when the toolbar's OWN content (Fold/depth/cycle/viewmode/explode/
+    // dims/bg — Pallet depth's full row set) is taller than the box .stage
+    // has room for, overflow-y must let a user reach the rest by scrolling
+    // the toolbar — not leave it clipped with no way in.
+    if(toolbar.scrollHeight > toolbar.clientHeight + 1 && mcs(toolbar).overflowY !== 'auto' && mcs(toolbar).overflowY !== 'scroll')
+      throw new Error(`toolbar content (${toolbar.scrollHeight}px) exceeds its box (${toolbar.clientHeight}px) and overflow-y is "${mcs(toolbar).overflowY}" — the overflow is clipped, not reachable`);
+    // and the specific controls this defect was reported against must be
+    // present somewhere inside that scrollable content (not merely display:
+    // none'd away as a wholly separate failure mode).
+    for(const id of ['m3explodeToggle', 'm3explodeFactor', 'm3explodeAxis'])
+      if(mcs(mel(id)).display === 'none') throw new Error(`#${id} is display:none at Pallet depth`);
+  });
+  mel('tab2d').click(); await msettle();
 
   // Work the rest of this block on Case/FEFCO201, the exact combination the
   // deploy report used.

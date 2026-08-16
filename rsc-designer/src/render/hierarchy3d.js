@@ -13,7 +13,7 @@
  * Wrap-vs-box keys off `structure`, never a styleId.
  */
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
-import {perfDisplayBody, perfSurfaceLine} from './perf3d.js';
+import {perfDisplayBody, perfSurfaceLine, displayBodyExtentY} from './perf3d.js';
 import {isDisplayGeo} from '../core/perf.js';
 import {explodeTier} from './explode.js';
 import {buildTray3d} from './tray3d.js';
@@ -127,7 +127,14 @@ function tierExplode(tier, geo, children, parentInnerH, ex){
     const od = orient(tier.childOuter, pl.orientation);
     return {x: od.l, y: od.h, z: od.w};
   });
-  const shellExtent = {x: geo.outer.L, y: geo.outer.H, z: geo.outer.W};
+  // DISPLAY STATE: the retained tray is far shorter than the closed
+  // container it came from — its footprint (L/W) is unchanged (the floor
+  // sits at the same place a closed box's floor would), but a gap sized off
+  // the full closed height sends the torn-open tray flying many multiples
+  // of its own visible size away from its contents. Use what the shell
+  // actually renders at.
+  const shellH = isDisplayGeo(geo) ? displayBodyExtentY(geo) : geo.outer.H;
+  const shellExtent = {x: geo.outer.L, y: shellH, z: geo.outer.W};
   return explodeTier(positions, extents, shellExtent, ex.axis || 'all', ex.factor);
 }
 
