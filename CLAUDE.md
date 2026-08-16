@@ -570,3 +570,22 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   a fine repeating mark reads as a solid rule). Next time the perforation
   state sheet regenerates, crop the dash region at actual embed size and
   look — don't assume the flat-board measurement covers it.
+- **RESOLVED (openability-guard task): an option scoped to one consumer
+  needs re-scoping when a second consumer starts reading the same fact.**
+  `outerFlaps` was correctly scoped as fold-only cosmetics — on a standard
+  0201 all four flaps are half the width, so swapping which pair is outer
+  leaves the blank identical, and that was true of every consumer that
+  existed. The perforation work promoted it to a fact with consequences
+  (`openabilityWarning` reads `meta.closure.top`, which fefco201 only
+  asserts for the `outerFlaps: 'L'` build), and nothing forced a re-read of
+  the original scoping — so the closure declaration silently disagreed with
+  the live fold render under `outerFlaps: 'W'`, false-clear on the
+  unopenable configuration and false-warn on the safe one. A correct
+  scoping decision can expire silently. Interim fix (`core/perf.js`,
+  `OUTERFLAPS_ASSERTED_STYLES`, marked TEMPORARY): the caller now confirms
+  which build is live, and ABSENCE OF THAT CONFIRMATION READS AS
+  NOT-EVALUATED, never as "assume the default" — an optional argument that
+  quietly defaults to the standard build reintroduces the identical failure
+  one level up. The real fix — thread `options` into the geometry build
+  chain and DERIVE `closure.top` from `outerFlaps` instead of asserting it —
+  is still open; this only closes the silent-wrong-answer gap until then.

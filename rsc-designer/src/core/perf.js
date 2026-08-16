@@ -659,7 +659,7 @@ export const isDisplayGeo = geo => !!(geo && geo.perf && geo.perf.state === 'dis
  *
  * @param {Function} [fmt]  length formatter (mm -> display string)
  */
-export function perfSpecRows(geo, perfIn, fmt = v => `${(+v).toFixed(1)} mm`){
+export function perfSpecRows(geo, perfIn, fmt = v => `${(+v).toFixed(1)} mm`, opts){
   const path = geo ? buildPerfPath(geo, perfIn) : null;
   if(!path) return [['Perforated', 'No']];
   const modeOf = p => p.mode === 'profiled'
@@ -675,7 +675,11 @@ export function perfSpecRows(geo, perfIn, fmt = v => `${(+v).toFixed(1)} mm`){
     ['Panels', path.panels.map(p => `${p.name} ${modeOf(p)}`).join(' · ')],
     ['Tear length', fmt(path.tearLength)]
   ];
-  const warn = openabilityWarning(geo, perfIn);
+  // rides along: a spec sheet that reads clean because the flap arrangement
+  // wasn't confirmed is the same defect as one that reads clean for a pack
+  // that will not open (see openabilityWarning) — so `opts` is threaded
+  // through here rather than omitted for convenience.
+  const warn = openabilityWarning(geo, perfIn, opts);
   if(warn) rows.push(['⚠ ' + warn.title, warn.detail]);
   return rows;
 }
@@ -712,7 +716,25 @@ export function perfSpecRows(geo, perfIn, fmt = v => `${(+v).toFixed(1)} mm`){
  * the base crease, so a bottom flap always stays with the base, which is
  * where it belongs.
  *
- * @returns {null|{panels:string[], parts:string[], title:string, detail:string}}
+ * TEMPORARY, until `meta.closure.top` is DERIVED from the style's own build
+ * option instead of asserted for one of them (see the `closure` comment in
+ * core/styles/fefco201.js) — delete OUTERFLAPS_ASSERTED_STYLES and the block
+ * below that reads it the moment that lands. Until then, fefco201's
+ * declaration is only true for its DEFAULT `outerFlaps` build; evaluating it
+ * without the caller confirming which build is live would recreate the exact
+ * inversion this guard exists to close (false-clear on the unopenable
+ * config, false-warn on the safe one — both traced against the live fold
+ * renderer's `options.outerFlaps` before this guard existed). So the caller
+ * must say which build is live, and ABSENCE OF THAT CONFIRMATION MEANS
+ * NOT-EVALUATED — never "assume the default": an optional argument that
+ * quietly defaults to the standard build reintroduces the same failure one
+ * level up, because a caller that forgets to pass it gets a confident wrong
+ * answer instead of an honest gap.
+ * @type {Object<string,string>} styleId -> the build value its closure.top assumes
+ */
+const OUTERFLAPS_ASSERTED_STYLES = {fefco201: 'L'};
+/**
+ * @returns {null|{panels:string[], parts:string[], title:string, detail:string}|{notEvaluated:true, title:string, detail:string}}
  */
 export function openabilityWarning(geo, perfIn, opts){
   const path = geo ? buildPerfPath(geo, perfIn, opts) : null;
@@ -720,6 +742,21 @@ export function openabilityWarning(geo, perfIn, opts){
   const cl = geo.meta && geo.meta.closure;
   // a style that declares no closure gets no opinion — silence beats a guess
   if(!cl || !Array.isArray(cl.top)) return null;
+
+  const styleId = geo.meta && geo.meta.style;
+  if(Object.prototype.hasOwnProperty.call(OUTERFLAPS_ASSERTED_STYLES, styleId)){
+    const assumed = OUTERFLAPS_ASSERTED_STYLES[styleId];
+    const live = opts && opts.outerFlaps;
+    if(live == null || live !== assumed){
+      return {
+        notEvaluated: true,
+        title: 'Openability not evaluated',
+        detail: 'Openability not evaluated for this flap arrangement — this style\'s ' +
+          'top-closure declaration (which panel holds the lid) is asserted for the standard ' +
+          'build only, and the live flap arrangement was not confirmed.'
+      };
+    }
+  }
 
   const held = [];
   for(const fl of cl.top){
