@@ -626,6 +626,7 @@
     <button class="btn" id="btnPng3d" title="Switch to the 3D view to capture the camera">3D PNG</button>
     <button class="btn" id="btnPdf" title="One-page pallet summary — three views + key dimensions, portrait letter">Pallet PDF</button>
     <button class="btn" id="btnStateSheet" style="display:none" title="Shipping and display state, side by side, at a fixed size">State sheet</button>
+    <button class="btn" id="btnExplodedSheet" style="display:none" title="Assembled vs exploded, side by side, at a fixed size">Exploded sheet</button>
     <span class="hsep"></span>
     <button class="btn" id="btnSaveFile">Save</button>
     <button class="btn" id="btnLoadFile">Load</button>
@@ -822,6 +823,21 @@
       <!-- look INSIDE (fit) vs look AT (graphics). Defaults smartly: Solid when
            the pack shown has artwork, Cutaway otherwise. Hierarchy mode only. -->
       <div class="seg" id="m3viewmode"><button id="m3solid" title="Closed pack — see the artwork on every printed face">Solid</button><button id="m3cut" class="on" title="Cut away the near faces — see the contents / fit">Cutaway</button></div>
+      <!-- EXPLODED VIEW: a transform on the placements this depth already
+           solved (render/explode.js) — never a re-layout, never a re-solve.
+           Carton/case/pallet only; the toggle is hidden at any other depth.
+           Axis default follows the level (all axes for carton/case, vertical
+           only for the pallet) the first time it's turned on per depth. -->
+      <div class="seg" id="m3explode" style="display:none">
+        <button id="m3explodeToggle" title="Pull the contents — and the shell itself — apart along the chosen axis">Explode</button>
+        <input type="range" id="m3explodeFactor" min="0" max="100" value="60" step="1" style="width:70px;vertical-align:middle" title="Explode amount" disabled>
+        <select id="m3explodeAxis" title="Explode axis" disabled>
+          <option value="all">All axes</option>
+          <option value="x">X</option>
+          <option value="y">Y (vertical)</option>
+          <option value="z">Z</option>
+        </select>
+      </div>
       <div class="seg"><button id="m3dims" title="Overlay L × W × H on the component">Dims</button></div>
       <!-- stage background: Grid is a SCALE REFERENCE (part of the shared
            canvas treatment), White is a clean ground for screenshots and the

@@ -15,6 +15,7 @@
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
 import {perfDisplayBody, perfSurfaceLine} from './perf3d.js';
 import {isDisplayGeo} from '../core/perf.js';
+import {explodeTier} from './explode.js';
 import {buildTray3d} from './tray3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
@@ -100,6 +101,35 @@ export function orientQuat(o){
 
 // child centre in the parent's local frame (parent cavity centred; z from floor)
 function childPos(pl, parentInnerH){ return new THREE.Vector3(pl.x, -parentInnerH/2 + pl.z, pl.y); }
+
+/**
+ * Per-tier exploded-view offsets, computed ONCE from the tier's own children
+ * + shell so every instance and the shell itself read the same rank set and
+ * the same factor. `ex` is `{level, axis, factor}` or null/undefined for "no
+ * explosion here" — this tier only explodes when `ex.level` names IT
+ * (`tier.name`), so a case explosion doesn't also explode the carton nested
+ * inside it unless the carton is independently toggled.
+ *
+ * `positions`/`extents` are in the render-local frame (x, y=vertical, z) —
+ * the SAME frame `childPos` returns and `explodeTier` is written in terms
+ * of, so no axis remapping happens anywhere in this file.
+ *
+ * Returns identity (every offset {x:0,y:0,z:0}) when `ex` doesn't apply, so
+ * every call site's shape is identical whether or not explosion is active —
+ * the only difference is whether the added vector is zero.
+ */
+function tierExplode(tier, geo, children, parentInnerH, ex){
+  const zeroShell = {x: 0, y: 0, z: 0};
+  const identity = {offsets: children.map(() => ({...zeroShell})), shell: zeroShell};
+  if(!ex || ex.level !== tier.name || !ex.factor) return identity;
+  const positions = children.map(pl => { const p = childPos(pl, parentInnerH); return {x: p.x, y: p.y, z: p.z}; });
+  const extents = children.map(pl => {
+    const od = orient(tier.childOuter, pl.orientation);
+    return {x: od.l, y: od.h, z: od.w};
+  });
+  const shellExtent = {x: geo.outer.L, y: geo.outer.H, z: geo.outer.W};
+  return explodeTier(positions, extents, shellExtent, ex.axis || 'all', ex.factor);
+}
 
 /** A cutaway rigid box: floor + 4 vertical walls with real board thickness,
  *  open top. Near walls are hidden per-frame so the interior stays visible. */
@@ -1076,6 +1106,23 @@ function soloClosed(geo, artInfo){
 function buildContainer(tier, bundle, sel, path, opts = {}){
   const g = new THREE.Group();
   const {geo, children, childKind} = tier;
+  const parentInnerH = geo.inner.H;
+
+  // EXPLODED VIEW — a transform on the placements this tier already solved
+  // (see explode.js), computed ONCE from the TRUE positions so every child
+  // instance and the shell read the same rank set and factor. The offset is
+  // then folded into a SHIFTED placement array, in the same {x,y,z} fields
+  // `childPos` already reads (world y/vertical <-> pl.z, world x/z <-> pl.x/
+  // pl.y) — so every existing consumer of a placement (childPos, the
+  // wrapless-piece drawer, the textured-instance path) produces the
+  // exploded position with NO changes of its own; only the ONE place that
+  // builds this shifted array needs to know explosion exists at all.
+  const ex = tierExplode(tier, geo, children, parentInnerH, opts.explode);
+  const exploded = children.map((pl, i) => {
+    const o = ex.offsets[i];
+    return (o.x || o.y || o.z) ? {...pl, x: pl.x + o.x, y: pl.y + o.z, z: pl.z + o.y} : pl;
+  });
+
   // Shell: a Shrink Bundle has none (film only). A SOLID open tray shows a
   // STATIC open box (walls stay put — you view it from outside, its contents
   // standing proud / seen through the open top), NOT a cutaway. Everything else
@@ -1086,21 +1133,27 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   // it IS the opened shell. Its near walls are not hidden as the camera
   // orbits, and do not need to be: there is no top to see past.
   const displayShell = isDisplayGeo(geo) ? perfDisplayBody(geo, tier.mat) : null;
+  let shellParts = [];                    // the shell body (+ its tear line, if any) — moves together
   if(isShrinkBundle(geo)){ /* no rigid shell */ }
-  else if(displayShell) g.add(displayShell);
-  else if(opts.solid && isOpenTop(geo)) g.add(openTrayBox(geo.outer, geo.inner, tier.mat));
-  else {
-    g.add(cutawayBox(geo.outer, geo.inner, tier.mat));
+  else if(displayShell){ g.add(displayShell); shellParts = [displayShell]; }
+  else if(opts.solid && isOpenTop(geo)){
+    const box = openTrayBox(geo.outer, geo.inner, tier.mat);
+    g.add(box); shellParts = [box];
+  }else {
+    const box = cutawayBox(geo.outer, geo.inner, tier.mat);
+    g.add(box); shellParts = [box];
     // SHIPPING state with a perforation: the tear is a surface line on an
-    // intact container.
+    // intact container — drawn separately, but it rides the SAME shell and
+    // must explode with it or the tear visually detaches from the body.
     const line = geo.perf ? perfSurfaceLine(geo) : null;
-    if(line) g.add(line);
+    if(line){ g.add(line); shellParts.push(line); }
   }
+  if(ex.shell.x || ex.shell.y || ex.shell.z)
+    for(const part of shellParts) part.position.set(ex.shell.x, ex.shell.y, ex.shell.z);
 
   // Solid mode FILLS the container — every child shown, none drilled to product
   // (drilling is the cutaway). openIdx -1 excludes nothing and skips the recurse.
   const openIdx = opts.solid ? -1 : clampIdx(sel[tier.name], children);
-  const parentInnerH = geo.inner.H;
 
   // a 'wrap' childKind whose bundle.wraps is null means the film tier is
   // disabled (or the content never collates into a wrap): there are no wrap
@@ -1109,7 +1162,7 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   // box, so it must never reach the rigid-box branch below.
   const w = childKind === 'wrap' ? bundle.wraps : null;
   if(childKind === 'wrap' && w){
-    const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
+    const closed = exploded.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     if(w.seals && closed.length){
       // filmed wrap: instanced conforming-film parts per closed unit. With a
       // tray in the chain the film wraps the TRAY, so the closed instances
@@ -1143,14 +1196,14 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
       g.add(collationPieces(bundle, closed, parentInnerH));
     }
   }else if(childKind !== 'wrap'){
-    const closed = children.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
+    const closed = exploded.map((pl, i) => ({pl, i})).filter(x => x.i !== openIdx);
     const art = tier.childArt;
     if(art && art.am && art.canvas && closed.length){
       // textured: every closed child instance carries the pack's art from one
       // shared texture. Canonical geometry + per-instance orientation.
       for(const m of artInstances(art.am, art.canvas, closed, pl => childPos(pl, parentInnerH), tier.childKind)) g.add(m);
     }else{
-      for(const [o, list] of groupByOrientation(children, openIdx)){
+      for(const [o, list] of groupByOrientation(exploded, openIdx)){
         const od = orient(tier.childOuter, o);
         const cg = roundedBoxGeo(Math.max(od.l - 1, 1), Math.max(od.h - 1, 1), Math.max(od.w - 1, 1), 2, 2);
         const inst = new THREE.InstancedMesh(cg, tier.childMat, list.length);
@@ -1165,17 +1218,22 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   }
 
   // the one opened child, recursed
-  if(children[openIdx]){
-    const pl = children[openIdx];
-    const childGroup = tier.buildChild(bundle, sel, path.concat(openIdx));
+  if(exploded[openIdx]){
+    const pl = exploded[openIdx];
+    const childGroup = tier.buildChild(bundle, sel, path.concat(openIdx), opts);
     childGroup.position.copy(childPos(pl, parentInnerH));
     childGroup.quaternion.copy(orientQuat(pl.orientation));
     g.add(childGroup);
   }
   // shrink film LAST, so the translucent skin draws over the visible contents —
   // a bundle skins to its own height; a shrink-wrapped tray skins up to the
-  // proud loaded height the chain measured (meta.shrinkLoadedH).
-  if(isShrink(geo)) g.add(filmSkin(geo.outer, geo.meta.shrinkLoadedH));
+  // proud loaded height the chain measured (meta.shrinkLoadedH). Moves with
+  // the shell (an open tray's skin) when the shell does.
+  if(isShrink(geo)){
+    const skin = filmSkin(geo.outer, geo.meta.shrinkLoadedH);
+    if(ex.shell.x || ex.shell.y || ex.shell.z) skin.position.add(new THREE.Vector3(ex.shell.x, ex.shell.y, ex.shell.z));
+    g.add(skin);
+  }
   return g;
 }
 
@@ -1224,7 +1282,7 @@ function makeTiers(bundle, cartonArt, caseArt){
     children: bundle.cartons.placements,
     ...(bundle.cartonGeo
       ? {childKind: 'carton', childOuter: bundle.cartonGeo.outer, childMat: board2, childArt: cartonArt,
-         buildChild: (b, s, path) => buildContainer(cartonTier, b, s, path)}
+         buildChild: (b, s, path, opts) => buildContainer(cartonTier, b, s, path, opts)}
       : {childKind: 'wrap', childOuter: bundle.wrapGeo ? bundle.wrapGeo.outer : (bundle.wraps ? bundle.wraps.envelope : bundle.caseGeo.inner), childMat: wrapSolidMat,
          buildChild: (b, s, path) => buildWrapOpened(b)})
   };
@@ -1259,7 +1317,7 @@ export function buildSellableCutaway(bundle, noun){
   return {group: g, walls};
 }
 
-export function buildHierarchy(bundle, depth, sel, solid){
+export function buildHierarchy(bundle, depth, sel, solid, explode){
   const pivot = getPivot();
   clear();
   group = new THREE.Group();
@@ -1342,25 +1400,28 @@ export function buildHierarchy(bundle, depth, sel, solid){
     // fills it, Cutaway drills one to product); only a closed box hides them.
     const showContents = isOpenTop(bundle.cartonGeo) || isShrink(bundle.cartonGeo);
     if(solid && !showContents) group.add(soloClosed(bundle.cartonGeo, cartonArt));
-    else { group.add(buildContainer(cartonTier, bundle, S, [], {solid})); opened = {wrap: S.wrap}; }
+    else { group.add(buildContainer(cartonTier, bundle, S, [], {solid, explode})); opened = {wrap: S.wrap}; }
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
     const showContents = isOpenTop(bundle.caseGeo) || isShrink(bundle.caseGeo);
     if(solid && !showContents) group.add(soloClosed(bundle.caseGeo, caseArt));
-    else { group.add(buildContainer(caseTier, bundle, S, [], {solid})); opened = {carton: S.carton, wrap: S.wrap}; }
+    else { group.add(buildContainer(caseTier, bundle, S, [], {solid, explode})); opened = {carton: S.carton, wrap: S.wrap}; }
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'pallet'){
     // the case rides the pallet normally; once it's disabled the carton does
     // (its cutaway tier), so pass whichever tier is actually outermost
-    const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S, solid);
+    const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S, solid, explode);
     span = r.span; outer = r.outer;
     if(!solid) opened = {case: S.case, carton: S.carton, wrap: S.wrap};
   }
 
   pivot.add(group);
-  setCamSpan(span);
+  // a wider frame so the live view doesn't clip exploded parts — the sheet
+  // composer reframes from the actually-rendered geometry (visibleSpan) so
+  // this margin is a live-view nicety only, never something a capture relies on.
+  setCamSpan(explode && explode.factor ? span*(1 + explode.factor*0.8) : span);
   registerFrame();
   lastOuter = outer;
   return {opened: S, span, counts: bundle.counts, outer};
@@ -1434,10 +1495,38 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opt
 // that outermost tier's placements/deck regardless of which tier it is, so
 // the geometry and the tier NAME (for picking/opening) come from outerTier,
 // never a hardcoded 'case' that is null when the case is off.
-function buildPallet(bundle, outerTier, S, solid){
+function buildPallet(bundle, outerTier, S, solid, explode){
   const {cases} = bundle;
   const co = outerTier.geo.outer;
   const deckH = bundle.cases.deck.baseH;
+
+  // EXPLODED VIEW — same transform-on-placements rule as buildContainer, but
+  // there is no SHELL to lift at pallet depth: cases sit on an open deck,
+  // never inside walls, so only the case positions separate (no cutawayBox,
+  // no `ex.shell` to apply). Default axis is VERTICAL ('y'), not 'all' —
+  // spreading cases sideways across a pallet just widens the footprint
+  // without showing anything a plan view didn't already show; pulling
+  // layers apart vertically is what an exploded PALLET is for.
+  const palEx = (explode && explode.level === 'pallet' && explode.factor) ? explode : null;
+  let palletOffsets = cases.placements.map(() => ({x: 0, y: 0, z: 0}));
+  if(palEx){
+    const positions = cases.placements.map(pl => ({x: pl.x, y: pl.z, z: pl.y}));
+    const extents = cases.placements.map(pl => {
+      const od = orient(co, pl.orientation);
+      return {x: od.l, y: od.h, z: od.w};
+    });
+    palletOffsets = explodeTier(positions, extents, {x: 0, y: 0, z: 0}, palEx.axis || 'y', palEx.factor).offsets;
+  }
+  // shifted placements, same {x,y,z} fields every downstream reader already
+  // takes — so `openTrayInstances`/`groupByOrientation`/`artInstances` and
+  // the recursed opened case need no changes of their own, exactly as in
+  // buildContainer. Kept SEPARATE from `cases.placements`: every measurement
+  // below (contentTopLocal, load height) reads the TRUE placements, because
+  // the Dims/HUD must report the real assembled load, not the exploded one.
+  const explodedCases = cases.placements.map((pl, i) => {
+    const o = palletOffsets[i];
+    return (o.x || o.y || o.z) ? {...pl, x: pl.x + o.x, y: pl.y + o.z, z: pl.z + o.y} : pl;
+  });
   // An OPEN tray never hides its contents: every tray on the pallet shows its
   // cartons standing PROUD of the low walls, so the load height is driven by the
   // proud carton top, not the tray wall (co.H).
@@ -1505,7 +1594,13 @@ function buildPallet(bundle, outerTier, S, solid){
     // closed units — textured when the pallet's pack (the outer tier: case, or
     // carton once the case is off) has artwork, so a printed pallet shows the art
     // on every case; else bare board, instanced per orientation.
-    const closed = cases.placements.map((pl, i) => ({pl, i})).filter(x => x.i !== uOpenIdx);
+    //
+    // openTrayInstances is NOT wired for pallet explosion (its shell+cartons+
+    // skin are one combined instancing pass per tray, unlike the other two
+    // branches' plain per-case positions) — an open-top/shrink pallet outer
+    // tier stays assembled even with explode on. Documented gap, not silent.
+    const casePlacements = (openOuter || shrinkOuter) ? cases.placements : explodedCases;
+    const closed = casePlacements.map((pl, i) => ({pl, i})).filter(x => x.i !== uOpenIdx);
     const art = outerTier.art;
     // closed units pick as 'pallet' (open THIS pallet slot), never the inner tier
     // name — clicking a carton on the pallet must set the pallet's own selection,
@@ -1520,7 +1615,7 @@ function buildPallet(bundle, outerTier, S, solid){
     }else if(art && art.am && art.canvas && closed.length){
       for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: yOff + deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
     }else{
-      for(const [o, list] of groupByOrientation(cases.placements, uOpenIdx)){
+      for(const [o, list] of groupByOrientation(explodedCases, uOpenIdx)){
         const od = orient(co, o);
         const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
         const inst = new THREE.InstancedMesh(cgeo, board, list.length);
@@ -1531,9 +1626,9 @@ function buildPallet(bundle, outerTier, S, solid){
         group.add(inst);
       }
     }
-    if(u === 0 && !solid && cases.placements[openIdx]){
-      const pl = cases.placements[openIdx];
-      const cg = buildContainer(outerTier, bundle, S, [openIdx]);
+    if(u === 0 && !solid && explodedCases[openIdx]){
+      const pl = explodedCases[openIdx];
+      const cg = buildContainer(outerTier, bundle, S, [openIdx], {explode});
       cg.position.set(pl.x, yOff + deckH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
       cg.quaternion.copy(orientQuat(pl.orientation));
       group.add(cg);

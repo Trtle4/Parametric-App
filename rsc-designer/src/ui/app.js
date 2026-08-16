@@ -60,6 +60,17 @@ let hierSel = {};              // opened index per tier {case,carton,wrap}
 // changes re-picks the default.
 let solidOverride = null;
 
+// EXPLODED VIEW — a transform on the placements the current depth already
+// solved (render/explode.js), never a re-solve. Which levels support it, and
+// each level's own axis, remembered per level so switching depth and back
+// keeps the knob — 'all' spreads the plan arrangement apart on every axis;
+// the pallet defaults to 'y' (vertical) — spreading cases sideways just
+// widens the footprint, pulling layers apart vertically is the point.
+const EXPLODE_LEVELS = ['carton', 'case', 'pallet'];
+let explodeOn = false;                                    // the toggle; factor 0 still reads as off
+let explodeAxis = {carton: 'all', case: 'all', pallet: 'y'};
+let explodeFactor = 0.6;   // 0..1 — the slider's live value while explodeOn
+
 // Dims overlay: L×W×H callouts on the active component, off by default. Each
 // view's refresh caches the subject's OUTER dims (mm, centred on the origin —
 // the shared world convention x=L,y=H,z=W); drawDims picks the right one for
@@ -1505,6 +1516,10 @@ function updateExportButtonsState(){
   // STL belongs to the tray alone: it is a 3D part, not a dieline. STEP stays
   // in Cookie-Tray (a B-rep format needs the kernel this app does not have).
   el('btnSTL').style.display = (activeLevel === 'tray' && isTierEnabled('tray')) ? '' : 'none';
+  // exploded sheet: any container level (carton/case/pallet), the pallet
+  // included — checked BEFORE the style-only early return below, since the
+  // pallet's `kind` is 'pallet', not 'style', and would never reach it.
+  el('btnExplodedSheet').style.display = EXPLODE_LEVELS.includes(activeLevel) ? '' : 'none';
   if(lvl.kind !== 'style'){
     el('btnDXF').disabled = true;
     el('btnDXF').title = lvl.kind === 'product'
@@ -1796,7 +1811,23 @@ function applyHierarchy(resetCam){
   el('m3viewmode').style.display = '';                 // shown in hierarchy mode
   el('m3solid').classList.toggle('on', solid);
   el('m3cut').classList.toggle('on', !solid);
-  const res = hier.buildHierarchy(bundle, depth, hierSel, solid);
+  // EXPLODED VIEW — shown only at a container depth. A Solid-closed plain
+  // style never reaches buildContainer at all (hierarchy3d's soloClosed
+  // branch), so explosion has nothing to move there; the control stays
+  // visible (Cutaway is one click away) but the built scene won't change
+  // until the user leaves Solid.
+  const canExplode = EXPLODE_LEVELS.includes(depth);
+  el('m3explode').style.display = canExplode ? '' : 'none';
+  if(canExplode){
+    el('m3explodeToggle').classList.toggle('on', explodeOn);
+    el('m3explodeFactor').disabled = !explodeOn;
+    el('m3explodeAxis').disabled = !explodeOn;
+    el('m3explodeFactor').value = Math.round(explodeFactor*100);
+    el('m3explodeAxis').value = explodeAxis[depth];
+  }
+  const explode = (canExplode && explodeOn && explodeFactor > 0)
+    ? {level: depth, axis: explodeAxis[depth], factor: explodeFactor} : null;
+  const res = hier.buildHierarchy(bundle, depth, hierSel, solid, explode);
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
   // palletMM is the TOTAL timber in the stack (drawDims splits H into
   // Pallet / Load / Total): two decks when double-stacked, so the second
@@ -2288,6 +2319,22 @@ if(!FOLD_VIEW_ENABLED){ const seg = el('m3fold').closest('.seg'); if(seg) seg.st
 // until the depth/level or the artwork changes (which reset to the smart default).
 el('m3solid').addEventListener('click', () => { solidOverride = true;  if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
 el('m3cut').addEventListener('click',   () => { solidOverride = false; if(view === '3d' && mode3d === 'hier') applyHierarchy(false); });
+// EXPLODED VIEW controls. The toggle switches to Cutaway too — an exploded
+// view of a closed solid pack shows nothing moving (buildContainer isn't
+// even called there), so turning explosion on is also turning off Solid.
+el('m3explodeToggle').addEventListener('click', () => {
+  explodeOn = !explodeOn;
+  if(explodeOn) solidOverride = false;
+  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+});
+el('m3explodeFactor').addEventListener('input', () => {
+  explodeFactor = (+el('m3explodeFactor').value || 0)/100;
+  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+});
+el('m3explodeAxis').addEventListener('change', () => {
+  explodeAxis[activeLevel] = el('m3explodeAxis').value;
+  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+});
 // Dims: toggle the L×W×H callout overlay (off by default). drawDims runs on
 // the render loop, so flipping the flag is enough; call it once for immediacy.
 el('m3dims').addEventListener('click', () => {
@@ -2637,6 +2684,63 @@ export async function stateSheet(){
   return sheet;
 }
 el('btnStateSheet').addEventListener('click', () => { stateSheet(); });
+
+/* ---------- exploded sheet: the composer's third caller ----------------
+ * Same shape as stateSheet: two scenes described to render/sheet.js, which
+ * knows nothing about explosion any more than it knows about perforation.
+ * Assembled vs exploded at whichever container depth (carton/case/pallet)
+ * is currently active — the SAME `explode` transform the live toggle drives,
+ * just held at a fixed demonstrative factor so the exported sheet doesn't
+ * depend on wherever the user's slider happens to be sitting.
+ */
+const EXPLODE_SHEET_FACTOR = 0.85;
+export async function explodedSheet(){
+  if(!EXPLODE_LEVELS.includes(activeLevel)) return null;
+  const bundle = hierarchyBundle();
+  if(!bundle) return null;
+  const lvl = LEVELS[activeLevel];
+  const axis = explodeAxis[activeLevel];
+  const prevSolid = solidOverride, prevOn = explodeOn, prevFactor = explodeFactor;
+  const setExplode = on => {
+    solidOverride = false;             // Cutaway — Solid never reaches buildContainer
+    explodeOn = on; explodeFactor = EXPLODE_SHEET_FACTOR;
+    applyHierarchy(false);
+  };
+  const g = activeGeometry();
+  const u = inputs.getUnit();
+  // the pallet has no dieline geometry (activeGeometry is style-levels only),
+  // so its subtitle reads the same deck-footprint/case-count facts the HUD
+  // does, off the bundle the sheet is about to render — not re-derived.
+  const subtitle = g
+    ? `${activeStyle().name} · ${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u} · axis ${axis}`
+    : (bundle.cases && bundle.cases.deck
+        ? `${fmtLen(bundle.cases.deck.L, u)} × ${fmtLen(bundle.cases.deck.W, u)} ${u} deck · ${bundle.counts.cases} cases · axis ${axis}`
+        : `axis ${axis}`);
+  const sheet = await composeSheet({
+    title: `${lvl.label} — exploded`,
+    subtitle,
+    footer: `Parametric packaging designer · ${dateStamp()}`,
+    grid: {cols: 2},
+    scenes: [
+      {caption: 'Assembled', camera: 'home', show: () => setExplode(false)},
+      // a flatter, slightly pulled-back angle than 'home' — the exploded
+      // stack is taller/wider than the assembled pack, and framed for what
+      // IT shows rather than reusing the assembled scene's own framing.
+      {caption: `Exploded — axis ${axis}`, camera: {rotX: 0.3, rotY: 0.58, dist: 1.15},
+       show: () => setExplode(true)}
+    ],
+    onRestore: () => {
+      solidOverride = prevSolid; explodeOn = prevOn; explodeFactor = prevFactor;
+      if(view === '3d') applyHierarchy(false); else hier.show(false);
+    }
+  });
+  // cancelable so a test can read the composed sheet instead of downloading
+  if(document.dispatchEvent(new CustomEvent('explodedsheet:composed',
+      {cancelable: true, detail: {sheet, level: activeLevel}})))
+    saveSheet(sheet, `${activeLevel}_exploded.png`);
+  return sheet;
+}
+el('btnExplodedSheet').addEventListener('click', () => { explodedSheet(); });
 
 // 2D zoom & pan
 const wrap2 = el('svgWrap');

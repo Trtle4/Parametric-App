@@ -120,6 +120,17 @@
   ><button id="d_pallet">Pallet</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
+  <!-- exploded view toolbar the real app wires at boot (m3explodeToggle/
+       Factor/Axis) — must exist or app.js's applyHierarchy throws at every
+       3D render, the ViewCube-incident shape (CLAUDE.md). -->
+  <div id="m3explode" style="display:none">
+    <button id="m3explodeToggle">Explode</button>
+    <input type="range" id="m3explodeFactor" min="0" max="100" value="60" step="1" disabled>
+    <select id="m3explodeAxis" disabled>
+      <option value="all">All axes</option><option value="x">X</option>
+      <option value="y">Y (vertical)</option><option value="z">Z</option>
+    </select>
+  </div>
   <button id="m3dims">Dims</button>
 </div>
 <!-- shelf Solid/Cutaway toolbar the real app wires at boot (shSolid/shCut) —
@@ -130,6 +141,7 @@
   <div id="m3bg"><button id="bgGrid" class="on">Grid</button><button id="bgWhite">White</button></div>
   <div id="shBg"><button id="shBgGrid" class="on">Grid</button><button id="shBgWhite">White</button></div>
   <button id="btnPdf">Pallet PDF</button><button id="btnStateSheet" style="display:none">State sheet</button>
+  <button id="btnExplodedSheet" style="display:none">Exploded sheet</button>
 </div>
 <div id="hud"><span id="hud2dKeys"></span></div>
 <div id="hierHud" style="display:none"></div>
@@ -5008,6 +5020,123 @@ await (async () => {
     eq(Object.keys(embed).sort().join(','), 'data,h,w', 'record shape:');
     if(!/^data:image\/jpeg;base64,/.test(embed.data)) throw new Error('not a JPEG data URL');
     eq(embed.w, a.width, 'width:'); eq(embed.h, a.height, 'height:');
+  });
+
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= EXPLODED VIEW — the composer's third caller ===========
+ * The offset MATH (even gaps, factor-zero identity, shell clearance,
+ * axis modes) is pinned in test/explode.test.html, where it can run without
+ * a scene. These pins are the ones that need the REAL app: does the
+ * rendered tree actually move, does toggling it leave the solved chain
+ * alone, does the sheet's per-scene camera override actually differ.
+ */
+await (async () => {
+  el('tab3d').click(); await settle();
+  el('d_case').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+
+  // FIXTURE PRECONDITION: there must be a real rendered scene to explode, or
+  // every pin below proves nothing (CLAUDE.md: confirm the specimen, not
+  // just the instrument).
+  const spanAssembled = visibleSpan(getPivot());
+  if(!(spanAssembled > 0)) throw new Error('no rendered scene at case depth — fixture is broken, not the feature');
+
+  // NO RE-SOLVE. Toggling explode must not touch the solved chain: same row
+  // count, same selected candidate, same casesPerPallet/cartonsPerCase.
+  // Mutate explosion to call the solver and this is what would catch it.
+  const snapChain = () => {
+    const key = build.getSelectedCandidateKey();
+    const row = resolveActiveRow(build.project, build.getRounding(), key);
+    return JSON.stringify({rows: build.getRows().length, key,
+      cases: row.casesPerPallet, cartons: row.cartonsPerCase});
+  };
+  const chainBefore = snapChain();
+
+  el('m3explodeToggle').click(); await settle();
+  const factorEnabledOn = !el('m3explodeFactor').disabled;
+  el('m3explodeFactor').value = 100; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanAssembled);
+  const spanExploded = visibleSpan(getPivot());
+  const chainAfter = snapChain();
+
+  t('exploded view: the toggle enables the factor/axis controls', () => {
+    if(!factorEnabledOn) throw new Error('factor slider stayed disabled after the toggle');
+  });
+  t('exploded view: case depth actually spreads the rendered geometry', () => {
+    if(!(spanExploded > spanAssembled*1.5))
+      throw new Error(`span did not grow enough: ${spanAssembled} -> ${spanExploded}`);
+  });
+  t('exploded view: toggling it leaves the solved chain untouched (no re-solve)', () => {
+    eq(chainAfter, chainBefore, 'chain state moved:');
+  });
+
+  // FACTOR ZERO IS IDENTITY, against the REAL render — not just the pure
+  // math module. Back to 0 and the visible span must return EXACTLY to the
+  // assembled value.
+  el('m3explodeFactor').value = 0; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanExploded);
+  const spanZero = visibleSpan(getPivot());
+  t('exploded view: factor 0 renders bit-identical to assembled', () => {
+    approx(spanZero, spanAssembled, 'span at factor 0 vs assembled:', 1e-6);
+  });
+  el('m3explodeToggle').click(); await settle();   // off — clean depth switch below
+
+  // LEVELS: the pallet explodes too, measured as its own precondition — not
+  // assumed from the case result above. If only one level were wired this
+  // is where it would show.
+  el('d_pallet').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+  const spanPalletAssembled = visibleSpan(getPivot());
+  if(!(spanPalletAssembled > 0)) throw new Error('no rendered scene at pallet depth — fixture is broken, not the feature');
+  const rowsBeforePallet = build.getRows().length;
+  const defaultAxis = el('m3explodeAxis').value;
+  el('m3explodeToggle').click(); await settle();
+  el('m3explodeFactor').value = 100; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanPalletAssembled);
+  const spanPalletExploded = visibleSpan(getPivot());
+  t('exploded view: pallet depth also spreads (both levels wired, not just case)', () => {
+    if(!(spanPalletExploded > spanPalletAssembled*1.3))
+      throw new Error(`pallet span did not grow enough: ${spanPalletAssembled} -> ${spanPalletExploded}`);
+    eq(build.getRows().length, rowsBeforePallet, 'pallet explode must not re-solve either:');
+  });
+  t('exploded view: pallet defaults to the vertical axis, not all', () => {
+    eq(defaultAxis, 'y', 'pallet default axis:');
+  });
+  el('m3explodeToggle').click(); await settle();   // OFF — restore before leaving this block
+
+  // CAMERA OVERRIDES DIFFER. Same idiom the composer's own "names no caller"
+  // pin uses — read the deployed source. The exploded sheet's two scene
+  // descriptors must not share one camera literal, or "framed for what it
+  // shows" is unverified. Mutation: setting both scenes to camera:'home'
+  // fails this.
+  const appSrc = await (await fetch('../src/ui/app.js')).text();
+  const explodedFnBody = (appSrc.match(/async function explodedSheet\(\)\{[\s\S]*?\n\}/) || [''])[0];
+  t('exploded sheet: the two scenes use different camera overrides', () => {
+    if(explodedFnBody.length < 100) throw new Error('could not locate explodedSheet() in app.js source');
+    const cams = [...explodedFnBody.matchAll(/camera:\s*('[\w]+'|\{[^}]*\})/g)].map(m => m[1]);
+    eq(cams.length, 2, 'expected exactly 2 camera fields:');
+    if(cams[0] === cams[1]) throw new Error(`both scenes use the same camera literal: ${cams[0]}`);
+  });
+
+  // DETERMINISM — the same property every other composer caller is held to.
+  el('d_case').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  const captureExplodedSheet = () => new Promise(resolve => {
+    document.addEventListener('explodedsheet:composed', e => { e.preventDefault(); resolve(e.detail.sheet.png()); }, {once: true});
+    el('btnExplodedSheet').click();
+  });
+  const png1 = await captureExplodedSheet();
+  const png2 = await captureExplodedSheet();
+  t('exploded sheet: same descriptors give byte-identical output', () => {
+    if(png1.length < 2000) throw new Error('the sheet composed nothing to compare');
+    eq(png2, png1, 'a second export differs:');
   });
 
   el('tab2d').click(); setLevel('case'); await settle();
