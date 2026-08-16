@@ -451,6 +451,12 @@
   .bcttbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
   .bcttbl td{padding:3px 4px;border-bottom:1px solid var(--line-2);color:var(--ink-2)}
   .bcttbl td:last-child{text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+  /* perforation panel: reuses .shelfpanel/.sp-* chrome + .bcthow disclosures */
+  .bcthow .sp-grid{padding:8px 10px 10px}
+  .perfpanelblock{border-top:1px solid var(--line-2)}
+  .perfpanelblock:first-of-type{border-top:none}
+  .perfpanelname{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-2);padding:8px 10px 0}
+  #perfWarn{color:var(--warn);line-height:1.4}
   /* dimensional sensitivity: one stacked block per axis — the rail column is
      narrow, so directions read as lines, not columns */
   .senstbl{display:flex;flex-direction:column;gap:11px}
@@ -626,6 +632,7 @@
     <button class="btn" id="btnPng3d" title="Switch to the 3D view to capture the camera">3D PNG</button>
     <button class="btn" id="btnPdf" title="One-page pallet summary — three views + key dimensions, portrait letter">Pallet PDF</button>
     <button class="btn" id="btnStateSheet" style="display:none" title="Shipping and display state, side by side, at a fixed size">State sheet</button>
+    <button class="btn" id="btnExplodedSheet" style="display:none" title="Assembled vs exploded, side by side, at a fixed size">Exploded sheet</button>
     <span class="hsep"></span>
     <button class="btn" id="btnSaveFile">Save</button>
     <button class="btn" id="btnLoadFile">Load</button>
@@ -688,6 +695,22 @@
         <button class="btn sm danger" id="btnArtRemove">Remove artwork</button>
       </div>
       <div class="sp-readout" id="artHint">Export the template, paint inside it, reupload — it maps 1:1.</div>
+    </div>
+
+    <!-- perforation controls (contextual: Carton/Case level). Collapsed to
+         just the enable checkbox until perforation is on; #perfNA replaces
+         the whole panel body on a style that cannot carry a perforation
+         (tray/flowwrap/shrinkbundle) — a missing control and an unsupported
+         style must never look the same. Built by app.js's mountPerfSection;
+         `normalizePerf`/`applyPerfPreset` (core/perf.js) are the only writer,
+         every field here calls through them. -->
+    <div class="shelfpanel railpanel" id="perfPanel" style="display:none">
+      <div class="sp-head">Perforation · <span id="perfLevelName">carton</span></div>
+      <div class="sp-readout" id="perfNA" style="display:none"></div>
+      <div id="perfBody" style="display:none">
+        <div class="field bchk"><label><input type="checkbox" id="perfEnable"> Enable perforation</label></div>
+        <div id="perfControls" style="display:none"></div>
+      </div>
     </div>
 
     <!-- retail shelf controls + readout (contextual: Shelf view) -->
@@ -822,6 +845,21 @@
       <!-- look INSIDE (fit) vs look AT (graphics). Defaults smartly: Solid when
            the pack shown has artwork, Cutaway otherwise. Hierarchy mode only. -->
       <div class="seg" id="m3viewmode"><button id="m3solid" title="Closed pack — see the artwork on every printed face">Solid</button><button id="m3cut" class="on" title="Cut away the near faces — see the contents / fit">Cutaway</button></div>
+      <!-- EXPLODED VIEW: a transform on the placements this depth already
+           solved (render/explode.js) — never a re-layout, never a re-solve.
+           Carton/case/pallet only; the toggle is hidden at any other depth.
+           Axis default follows the level (all axes for carton/case, vertical
+           only for the pallet) the first time it's turned on per depth. -->
+      <div class="seg" id="m3explode" style="display:none">
+        <button id="m3explodeToggle" title="Pull the contents — and the shell itself — apart along the chosen axis">Explode</button>
+        <input type="range" id="m3explodeFactor" min="0" max="100" value="60" step="1" style="width:70px;vertical-align:middle" title="Explode amount" disabled>
+        <select id="m3explodeAxis" title="Explode axis" disabled>
+          <option value="all">All axes</option>
+          <option value="x">X</option>
+          <option value="y">Y (vertical)</option>
+          <option value="z">Z</option>
+        </select>
+      </div>
       <div class="seg"><button id="m3dims" title="Overlay L × W × H on the component">Dims</button></div>
       <!-- stage background: Grid is a SCALE REFERENCE (part of the shared
            canvas treatment), White is a clean ground for screenshots and the

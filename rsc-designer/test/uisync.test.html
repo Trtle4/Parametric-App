@@ -120,6 +120,17 @@
   ><button id="d_pallet">Pallet</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
+  <!-- exploded view toolbar the real app wires at boot (m3explodeToggle/
+       Factor/Axis) — must exist or app.js's applyHierarchy throws at every
+       3D render, the ViewCube-incident shape (CLAUDE.md). -->
+  <div id="m3explode" style="display:none">
+    <button id="m3explodeToggle">Explode</button>
+    <input type="range" id="m3explodeFactor" min="0" max="100" value="60" step="1" disabled>
+    <select id="m3explodeAxis" disabled>
+      <option value="all">All axes</option><option value="x">X</option>
+      <option value="y">Y (vertical)</option><option value="z">Z</option>
+    </select>
+  </div>
   <button id="m3dims">Dims</button>
 </div>
 <!-- shelf Solid/Cutaway toolbar the real app wires at boot (shSolid/shCut) —
@@ -130,6 +141,7 @@
   <div id="m3bg"><button id="bgGrid" class="on">Grid</button><button id="bgWhite">White</button></div>
   <div id="shBg"><button id="shBgGrid" class="on">Grid</button><button id="shBgWhite">White</button></div>
   <button id="btnPdf">Pallet PDF</button><button id="btnStateSheet" style="display:none">State sheet</button>
+  <button id="btnExplodedSheet" style="display:none">Exploded sheet</button>
 </div>
 <div id="hud"><span id="hud2dKeys"></span></div>
 <div id="hierHud" style="display:none"></div>
@@ -169,6 +181,18 @@
     <button id="btnArtRemove">Remove</button>
   </div>
   <div id="artHint"></div>
+</div>
+<!-- Perforation panel the real app wires at boot (mountPerfSection) — must
+     exist or app.js throws on el('perfPanel').style at every mount, the
+     ViewCube-incident shape (CLAUDE.md). Only the STATIC shell lives here;
+     everything inside #perfControls is built by innerHTML at mount time. -->
+<div id="perfPanel" style="display:none">
+  <span id="perfLevelName"></span>
+  <div id="perfNA" style="display:none"></div>
+  <div id="perfBody" style="display:none">
+    <input type="checkbox" id="perfEnable">
+    <div id="perfControls" style="display:none"></div>
+  </div>
 </div>
 
 <div id="matFields" style="display:contents"></div>
@@ -231,7 +255,8 @@ import {getStageBackground, setStageBackground} from '../src/render/fold3d.js';
 import {openabilityWarning, perfSpecRows} from '../src/core/perf.js';
 import {foldBuilders} from '../src/render/folds/index.js';
 import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerforation, perfFrame,
-        normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT} from '../src/core/perf.js';
+        normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT, PERF_PRESETS, canPerforate,
+        perfUnavailableReason} from '../src/core/perf.js';
 import {draw2d} from '../src/render/dieline2d.js';
 import {buildDXF} from '../src/export/dxf.js';
 import {wrap as pdfWrap, textWidth as pdfTextWidth, SECTION_COL_W, winAnsi} from '../src/export/palletpdf.js';
@@ -5010,6 +5035,281 @@ await (async () => {
     eq(embed.w, a.width, 'width:'); eq(embed.h, a.height, 'height:');
   });
 
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= EXPLODED VIEW — the composer's third caller ===========
+ * The offset MATH (even gaps, factor-zero identity, shell clearance,
+ * axis modes) is pinned in test/explode.test.html, where it can run without
+ * a scene. These pins are the ones that need the REAL app: does the
+ * rendered tree actually move, does toggling it leave the solved chain
+ * alone, does the sheet's per-scene camera override actually differ.
+ */
+await (async () => {
+  el('tab3d').click(); await settle();
+  el('d_case').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+
+  // FIXTURE PRECONDITION: there must be a real rendered scene to explode, or
+  // every pin below proves nothing (CLAUDE.md: confirm the specimen, not
+  // just the instrument).
+  const spanAssembled = visibleSpan(getPivot());
+  if(!(spanAssembled > 0)) throw new Error('no rendered scene at case depth — fixture is broken, not the feature');
+
+  // NO RE-SOLVE. Toggling explode must not touch the solved chain: same row
+  // count, same selected candidate, same casesPerPallet/cartonsPerCase.
+  // Mutate explosion to call the solver and this is what would catch it.
+  const snapChain = () => {
+    const key = build.getSelectedCandidateKey();
+    const row = resolveActiveRow(build.project, build.getRounding(), key);
+    return JSON.stringify({rows: build.getRows().length, key,
+      cases: row.casesPerPallet, cartons: row.cartonsPerCase});
+  };
+  const chainBefore = snapChain();
+
+  el('m3explodeToggle').click(); await settle();
+  const factorEnabledOn = !el('m3explodeFactor').disabled;
+  el('m3explodeFactor').value = 100; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanAssembled);
+  const spanExploded = visibleSpan(getPivot());
+  const chainAfter = snapChain();
+
+  t('exploded view: the toggle enables the factor/axis controls', () => {
+    if(!factorEnabledOn) throw new Error('factor slider stayed disabled after the toggle');
+  });
+  t('exploded view: case depth actually spreads the rendered geometry', () => {
+    if(!(spanExploded > spanAssembled*1.5))
+      throw new Error(`span did not grow enough: ${spanAssembled} -> ${spanExploded}`);
+  });
+  t('exploded view: toggling it leaves the solved chain untouched (no re-solve)', () => {
+    eq(chainAfter, chainBefore, 'chain state moved:');
+  });
+
+  // FACTOR ZERO IS IDENTITY, against the REAL render — not just the pure
+  // math module. Back to 0 and the visible span must return EXACTLY to the
+  // assembled value.
+  el('m3explodeFactor').value = 0; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanExploded);
+  const spanZero = visibleSpan(getPivot());
+  t('exploded view: factor 0 renders bit-identical to assembled', () => {
+    approx(spanZero, spanAssembled, 'span at factor 0 vs assembled:', 1e-6);
+  });
+  el('m3explodeToggle').click(); await settle();   // off — clean depth switch below
+
+  // LEVELS: the pallet explodes too, measured as its own precondition — not
+  // assumed from the case result above. If only one level were wired this
+  // is where it would show.
+  el('d_pallet').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  await waitFrames(() => getPivot().children.length > 0);
+  const spanPalletAssembled = visibleSpan(getPivot());
+  if(!(spanPalletAssembled > 0)) throw new Error('no rendered scene at pallet depth — fixture is broken, not the feature');
+  const rowsBeforePallet = build.getRows().length;
+  const defaultAxis = el('m3explodeAxis').value;
+  el('m3explodeToggle').click(); await settle();
+  el('m3explodeFactor').value = 100; fire(el('m3explodeFactor'), 'input');
+  await waitFrames(() => visibleSpan(getPivot()) !== spanPalletAssembled);
+  const spanPalletExploded = visibleSpan(getPivot());
+  t('exploded view: pallet depth also spreads (both levels wired, not just case)', () => {
+    if(!(spanPalletExploded > spanPalletAssembled*1.3))
+      throw new Error(`pallet span did not grow enough: ${spanPalletAssembled} -> ${spanPalletExploded}`);
+    eq(build.getRows().length, rowsBeforePallet, 'pallet explode must not re-solve either:');
+  });
+  t('exploded view: pallet defaults to the vertical axis, not all', () => {
+    eq(defaultAxis, 'y', 'pallet default axis:');
+  });
+  el('m3explodeToggle').click(); await settle();   // OFF — restore before leaving this block
+
+  // CAMERA OVERRIDES DIFFER. Same idiom the composer's own "names no caller"
+  // pin uses — read the deployed source. The exploded sheet's two scene
+  // descriptors must not share one camera literal, or "framed for what it
+  // shows" is unverified. Mutation: setting both scenes to camera:'home'
+  // fails this.
+  const appSrc = await (await fetch('../src/ui/app.js')).text();
+  const explodedFnBody = (appSrc.match(/async function explodedSheet\(\)\{[\s\S]*?\n\}/) || [''])[0];
+  t('exploded sheet: the two scenes use different camera overrides', () => {
+    if(explodedFnBody.length < 100) throw new Error('could not locate explodedSheet() in app.js source');
+    const cams = [...explodedFnBody.matchAll(/camera:\s*('[\w]+'|\{[^}]*\})/g)].map(m => m[1]);
+    eq(cams.length, 2, 'expected exactly 2 camera fields:');
+    if(cams[0] === cams[1]) throw new Error(`both scenes use the same camera literal: ${cams[0]}`);
+  });
+
+  // DETERMINISM — the same property every other composer caller is held to.
+  el('d_case').click(); await settle();
+  if(!el('m3cut').classList.contains('on')) el('m3cut').click();
+  await settle();
+  const captureExplodedSheet = () => new Promise(resolve => {
+    document.addEventListener('explodedsheet:composed', e => { e.preventDefault(); resolve(e.detail.sheet.png()); }, {once: true});
+    el('btnExplodedSheet').click();
+  });
+  const png1 = await captureExplodedSheet();
+  const png2 = await captureExplodedSheet();
+  t('exploded sheet: same descriptors give byte-identical output', () => {
+    if(png1.length < 2000) throw new Error('the sheet composed nothing to compare');
+    eq(png2, png1, 'a second export differs:');
+  });
+
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= PERFORATION CONTROL PANEL — driven like a user ========
+ * Every perf pin above this line constructs `level.perf` directly, via
+ * applyPerfPreset/normalizePerf — which is exactly why a feature with 49
+ * passing pins and no way to reach it shipped to production undetected.
+ * These pins click the checkbox, pick a preset from the select, flip the
+ * state toggle, type into the corner fields — the DOM path a real user
+ * takes — and read back through the SAME geoAt/DXF/BCT consumers the
+ * pins above already trust. See CLAUDE.md: "a feature is not done until
+ * a pin drives it the way a user does."
+ */
+await (async () => {
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+  const styleOptions = () => [...el('levelStyleSel').options].map(o => o.value);
+  const setStyle = id => { el('levelStyleSel').value = id; fire(el('levelStyleSel'), 'change'); };
+  const PERF_LEVELS2 = [['case', 'tertiary'], ['carton', 'secondary']];
+
+  // REACHABILITY. From a default load, on each level x style this feature
+  // is documented to support, the enable control exists and is visible.
+  // This is the pin whose absence caused the deploy report.
+  const APPLICABLE = {case: ['fefco201', 'a6120', 'sealend'], carton: ['fefco201', 'a6120', 'sealend']};
+  for(const [level] of PERF_LEVELS2){
+    setLevel(level); await settle();
+    const origStyle = el('levelStyleSel').value;
+    try{
+      for(const styleId of APPLICABLE[level]){
+        if(!styleOptions().includes(styleId)) continue;
+        setStyle(styleId); await settle();
+        t(`perforation reachability: ${level}/${styleId} shows the enable control`, () => {
+          if(getComputedStyle(el('perfPanel')).display === 'none') throw new Error('perfPanel is hidden');
+          if(getComputedStyle(el('perfBody')).display === 'none') throw new Error('perfBody is hidden — reads as unsupported, not reachable');
+          const box = el('perfEnable');
+          if(getComputedStyle(box).display === 'none' || box.offsetParent === null) throw new Error('the enable checkbox is not visible');
+        });
+      }
+    } finally { setStyle(origStyle); await settle(); }
+  }
+
+  // Work the rest of this block on Case/FEFCO201, the exact combination the
+  // deploy report used.
+  setLevel('case'); await settle();
+  const origCaseStyle = el('levelStyleSel').value;
+  setStyle('fefco201'); await settle();
+
+  // ENABLE THROUGH THE CONTROL. Not normalizePerf returning an object — the
+  // app rendering a tear line, read the SAME geoAt().aux.PERF the DXF/SVG
+  // pins above already trust.
+  if(el('perfEnable').checked){ el('perfEnable').click(); await settle(); }   // start OFF
+  t('perforation: fixture starts disabled, or this pin proves nothing', () => {
+    if(geoAt('case').aux) throw new Error('perf was already on before the pin started');
+  });
+  el('perfEnable').click(); await settle();
+  t('perforation: clicking Enable produces a real tear line in the rendered geometry', () => {
+    const g = geoAt('case');
+    if(!g.aux || !g.aux.PERF || !g.aux.PERF.length) throw new Error('no PERF aux layer after enabling through the control');
+  });
+  t('perforation: enabling with no prior configuration applies the Angled sides default, not an empty one', () => {
+    eq(el('perfPreset').value, 'angled', 'preset select after first enable:');
+  });
+
+  // PRESET CLICK CHANGES THE RENDER. All five, pairwise distinct — a pin
+  // that only checked "the click doesn't throw" would pass on a picker
+  // wired to nothing.
+  const pathsByPreset = {};
+  for(const p of PERF_PRESETS){
+    el('perfPreset').value = p.id; fire(el('perfPreset'), 'change'); await settle();
+    pathsByPreset[p.id] = JSON.stringify(buildPerfPath(geoAt('case'), build.project.tertiary.perf).segments);
+  }
+  t('perforation: every preset produces a genuinely different tear path', () => {
+    const ids = PERF_PRESETS.map(p => p.id);
+    for(let i = 0; i < ids.length; i++) for(let j = i + 1; j < ids.length; j++)
+      if(pathsByPreset[ids[i]] === pathsByPreset[ids[j]]) throw new Error(`${ids[i]} and ${ids[j]} produced identical paths`);
+  });
+
+  // STATE TOGGLE. Flips the 3D display/shipping geometry AND BCT.
+  el('perfPreset').value = 'angled'; fire(el('perfPreset'), 'change'); await settle();
+  t('perforation: state defaults to Shipping, BCT is a real number', () => {
+    if(isDisplayGeo(geoAt('case'))) throw new Error('fixture is already in display state');
+    if(!/\d/.test(el('bctVal').textContent)) throw new Error('BCT has no number to begin with — fixture proves nothing');
+  });
+  el('perfStateDisplay').click(); await settle();
+  t('perforation: the state toggle switches the 3D to display geometry and BCT to not-applicable', () => {
+    if(!isDisplayGeo(geoAt('case'))) throw new Error('geometry did not switch to display state');
+    const bctText = el('bctVal').textContent + el('bctRatio').textContent + (el('bctNote') ? el('bctNote').textContent : '');
+    if(!/not applicable/i.test(bctText)) throw new Error(`BCT did not read not-applicable in display state: "${bctText}"`);
+  });
+  el('perfStateClosed').click(); await settle();
+
+  // NOT APPLICABLE. tray/flowwrap/shrinkbundle read the message, not a
+  // silently missing control — a missing control and an unsupported style
+  // must never look the same.
+  for(const styleId of ['tray', 'flowwrap', 'shrinkbundle']){
+    if(!styleOptions().includes(styleId)) continue;
+    setStyle(styleId); await settle();
+    t(`perforation: ${styleId} shows "not applicable", not an empty space`, () => {
+      if(getComputedStyle(el('perfPanel')).display === 'none') throw new Error('the whole panel is hidden — indistinguishable from a missing control');
+      if(getComputedStyle(el('perfNA')).display === 'none') throw new Error('no not-applicable message shown');
+      if(!/not applicable/i.test(el('perfNA').textContent)) throw new Error('message does not say not applicable');
+      if(getComputedStyle(el('perfBody')).display !== 'none') throw new Error('the enable checkbox is still showing on an unsupported style');
+    });
+  }
+  setStyle('fefco201'); await settle();
+  if(!el('perfEnable').checked){ el('perfEnable').click(); await settle(); }
+
+  // CUSTOM LABEL. The only observable is the picker's own selected value.
+  el('perfPreset').value = 'bowed'; fire(el('perfPreset'), 'change'); await settle();
+  t('perforation: selecting a preset labels it by name', () => {
+    eq(el('perfPreset').value, 'bowed', 'preset select value:');
+  });
+  el('perfAdvanced').open = true;
+  el('perfCorner0').value = 7; fire(el('perfCorner0'), 'change'); await settle();
+  t('perforation: editing after a preset relabels to Custom', () => {
+    eq(el('perfPreset').value, '', 'preset select value after edit:');
+  });
+
+  // ONE WRITER. The write-time clamp (normalizePerf) is what EVERY control
+  // must pass through — an out-of-range value typed into either the
+  // advanced OR the simple field comes back clamped, never stored raw.
+  // Mutate a control to assign level.perf directly and this is what would
+  // catch it.
+  el('perfCorner0').value = 99999; fire(el('perfCorner0'), 'change'); await settle();
+  t('perforation: the advanced corner control is clamped by the one writer, not a second path', () => {
+    const H = perfFrame(geoAt('case')).H, stored = build.project.tertiary.perf.cornerH[0];
+    if(stored >= 99999) throw new Error(`stored value ${stored} was not clamped — advanced wrote around normalizePerf`);
+    if(!(stored <= H)) throw new Error(`stored value ${stored} exceeds the container height ${H}`);
+  });
+  el('perfBack').value = -99999; fire(el('perfBack'), 'change'); await settle();
+  t('perforation: the simple back-height control is clamped by the same one writer', () => {
+    const stored = build.project.tertiary.perf.cornerH[0];
+    if(stored <= -99999) throw new Error(`stored value ${stored} was not clamped — simple wrote around normalizePerf`);
+    if(!(stored >= 0)) throw new Error(`stored value ${stored} is negative`);
+  });
+
+  // MIRROR SIDES, on by default: editing right propagates to left (SWAPPED
+  // flats — the two side panels run opposite directions around the girth),
+  // and stops propagating once the toggle is off.
+  el('perfPerPanel').open = true;
+  if(!el('perfMirror').checked) el('perfMirror').click();
+  el('perfFlatFrom_right').value = 22; fire(el('perfFlatFrom_right'), 'change'); await settle();
+  t('perforation: mirror sides propagates right onto left, flats swapped', () => {
+    const panels = build.project.tertiary.perf.panels;
+    approx(panels.right.flatA, 22, 'right.flatA:', 0.01);
+    approx(panels.left.flatB, 22, 'left.flatB (mirrored):', 0.01);
+  });
+  el('perfMirror').click(); await settle();
+  el('perfFlatFrom_right').value = 41; fire(el('perfFlatFrom_right'), 'change'); await settle();
+  t('perforation: with mirror off, editing right leaves left untouched', () => {
+    const panels = build.project.tertiary.perf.panels;
+    approx(panels.right.flatA, 41, 'right.flatA:', 0.01);
+    approx(panels.left.flatB, 22, 'left.flatB (unchanged):', 0.01);
+  });
+
+  // restore: disable perforation and the level/style this block started
+  // from, so nothing leaks into whatever runs after.
+  if(el('perfEnable').checked){ el('perfEnable').click(); await settle(); }
+  setStyle(origCaseStyle); await settle();
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 

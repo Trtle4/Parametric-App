@@ -1,0 +1,202 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>exploded-view tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for render/explode.js — the exploded-view offset math.
+   DOM-free, no THREE dependency: everything here is plain numbers, so this
+   page tests the TRANSFORM in isolation from any scene. Render-level pins
+   (does the rendered tree actually move, does the shell clear a REAL case,
+   does explosion leave the solved candidate/count alone) live in
+   test/uisync.test.html, which drives the real app. */
+import {rankOffsets, axisOffsets, shellOffset, explodeTier, EXPLODE_GAP_K} from '../src/render/explode.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor && fn.constructor.name === 'AsyncFunction')
+    { results.push(`FAIL  ${name}: async pin body — its throw would be an unhandled rejection`); return; }
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function ok(cond, msg){ if(!cond) throw new Error(msg); }
+function eq(actual, expected, msg = ''){
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
+}
+function near(a, b, tol, msg = ''){
+  if(!(Math.abs(a - b) <= tol)) throw new Error(`${msg} expected ${b} ±${tol}, got ${a}`);
+}
+
+/* ================================================================ ranks */
+
+t('rankOffsets: distinct values get symmetric, centred ranks', () => {
+  eq(rankOffsets([10, 20, 30]), [-1, 0, 1], '3-way:');
+  eq(rankOffsets([10, 20]), [-0.5, 0.5], '2-way:');
+  eq(rankOffsets([10]), [0], '1-way:');
+  eq(rankOffsets([]), [], 'empty:');
+  // order of the ranks follows the VALUE, not the input order
+  eq(rankOffsets([30, 10, 20]), [1, -1, 0], 'input-order independence:');
+});
+t('rankOffsets: values within tolerance share a rank', () => {
+  eq(rankOffsets([10, 10.0001, 20], 1e-3), [-0.5, -0.5, 0.5], 'clustered:');
+  // ...but NOT when they exceed it
+  eq(rankOffsets([10, 10.1, 20], 1e-3), [-1, 0, 1], 'not clustered:');
+});
+
+/* ================================================================ factor */
+
+// FACTOR ZERO IS IDENTITY. This is what makes "transform, not re-layout"
+// checkable rather than merely intended: a caller that forgets to gate on
+// factor cannot un-explode by accident, because the offset IS zero, not
+// "close to" zero. Mutation: hard-coding a nonzero K in axisOffsets instead
+// of multiplying by `factor` would still pass every OTHER pin here but fails
+// this one immediately.
+t('factor 0 is identity — offsets and shell both exactly zero', () => {
+  eq(axisOffsets([-150, -50, 50, 150], 100, 0), [0, 0, 0, 0], 'axisOffsets:');
+  eq(shellOffset(rankOffsets([-150, -50, 50, 150]), 100, 500, 0), 0, 'shellOffset:');
+  const positions = [{x: -50, y: 0, z: -30}, {x: 50, y: 0, z: -30}, {x: -50, y: 0, z: 30}, {x: 50, y: 0, z: 30}];
+  const extents = positions.map(() => ({x: 90, y: 60, z: 50}));
+  const shellExtent = {x: 220, y: 120, z: 150};
+  const r = explodeTier(positions, extents, shellExtent, 'all', 0);
+  ok(r.offsets.every(o => o.x === 0 && o.y === 0 && o.z === 0), 'every offset exactly zero:');
+  eq(r.shell, {x: 0, y: 0, z: 0}, 'shell exactly zero:');
+});
+
+/* ================================================================== gaps */
+
+// EVEN GAPS, not a gradient from the centroid. A proportional implementation
+// (offset = factor * k * distanceFromCentre) gives EQUAL gaps only for
+// evenly-spaced input positions by coincidence — the moment inputs are
+// UNEVENLY spaced (as real layer positions often are), proportional spacing
+// preserves the input's own unevenness while rank-based spacing does not.
+// That is the distinction this pin exists to catch, so the fixture uses
+// unevenly-spaced inputs and 4 ranks (2 would not distinguish "even" from
+// "just two numbers").
+t('even gaps: unevenly-spaced inputs still produce equal steps between ranks', () => {
+  const unevenValues = [-500, -60, 10, 300];   // real gaps: 440, 70, 290 — nothing like even
+  const off = axisOffsets(unevenValues, 40, 1);
+  const gaps = off.slice(1).map((v, i) => v - off[i]);
+  near(gaps[0], gaps[1], 1e-9, 'gap 1 vs 2:'); near(gaps[1], gaps[2], 1e-9, 'gap 2 vs 3:');
+  eq(gaps[0], EXPLODE_GAP_K*40, 'step size is exactly K*unit:');
+  // MUTATION CHECK: a proportional-from-centroid stand-in, run against the
+  // SAME uneven input, does NOT produce equal gaps — proving the pin can
+  // fail, and that rank-based is a real design choice, not incidental.
+  const mean = unevenValues.reduce((a, b) => a + b)/unevenValues.length;
+  const proportional = unevenValues.map(v => (v - mean)*0.6);
+  const pgaps = proportional.slice(1).map((v, i) => v - proportional[i]);
+  ok(Math.abs(pgaps[0] - pgaps[1]) > 1 || Math.abs(pgaps[1] - pgaps[2]) > 1,
+     'the proportional stand-in should NOT have even gaps, or this pin proves nothing');
+});
+t('even gaps hold for 5 ranks too, not just 3-4', () => {
+  const vals = [-400, -180, 0, 90, 260];
+  const off = axisOffsets(vals, 25, 1);
+  const gaps = off.slice(1).map((v, i) => v - off[i]);
+  for(let i = 1; i < gaps.length; i++) near(gaps[i], gaps[0], 1e-9, `gap ${i}:`);
+});
+
+/* ============================================================= all-move */
+
+// ALL INSTANCES MOVE, not just the first — the span-derivation bug this
+// project already hit once (a pallet of 48 measuring as one case) had
+// exactly this shape: something that only looked at index 0.
+t('every instance gets its own nonzero offset when ranked apart', () => {
+  const n = 12;
+  const positions = Array.from({length: n}, (_, i) => ({x: (i - (n - 1)/2)*40, y: 0, z: 0}));
+  const extents = positions.map(() => ({x: 35, y: 20, z: 20}));
+  const r = explodeTier(positions, extents, {x: 400, y: 60, z: 60}, 'x', 1);
+  eq(r.offsets.length, n, 'one offset per instance:');
+  ok(r.offsets.every(o => o.x !== 0), 'every instance moved on x:');
+  // and they are all DISTINCT (rank-ordered, not all shoved to one spot)
+  const xs = r.offsets.map(o => o.x);
+  ok(new Set(xs).size === n, 'every instance landed at its own position:');
+});
+
+/* =============================================================== shell */
+
+// SHELL CLEARS. At factor 1 the shell's own bounding box must not intersect
+// ANY content instance's bounding box, regardless of rank count — proven
+// here against an artificially large rank count (12) so the additive (not
+// multiplicative) gap formula is actually exercised, not just the 2-4 rank
+// cases the other pins use.
+t('shell clears every content instance at factor 1, many ranks', () => {
+  const n = 12, contentUnit = 40;
+  const positions = Array.from({length: n}, (_, i) => ({x: (i - (n - 1)/2)*contentUnit, y: 0, z: 0}));
+  const extents = positions.map(() => ({x: contentUnit, y: 30, z: 30}));
+  const shellDim = 500;   // the container is much bigger than one content unit
+  const shellExtent = {x: shellDim, y: 80, z: 80};
+  const r = explodeTier(positions, extents, shellExtent, 'x', 1);
+  const shellNear = r.shell.x - shellDim/2, shellFar = r.shell.x + shellDim/2;
+  for(let i = 0; i < n; i++){
+    const near_ = r.offsets[i].x - contentUnit/2, far_ = r.offsets[i].x + contentUnit/2;
+    ok(shellNear > far_ || shellFar < near_, `instance ${i}: [${near_},${far_}] overlaps shell [${shellNear},${shellFar}]`);
+  }
+  // and the shell moved in the SAME direction on every content rank (single
+  // side, not split) — "lifts clear", not "flies apart"
+  ok(r.shell.x > Math.max(...r.offsets.map(o => o.x)), 'shell is beyond the outermost content rank:');
+});
+t('shell offset does not blow up with rank count (additive gap, not multiplicative)', () => {
+  // same content unit and shell dimension, only the RANK COUNT differs —
+  // the gap the shell adds beyond the last content rank should be the SAME
+  // in both cases (one shellDim-scaled step), not scaled by how many ranks
+  // came before it. Mutation: multiplying the shell's step by (maxRank+1)
+  // instead of adding one fixed step fails this by a wide margin.
+  const few = explodeTier([{x: -20, y: 0, z: 0}, {x: 20, y: 0, z: 0}],
+    [{x: 40, y: 10, z: 10}, {x: 40, y: 10, z: 10}], {x: 300, y: 50, z: 50}, 'x', 1);
+  const many = explodeTier(
+    Array.from({length: 10}, (_, i) => ({x: (i - 4.5)*40, y: 0, z: 0})),
+    Array.from({length: 10}, () => ({x: 40, y: 10, z: 10})), {x: 300, y: 50, z: 50}, 'x', 1);
+  const fewGapBeyondContent = few.shell.x - Math.max(...few.offsets.map(o => o.x));
+  const manyGapBeyondContent = many.shell.x - Math.max(...many.offsets.map(o => o.x));
+  near(fewGapBeyondContent, manyGapBeyondContent, 1e-9, 'the added gap should be identical regardless of rank count:');
+  eq(fewGapBeyondContent, EXPLODE_GAP_K*300, 'and equal to exactly one K*shellDim step:');
+});
+
+/* ================================================================= axes */
+
+// AXIS MODES. 'all' separates on x, y AND z; a single-axis mode leaves the
+// OTHER two bit-identical to assembled (zero offset) — a pin that only
+// checks the requested axis moved would miss a mutation that also moved an
+// axis nobody asked for.
+t("axis 'all' separates on three axes; a single axis leaves the other two untouched", () => {
+  const positions = [{x: -50, y: -40, z: -30}, {x: 50, y: 40, z: 30}];
+  const extents = positions.map(() => ({x: 30, y: 30, z: 30}));
+  const shellExtent = {x: 200, y: 200, z: 200};
+  const all = explodeTier(positions, extents, shellExtent, 'all', 1);
+  ok(all.offsets.every(o => o.x !== 0 && o.y !== 0 && o.z !== 0), "'all': every axis moved on every instance");
+
+  for(const axis of ['x', 'y', 'z']){
+    const r = explodeTier(positions, extents, shellExtent, axis, 1);
+    for(const o of r.offsets){
+      const others = ['x', 'y', 'z'].filter(a => a !== axis);
+      for(const a of others) eq(o[a], 0, `axis '${axis}': offset.${a} must stay zero:`);
+    }
+    ok(r.offsets.some(o => o[axis] !== 0), `axis '${axis}': the requested axis actually moved:`);
+    for(const a of ['x', 'y', 'z'].filter(a => a !== axis)) eq(r.shell[a], 0, `axis '${axis}': shell.${a} must stay zero:`);
+  }
+});
+
+/* ============================================================ determinism */
+
+// Pure function of its inputs — no Date.now/Math.random anywhere in the
+// module (checked by reading the source, since a hidden nondeterminism
+// would still pass an output-comparison pin if it happened to run fast
+// enough not to tick over — the same "confirm the specimen" gap a clock
+// read would leave open). The fetch is awaited HERE, outside t(), which
+// refuses an async body (CLAUDE.md) — the awaits stay in the enclosing
+// block and the pin itself is synchronous.
+const explodeSrc = await (await fetch('../src/render/explode.js')).text();
+t('explode.js reads no clock or RNG', () => {
+  ok(!/Date\.now|Math\.random|new Date\(\)/.test(explodeSrc), 'no nondeterministic source found in the module');
+});
+t('same inputs give byte-identical output across repeated calls', () => {
+  const positions = [{x: -50, y: 10, z: 0}, {x: 50, y: -10, z: 0}, {x: 0, y: 30, z: 0}];
+  const extents = positions.map(() => ({x: 40, y: 20, z: 20}));
+  const shellExtent = {x: 300, y: 150, z: 150};
+  const a = explodeTier(positions, extents, shellExtent, 'all', 0.73);
+  const b = explodeTier(positions, extents, shellExtent, 'all', 0.73);
+  eq(a, b, 'two calls with identical inputs:');
+});
+
+document.getElementById('out').textContent =
+  results.join('\n') + `\n\n${results.filter(r => r.startsWith('PASS')).length}/${results.length} passed`;
+</script>
