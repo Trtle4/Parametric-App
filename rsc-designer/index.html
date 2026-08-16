@@ -582,6 +582,20 @@
     main{min-height:0}
     .stage{order:1;position:sticky;top:0;z-index:6;height:46vh;min-height:300px;flex:none;
       border-bottom:1px solid var(--line);box-shadow:0 6px 14px rgba(20,30,40,.10)}
+    /* The 3D toolbar (.mode3d) floats absolutely inside .stage, which clips
+       (overflow:hidden — needed to mask the canvas/SVG at its own edges, not
+       written with this toolbar in mind). At the 46vh/min 300px stage height
+       real phones actually render at, a full depth's worth of segs (Fold,
+       depth select, cycle arrows, Solid/Cutaway, Explode, Dims, Grid/White)
+       does not fit in one screenful — its trailing rows were being clipped
+       into invisibility rather than merely inconvenient to reach. Anchoring
+       both top AND bottom (instead of leaving height implicit) makes the
+       toolbar's own box exactly as tall as the room .stage actually has, and
+       overflow-y:auto makes whatever doesn't fit reachable by scrolling the
+       toolbar itself — same fix shape as the rail's own overflow:auto on
+       desktop, applied to the one other place controls can run taller than
+       their container. */
+    .mode3d{bottom:8px;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .rail.left{order:2;border-right:0;border-bottom:1px solid var(--line)}
     .rail.right{order:3;border-left:0;border-bottom:1px solid var(--line)}
     .rail{max-height:none;overflow:visible;flex:none}

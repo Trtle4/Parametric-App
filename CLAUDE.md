@@ -544,13 +544,25 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
     objects, because the pivot holds every view's group at once and toggles
     visibility: an unscoped count saw the 3D tab's leftovers while the shelf
     was on screen and reported a torn facing that was not there.
-  - **A feature is not done until a pin drives it the way a user does.**
-    Perforation shipped with a path builder, renderers, exports, an
-    openability guard and 49 passing pins — and no control to enable it.
-    Every pin constructed the perf object directly, so every one of them
-    passed on a feature no user could reach. At least one pin per feature
-    must start from a default load and arrive at the behaviour through the
-    interface.
+  - **A feature is not done until a pin drives it the way a user does — at
+    the width the user does it.** Perforation shipped with a path builder,
+    renderers, exports, an openability guard and 49 passing pins — and no
+    control to enable it. Every pin constructed the perf object directly, so
+    every one of them passed on a feature no user could reach. At least one
+    pin per feature must start from a default load and arrive at the
+    behaviour through the interface. The perforation reachability pins
+    themselves then passed while State sheet and exploded were unreachable
+    on a phone — desktop-shaped proof, because they ran against a DOM
+    skeleton that (correctly, for its own purposes) loads no layout CSS at
+    all, so no width could ever have mattered to them. "The way a user
+    does" includes the viewport they use: a reachability pin needs a real
+    stylesheet and a real `@media` breakpoint behind it, not just a
+    real click.
+  - **Where a pin exists to rule out a specific wrong implementation, run
+    the wrong implementation against the fixture.** The even-gaps pin runs
+    a proportional-from-centroid stand-in against its own input and asserts
+    the stand-in fails. That proves the pin is capable of failing, rather
+    than merely not obviously trivial.
 - **Latent: a single-`shelfRoot` restructure of `shelf3d.js` crashed the
   headless renderer.** Tried during the shelf-compare amendments and
   reverted (the per-bay grouping it would have replaced was a floor, not a
