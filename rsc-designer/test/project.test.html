@@ -17,9 +17,9 @@
        -> 96 cases, 1152 cartons, coverage 77%                     */
 import {newProject, candidateCases, checkLockedCase, roundCavityUp, ROUNDING,
         verticalToOrientations, resolveChainShape,
-        roundGirthEligible} from '../src/core/project.js';
+        roundGirthEligible, styleDefaults, styleOptionDefaults} from '../src/core/project.js';
 import {fitInto, solveParent} from '../src/core/containment.js';
-import {styleById} from '../src/core/styles/index.js';
+import {styleById, styles} from '../src/core/styles/index.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 import {splitHeight} from '../src/render/dims3d.js';
 
@@ -672,6 +672,24 @@ t('the chain resolves round girth with diameter d for an on-edge sleeve (not a r
   p.primary.wrap.params.girthBasis = 'rectangular';
   const rRect = candidateCases(p, '1mm')[0];
   if(!(rRect.filmAreaM2 > rRound.filmAreaM2)) throw new Error('rectangular girth should use more film than round — round did not resolve');
+});
+
+/* ================= STYLE SIGNATURE — geometry(params, options) ===========
+ * The outerFlaps task's real fix: every style now takes an optional second
+ * `options` argument. Only fefco201 reads it; the rest must build under the
+ * new call shape and ignore it — an argument a style doesn't use costs it
+ * nothing, so its output with options passed must be byte-identical to
+ * without. Every registered style, not just the three rigid ones.
+ */
+t('every style builds under geometry(params, options), and a style that ignores options is unaffected by it', () => {
+  for(const s of styles){
+    const params = styleDefaults(s.id), options = styleOptionDefaults(s.id);
+    const withOpts = s.geometry(params, options);
+    const withoutOpts = s.geometry(params);
+    if(!(withOpts && withOpts.cut && withOpts.cut.length)) throw new Error(`${s.id}: did not build with options passed`);
+    if(!(withoutOpts && withoutOpts.cut && withoutOpts.cut.length)) throw new Error(`${s.id}: did not build with options omitted`);
+    eq(withOpts, withoutOpts, `${s.id}: default options must be byte-identical to omitting them:`);
+  }
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

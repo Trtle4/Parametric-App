@@ -613,6 +613,13 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   which build is live, and ABSENCE OF THAT CONFIRMATION READS AS
   NOT-EVALUATED, never as "assume the default" — an optional argument that
   quietly defaults to the standard build reintroduces the identical failure
-  one level up. The real fix — thread `options` into the geometry build
-  chain and DERIVE `closure.top` from `outerFlaps` instead of asserting it —
-  is still open; this only closes the silent-wrong-answer gap until then.
+  one level up. **The real fix landed** (`outerFlaps` task): `geometry()`
+  now takes `(params, options)` — threaded through all six `styleById(...)
+  .geometry(...)` call sites in `project.js`, including the wrap's, for the
+  same reason a partially-threaded option created this task in the first
+  place — and `fefco201`'s `closure.top` derives `holdsLid` from the live
+  `outerFlaps` build instead of asserting the default one. The temporary
+  argument, `OUTERFLAPS_ASSERTED_STYLES`, and the not-evaluated state are
+  gone. Golden stayed bit-identical, confirming gate 2 of that task's own
+  survey: `outerFlaps` moves the fold and the closure declaration, never
+  the blank.

@@ -300,12 +300,8 @@ function refresh2d(){
   // OPENABILITY. Warn, never block: an asymmetric or unusual build is
   // legitimate, and a pack that will not open is a design error to show, not
   // a state to forbid. Nothing on any write path consults this.
-  // The live `outerFlaps` build option rides along too — a style whose
-  // closure declaration is only asserted for its default build (fefco201)
-  // needs it to tell a real verdict from "not evaluated"; see perf.js.
   const perfLevel = LEVELS[activeLevel].perfKey && build.project[LEVELS[activeLevel].perfKey];
-  const warn = openabilityWarning(g, (perfLevel && perfLevel.perf) || null,
-    {outerFlaps: perfLevel && perfLevel.options && perfLevel.options.outerFlaps});
+  const warn = openabilityWarning(g, (perfLevel && perfLevel.perf) || null);
   const warnStat = warn
     ? `<div class="stat" data-warn="openability" style="grid-column:1/-1">` +
       `<span class="lab" style="color:var(--warn)">⚠ ${warn.title}</span>` +
@@ -680,7 +676,7 @@ function mountPerfSection(){
 
   // OPENABILITY, in the rail too — the SAME call the spec sheet and the
   // styleStats readout make, never a second computation.
-  const warn = openabilityWarning(geo, perf, {outerFlaps: level.options && level.options.outerFlaps});
+  const warn = openabilityWarning(geo, perf);
   const warnBox = el('perfWarn');
   if(warn){ warnBox.style.display = ''; warnBox.textContent = `⚠ ${warn.title} — ${warn.detail}`; }
   else warnBox.style.display = 'none';
@@ -2861,11 +2857,7 @@ function exportPalletPdf(){
     const rows = [];
     for(const [lvl, key] of perfLevels){
       const pre = perfLevels.length > 1 ? `${lvl[0].toUpperCase()}${lvl.slice(1)} · ` : '';
-      // same `outerFlaps` confirmation the rail passes — a spec sheet that
-      // reads clean because the argument didn't reach it is the defect this
-      // guard exists to prevent.
-      const opts = {outerFlaps: build.project[key].options && build.project[key].options.outerFlaps};
-      for(const [k, v] of perfSpecRows(row.geo[lvl], build.project[key].perf, q => `${fmtLen(q, u)} ${u}`, opts))
+      for(const [k, v] of perfSpecRows(row.geo[lvl], build.project[key].perf, q => `${fmtLen(q, u)} ${u}`))
         rows.push([pre + k, v]);
     }
     sections.push({label: 'Perforation', rows});
