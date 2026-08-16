@@ -13,7 +13,9 @@ import * as inputs from './inputs.js';
 import {el} from './inputs.js';
 import {draw2d, apply2dView, view2d} from '../render/dieline2d.js';
 import {auxLegendRows} from '../render/auxlayers.js';
-import {isDisplayGeo, openabilityWarning, perfSpecRows} from '../core/perf.js';
+import {isDisplayGeo, openabilityWarning, perfSpecRows, PERF_PRESETS, applyPerfPreset,
+        normalizePerf, canPerforate, perfUnavailableReason, PERF_PANELS, PERF_CORNERS,
+        PERF_MODES, PERF_TRANSITIONS, PERF_STEP_RANGE, PERF_SPEC_DEFAULT, perfSpecLabel} from '../core/perf.js';
 import {composeSheet, saveSheet} from '../render/sheet.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
@@ -427,6 +429,263 @@ function editArt(patch){
   Object.assign(art, patch);
   afterArtChange();
 }
+
+/* ================================================================ perforation
+ * The rail control panel for `project.secondary.perf` / `project.tertiary.perf`
+ * — Carton and Case only. core/perf.js's path builder, renderers, exports and
+ * openability guard were all built and tested against a perf object constructed
+ * directly; nothing ever let a live user write one. This is that writer, and
+ * `normalizePerf`/`applyPerfPreset` (core/perf.js) stay the ONLY place a perf
+ * object is actually assembled — every control below builds a PATCH and hands
+ * it to writePerf, never assigns `level.perf` itself.
+ */
+
+/** Which project key ('secondary'|'tertiary') owns perforation for the
+ *  active level, or null when the active level isn't Carton/Case. */
+function perfLevelKey(){ return LEVELS[activeLevel] ? LEVELS[activeLevel].perfKey || null : null; }
+
+/** The preset (if any) whose output is BIT-IDENTICAL to the current perf —
+ *  computed by comparison against applyPerfPreset's own output, never by
+ *  tracking interaction history. Editing any field moves `perf` away from
+ *  every preset's output, so "Custom" falls out for free — there is no
+ *  separate "dirty" flag to fall out of sync with the value it describes. */
+function matchedPreset(perf, geo){
+  if(!perf) return null;
+  for(const p of PERF_PRESETS){
+    const candidate = applyPerfPreset(p.id, geo, perf);
+    if(candidate && JSON.stringify(candidate) === JSON.stringify(perf)) return p;
+  }
+  return null;
+}
+
+/** THE WRITER. Every perforation control — simple, advanced, per-panel,
+ *  mirror, radius, state, spec — calls this and only this. `patch` is
+ *  merged onto the CURRENT perf before normalizing, so a control only
+ *  needs to name the fields it owns. */
+function writePerf(level, geo, patch){
+  level.perf = normalizePerf({...level.perf, ...patch}, geo);
+  afterPerfChange();
+}
+function afterPerfChange(){
+  solidOverride = null;      // a perforated pack's own display/shipping split re-picks Solid/Cutaway
+  projectChanged();
+  mountPerfSection();
+}
+
+/** Mirror one panel's settings onto its opposite side (right<->left), for
+ *  the "Mirror sides" convenience toggle. Mode/transition/bow/steps carry
+ *  straight across; the two flats SWAP, because the two side panels run in
+ *  OPPOSITE directions around the girth — right's near-BACK corner is its
+ *  fromCorner (flatA), but left's near-BACK corner is its toCorner (flatB). */
+function mirroredPanel(src){
+  return {mode: src.mode, transition: src.transition, bow: src.bow, steps: src.steps,
+          flatA: src.flatB, flatB: src.flatA};
+}
+
+function mountPerfSection(){
+  const key = perfLevelKey();
+  const panel = el('perfPanel');
+  const lvl = LEVELS[activeLevel];
+  if(!key || !lvl.enabledOf(build.project)){ panel.style.display = 'none'; return; }
+  const level = build.project[key];
+  const geo = activeGeometry();
+  panel.style.display = '';
+  el('perfLevelName').textContent = activeLevel;
+
+  if(!geo || !canPerforate(geo)){
+    // NOT APPLICABLE, stated — a missing control and an unsupported style
+    // must never look the same to a user.
+    el('perfNA').style.display = '';
+    el('perfNA').textContent = perfUnavailableReason(geo);
+    el('perfBody').style.display = 'none';
+    return;
+  }
+  el('perfNA').style.display = 'none';
+  el('perfBody').style.display = '';
+
+  // seed a well-formed perf the first time this level is ever mounted (an
+  // empty {} from newProject is not a valid perf shape) — normalizePerf is
+  // the writer either way, so this is not a second construction path.
+  if(!level.perf || typeof level.perf.enabled !== 'boolean') level.perf = normalizePerf(level.perf, geo);
+  const perf = level.perf;
+
+  const enableBox = el('perfEnable');
+  enableBox.checked = perf.enabled;
+  if(!enableBox.dataset.wired){
+    enableBox.dataset.wired = '1';
+    enableBox.addEventListener('change', () => {
+      const k = perfLevelKey(); if(!k) return;
+      const lv = build.project[k], g = activeGeometry();
+      if(enableBox.checked){
+        // enabling applies a real starting shape, never an empty one — the
+        // level tear a fresh `{}` would clamp to is not "a sensible default",
+        // it is the absence of a decision
+        const preset = applyPerfPreset('angled', g, null);
+        if(preset) lv.perf = preset;
+      }else{
+        lv.perf = normalizePerf({...lv.perf, enabled: false}, g);
+      }
+      afterPerfChange();
+    });
+  }
+  el('perfControls').style.display = perf.enabled ? '' : 'none';
+  if(!perf.enabled) return;
+
+  const match = matchedPreset(perf, geo);
+  const u = inputs.getUnit();
+  // unit conversion happens ONLY here (reading) and in core/units.js (display
+  // formatting) — the same two places CLAUDE.md's architecture rule names —
+  // never a hand-rolled mm<->display conversion inline.
+  const fromMMv = mm => fmtInputValue(fromMM(mm, u), u);
+  const toMMv = v => toMM(+v || 0, u);
+  const step = u === 'in' ? 0.01 : 1;
+
+  const panelCorner = (i, which) => PERF_CORNERS[which === 'from' ? i : (i + 1) % 4];
+
+  el('perfControls').innerHTML = `
+    <div class="sp-grid">
+      <label>Preset</label>
+      <select id="perfPreset">
+        <option value=""${match ? '' : ' selected'}>Custom</option>
+        ${PERF_PRESETS.map(p => `<option value="${p.id}"${match && match.id === p.id ? ' selected' : ''}>${p.name}</option>`).join('')}
+      </select>
+    </div>
+    <div class="sp-readout" id="perfPresetHint">${match ? match.hint : 'Edited from a preset — values no longer match one.'}</div>
+
+    <div class="sp-grid">
+      <label>Back height</label>
+      <div class="sp-num"><input id="perfBack" type="number" step="${step}" value="${fromMMv(perf.cornerH[0])}"><span>${u}</span></div>
+      <label>Front height</label>
+      <div class="sp-num"><input id="perfFront" type="number" step="${step}" value="${fromMMv(perf.cornerH[2])}"><span>${u}</span></div>
+    </div>
+
+    <details id="perfAdvanced" class="bcthow">
+      <summary>Advanced — corners individually</summary>
+      <div class="sp-grid">
+        ${PERF_CORNERS.map((name, i) => `<label>${name}</label>
+          <div class="sp-num"><input id="perfCorner${i}" type="number" step="${step}" value="${fromMMv(perf.cornerH[i])}"><span>${u}</span></div>`).join('')}
+      </div>
+    </details>
+
+    <details id="perfPerPanel" class="bcthow">
+      <summary>Per-panel settings</summary>
+      ${PERF_PANELS.map((name, i) => {
+        const p = perf.panels[name], fromC = panelCorner(i, 'from'), toC = panelCorner(i, 'to');
+        return `<div class="perfpanelblock">
+          <div class="perfpanelname">${name}</div>
+          <div class="sp-grid">
+            <label>Mode</label>
+            <select id="perfMode_${name}">${PERF_MODES.map(m => `<option value="${m}"${p.mode === m ? ' selected' : ''}>${m}</option>`).join('')}</select>
+            <label>Flat at ${fromC}</label>
+            <div class="sp-num"><input id="perfFlatFrom_${name}" type="number" step="${step}" value="${fromMMv(p.flatA)}"><span>${u}</span></div>
+            <label>Flat at ${toC}</label>
+            <div class="sp-num"><input id="perfFlatTo_${name}" type="number" step="${step}" value="${fromMMv(p.flatB)}"><span>${u}</span></div>
+            <label>Transition</label>
+            <select id="perfTrans_${name}">${PERF_TRANSITIONS.map(t => `<option value="${t}"${p.transition === t ? ' selected' : ''}>${t}</option>`).join('')}</select>
+            <label>Bow</label>
+            <div class="sp-num"><input id="perfBow_${name}" type="number" step="${step}" value="${fromMMv(p.bow)}"><span>${u}</span></div>
+            <label${p.transition === 'stepped' ? '' : ' style="display:none"'} id="perfStepsLab_${name}">Steps</label>
+            <div class="sp-num"${p.transition === 'stepped' ? '' : ' style="display:none"'} id="perfStepsRow_${name}"><input id="perfSteps_${name}" type="number" min="${PERF_STEP_RANGE.min}" max="${PERF_STEP_RANGE.max}" step="1" value="${p.steps}"></div>
+          </div>
+        </div>`;
+      }).join('')}
+    </details>
+
+    <div class="field bchk"><label><input type="checkbox" id="perfMirror"${perfMirrorSides ? ' checked' : ''}> Mirror sides <span class="hint">right &amp; left stay in sync</span></label></div>
+
+    <div class="sp-grid">
+      <label>Radius</label>
+      <div class="sp-num"><input id="perfRadius" type="number" min="0" step="${step}" value="${fromMMv(perf.radius)}"><span>${u}</span></div>
+    </div>
+
+    <div class="field"><label>State</label>
+      <div class="seg" id="perfStateSeg">
+        <button type="button" id="perfStateClosed" class="${perf.state === 'closed' ? 'on' : ''}">Shipping</button>
+        <button type="button" id="perfStateDisplay" class="${perf.state === 'display' ? 'on' : ''}">Display</button>
+      </div>
+    </div>
+
+    <div class="sp-grid">
+      <label>Cut <span class="sp-hint">tear pattern</span></label>
+      <div class="sp-num"><input id="perfCut" type="number" min="0.5" max="50" step="0.5" value="${(+perf.spec.cut).toFixed(1)}"><span>mm</span></div>
+      <label>Tie</label>
+      <div class="sp-num"><input id="perfTie" type="number" min="0.1" max="20" step="0.1" value="${(+perf.spec.tie).toFixed(1)}"><span>mm</span></div>
+    </div>
+    <div class="sp-readout">${perfSpecLabel(perf.spec)} — text only, feeds no calculation</div>
+
+    <div class="sp-readout" id="perfWarn" style="display:none"></div>
+  `;
+
+  // ---- wire every control through writePerf; nothing assigns level.perf itself
+  const K = () => perfLevelKey();
+  const LV = () => build.project[K()];
+  const G = () => activeGeometry();
+
+  el('perfPreset').addEventListener('change', () => {
+    const id = el('perfPreset').value;
+    if(!id) return;                    // "Custom" selected on an already-custom perf: nothing to do
+    const applied = applyPerfPreset(id, G(), LV().perf);
+    if(applied){ LV().perf = applied; afterPerfChange(); }
+  });
+
+  el('perfBack').addEventListener('change', () =>
+    writePerf(LV(), G(), {cornerH: [toMMv(el('perfBack').value), toMMv(el('perfBack').value), LV().perf.cornerH[2], LV().perf.cornerH[3]]}));
+  el('perfFront').addEventListener('change', () =>
+    writePerf(LV(), G(), {cornerH: [LV().perf.cornerH[0], LV().perf.cornerH[1], toMMv(el('perfFront').value), toMMv(el('perfFront').value)]}));
+
+  PERF_CORNERS.forEach((name, i) => {
+    el(`perfCorner${i}`).addEventListener('change', () => {
+      const cornerH = LV().perf.cornerH.slice();
+      cornerH[i] = toMMv(el(`perfCorner${i}`).value);
+      writePerf(LV(), G(), {cornerH});
+    });
+  });
+
+  el('perfMirror').addEventListener('change', () => { perfMirrorSides = el('perfMirror').checked; });
+
+  PERF_PANELS.forEach((name, i) => {
+    const readPanel = () => ({
+      mode: el(`perfMode_${name}`).value,
+      flatA: toMMv(el(`perfFlatFrom_${name}`).value),
+      flatB: toMMv(el(`perfFlatTo_${name}`).value),
+      transition: el(`perfTrans_${name}`).value,
+      bow: toMMv(el(`perfBow_${name}`).value),
+      steps: +el(`perfSteps_${name}`).value || 3
+    });
+    const commitPanel = () => {
+      const edited = readPanel();
+      const panels = {...LV().perf.panels, [name]: edited};
+      // MIRROR SIDES: right<->left only, and only while the toggle is on.
+      // Editing back/front never touches the sides — there is no opposite
+      // panel for them to mirror onto.
+      if(perfMirrorSides && (name === 'right' || name === 'left'))
+        panels[name === 'right' ? 'left' : 'right'] = mirroredPanel(edited);
+      writePerf(LV(), G(), {panels});
+    };
+    el(`perfMode_${name}`).addEventListener('change', commitPanel);
+    el(`perfFlatFrom_${name}`).addEventListener('change', commitPanel);
+    el(`perfFlatTo_${name}`).addEventListener('change', commitPanel);
+    el(`perfTrans_${name}`).addEventListener('change', commitPanel);
+    el(`perfBow_${name}`).addEventListener('change', commitPanel);
+    el(`perfSteps_${name}`).addEventListener('change', commitPanel);
+  });
+
+  el('perfRadius').addEventListener('change', () => writePerf(LV(), G(), {radius: toMMv(el('perfRadius').value)}));
+
+  el('perfStateClosed').addEventListener('click', () => writePerf(LV(), G(), {state: 'closed'}));
+  el('perfStateDisplay').addEventListener('click', () => writePerf(LV(), G(), {state: 'display'}));
+
+  el('perfCut').addEventListener('change', () => writePerf(LV(), G(), {spec: {...LV().perf.spec, cut: +el('perfCut').value || PERF_SPEC_DEFAULT.cut}}));
+  el('perfTie').addEventListener('change', () => writePerf(LV(), G(), {spec: {...LV().perf.spec, tie: +el('perfTie').value || PERF_SPEC_DEFAULT.tie}}));
+
+  // OPENABILITY, in the rail too — the SAME call the spec sheet and the
+  // styleStats readout make, never a second computation.
+  const warn = openabilityWarning(geo, perf, {outerFlaps: level.options && level.options.outerFlaps});
+  const warnBox = el('perfWarn');
+  if(warn){ warnBox.style.display = ''; warnBox.textContent = `⚠ ${warn.title} — ${warn.detail}`; }
+  else warnBox.style.display = 'none';
+}
+let perfMirrorSides = true;
 
 /** The pallet-stats readout: the OUTERMOST enabled tier on the pallet — the
  *  case (the shipper) normally, or the carton once the case is disabled —
@@ -1414,6 +1673,7 @@ function mountActiveLevel(){
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
   }
+  mountPerfSection();
   mountCostRates();
 }
 
@@ -2938,6 +3198,7 @@ notify.onRefresh('cost', refreshCost);
 notify.onRefresh('shelf', refreshShelf);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('artworkPanel', updateArtPanel);
+notify.onRefresh('perfPanel', mountPerfSection);
 notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
 
 // 3D candidate-cycle arrows: a second control onto build.js's selection state.

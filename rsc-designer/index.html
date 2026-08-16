@@ -451,6 +451,12 @@
   .bcttbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
   .bcttbl td{padding:3px 4px;border-bottom:1px solid var(--line-2);color:var(--ink-2)}
   .bcttbl td:last-child{text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+  /* perforation panel: reuses .shelfpanel/.sp-* chrome + .bcthow disclosures */
+  .bcthow .sp-grid{padding:8px 10px 10px}
+  .perfpanelblock{border-top:1px solid var(--line-2)}
+  .perfpanelblock:first-of-type{border-top:none}
+  .perfpanelname{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-2);padding:8px 10px 0}
+  #perfWarn{color:var(--warn);line-height:1.4}
   /* dimensional sensitivity: one stacked block per axis — the rail column is
      narrow, so directions read as lines, not columns */
   .senstbl{display:flex;flex-direction:column;gap:11px}
@@ -689,6 +695,22 @@
         <button class="btn sm danger" id="btnArtRemove">Remove artwork</button>
       </div>
       <div class="sp-readout" id="artHint">Export the template, paint inside it, reupload — it maps 1:1.</div>
+    </div>
+
+    <!-- perforation controls (contextual: Carton/Case level). Collapsed to
+         just the enable checkbox until perforation is on; #perfNA replaces
+         the whole panel body on a style that cannot carry a perforation
+         (tray/flowwrap/shrinkbundle) — a missing control and an unsupported
+         style must never look the same. Built by app.js's mountPerfSection;
+         `normalizePerf`/`applyPerfPreset` (core/perf.js) are the only writer,
+         every field here calls through them. -->
+    <div class="shelfpanel railpanel" id="perfPanel" style="display:none">
+      <div class="sp-head">Perforation · <span id="perfLevelName">carton</span></div>
+      <div class="sp-readout" id="perfNA" style="display:none"></div>
+      <div id="perfBody" style="display:none">
+        <div class="field bchk"><label><input type="checkbox" id="perfEnable"> Enable perforation</label></div>
+        <div id="perfControls" style="display:none"></div>
+      </div>
     </div>
 
     <!-- retail shelf controls + readout (contextual: Shelf view) -->

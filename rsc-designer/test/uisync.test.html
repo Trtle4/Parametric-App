@@ -182,6 +182,18 @@
   </div>
   <div id="artHint"></div>
 </div>
+<!-- Perforation panel the real app wires at boot (mountPerfSection) — must
+     exist or app.js throws on el('perfPanel').style at every mount, the
+     ViewCube-incident shape (CLAUDE.md). Only the STATIC shell lives here;
+     everything inside #perfControls is built by innerHTML at mount time. -->
+<div id="perfPanel" style="display:none">
+  <span id="perfLevelName"></span>
+  <div id="perfNA" style="display:none"></div>
+  <div id="perfBody" style="display:none">
+    <input type="checkbox" id="perfEnable">
+    <div id="perfControls" style="display:none"></div>
+  </div>
+</div>
 
 <div id="matFields" style="display:contents"></div>
 <div id="levelPlacement" style="display:contents"></div>
@@ -243,7 +255,8 @@ import {getStageBackground, setStageBackground} from '../src/render/fold3d.js';
 import {openabilityWarning, perfSpecRows} from '../src/core/perf.js';
 import {foldBuilders} from '../src/render/folds/index.js';
 import {PERF_CHORD_TOL, applyPerfPreset, buildPerfPath, perfAux, withPerforation, perfFrame,
-        normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT} from '../src/core/perf.js';
+        normalizePerf, isDisplayGeo, PERF_MIN_RETAINED_DEFAULT, PERF_PRESETS, canPerforate,
+        perfUnavailableReason} from '../src/core/perf.js';
 import {draw2d} from '../src/render/dieline2d.js';
 import {buildDXF} from '../src/export/dxf.js';
 import {wrap as pdfWrap, textWidth as pdfTextWidth, SECTION_COL_W, winAnsi} from '../src/export/palletpdf.js';
@@ -5139,6 +5152,164 @@ await (async () => {
     eq(png2, png1, 'a second export differs:');
   });
 
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ================= PERFORATION CONTROL PANEL — driven like a user ========
+ * Every perf pin above this line constructs `level.perf` directly, via
+ * applyPerfPreset/normalizePerf — which is exactly why a feature with 49
+ * passing pins and no way to reach it shipped to production undetected.
+ * These pins click the checkbox, pick a preset from the select, flip the
+ * state toggle, type into the corner fields — the DOM path a real user
+ * takes — and read back through the SAME geoAt/DXF/BCT consumers the
+ * pins above already trust. See CLAUDE.md: "a feature is not done until
+ * a pin drives it the way a user does."
+ */
+await (async () => {
+  const geoAt = lvl => levelGeometry(build.project, lvl, build.getRounding(), build.getSelectedCandidateKey());
+  const styleOptions = () => [...el('levelStyleSel').options].map(o => o.value);
+  const setStyle = id => { el('levelStyleSel').value = id; fire(el('levelStyleSel'), 'change'); };
+  const PERF_LEVELS2 = [['case', 'tertiary'], ['carton', 'secondary']];
+
+  // REACHABILITY. From a default load, on each level x style this feature
+  // is documented to support, the enable control exists and is visible.
+  // This is the pin whose absence caused the deploy report.
+  const APPLICABLE = {case: ['fefco201', 'a6120', 'sealend'], carton: ['fefco201', 'a6120', 'sealend']};
+  for(const [level] of PERF_LEVELS2){
+    setLevel(level); await settle();
+    const origStyle = el('levelStyleSel').value;
+    try{
+      for(const styleId of APPLICABLE[level]){
+        if(!styleOptions().includes(styleId)) continue;
+        setStyle(styleId); await settle();
+        t(`perforation reachability: ${level}/${styleId} shows the enable control`, () => {
+          if(getComputedStyle(el('perfPanel')).display === 'none') throw new Error('perfPanel is hidden');
+          if(getComputedStyle(el('perfBody')).display === 'none') throw new Error('perfBody is hidden — reads as unsupported, not reachable');
+          const box = el('perfEnable');
+          if(getComputedStyle(box).display === 'none' || box.offsetParent === null) throw new Error('the enable checkbox is not visible');
+        });
+      }
+    } finally { setStyle(origStyle); await settle(); }
+  }
+
+  // Work the rest of this block on Case/FEFCO201, the exact combination the
+  // deploy report used.
+  setLevel('case'); await settle();
+  const origCaseStyle = el('levelStyleSel').value;
+  setStyle('fefco201'); await settle();
+
+  // ENABLE THROUGH THE CONTROL. Not normalizePerf returning an object — the
+  // app rendering a tear line, read the SAME geoAt().aux.PERF the DXF/SVG
+  // pins above already trust.
+  if(el('perfEnable').checked){ el('perfEnable').click(); await settle(); }   // start OFF
+  t('perforation: fixture starts disabled, or this pin proves nothing', () => {
+    if(geoAt('case').aux) throw new Error('perf was already on before the pin started');
+  });
+  el('perfEnable').click(); await settle();
+  t('perforation: clicking Enable produces a real tear line in the rendered geometry', () => {
+    const g = geoAt('case');
+    if(!g.aux || !g.aux.PERF || !g.aux.PERF.length) throw new Error('no PERF aux layer after enabling through the control');
+  });
+  t('perforation: enabling with no prior configuration applies the Angled sides default, not an empty one', () => {
+    eq(el('perfPreset').value, 'angled', 'preset select after first enable:');
+  });
+
+  // PRESET CLICK CHANGES THE RENDER. All five, pairwise distinct — a pin
+  // that only checked "the click doesn't throw" would pass on a picker
+  // wired to nothing.
+  const pathsByPreset = {};
+  for(const p of PERF_PRESETS){
+    el('perfPreset').value = p.id; fire(el('perfPreset'), 'change'); await settle();
+    pathsByPreset[p.id] = JSON.stringify(buildPerfPath(geoAt('case'), build.project.tertiary.perf).segments);
+  }
+  t('perforation: every preset produces a genuinely different tear path', () => {
+    const ids = PERF_PRESETS.map(p => p.id);
+    for(let i = 0; i < ids.length; i++) for(let j = i + 1; j < ids.length; j++)
+      if(pathsByPreset[ids[i]] === pathsByPreset[ids[j]]) throw new Error(`${ids[i]} and ${ids[j]} produced identical paths`);
+  });
+
+  // STATE TOGGLE. Flips the 3D display/shipping geometry AND BCT.
+  el('perfPreset').value = 'angled'; fire(el('perfPreset'), 'change'); await settle();
+  t('perforation: state defaults to Shipping, BCT is a real number', () => {
+    if(isDisplayGeo(geoAt('case'))) throw new Error('fixture is already in display state');
+    if(!/\d/.test(el('bctVal').textContent)) throw new Error('BCT has no number to begin with — fixture proves nothing');
+  });
+  el('perfStateDisplay').click(); await settle();
+  t('perforation: the state toggle switches the 3D to display geometry and BCT to not-applicable', () => {
+    if(!isDisplayGeo(geoAt('case'))) throw new Error('geometry did not switch to display state');
+    const bctText = el('bctVal').textContent + el('bctRatio').textContent + (el('bctNote') ? el('bctNote').textContent : '');
+    if(!/not applicable/i.test(bctText)) throw new Error(`BCT did not read not-applicable in display state: "${bctText}"`);
+  });
+  el('perfStateClosed').click(); await settle();
+
+  // NOT APPLICABLE. tray/flowwrap/shrinkbundle read the message, not a
+  // silently missing control — a missing control and an unsupported style
+  // must never look the same.
+  for(const styleId of ['tray', 'flowwrap', 'shrinkbundle']){
+    if(!styleOptions().includes(styleId)) continue;
+    setStyle(styleId); await settle();
+    t(`perforation: ${styleId} shows "not applicable", not an empty space`, () => {
+      if(getComputedStyle(el('perfPanel')).display === 'none') throw new Error('the whole panel is hidden — indistinguishable from a missing control');
+      if(getComputedStyle(el('perfNA')).display === 'none') throw new Error('no not-applicable message shown');
+      if(!/not applicable/i.test(el('perfNA').textContent)) throw new Error('message does not say not applicable');
+      if(getComputedStyle(el('perfBody')).display !== 'none') throw new Error('the enable checkbox is still showing on an unsupported style');
+    });
+  }
+  setStyle('fefco201'); await settle();
+  if(!el('perfEnable').checked){ el('perfEnable').click(); await settle(); }
+
+  // CUSTOM LABEL. The only observable is the picker's own selected value.
+  el('perfPreset').value = 'bowed'; fire(el('perfPreset'), 'change'); await settle();
+  t('perforation: selecting a preset labels it by name', () => {
+    eq(el('perfPreset').value, 'bowed', 'preset select value:');
+  });
+  el('perfAdvanced').open = true;
+  el('perfCorner0').value = 7; fire(el('perfCorner0'), 'change'); await settle();
+  t('perforation: editing after a preset relabels to Custom', () => {
+    eq(el('perfPreset').value, '', 'preset select value after edit:');
+  });
+
+  // ONE WRITER. The write-time clamp (normalizePerf) is what EVERY control
+  // must pass through — an out-of-range value typed into either the
+  // advanced OR the simple field comes back clamped, never stored raw.
+  // Mutate a control to assign level.perf directly and this is what would
+  // catch it.
+  el('perfCorner0').value = 99999; fire(el('perfCorner0'), 'change'); await settle();
+  t('perforation: the advanced corner control is clamped by the one writer, not a second path', () => {
+    const H = perfFrame(geoAt('case')).H, stored = build.project.tertiary.perf.cornerH[0];
+    if(stored >= 99999) throw new Error(`stored value ${stored} was not clamped — advanced wrote around normalizePerf`);
+    if(!(stored <= H)) throw new Error(`stored value ${stored} exceeds the container height ${H}`);
+  });
+  el('perfBack').value = -99999; fire(el('perfBack'), 'change'); await settle();
+  t('perforation: the simple back-height control is clamped by the same one writer', () => {
+    const stored = build.project.tertiary.perf.cornerH[0];
+    if(stored <= -99999) throw new Error(`stored value ${stored} was not clamped — simple wrote around normalizePerf`);
+    if(!(stored >= 0)) throw new Error(`stored value ${stored} is negative`);
+  });
+
+  // MIRROR SIDES, on by default: editing right propagates to left (SWAPPED
+  // flats — the two side panels run opposite directions around the girth),
+  // and stops propagating once the toggle is off.
+  el('perfPerPanel').open = true;
+  if(!el('perfMirror').checked) el('perfMirror').click();
+  el('perfFlatFrom_right').value = 22; fire(el('perfFlatFrom_right'), 'change'); await settle();
+  t('perforation: mirror sides propagates right onto left, flats swapped', () => {
+    const panels = build.project.tertiary.perf.panels;
+    approx(panels.right.flatA, 22, 'right.flatA:', 0.01);
+    approx(panels.left.flatB, 22, 'left.flatB (mirrored):', 0.01);
+  });
+  el('perfMirror').click(); await settle();
+  el('perfFlatFrom_right').value = 41; fire(el('perfFlatFrom_right'), 'change'); await settle();
+  t('perforation: with mirror off, editing right leaves left untouched', () => {
+    const panels = build.project.tertiary.perf.panels;
+    approx(panels.right.flatA, 41, 'right.flatA:', 0.01);
+    approx(panels.left.flatB, 22, 'left.flatB (unchanged):', 0.01);
+  });
+
+  // restore: disable perforation and the level/style this block started
+  // from, so nothing leaks into whatever runs after.
+  if(el('perfEnable').checked){ el('perfEnable').click(); await settle(); }
+  setStyle(origCaseStyle); await settle();
   el('tab2d').click(); setLevel('case'); await settle();
 })();
 
