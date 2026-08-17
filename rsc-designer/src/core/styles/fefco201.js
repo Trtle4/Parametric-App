@@ -15,10 +15,16 @@ const CHAMFER_MAX = 15;        // mm
 
 /**
  * @param {import('../types.js').Params} p
+ * @param {Object} [options]  style-specific build options — see
+ *   `core/styles/index.js`'s `outerFlaps` descriptor. Knowable at build
+ *   time (unlike, say, `shrink`, which needs a solved chain), so it is
+ *   consumed here rather than applied to `meta` after the fact — see
+ *   CLAUDE.md, "Two legitimate shapes for style inputs."
  * @returns {import('../types.js').Geometry}
  */
-export function fefco201(p){
+export function fefco201(p, options = {}){
   const {L, W, H, glue, slot} = p;
+  const outerFlaps = options.outerFlaps === 'W' ? 'W' : 'L';
   const F = W / 2;
   const x1 = glue, x2 = glue + L, x3 = glue + L + W, x4 = glue + 2*L + W, x5 = glue + 2*L + 2*W;
   const yb0 = 0, yb1 = F, yt1 = F + H, yt2 = 2*F + H;
@@ -100,19 +106,17 @@ export function fefco201(p){
       // by the majors, which lift straight off it, so it holds nothing.
       //
       // Panel indices are the artMap girth walk (0 back, 1 right, 2 front,
-      // 3 left), so perf and this list index the same walls.
-      //
-      // LIMITATION, stated rather than hidden: which pair is the major is the
-      // `outerFlaps` OPTION, and options do not reach the geometry builder.
-      // This declares the standard/default build (length panels outer). With
-      // outerFlaps: 'W' the roles swap and this list would be wrong.
+      // 3 left), so perf and this list index the same walls. Which pair is
+      // the major is the LIVE `outerFlaps` build (also what the 3D fold
+      // builder, render/folds/fefco201.js, reads to decide which pair
+      // staggers inward) — length panels (0, 2) by default, width panels
+      // (1, 3) under `outerFlaps: 'W'`.
       closure: {
-        top: [
-          {panel: 0, part: 'major flap', holdsLid: true},
-          {panel: 1, part: 'minor flap', holdsLid: false},
-          {panel: 2, part: 'major flap', holdsLid: true},
-          {panel: 3, part: 'minor flap', holdsLid: false}
-        ],
+        top: [0, 1, 2, 3].map(panel => {
+          const isLengthPanel = panel === 0 || panel === 2;
+          const major = outerFlaps === 'W' ? !isLengthPanel : isLengthPanel;
+          return {panel, part: major ? 'major flap' : 'minor flap', holdsLid: major};
+        }),
         lidJoin: 'the tape along the centre seam'
       },
       // ARTWORK MAP — same upright-tube convention as the cartons (extrude

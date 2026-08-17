@@ -5428,6 +5428,35 @@ await (async () => {
   });
   mel('tab2d').click(); await msettle();
 
+  // outerFlaps TASK — THE INVERSION, LIVE, AT 390px. Flip the real
+  // #p_outerFlaps control (mountLevel's generic options field) and the
+  // rail's openability verdict (#perfWarn, the SAME call the styleStats
+  // readout and the spec sheet make) flips with it — no confirmation
+  // argument, no not-evaluated state, just the live build read straight
+  // off geometry(). Retaining the BACK panel (a length panel, panel 0)
+  // warns under the default 'L' build and must stop warning the instant
+  // outerFlaps flips to 'W', with no other change.
+  mSetLevel('case'); await msettle();
+  mSetStyle('fefco201'); await msettle();
+  if(!mel('perfEnable').checked){ mel('perfEnable').click(); await msettle(); }
+  mel('perfAdvanced') && (mel('perfAdvanced').open = true);
+  mel('perfPerPanel').open = true;
+  mel('perfMode_back').value = 'full'; mfire(mel('perfMode_back'), 'change'); await msettle();
+  t('outerFlaps at 390px: retaining the back panel warns under the default L build', () => {
+    if(mcs(mel('perfWarn')).display === 'none') throw new Error('no warning shown for a retained major-flap panel under the default build');
+    if(!/separate/i.test(mel('perfWarn').textContent)) throw new Error(`#perfWarn does not read a real verdict: "${mel('perfWarn').textContent}"`);
+  });
+  mel('p_outerFlaps').value = 'W'; mfire(mel('p_outerFlaps'), 'change'); await msettle();
+  t('outerFlaps at 390px: flipping the control to W flips the rail verdict — same back panel, no longer warns', () => {
+    if(mcs(mel('perfWarn')).display !== 'none') throw new Error(`still warning after outerFlaps flipped to W: "${mel('perfWarn').textContent}"`);
+  });
+  mel('p_outerFlaps').value = 'L'; mfire(mel('p_outerFlaps'), 'change'); await msettle();
+  t('outerFlaps at 390px: flipping back to L restores the warning — the same live read, not a one-way latch', () => {
+    if(mcs(mel('perfWarn')).display === 'none') throw new Error('warning did not return after flipping outerFlaps back to L');
+  });
+  mel('perfMode_back').value = 'profiled'; mfire(mel('perfMode_back'), 'change'); await msettle();
+  if(mel('perfEnable').checked){ mel('perfEnable').click(); await msettle(); }
+
   // Work the rest of this block on Case/FEFCO201, the exact combination the
   // deploy report used.
   setLevel('case'); await settle();

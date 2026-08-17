@@ -802,18 +802,13 @@ t('openability: retaining a panel warns exactly where the closure holds', () => 
     a6120:    {back: false, right: false, front: true,  left: false},
     sealend:  {back: true,  right: true,  front: true,  left: true}
   };
-  // fefco201's closure.top is only asserted for its DEFAULT outerFlaps build
-  // (core/perf.js's OUTERFLAPS_ASSERTED_STYLES) — this pin is testing THAT
-  // build's real verdicts, so it confirms it; a6120/sealend have no such
-  // option and ignore the hint.
-  const OF = {outerFlaps: 'L'};
   for(const [id, geo] of RIGID){
     const H = perfFrame(geo).H;
     for(const name of PERF_PANELS){
       const panels = {back: {}, right: {}, front: {}, left: {}};
       panels[name] = {mode: 'full'};
       const perf = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H], panels});
-      const w = openabilityWarning(geo, perf, OF);
+      const w = openabilityWarning(geo, perf);
       eq(!!w, expect[id][name], `${id}: full ${name} panel warns?`);
       if(w){
         ok(w.detail.includes(name), `${id}/${name}: the warning must name the panel`);
@@ -822,7 +817,7 @@ t('openability: retaining a panel warns exactly where the closure holds', () => 
       }
     }
     // ...and a girth with nothing retained to full height never warns
-    ok(!openabilityWarning(geo, onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]}), OF),
+    ok(!openabilityWarning(geo, onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]})),
        `${id}: an all-profiled tear must not warn`);
   }
 });
@@ -834,7 +829,7 @@ t('openability: retaining a panel warns exactly where the closure holds', () => 
 // fails on two of the three styles.
 t('openability: every shipped preset opens, on every style', () => {
   for(const [id, geo] of RIGID) for(const preset of PERF_PRESETS){
-    const w = openabilityWarning(geo, applyPerfPreset(preset.id, geo, {enabled: true}), {outerFlaps: 'L'});
+    const w = openabilityWarning(geo, applyPerfPreset(preset.id, geo, {enabled: true}));
     ok(!w, `${id}/${preset.id}: ${w ? w.detail : ''}`);
   }
   // and the revised `open-front` still retains the back as high as it legally
@@ -852,7 +847,7 @@ t('openability: a warning never blocks a write', () => {
   const geo = gCase, H = perfFrame(geo).H;
   const perf = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
     panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
-  ok(openabilityWarning(geo, perf, {outerFlaps: 'L'}), 'the fixture must warn, or this proves nothing');
+  ok(openabilityWarning(geo, perf), 'the fixture must warn, or this proves nothing');
   eq(perf.panels.back.mode, 'full', 'the mode is stored as written:');
   const g = withPerforation(geo, perf);
   ok(g.aux.PERF.length > 0, 'the path is still built');
@@ -875,63 +870,58 @@ t('openability: a style with no declared closure is not second-guessed', () => {
   }
 });
 
-// TEMPORARY GUARD: fefco201's closure.top is asserted for its DEFAULT
-// outerFlaps build only (core/perf.js's OUTERFLAPS_ASSERTED_STYLES). Until
-// closure.top is DERIVED from the live build instead, evaluating it needs
-// the caller to confirm which build is live — and the failure direction has
-// to be NOT-EVALUATED, never "assume the default": an omitted argument must
-// read the same as a confirmed non-default one, not the same as a confirmed
-// default one. Both the WOULD-WARN and WOULD-PASS fixtures are checked so
-// the guard is proven on both halves, not just on silence — a pin checking
-// only "doesn't warn" would still pass if the whole feature were removed.
-t('openability: unconfirmed or non-default outerFlaps reads not-evaluated, never a verdict', () => {
-  const geo = gCase, H = perfFrame(geo).H;
-  const bad = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
-    panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});   // would WARN, confirmed default
-  const good = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]});     // would PASS (null), confirmed default
-
-  for(const [label, perf] of [['would-warn', bad], ['would-pass', good]]){
-    // argument OMITTED entirely
-    const omitted = openabilityWarning(geo, perf);
-    ok(omitted && omitted.notEvaluated === true, `${label}: omitted opts must read not-evaluated, not assume default`);
-    ok(!omitted.panels, `${label}: not-evaluated is not a verdict — no panels named`);
-    // confirmed NON-DEFAULT
-    const nonDefault = openabilityWarning(geo, perf, {outerFlaps: 'W'});
-    ok(nonDefault && nonDefault.notEvaluated === true, `${label}: non-default outerFlaps must read not-evaluated`);
-    ok(!nonDefault.panels, `${label}: not-evaluated is not a verdict — no panels named`);
+// THE INVERSION, both directions — the behaviour the old not-evaluated
+// guard could only refuse to answer. `closure.top` now comes from the LIVE
+// `outerFlaps` build (fefco201.js), so retaining a panel warns exactly when
+// THAT panel is the major pair for the build actually in force — not
+// always the default (0/2, length panels).
+t('openability: closure.top follows the LIVE outerFlaps build, inverted under W', () => {
+  const H = perfFrame(gCase).H;
+  const fullPanel = name => {
+    const panels = {back: {}, right: {}, front: {}, left: {}};
+    panels[name] = {mode: 'full'};
+    return onPerf(gCase, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H], panels});
+  };
+  // default build ('L' — or omitted, since 'L' is the default): length
+  // panels (back/front, indices 0/2) are major and hold the lid.
+  const geoL = fefco201(CASE_P, {outerFlaps: 'L'});
+  const geoDefault = fefco201(CASE_P);   // omitted options — same as 'L'
+  for(const geo of [geoL, geoDefault]){
+    ok(openabilityWarning(geo, fullPanel('back')), 'L build: retaining back (major) warns');
+    ok(openabilityWarning(geo, fullPanel('front')), 'L build: retaining front (major) warns');
+    ok(!openabilityWarning(geo, fullPanel('right')), 'L build: retaining right (minor) does not warn');
+    ok(!openabilityWarning(geo, fullPanel('left')), 'L build: retaining left (minor) does not warn');
   }
-
-  // confirmed DEFAULT gets the real verdict back — bit-identical to before
-  // this guard existed
-  const confirmedBad = openabilityWarning(geo, bad, {outerFlaps: 'L'});
-  ok(confirmedBad && !confirmedBad.notEvaluated, 'confirmed default: a real verdict, not not-evaluated:');
-  ok(confirmedBad.panels && confirmedBad.panels.length, 'confirmed default: the verdict names panels:');
-  eq(openabilityWarning(geo, good, {outerFlaps: 'L'}), null, 'confirmed default + a clean config still passes:');
-
-  // a style with NO outerFlaps option is unaffected either way — the guard
-  // is scoped to styles whose closure actually depends on it, not a blanket
-  // "no opts, no verdict" rule that would falsely gag a6120/sealend too
-  const aH = perfFrame(gCarton).H;
-  const aBad = onPerf(gCarton, {cornerH: [0.5*aH, 0.5*aH, 0.5*aH, 0.5*aH],
-    panels: {back: {}, right: {}, front: {mode: 'full'}, left: {}}});
-  const aw = openabilityWarning(gCarton, aBad);
-  ok(aw && !aw.notEvaluated, 'a6120 still gives a real verdict with no opts at all:');
+  // outerFlaps: 'W' — the roles swap. Width panels (right/left, 1/3) are now
+  // major; length panels are now minor. Same fixture shapes, opposite verdicts.
+  const geoW = fefco201(CASE_P, {outerFlaps: 'W'});
+  const fullPanelW = name => {
+    const panels = {back: {}, right: {}, front: {}, left: {}};
+    panels[name] = {mode: 'full'};
+    return onPerf(geoW, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H], panels});
+  };
+  ok(!openabilityWarning(geoW, fullPanelW('back')), 'W build: retaining back (now minor) does not warn');
+  ok(!openabilityWarning(geoW, fullPanelW('front')), 'W build: retaining front (now minor) does not warn');
+  ok(openabilityWarning(geoW, fullPanelW('right')), 'W build: retaining right (now major) warns');
+  ok(openabilityWarning(geoW, fullPanelW('left')), 'W build: retaining left (now major) warns');
 });
 
-// AND IT RIDES THE SPEC SHEET the same way, since a spec sheet that reads
-// clean because the confirmation didn't reach it is the exact defect this
-// guard exists to prevent.
-t('spec: unconfirmed outerFlaps shows not-evaluated, not a clean sheet', () => {
-  const geo = gCase, H = perfFrame(geo).H;
-  const bad = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
+// NOT-EVALUATED IS GONE. No configuration of any style — closed, open,
+// either outerFlaps build — produces it any more; every verdict is a real
+// one (or null). Mutate: reintroduce the notEvaluated branch and this fails.
+t('openability: no configuration produces a not-evaluated state any more', () => {
+  const H = perfFrame(gCase).H;
+  const bad = onPerf(gCase, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
     panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
-  const omitted = perfSpecRows(geo, bad);
-  ok(omitted.some(r => /not evaluated/.test(r[0] + r[1])), 'omitted opts: the sheet must say not-evaluated');
-  ok(!omitted.some(r => /will not separate/.test(r[0] + r[1])), 'omitted opts: must not print a real verdict');
-  const nonDefault = perfSpecRows(geo, bad, undefined, {outerFlaps: 'W'});
-  ok(nonDefault.some(r => /not evaluated/.test(r[0] + r[1])), 'non-default: the sheet must say not-evaluated');
-  const confirmed = perfSpecRows(geo, bad, undefined, {outerFlaps: 'L'});
-  ok(confirmed.some(r => /will not separate/.test(r[0] + r[1])), 'confirmed default: the sheet keeps the real verdict');
+  for(const opts of [undefined, {outerFlaps: 'L'}, {outerFlaps: 'W'}, {}]){
+    const geo = fefco201(CASE_P, opts);
+    const w = openabilityWarning(geo, bad);
+    ok(w === null || w.notEvaluated === undefined, `opts=${JSON.stringify(opts)}: no notEvaluated flag on the result`);
+  }
+  // and the spec sheet, same claim
+  const geoW = fefco201(CASE_P, {outerFlaps: 'W'});
+  const rows = perfSpecRows(geoW, bad);
+  ok(!rows.some(r => /not evaluated/i.test(r[0] + r[1])), 'the spec sheet never prints not-evaluated');
 });
 
 /* ============================================================ spec sheet */
@@ -967,7 +957,7 @@ t('spec: an active openability warning is on the block', () => {
   const bad = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H],
     panels: {back: {mode: 'full'}, right: {}, front: {}, left: {}}});
   const good = onPerf(geo, {cornerH: [0.5*H, 0.5*H, 0.5*H, 0.5*H]});
-  const has = perf => perfSpecRows(geo, perf, undefined, {outerFlaps: 'L'}).some(r => /will not separate/.test(r[0] + r[1]));
+  const has = perf => perfSpecRows(geo, perf).some(r => /will not separate/.test(r[0] + r[1]));
   ok(has(bad), 'the warning must reach the sheet');
   ok(!has(good), 'a pack that opens must not carry one');
 });

@@ -370,7 +370,7 @@ function solvePrimaryStage(project, content, opts = {}){
   }else{
     wp.L = env.L; wp.W = env.W; wp.H = env.H;
   }
-  const wrapGeo = {...styleById(prim.wrap.styleId).geometry(wp)};   // true envelope axes throughout — no permutation
+  const wrapGeo = {...styleById(prim.wrap.styleId).geometry(wp, prim.wrap.options)};   // true envelope axes throughout — no permutation
   // wrapAxis stays 'L' on the row: a fixed constant the renderer/readout read
   // so seals/fin always land on the L-ends, never a resolved-per-envelope pick.
   return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis: 'L', wp};
@@ -536,7 +536,7 @@ function solveTrayStage(project, content){
 function materialAreaObjective(level){
   return cavity => {
     const params = {...level.params, L: cavity.L, W: cavity.W, H: cavity.H};
-    const geo = styleById(level.styleId).geometry(params);
+    const geo = styleById(level.styleId).geometry(params, level.options);
     return geo.bbox.maxX*geo.bbox.maxY;
   };
 }
@@ -581,7 +581,7 @@ function solveSecondaryInner(project, child, step){
       arrangement = fit; fits = fit.total >= requestedUnits; capacity = fit.total;
     }
   }
-  return {params, geo: styleById(sec.styleId).geometry(params), orientation: chosen, fits, capacity, arrangement, requestedUnits};
+  return {params, geo: styleById(sec.styleId).geometry(params, sec.options), orientation: chosen, fits, capacity, arrangement, requestedUnits};
 }
 
 /**
@@ -636,7 +636,7 @@ function fitChildInOuter(child, cavity, chosenOrientation, opts){
  *  enabled flags are not consulted in this legacy mode). */
 function legacyBelowOutermost(project){
   const sec = project.secondary;
-  const geo = styleById(sec.styleId).geometry(sec.params);
+  const geo = styleById(sec.styleId).geometry(sec.params, sec.options);
   return {
     content: null, primaryResult: null,
     secondaryVariant: {params: sec.params, geo, fits: true, orientation: null, requestedUnits: null},
@@ -716,7 +716,7 @@ export function candidateCases(project, rounding = '1mm'){
     if(!shape){
       const cavity = roundCavityUp(c.cavity, step);
       const outerParams = {...outerLevel.params, L: cavity.L, W: cavity.W, H: cavity.H};
-      const outerGeo = styleById(outerLevel.styleId).geometry(outerParams);
+      const outerGeo = styleById(outerLevel.styleId).geometry(outerParams, outerLevel.options);
       const childFit = fitChildInOuter(child, cavity, c.o, openTop ? {openTop: true, wantCount: c.nx*c.ny*c.layers} : {});
       shape = {cavity, outerParams, outerGeo, childFit};
       shapeCache.set(shapeKey, shape);
@@ -745,7 +745,7 @@ export function checkLockedCase(project, rounding = '1mm'){
   // could spuriously "not fit". Pass none: fitChildInOuter falls back to
   // the child's own allowedOrientations, same as the unlocked path.
   const childFit = fitChildInOuter(child, cavity, null, openTop ? {openTop: true, wantCount: outerLink.count} : {});
-  const outerGeo = styleById(outerLevel.styleId).geometry(outerLevel.params);
+  const outerGeo = styleById(outerLevel.styleId).geometry(outerLevel.params, outerLevel.options);
   const childVol = child.outer.L*child.outer.W*child.outer.H;
   const cand = {nx: '—', ny: '—', layers: childFit.layers,
                 o: childFit.placements[0] ? childFit.placements[0].orientation : '—'};
