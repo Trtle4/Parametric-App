@@ -623,3 +623,23 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   gone. Golden stayed bit-identical, confirming gate 2 of that task's own
   survey: `outerFlaps` moves the fold and the closure declaration, never
   the blank.
+- **The DXF harness fetches its parser from an external CDN, so it can't
+  run in every environment.** `test/dxf.test.html` dynamically imports
+  `dxf-parser` from esm.sh; in a sandboxed environment without reach to
+  that CDN the whole file hangs at "running…" with no pin result at all —
+  confirmed pre-existing (via `git stash`) during the `outerFlaps` task,
+  not caused by it. Standing limitation, not new, but it means any future
+  change that touches DXF output ships unverified in exactly the
+  environments most likely to be sandboxed. Fix: vendor the parser (a
+  committed file this repo controls, like `three.r128.min.js` already is
+  for the Playwright harness) instead of fetching it live.
+- **The perforation arc is complete.** Path builder (crease resolution,
+  chord-tolerance sampling, presets), 3D display state, BCT gating, the
+  spec sheet, the openability warning, the control panel that makes all of
+  it reachable, and now `outerFlaps` deriving `closure.top` from the live
+  build instead of a temporary confirm-or-refuse argument — landed across
+  separate tasks, each building on the last. Recorded here so the
+  temporary-argument history in the openability-guard entry above reads as
+  closed, not as a loose thread: anyone finding that commit in isolation
+  should find this note beside it, not re-litigate a gap that was already
+  closed by a later task.
