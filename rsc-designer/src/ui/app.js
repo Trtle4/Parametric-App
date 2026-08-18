@@ -80,18 +80,22 @@ let explodeFactor = 0.6;   // 0..1 — the slider's live value while explodeOn
 let showDims = false;
 const subjectDims = {fold: null, nest: null};
 
-// Retail shelf view state — a visualization config, not a design parameter,
-// so it lives here (like `view`/`mode3d`), never on the project. Counts are a
-// number or 'auto' (fill to the shelf). `front` is which face points at the
-// shopper, as an orientation string consumed by fitInto/orientDims (see
-// FRONT_PANELS): o[0]=across, o[1]=depth (back-to-front), o[2]=up.
-// `rot` spins the FORWARD FACE in its own plane (about the depth axis) by
-// 0/90/180/270°, clockwise to the shopper — like turning a framed picture on
-// the wall. Face selection picks WHICH face the shopper sees; rot spins whatever
-// face is forward, and the same face stays forward (never a side/back). 90°/270°
-// swap the face's two dims (across ↔ up; depth unchanged), so its width×height
-// on the shelf changes and the fill (facings/stack/count/occupied) recomputes.
-const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', front: 'auto', rot: 0, cutaway: false};
+// Retail shelf BAY state — width/depth/height/facings/stack/deep/cutaway are
+// a visualization config, not a design parameter, so they live here (like
+// `view`/`mode3d`), never on the project, and are genuinely shared: the two
+// compare bays are one shelf spec applied twice (CLAUDE.md).
+//
+// `front` (which face points at the shopper — an orientation string
+// consumed by fitInto/orientDims, see FRONT_PANELS: o[0]=across, o[1]=depth,
+// o[2]=up) and `rot` (spins the FORWARD FACE in its own plane by 0/90/180/
+// 270°, clockwise to the shopper, about the depth axis — the same face
+// stays forward, swapping across↔up at 90°/270° so the fill recomputes) are
+// NOT here: they are per-DESIGN presentation, chosen when the design was
+// saved, and live on `project.shelf` (core/project.js) so shelf-compare
+// restores each slot's own — never on this shared object, whose whole point
+// is to be the same for both bays. `shelfFill(proj, ...)` reads
+// `proj.shelf.front`/`.rot` off whichever project it was handed.
+const shelf = {width: 1000, depth: 500, height: 300, facings: 'auto', stack: 'auto', deep: 'auto', cutaway: false};
 /* COMPARE STATE — view state, never project state. `project` is a snapshot
  * deserialized from a save slot: a separate object graph with its own artwork
  * and its own rates, solved through the same pure core functions and never
@@ -918,7 +922,7 @@ function shelfFill(proj, key, onArtDecode){
   // face — the printed front and the merchandised front are one face, so this
   // is the same value, not a second convention.
   const packFront = packFrontOrientation(geo);
-  const frontO = (artPinsFront || shelf.front === 'auto') ? packFront : shelf.front;
+  const frontO = (artPinsFront || proj.shelf.front === 'auto') ? packFront : proj.shelf.front;
   // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
   // axis, like turning a framed picture on the wall) — the same face stays
   // toward the shopper, never a side or the back. So the two dims OF THAT FACE
@@ -934,7 +938,7 @@ function shelfFill(proj, key, onArtDecode){
   // to set. One effective angle drives the fill and the render together.
   const baseRoll = faceUpRoll(frontO, geo.meta.frontFace,
                               frontO === packFront ? geo.meta.frontUp : null);
-  const rotDeg = ((baseRoll + shelf.rot) % 360 + 360) % 360;
+  const rotDeg = ((baseRoll + proj.shelf.rot) % 360 + 360) % 360;
   const spun = (rotDeg % 180) !== 0;
   const fillO = spun ? frontO[2] + frontO[1] + frontO[0] : frontO;
   // fixed to the front-panel orientation — the shopper-facing face is the
@@ -968,8 +972,9 @@ function shelfFill(proj, key, onArtDecode){
   // just laid on fillO. At 90°/270° across and up have swapped, so odFoot.l/h are
   // the transposed pair (odFoot.w/depth stays). odGeo = the pack's TRUE
   // front-facing dims (front face = odGeo.l × odGeo.h); buildShelf builds the box
-  // from these and spins it about the depth axis by shelf.rot, so the same face
-  // stays forward and its width×height on the shelf matches odFoot.
+  // from these and spins it about the depth axis by the design's own
+  // proj.shelf.rot, so the same face stays forward and its width×height
+  // on the shelf matches odFoot.
   const odFoot = orientDims(geo.outer, fillO);
   const odGeo = orientDims(geo.outer, frontO);
   return {noun, row, geo, artInfo, artOnBody, artPinsFront, frontO, rotDeg,
@@ -1041,9 +1046,15 @@ function refreshShelf(){
  * writes to the live project, and B is read-only by construction: to change
  * it you load it, edit it as the active project, and save it back.
  *
- * The bays are IDENTICAL: one shelf spec, applied twice. That is what keeps
- * the two counts directly comparable — each is a full-bay number, not a
- * half-bay number needing mental doubling.
+ * The BAYS (width/depth/height/facings/stack/deep/cutaway) are IDENTICAL:
+ * one shelf spec, applied twice. That is what keeps the two counts directly
+ * comparable — each is a full-bay number, not a half-bay number needing
+ * mental doubling. Front-panel designation and rotation are NOT part of
+ * that shared spec — they are per-DESIGN (project.shelf), so each bay
+ * presents the pack the way ITS OWN design was saved, not whatever the
+ * other bay (or the live control) currently shows. Camera/orbit stays
+ * shared regardless: comparing two packs from two viewpoints isn't a
+ * comparison.
  */
 const BAY_GAP = 120;                        // mm of aisle between the two bays
 
@@ -1066,10 +1077,13 @@ function refreshCompare(){
   const fillA = shelfFill(build.project, selKey(), () => { if(view === 'shelf') refreshShelf(); });
   const fillB = compareFillB();
   el('spUnit').textContent = fillA.noun + 's';
-  // the front selector applies to BOTH bays (it is shelf-view state, not a
-  // property of either design); 'auto' — the default — lets each design present
-  // by its own declared face, which is the honest merchandising comparison.
-  el('shFront').disabled = fillA.artPinsFront || (fillB && fillB.artPinsFront);
+  // Front-panel designation and rotation are PER DESIGN (project.shelf),
+  // resolved independently inside shelfFill for whichever project it was
+  // handed — B renders with its own saved values, never A's. The control
+  // only ever writes to A (B is read-only by construction), so it is
+  // disabled only on A's own artPinsFront: B's pinned artwork, if any, is
+  // B's own business and must not reach in and disable editing A.
+  el('shFront').disabled = fillA.artPinsFront;
   el('shFront').title = el('shFront').disabled ? 'Front follows the uploaded artwork' : '';
 
   const span = Math.max(shelf.width*2 + BAY_GAP, shelf.depth, shelf.height)*0.62;
@@ -2444,8 +2458,13 @@ function writeShelfFields(){
   const step = u === 'in' ? '0.25' : '10';
   ['shWidth', 'shDepth', 'shHeight'].forEach(id => el(id).step = step);
   el('uShW').textContent = el('uShD').textContent = el('uShH').textContent = u;
-  el('shFront').value = shelf.front;
-  el('shRotVal').textContent = shelf.rot + '°';
+  // front/rot are DESIGN state (project.shelf), always A's — the control
+  // never writes to B, so it only ever needs to reflect A. Re-run on every
+  // project change (registered below) so loading a file/slot into A resyncs
+  // the control to what THAT design actually saved, instead of leaving the
+  // previous design's front/rot showing.
+  el('shFront').value = build.project.shelf.front;
+  el('shRotVal').textContent = build.project.shelf.rot + '°';
   el('shFacings').value = shelf.facings === 'auto' ? '' : shelf.facings;
   el('shStack').value = shelf.stack === 'auto' ? '' : shelf.stack;
   el('shDeep').value = shelf.deep === 'auto' ? '' : shelf.deep;
@@ -2457,10 +2476,20 @@ const shelfCount = raw => raw.trim() === '' ? 'auto' : Math.max(1, Math.round(+r
 el('shWidth').addEventListener('input',  () => { shelf.width  = shelfDim(el('shWidth').value,  shelf.width);  refreshShelf(); });
 el('shDepth').addEventListener('input',  () => { shelf.depth  = shelfDim(el('shDepth').value,  shelf.depth);  refreshShelf(); });
 el('shHeight').addEventListener('input', () => { shelf.height = shelfDim(el('shHeight').value, shelf.height); refreshShelf(); });
-el('shFront').addEventListener('change', () => { shelf.front = el('shFront').value; refreshShelf(); });
-// each click turns the pack 90° in plan: 0→90→180→270→0. Shelf-local only —
-// it never touches the upstream carton/case design, just how the pack sits here.
-el('shRotate').addEventListener('click', () => { shelf.rot = (shelf.rot + 90) % 360; el('shRotVal').textContent = shelf.rot + '°'; refreshShelf(); });
+// front/rot write to A's OWN project (build.project.shelf), never to the
+// shared `shelf` bay-spec object and never to `compare.project` — B is
+// read-only by construction, so a control that only ever targets A cannot
+// reach it, rather than needing a guard to keep it out.
+el('shFront').addEventListener('change', () => { build.project.shelf.front = el('shFront').value; projectChanged(); });
+// each click turns the pack 90° in plan: 0→90→180→270→0 — A's presentation,
+// not the upstream carton/case design (still never touches that), and now
+// not the shelf bay spec either: it's part of what A IS on shelf, so it's
+// saved and restored per design, same as front-panel designation.
+el('shRotate').addEventListener('click', () => {
+  build.project.shelf.rot = (build.project.shelf.rot + 90) % 360;
+  el('shRotVal').textContent = build.project.shelf.rot + '°';
+  projectChanged();
+});
 el('shFacings').addEventListener('input', () => { shelf.facings = shelfCount(el('shFacings').value); refreshShelf(); });
 el('shStack').addEventListener('input',   () => { shelf.stack   = shelfCount(el('shStack').value);   refreshShelf(); });
 el('shDeep').addEventListener('input',    () => { shelf.deep    = shelfCount(el('shDeep').value);    refreshShelf(); });
@@ -3188,6 +3217,13 @@ notify.onRefresh('cost', refreshCost);
 // the retail shelf reflects the sellable pack's geometry, so it re-fills on
 // every project change too (refreshShelf no-ops unless the Shelf view is up).
 notify.onRefresh('shelf', refreshShelf);
+// front/rot moved onto the project (shelf-compare per-slot task): the
+// #shFront/#shRotVal controls must resync to A's own value whenever A
+// changes wholesale (a file/slot load into A), not just on a units switch —
+// otherwise they'd keep showing the PREVIOUS design's front/rot after a
+// load. Registered rather than hand-inserted at every load call site, same
+// reason every other display here is.
+notify.onRefresh('shelfFields', writeShelfFields);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('artworkPanel', updateArtPanel);
 notify.onRefresh('perfPanel', mountPerfSection);

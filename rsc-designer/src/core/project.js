@@ -220,7 +220,15 @@ export function newProject(){
     // entry is {src, natW, natH, fit, dx, dy, scale} — `src` a downscaled data
     // URL (see save.js) so the save file round-trips the art without bloating.
     // Empty by default; a level appears only once art is uploaded there.
-    artwork: {}
+    artwork: {},
+    // RETAIL SHELF PRESENTATION — which face is merchandised forward and how
+    // far it's turned. Chosen when the design is saved and part of what the
+    // design IS on shelf, so it lives on the project (unlike the shelf's own
+    // width/depth/height/facings/stack/deep/cutaway, which are bay-spec, not
+    // design data, and stay session-only UI state in ui/app.js). This is what
+    // lets shelf-compare restore each slot's own presentation instead of
+    // both bays reading whatever the live control currently shows.
+    shelf: {front: 'auto', rot: 0}
   };
 }
 

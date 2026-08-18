@@ -248,11 +248,22 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   side. The isolation PIN needs A and B to DIFFER: measured, with both bays the
   same design a mutation that wrote B's pallet spec straight into the live
   project passed, because the value leaked in was the value already there.
-  Per-side front/rotate controls were deliberately NOT built — the existing
-  shared controls apply to both bays, and 'auto' (the default) lets each design
-  present by its own declared face, which is the honest merchandising
-  comparison; per-side overrides, comparing three designs, and delta
-  highlighting are all noted and unbuilt.
+  Per-side front/rotate controls were deliberately NOT built at first — the
+  shared controls applied to both bays, and 'auto' (the default) let each
+  design present by its own declared face, read as the honest merchandising
+  comparison. **That reasoning didn't survive contact with a non-default
+  save** (per-slot view state task): a design saved with a chosen front panel
+  or rotation opened under whatever the OTHER bay's live control showed,
+  because `shelf.front`/`shelf.rot` were pure UI state, never on the project,
+  so there was nothing to restore in the first place. Fixed by splitting
+  `shelf`: width/depth/height/facings/stack/deep/cutaway stay shared bay spec
+  (still one shelf spec applied twice — that part of the original reasoning
+  held), while `front`/`rot` moved onto `project.shelf`, chosen when a design
+  is saved and restored per slot. `shelfFill(proj, ...)` now reads
+  `proj.shelf.front`/`.rot` off whichever project it was handed, instead of
+  the one shared object regardless of which bay. Camera/orbit stays shared —
+  comparing two packs from two viewpoints was never the ask. Comparing three
+  designs and delta highlighting remain noted and unbuilt.
 - **The pallet PDF's PLAN view is shot through a LONG LENS, and that is what
   puts the pallet in it.** A plan of a pallet has to contain the pallet, and it
   did not: at the renderer's normal 38° lens a 1.4m load seen from overhead is
@@ -571,6 +582,14 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
     a proportional-from-centroid stand-in against its own input and asserts
     the stand-in fails. That proves the pin is capable of failing, rather
     than merely not obviously trivial.
+  - **An isolation pin covers what it enumerates.** Compare's pin asserted
+    B never contaminates A's readouts — facings, cost, sellable unit — and
+    front-panel designation and orientation leaked through anyway, because
+    they are VIEW STATE, not readouts, so the pin's own enumeration never
+    named them. Both bays read the one shared `shelf.front`/`shelf.rot`
+    regardless of which project `shelfFill` was handed, and nothing was
+    watching. When a pin asserts non-contamination, enumerate what it does
+    not cover.
 - **Latent: a single-`shelfRoot` restructure of `shelf3d.js` crashed the
   headless renderer.** Tried during the shelf-compare amendments and
   reverted (the per-bay grouping it would have replaced was a floor, not a

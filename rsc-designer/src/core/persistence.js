@@ -163,6 +163,14 @@ function fillProjectDefaults(loadedProject){
   // (the downscaled data URLs ride through untouched, an unknown-field-style
   // passthrough but made explicit since it's a first-class model field now)
   if(loadedProject.artwork === undefined){ out.artwork = clone(base.artwork); }
+  // SHELF PRESENTATION: a genuinely new field (the shelf-compare per-slot
+  // task) — absent → the documented default {front:'auto', rot:0}, which is
+  // bit-identical to what every pre-existing save already looked like on
+  // shelf (there was no other value to have), so an old slot opens exactly
+  // as it always has. Missing → defaulted + reported, same as any other
+  // field this function fills; not a schema migration, since nothing about
+  // an EXISTING field's shape or meaning changed.
+  out.shelf = mergeDefaults(loadedProject.shelf, base.shelf, 'shelf', report);
   return {project: out, defaulted: report};
 }
 
