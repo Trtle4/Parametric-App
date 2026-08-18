@@ -3730,6 +3730,206 @@ await (async () => {
 })();
 
 /* ==================================================================
+   Shelf compare — front-panel designation and rotation are PER SLOT.
+   The isolation pin above asserts B never contaminates A's READOUTS
+   (facings, cost, sellable unit) — it says nothing about VIEW STATE, and
+   front-panel designation/rotation leaked through exactly that gap: both
+   bays used to read the one shared `shelf.front`/`shelf.rot` regardless of
+   which project shelfFill was handed. They are per-DESIGN now
+   (project.shelf), chosen when a design is saved and restored from its
+   slot — never harmonized to whatever the live control currently shows.
+   Camera/orbit is deliberately NOT part of this: comparing two packs from
+   two different viewpoints is not a comparison, so it stays shared and is
+   pinned that way below, not made per-bay alongside front/rot.
+   ================================================================== */
+await (async () => {
+  const PRES_SLOT = 4;                      // a slot the other compare pins do not use
+  const enter = slot => { el('shCmpSlot').value = String(slot); fire(el('shCmpSlot'), 'change'); el('shCompare').click(); };
+  const exit = () => { if(el('shCompare').classList.contains('on')) el('shCompare').click(); };
+  const cmpCells = () => [...document.querySelectorAll('#shReadout .cmp > div')].map(d => d.textContent.trim());
+  const setShelfState = (front, rot) => { build.project.shelf.front = front; build.project.shelf.rot = rot; build.recompute(); };
+  const packCount = bay => { let n = 0; bay.group.traverse(o => { if(o.isInstancedMesh) n = Math.max(n, o.count); }); return n; };
+  const saveSlot = (i, name, proj) => save.saveToSlot(i, name,
+    {project: proj, rounding: build.getRounding(), selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+
+  el('tabShelf').click(); await settle();
+  const original = {...build.project.shelf};
+
+  // THE FIXTURE. A and B must differ on BOTH axes, or nothing below is
+  // falsifiable — a pin that passed with A.front === B.front, or
+  // A.rot === B.rot, could not tell "restored independently" from
+  // "harmonized to whichever side happens to match." Hand-checked against
+  // this file's default project (a6120 100x60x150 carton on a 1000x500x300
+  // shelf, measured live, not assumed): front auto/rot 0 -> 50 packs
+  // (5 facings x 5 high x 2 deep); front WLH/rot 90 -> 38 packs
+  // (19 x 1 x 2) — the two differ, and measured BEFORE trusting either
+  // number below.
+  const A_FRONT = 'auto', A_ROT = 0;
+  const B_FRONT = 'WLH', B_ROT = 90;
+  if(A_FRONT === B_FRONT || A_ROT === B_ROT)
+    throw new Error('fixture does not differ on both axes — the pins below would prove nothing');
+  setShelfState(A_FRONT, A_ROT);
+  const A_COUNT = +((el('shReadout').textContent.match(/^(\d+)/) || [])[1] || NaN);
+  setShelfState(B_FRONT, B_ROT);
+  const B_COUNT = +((el('shReadout').textContent.match(/^(\d+)/) || [])[1] || NaN);
+  if(!(A_COUNT > 0) || !(B_COUNT > 0)) throw new Error('fixture broken: no sellable pack on this project');
+  if(A_COUNT === B_COUNT)
+    throw new Error(`vacuous fixture: A and B both resolve to ${A_COUNT} packs — a swap could not show`);
+
+  // Save B under ITS OWN presentation (still live from the measurement
+  // above), independent of whatever A is about to be set to.
+  saveSlot(PRES_SLOT, 'Presentation B', build.project);
+
+  // Now give A a DIFFERENT presentation.
+  setShelfState(A_FRONT, A_ROT);
+  el('tabShelf').click(); await settle();
+
+  t('shelf compare: A unchanged — entering and leaving compare does not alter A\'s front-panel/rotation', () => {
+    enter(PRES_SLOT);
+    try{
+      eq(JSON.stringify(build.project.shelf), JSON.stringify({front: A_FRONT, rot: A_ROT}), 'A\'s project.shelf during compare:');
+      eq(el('shFront').value, A_FRONT, 'the control still shows A\'s front:');
+      eq(el('shRotVal').textContent, A_ROT + '°', 'the control still shows A\'s rotation:');
+    } finally { exit(); }
+    eq(JSON.stringify(build.project.shelf), JSON.stringify({front: A_FRONT, rot: A_ROT}), 'A\'s project.shelf after compare:');
+  });
+
+  t('shelf compare: B renders with its OWN saved front-panel/rotation, not A\'s (round trip)', () => {
+    enter(PRES_SLOT);
+    try{
+      const cells = cmpCells();
+      if(cells.length !== 21) throw new Error(`comparison table is ${cells.length} cells, expected 21`);
+      eq(cells[4], `${A_COUNT} cartons`, 'A column, On shelf:');
+      eq(cells[5], `${B_COUNT} cartons`, 'B column, On shelf — B\'s own count, not A\'s:');
+      // and the SCENE itself — what the export will actually photograph —
+      // carries the same two counts, not just the text readout, since the
+      // capture takes whatever these groups already contain (see the
+      // export pins below).
+      eq(packCount(shelfBay('A')), A_COUNT, 'A\'s rendered instance count:');
+      eq(packCount(shelfBay('B')), B_COUNT, 'B\'s rendered instance count — B\'s own, not A\'s:');
+    } finally { exit(); }
+  });
+
+  t('shelf compare: both directions — the non-default presentation can be in EITHER slot', () => {
+    // Swap roles: the SLOT now carries the presentation A had a moment ago
+    // (A_FRONT/A_ROT), and A is given B's presentation instead. A fix that
+    // just made "B always wins" (or "the slot's value always wins") would
+    // still pass the round-trip pin above but fail here.
+    setShelfState(A_FRONT, A_ROT);
+    saveSlot(PRES_SLOT, 'Presentation A-as-slot', build.project);
+    setShelfState(B_FRONT, B_ROT);
+    enter(PRES_SLOT);
+    try{
+      const cells = cmpCells();
+      if(cells.length !== 21) throw new Error(`comparison table is ${cells.length} cells, expected 21`);
+      eq(cells[4], `${B_COUNT} cartons`, 'A column (now holds the non-default presentation):');
+      eq(cells[5], `${A_COUNT} cartons`, 'B column (now the default, from its own slot) — not A\'s value:');
+    } finally { exit(); }
+    // restore PRES_SLOT to B's own (non-default) presentation for the pins
+    // below — save it WHILE the project actually holds it, not after
+    // resetting A back to default first.
+    setShelfState(B_FRONT, B_ROT);
+    saveSlot(PRES_SLOT, 'Presentation B', build.project);
+    setShelfState(A_FRONT, A_ROT);   // back to A's own presentation
+  });
+
+  t('shelf compare: the camera/orbit is ONE shared value — never per-bay', () => {
+    enter(PRES_SLOT);
+    try{
+      if(setOrbit.length !== 3)
+        throw new Error(`setOrbit takes ${setOrbit.length} args, expected exactly (rotX, rotY, dist) — no bay parameter to abuse`);
+      const before = getOrbit();
+      setOrbit(0.11, -0.22, 987);
+      eq(JSON.stringify(getOrbit()), JSON.stringify({rotX: 0.11, rotY: -0.22, dist: 987}), 'the one shared orbit updates:');
+      // structurally: neither bay carries its own camera/orbit-shaped
+      // field — there is nowhere for a per-bay override to even live.
+      // Mutate: give a bay object a `.camera`/`.orbit` key and this fails.
+      for(const id of ['A', 'B']){
+        const bay = shelfBay(id);
+        if(!bay) throw new Error(`bay ${id} did not build`);
+        for(const k of Object.keys(bay))
+          if(/camera|orbit/i.test(k)) throw new Error(`bay ${id} carries its own ${k} — the camera is no longer shared`);
+      }
+      setOrbit(before.rotX, before.rotY, before.dist);
+    } finally { exit(); }
+  });
+
+  // EXPORT MATCHES THE SCREEN. compareSheet() builds no geometry of its own —
+  // it only toggles visibility/position on the SAME bay groups refreshCompare
+  // already built (see its own comment) — so the counts the capture
+  // photographs are exactly what's asserted above, sampled again right
+  // before the capture to be sure entering compare via the sheet button's
+  // own path didn't rebuild anything differently.
+  enter(PRES_SLOT);
+  let cmpSheet2 = null, cmpErr2 = '';
+  const grabCmp2 = e => { e.preventDefault(); cmpSheet2 = e.detail.sheet; };
+  document.addEventListener('comparesheet:composed', grabCmp2);
+  try{ el('shCmpSheet').click(); await waitFrames(() => !!cmpSheet2, 8000); }
+  catch(e){ cmpErr2 = e.message; }
+  finally{ document.removeEventListener('comparesheet:composed', grabCmp2); }
+  const sceneCountsAtExport = {A: packCount(shelfBay('A')), B: packCount(shelfBay('B'))};
+  exit();
+
+  t('shelf compare export: the composed sheet is built from each bay\'s OWN presentation, not a shared one', () => {
+    if(cmpErr2) throw new Error(cmpErr2);
+    if(!cmpSheet2) throw new Error('no comparesheet:composed event — the export did not run');
+    eq(JSON.stringify(sceneCountsAtExport), JSON.stringify({A: A_COUNT, B: B_COUNT}), 'scene state at export time:');
+  });
+
+  t('shelf compare at 390px: B keeps its own front-panel/rotation through the real-CSS mobile fixture', () => {
+    const mframe = document.getElementById('mobileFixture');
+    if(!mframe || !mframe.contentDocument) throw new Error('mobile fixture not available');
+    const mdoc = mframe.contentDocument;
+    const mel = id => mdoc.getElementById(id);
+    const mfire = (node, type) => node.dispatchEvent(new Event(type, {bubbles: true}));
+    const mCmpCells = () => [...mdoc.querySelectorAll('#shReadout .cmp > div')].map(d => d.textContent.trim());
+    const mCount = () => +((mel('shReadout').textContent.match(/^(\d+)/) || [])[1] || NaN);
+
+    // B: a fresh, explicit project with the non-default presentation,
+    // saved through the OUTER page's save.js directly (pure JS/
+    // localStorage — the Save-to-slot BUTTON opens a blocking prompt()
+    // this harness cannot answer). Deliberately NOT cross-checked against
+    // this file's own A_COUNT/B_COUNT: those were measured against the
+    // OUTER page's build.project, which earlier pins in this suite have
+    // since resized — a real, independent instance, not the same fixture.
+    const bProject = newProject();
+    bProject.shelf = {front: B_FRONT, rot: B_ROT};
+    saveSlot(PRES_SLOT, '390 B', bProject);
+
+    mel('tabShelf').click();
+    const aCountBefore = mCount();
+    mel('shCmpSlot').value = String(PRES_SLOT); mfire(mel('shCmpSlot'), 'change');
+    mel('shCompare').click();
+    let bFromCompare;
+    try{
+      const cells = mCmpCells();
+      if(cells.length !== 21) throw new Error(`comparison table at 390px is ${cells.length} cells, expected 21`);
+      bFromCompare = cells[5];
+      eq(cells[4], `${aCountBefore} cartons`, '390px, A column unaffected by entering compare:');
+    } finally { if(mel('shCompare').classList.contains('on')) mel('shCompare').click(); }
+
+    // Cross-check bFromCompare against B's OWN design loaded DIRECTLY (not
+    // through compare at all) — B's true single-view rendering, the same
+    // "does B match its own independent solve" idiom the desktop isolation
+    // pin above uses. #btnSlotLoad triggers no prompt() (only Save-to-slot
+    // does), so this is drivable through the real controls.
+    mel('slotSel').value = String(PRES_SLOT); mfire(mel('slotSel'), 'change');
+    mel('btnSlotLoad').click();
+    mel('tabShelf').click();
+    const bAlone = `${mCount()} cartons`;
+    if(bAlone !== bFromCompare)
+      throw new Error(`B via compare read "${bFromCompare}" but B loaded directly reads "${bAlone}" — compare is not showing B's own presentation`);
+    if(bAlone === `${aCountBefore} cartons`)
+      throw new Error(`fixture vacuous at 390px: B's own count equals A's original count (${aCountBefore}) — cannot tell them apart`);
+  });
+
+  save.clearSlot(PRES_SLOT);
+  build.project.shelf.front = original.front; build.project.shelf.rot = original.rot;
+  build.recompute();
+  el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
    Material cost — rates x the quantities the chain already solved.
    The point of every pin here: there is ONE cost, derived with the other
    chain values, and the panel / the level readout / the Build column are

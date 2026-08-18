@@ -288,15 +288,25 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
   if(!result.migrationsRun[1].startsWith('v2 -> v3')) throw new Error(`unexpected migration: ${result.migrationsRun[1]}`);
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
-  // this fixture predates openTop, the pallet.stacking (BCT) block AND the
-  // pallet.patternIndex pattern pick -- all genuinely new fields, correctly
+  // this fixture predates openTop, perf, the pallet.stacking (BCT) block,
+  // pallet.patternIndex and shelf -- all genuinely new fields, correctly
   // reported as defaulted (openTop from each level's OWN style, both false
   // here for a6120/fefco201; patternIndex 0 = the ranked best), not
-  // silently absent
-  eq(result.defaulted, ['secondary.openTop', 'tertiary.openTop', 'pallet.patternIndex', 'pallet.stacking'],
-     'the new openTop + patternIndex + pallet.stacking fields are filled:');
+  // silently absent. Order follows each object's own key order in
+  // newProject() (secondary declares openTop before perf; tertiary the
+  // reverse), not alphabetical or insertion-into-report order — a change
+  // to that order elsewhere would be a real, if harmless, thing to notice.
+  eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
+                         'pallet.patternIndex', 'pallet.stacking', 'shelf'],
+     'the new openTop/perf/pallet.stacking/patternIndex/shelf fields are filled:');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
+  // THE COMPATIBILITY CLAIM, against a REAL prior save (this fixture is a
+  // genuine committed v1 file, years older than shelf-compare) rather than
+  // a constructed object with the key omitted: a save from before shelf
+  // presentation existed opens with the documented default, not whatever
+  // the last-viewed design happened to show.
+  eq(result.project.shelf, {front: 'auto', rot: 0}, 'pre-existing save defaults shelf presentation to auto/0:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
@@ -316,6 +326,9 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
   eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
+  // same compatibility claim as full-chain, against this fixture's own
+  // real pre-shelf save.
+  eq(result.project.shelf, {front: 'auto', rot: 0}, 'pre-existing save defaults shelf presentation to auto/0:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
@@ -335,6 +348,9 @@ await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces i
   eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');
+  // same compatibility claim as full-chain, against this fixture's own
+  // real pre-shelf save.
+  eq(result.project.shelf, {front: 'auto', rot: 0}, 'pre-existing save defaults shelf presentation to auto/0:');
   const rows = candidateCases(result.project, result.rounding);
   const r = findSelected(rows, result.selectedCandidate);
   if(!r) throw new Error('selected candidate not found in recomputed rows');
