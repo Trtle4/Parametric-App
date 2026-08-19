@@ -6,8 +6,8 @@
  *   committed to a repo. Every function here that touches a File/Blob
  *   belongs to this layer.
  *
- *   localStorage (convenience only) — autosave + five named slots. Never
- *   the source of truth: every access is wrapped so a failure (quota,
+ *   localStorage (convenience only) — autosave + SLOT_COUNT named slots.
+ *   Never the source of truth: every access is wrapped so a failure (quota,
  *   private-mode Safari, disabled storage) degrades to "the feature quietly
  *   doesn't work", never to a broken app. hasStorage reports which case
  *   we're in, once, at load.
@@ -16,7 +16,7 @@ import {serializeProject, deserializeProject} from '../core/persistence.js';
 
 const AUTOSAVE_KEY = 'rsc-designer:autosave';
 const SLOT_KEY = i => `rsc-designer:slot:${i}`;
-export const SLOT_COUNT = 5;
+export const SLOT_COUNT = 10;
 
 function probeStorage(){
   try{
