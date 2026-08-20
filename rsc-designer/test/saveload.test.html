@@ -15,7 +15,7 @@
    documents, plus one full hand-checked chain round-trip through project.js's
    own math, PLUS every committed v1 fixture: each must load, migrate to
    current, and reproduce its hand-checked chain values forever. */
-import {newProject, candidateCases} from '../src/core/project.js';
+import {newProject, candidateCases, verticalToOrientations} from '../src/core/project.js';
 import {serializeProject, deserializeProject} from '../src/core/persistence.js';
 import {CURRENT_SCHEMA_VERSION} from '../src/core/schemaMigrations.js';
 
@@ -247,6 +247,23 @@ t('save -> reload -> load reproduces the exact hand-checked chain', () => {
   eq(after.cavity, before.cavity, 'identical to pre-save:');
   eq(after.outer, before.outer, 'identical to pre-save:');
   eq(after.casesPerPallet, before.casesPerPallet, 'identical to pre-save:');
+});
+
+/* ---- item 2: a PINNED facing (not the auto default) survives save/reload,
+   as a specific array value — never quietly re-defaulted to the 2-entry
+   auto pair. allowedOrientations is a plain array field with no special
+   persistence handling (mergeDefaults treats arrays as presence/absence
+   only), so this pin is the guarantee that stays true, not a new code path. */
+t('a pinned facing (allowedOrientations with ONE entry) survives save -> reload exactly', () => {
+  const project = chainProject();
+  project.primary.allowedOrientations = verticalToOrientations('H', false, true);   // pinned: WLH only
+  eq(project.primary.allowedOrientations, ['WLH'], 'fixture is actually pinned, not auto:');
+
+  const doc = serializeProject({project, rounding: '1mm', selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+  const reloaded = deserializeProject(JSON.parse(JSON.stringify(doc)));
+
+  eq(reloaded.project.primary.allowedOrientations, ['WLH'],
+    'reloaded value is the exact pinned facing, not the 2-entry auto default:');
 });
 
 /* ---- v1 fixtures: permanent obligations ---------------------------------

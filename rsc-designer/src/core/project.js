@@ -235,20 +235,35 @@ export function newProject(){
 export const linkFor = (project, parent) => project.links.find(l => l.parent === parent);
 
 /**
- * Resolve user intent — "which child axis points up" + "may the solver
- * rotate it in plan" — into the orientation set containment consumes.
+ * Resolve user intent — "which child axis points up" + "how the two in-plan
+ * rotations are handled" — into the orientation set containment consumes.
  * Which face is up is a HARD CONSTRAINT (print, product settle, closure),
- * never an optimization variable; in-plan rotation is the only freedom the
- * solver may be granted, and only explicitly.
+ * never an optimization variable. The in-plan rotation is either left to the
+ * solver to compare (both orientations enumerated) or pinned to one specific
+ * facing — `flip` picks WHICH of the pair when `mayRotate` is false; it is
+ * ignored when `mayRotate` is true, so every existing 2-arg call keeps its
+ * exact prior meaning.
  * @param {'H'|'L'|'W'} verticalAxis  child dimension that points up
- * @param {boolean} mayRotate         solver may turn the child 90° in plan
+ * @param {boolean} mayRotate         solver may compare both in-plan rotations
+ * @param {boolean} [flip]            when pinned, take the pair's SECOND
+ *   orientation instead of its first — the only way to pin the transposed
+ *   facing; absent, pins the first, same as always
  */
-export function verticalToOrientations(verticalAxis, mayRotate){
-  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
-  const pair = pairs[verticalAxis];
+export function verticalToOrientations(verticalAxis, mayRotate, flip = false){
+  const pair = ORIENT_PAIRS[verticalAxis];
   if(!pair) throw new Error(`unknown vertical axis "${verticalAxis}"`);
-  return mayRotate ? [...pair] : [pair[0]];
+  return mayRotate ? [...pair] : [pair[flip ? 1 : 0]];
 }
+
+/** The two in-plan-rotation orientation strings for each vertical axis — the
+ *  single source verticalToOrientations/orientationsToAxes/
+ *  orientationsToVertical all read, so the pairing can never drift between
+ *  the writer and its readers. */
+export const ORIENT_PAIRS = Object.freeze({
+  H: Object.freeze(['LWH', 'WLH']),
+  L: Object.freeze(['WHL', 'HWL']),
+  W: Object.freeze(['LHW', 'HLW'])
+});
 
 /** Plain-language labels for the vertical-axis choice, code alongside. */
 export const VERTICAL_CHOICES = [
