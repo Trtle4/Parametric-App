@@ -900,29 +900,25 @@ function shelfFill(proj, key, onArtDecode){
   const {noun, row, geo} = shelfSellable(proj, key);
   if(!geo) return {noun, geo: null, row};
   const cavity = {L: shelf.width, W: shelf.depth, H: shelf.height};
-  // artwork on the sellable pack → every facing pack shows it, printed FRONT to
-  // the shopper. That pins the orientation to the print front ('LWH', the pack's
-  // canonical footprint), overriding the manual front selector so the packed
-  // slot matches the textured geometry.
+  // artwork on the sellable pack → every facing pack shows it, printed on
+  // whichever panel the style's artMap maps it to.
   const sellCanvas = artCanvasFor(noun, geo, onArtDecode, proj);
   const artInfo = sellCanvas ? {am: geo.meta.artMap, canvas: sellCanvas} : null;
-  // Whether a PRINTED pack can still be turned to another face depends on where
-  // its art lives. A wrap's art rides the real pillow geometry (closedWrapParts
-  // + bodyRingUVs), which orients like any other geometry, so every face stays
-  // selectable. A tube pack's art is packArtGeometry — built already laid out
-  // for that pack's own front — so turning it to another face would carry the
-  // layout rather than re-derive it, and the selector stays pinned. The old
-  // rule locked on "has artwork" alone, which took the control away from wraps
-  // that never needed it locked. ONE expression, read by the lock and by the
-  // renderer's own choice of path below.
+  // Artwork designates which panel CARRIES THE PRINT. Shelf front designates
+  // which panel FACES THE SHOPPER. Two different facts — conflating them took
+  // the front/rotate controls away from a printed pack, which is a legitimate
+  // merchandising choice (side-on, or turned so a flavour band reads along the
+  // shelf), not an error state. Both controls stay live under artwork, for a
+  // wrap (art rides the real pillow geometry) and a tube pack alike (art rides
+  // packArtGeometry's tube, built in the pack's own neutral canonical frame —
+  // faceShopperQuat turns it to any front the same way it turns the wrap).
   const artOnBody = noun === 'wrap';
-  const artPinsFront = !!artInfo && !artOnBody;
   // 'auto' (the default) follows the PACK's declared display face; an explicit
-  // pick from the selector still wins. A pinned-front pack takes that same
-  // face — the printed front and the merchandised front are one face, so this
-  // is the same value, not a second convention.
+  // pick from the selector still wins. Printed or not, artwork never overrides
+  // this — the printed front and the merchandised front happen to start as the
+  // same face under 'auto', not because one pins the other.
   const packFront = packFrontOrientation(geo);
-  const frontO = (artPinsFront || proj.shelf.front === 'auto') ? packFront : proj.shelf.front;
+  const frontO = proj.shelf.front === 'auto' ? packFront : proj.shelf.front;
   // rotate 90°/270° spins the FORWARD FACE in its own plane (about the depth
   // axis, like turning a framed picture on the wall) — the same face stays
   // toward the shopper, never a side or the back. So the two dims OF THAT FACE
@@ -977,7 +973,7 @@ function shelfFill(proj, key, onArtDecode){
   // on the shelf matches odFoot.
   const odFoot = orientDims(geo.outer, fillO);
   const odGeo = orientDims(geo.outer, frontO);
-  return {noun, row, geo, artInfo, artOnBody, artPinsFront, frontO, rotDeg,
+  return {noun, row, geo, artInfo, artOnBody, frontO, rotDeg,
           placements, facings, stack, deep, total, maxF, maxD, maxS, odFoot, odGeo,
           fits: !!(maxF && maxD && maxS)};
 }
@@ -1005,8 +1001,6 @@ function refreshShelf(){
     showShelf(false);
     return;
   }
-  el('shFront').disabled = fill.artPinsFront;
-  el('shFront').title = fill.artPinsFront ? 'Front follows the uploaded artwork' : '';
   const occ = shelfOccupancy(fill);
   el('shReadout').innerHTML = fill.fits
     ? `<b>${fill.total}</b> ${fill.noun}${fill.total === 1 ? '' : 's'} on shelf<br>` +
@@ -1080,11 +1074,8 @@ function refreshCompare(){
   // Front-panel designation and rotation are PER DESIGN (project.shelf),
   // resolved independently inside shelfFill for whichever project it was
   // handed — B renders with its own saved values, never A's. The control
-  // only ever writes to A (B is read-only by construction), so it is
-  // disabled only on A's own artPinsFront: B's pinned artwork, if any, is
-  // B's own business and must not reach in and disable editing A.
-  el('shFront').disabled = fillA.artPinsFront;
-  el('shFront').title = el('shFront').disabled ? 'Front follows the uploaded artwork' : '';
+  // only ever writes to A (B is read-only by construction) and stays enabled
+  // regardless of either design's artwork — see shelfFill.
 
   const span = Math.max(shelf.width*2 + BAY_GAP, shelf.depth, shelf.height)*0.62;
   const half = (shelf.width + BAY_GAP)/2;
@@ -1659,6 +1650,10 @@ function mountActiveLevel(){
     inputs.mountLevel(activeStyle(), lvl.paramsOf(proj), lvl.optionsOf(proj), {
       effectiveDims,
       locked,
+      // whether THIS level currently carries artwork — read by the L/W swap
+      // notice (item 3) so it can say when a mapped panel just resized,
+      // rather than leaving that to be discovered in the render
+      hasArt: !!(proj.artwork && proj.artwork[activeLevel]),
       // dims are read-only unless unlocked (mountLockControl's deliberate
       // toggle); this fires for material/option edits, and for dim edits
       // only once unlocked — never an implicit lock-on-type
@@ -1880,14 +1875,14 @@ function projectChanged(){ build.recompute(); }
  *  steal focus from a field mid-edit). No-op for whichever instances
  *  aren't mounted right now (refreshVertControl/refreshClearanceControl/
  *  refreshCountArrangement all return early when their idp isn't present). */
-/** "May rotate about vertical" has no effect when an explicit grid already
- *  fixes the layout (UAT #8) — disable the checkbox and show a hint rather
- *  than leaving a dead-looking control. Driven from the sibling arrangement
- *  link, kept in sync on every recompute (the Arr auto↔explicit toggle routes
- *  through onInput → recompute → refreshPlacementControls). */
+/** Facing has no effect when an explicit grid already fixes the layout
+ *  (UAT #8) — disable the select and show a hint rather than leaving a
+ *  dead-looking control. Driven from the sibling arrangement link, kept in
+ *  sync on every recompute (the Arr auto↔explicit toggle routes through
+ *  onInput → recompute → refreshPlacementControls). */
 function syncRotInert(idp, link){
   const inert = link && link.arrangement !== 'auto';
-  const rot = el(idp + 'Rot'); if(rot) rot.disabled = inert;
+  const facing = el(idp + 'Facing'); if(facing) facing.disabled = inert;
   const hint = el(idp + 'RotHint'); if(hint) hint.style.display = inert ? '' : 'none';
 }
 

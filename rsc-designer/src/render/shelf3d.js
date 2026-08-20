@@ -237,10 +237,10 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
         }
         rot = true;                                // same +Z-front frame as the art tube
       }else if(printed){
-        // printed pack: the shared closed art body. packArtGeometry's FRONT is
-        // +Z; the shelf's front (frontMat) is local -Z, so rotate each pack 180°
-        // about the vertical to match — then the group's own 180° (below) carries
-        // both to the shopper side. One shared texture across every facing pack.
+        // printed pack: the shared closed art body, in its neutral canonical
+        // frame (FRONT +Z) — faceShopperQuat below turns whichever panel the
+        // user picked toward the shopper, same as every other printed part on
+        // this shelf. One shared texture across every facing pack.
         pgeo = packArtGeometry(art.am);
         const mats = packArtMaterials(art.canvas, kraft);
         shelfArtMat = mats[0]; bay.artMat = shelfArtMat;
@@ -251,15 +251,20 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
       }
       const inst = new THREE.InstancedMesh(pgeo, pmat, solidPl.length);
       // TWO rotations about DIFFERENT axes, kept separate:
-      //  • A — art-front alignment (art packs only): packArtGeometry already
-      //    builds the tube laid out for the pack's OWN front orientation (an
-      //    upright carton comes out L across / H up / W deep, a flow wrap L
-      //    across / W up / H deep), so the tube needs no orientation rotation —
-      //    only the 180° about the VERTICAL that turns its FRONT (+Z of that
-      //    frame, i.e. the shelf's back) toward the shopper. Running it through
-      //    faceShopperQuat instead applies the orientation TWICE and stands the
-      //    pack on the wrong axis; measured, it put a printed wrap 49mm tall
-      //    where it should be 172.
+      //  • Q — front-panel orientation, via the SAME faceShopperQuat every other
+      //    printed part on this shelf uses (the wrap parts, the opened cutaway).
+      //    packArtGeometry and perfBodyGeometry both build in the pack's NEUTRAL
+      //    canonical frame (x=L, y=H, z=W, front at +Z — orient.js's own basis
+      //    for 'LWH', the same frame orientQuat assumes as input), never with any
+      //    orientation baked in — so composing faceShopperQuat here is a single
+      //    application, not a second one on top of a first. The old fixed 180°-Y
+      //    matrix was just this composition frozen at its frontO='LWH' default;
+      //    a prior attempt to turn packs to OTHER fronts by adding faceShopperQuat
+      //    on top of that fixed matrix genuinely did double-apply the orientation
+      //    (measured: a printed wrap rendered 49mm tall where it should be 172) —
+      //    but that pack front-panel selection never reaches this branch at all,
+      //    so the fix here is generalizing the one correct call, not resurrecting
+      //    the double-apply.
       //  • S — the user's Rotate 90°: spin the forward face IN ITS OWN PLANE, about
       //    the DEPTH axis (local Z, the shopper→back axis). The same face stays
       //    forward — only its content turns — so a side/back face is never shown.
@@ -267,14 +272,15 @@ export function buildShelf(od, shelf, placements, visible, art, rotDeg = 0, opts
       //    FRONT: the → arrow goes right→bottom→left→top over the cycle). Because
       //    S is about Z and the front normal IS the Z axis, S never disturbs which
       //    face points forward.
-      // rotDeg=0 → S is identity, so the matrix is exactly the pre-rotation one
-      // (bit-identical default: identity for board packs, A for art packs).
-      const A = new THREE.Matrix4().makeRotationY(Math.PI);
+      // rotDeg=0, frontO='LWH' → S is identity and Q is the old fixed 180°-Y, so
+      // the matrix is exactly the pre-rotation default (bit-identical: identity
+      // for board packs, Q for art/display-body packs).
+      const Q = rot ? faceShopperQuat(opts.frontO || 'LWH', opts.frontAxis || 'W') : null;
       const S = new THREE.Matrix4().makeRotationZ(rotDeg*Math.PI/180);
       const M = new THREE.Matrix4();
       for(let i = 0; i < solidPl.length; i++){
         const p = solidPl[i];
-        if(rot) M.copy(A); else M.identity();
+        if(rot) M.makeRotationFromQuaternion(Q); else M.identity();
         M.premultiply(S);                                // spin in-plane about the depth axis
         M.setPosition(p.x, p.z, p.y);                     // (across, up, depth)
         inst.setMatrixAt(i, M);

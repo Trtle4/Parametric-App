@@ -12,7 +12,7 @@
  */
 import {toMM, fromMM, fmtInputValue} from '../core/units.js';
 import {RATE_ROWS, COST_DEFAULTS, rateOf, rateToDisplay, rateFromDisplay} from '../core/cost.js';
-import {VERTICAL_CHOICES, verticalToOrientations} from '../core/project.js';
+import {VERTICAL_CHOICES, verticalToOrientations, ORIENT_PAIRS} from '../core/project.js';
 
 export const el = id => document.getElementById(id);
 
@@ -41,6 +41,58 @@ export const getPalUnit = () => palUnit;
 
 /* ---------- field construction, bound to a project level ---------- */
 
+/** Whether the "length is the longer plan dimension" convention applies to a
+ *  style: every rigid corrugated/folding-carton tube and tray (fefco201,
+ *  a6120, sealend, tray), never a flexible film (flowwrap, shrinkbundle) —
+ *  a wrap's length runs along the machine/film direction, not a plan
+ *  proportion, and a bare product may legitimately have any proportions.
+ *  Reads the style registry's own `material` field rather than a new
+ *  per-style flag, so an eligible style can never fall out of sync with it. */
+const appliesLWConvention = style => style.material !== 'film';
+
+/** L >= W, enforced ONLY on a user EDIT of L or W — never on load (a saved
+ *  project's stored values are kept exactly as saved: see persistence.js,
+ *  which never runs input-time logic). Swapping is NOT neutral: the blank
+ *  is the same shape, but the panel roles swap (the girth walk assignment
+ *  follows whichever value is now L vs W), so any artwork mapped to the
+ *  front panel is now sized by a different pair of numbers. Both fields are
+ *  updated visibly — never a silent reinterpretation of what was typed. */
+function normalizeLW(params, m){
+  if(!(params.L > 0) || !(params.W > 0) || params.L >= params.W){
+    clearLWSwapNotice();   // a later edit that no longer needs swapping outlives the earlier advisory
+    return;
+  }
+  [params.L, params.W] = [params.W, params.L];
+  const lIn = el('p_L'), wIn = el('p_W');
+  if(lIn && !isFocused(lIn)) lIn.value = fmtInputValue(fromMM(params.L, unit), unit);
+  if(wIn && !isFocused(wIn)) wIn.value = fmtInputValue(fromMM(params.W, unit), unit);
+  showLWSwapNotice(m.hasArt);
+  m.onInput({key: 'L', group: 'dims'});
+}
+
+function clearLWSwapNotice(){
+  const host = el('dimFields');
+  const old = host && host.querySelector('.lwswap');
+  if(old) old.remove();
+}
+
+/** Inline advisory next to the dims fields — the "worth surfacing at the
+ *  moment it happens" half of the L/W swap, so a mapped panel resizing is
+ *  something the user reads, not something they discover in the render.
+ *  Reuses the countwarn look mountCountArrangement already established for
+ *  an inline, non-blocking advisory. */
+function showLWSwapNotice(hasArt){
+  const host = el('dimFields');
+  if(!host) return;
+  clearLWSwapNotice();
+  const div = document.createElement('div');
+  div.className = 'lwswap';
+  div.innerHTML = `<div class="countwarn">Length and width swapped to keep length &ge; width.${
+    hasArt ? ' Artwork is mapped to the front panel at its NEW width — check the template before printing.' : ''
+  }</div>`;
+  host.appendChild(div);
+}
+
 /** A numeric length (or fixedUnit) field, its value read from and written to
  *  the backing project object. A dimension field is read-only by DEFAULT —
  *  solved from the level's contents — and only becomes editable once the
@@ -66,10 +118,17 @@ function lengthField(d, params, m){
   const input = wrap.querySelector('input');
   input.value = d.fixedUnit ? mmVal : fmtInputValue(fromMM(mmVal, unit), unit);
   if(readOnly){ input.style.opacity = '0.6'; input.style.cursor = 'not-allowed'; }
-  else input.addEventListener('input', () => {
-    params[d.key] = d.fixedUnit ? (+input.value || 0) : toMM(+input.value || 0, unit);
-    m.onInput({key: d.key, group: d.group});
-  });
+  else{
+    input.addEventListener('input', () => {
+      params[d.key] = d.fixedUnit ? (+input.value || 0) : toMM(+input.value || 0, unit);
+      m.onInput({key: d.key, group: d.group});
+    });
+    // normalize on COMMIT (blur/Enter), never mid-keystroke — swapping the
+    // two fields' displayed values while the user is still typing digits
+    // would scatter the cursor across a box that just changed under it.
+    if((d.key === 'L' || d.key === 'W') && appliesLWConvention(m.style))
+      input.addEventListener('change', () => normalizeLW(params, m));
+  }
   return wrap;
 }
 
@@ -358,39 +417,54 @@ export function mountProduct(prim, m){
  *  Single-axis view — kept for callers/tests that reason about one axis;
  *  the vertical control itself uses orientationsToAxes (multi). */
 export function orientationsToVertical(list){
-  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
   for(const axis of ['H', 'L', 'W']){
-    const [a, b] = pairs[axis];
+    const [a, b] = ORIENT_PAIRS[axis];
     if(list.length === 1 && list[0] === a) return {axis, mayRotate: false};
     if(list.length >= 2 && list.includes(a) && list.includes(b)) return {axis, mayRotate: true};
   }
   for(const axis of ['H', 'L', 'W'])
-    if(list.includes(pairs[axis][0])) return {axis, mayRotate: list.length > 1};
+    if(list.includes(ORIENT_PAIRS[axis][0])) return {axis, mayRotate: list.length > 1};
   return {axis: 'H', mayRotate: true};
 }
 
 /** Multi-axis inverse: which vertical axes an allowedOrientations list stands
- *  the child up on, and whether in-plan rotation is allowed. The vertical axis
- *  is now a COMPARISON variable (the user checks any of L/W/H to evaluate),
- *  so the list may span several axes at once — one candidate set per axis flows
- *  straight through parentCandidates into the Build table. mayRotate is on when
- *  any axis carries its transposed pair (the writer keeps every checked axis in
- *  the same rotate state, so the flag is consistent across them). */
+ *  the child up on, and how the horizontal facing is fixed. The vertical axis
+ *  is a COMPARISON variable (the user checks any of L/W/H to evaluate), so the
+ *  list may span several axes at once — one candidate set per axis flows
+ *  straight through parentCandidates into the Build table. `facing` is
+ *  'auto' when an axis carries both of its pair (the solver compares them,
+ *  today's default), or 'p0'/'p1' when only one is present — the same value
+ *  read for every checked axis (the writer keeps them consistent); if they
+ *  ever disagree, 'auto' wins, matching the old mayRotate OR. */
 export function orientationsToAxes(list){
-  const pairs = {H: ['LWH', 'WLH'], L: ['WHL', 'HWL'], W: ['LHW', 'HLW']};
-  const axes = []; let mayRotate = false;
+  const axes = []; let facing = null;
   for(const axis of ['H', 'L', 'W']){
-    const [a, b] = pairs[axis];
-    if((list || []).includes(a) || (list || []).includes(b)){
-      axes.push(axis);
-      if(list.includes(a) && list.includes(b)) mayRotate = true;
-    }
+    const [a, b] = ORIENT_PAIRS[axis];
+    const hasA = (list || []).includes(a), hasB = (list || []).includes(b);
+    if(!hasA && !hasB) continue;
+    axes.push(axis);
+    const axisFacing = hasA && hasB ? 'auto' : hasB ? 'p1' : 'p0';
+    facing = facing === null ? axisFacing : (facing === axisFacing ? facing : 'auto');
   }
-  return axes.length ? {axes, mayRotate} : {axes: ['H'], mayRotate: true};
+  return axes.length ? {axes, facing} : {axes: ['H'], facing: 'auto'};
 }
 
-/** Vertical axis (hard constraint) + in-plan rotation (the solver's only
- *  freedom), bound to `level.allowedOrientations`.
+/** Which axis letter lands "across" (world X) for pair slot `which` (0 or 1),
+ *  joined across every checked axis so the label stays accurate whatever the
+ *  comparison covers — 'L-facing' for pair[0] of a vertical-H child (its own
+ *  L across), 'W-facing' for pair[1], and so on for the L/W-vertical pairs. */
+function facingLabel(axes, which){
+  const letters = [...new Set((axes.length ? axes : ['H']).map(a => ORIENT_PAIRS[a][which][0]))];
+  return `${letters.join('/')}-facing`;
+}
+
+/** Vertical axis (hard constraint) + horizontal facing, bound to
+ *  `level.allowedOrientations`. Facing is a three-way choice, not a rotate
+ *  toggle: auto compares both in-plan rotations (today's default, unchanged),
+ *  and the other two PIN one specific facing each — pair[0] and pair[1] of
+ *  whichever axis(es) are checked. Artwork/merchandising designating "which
+ *  panel is a wrap's length side" needs the pinned cases; auto alone can only
+ *  compare, never commit to one.
  * @param {HTMLElement} host
  * @param {string} idp        id prefix, unique per mounted instance
  * @param {Object} level       the project level owning allowedOrientations (mutated in place)
@@ -412,22 +486,36 @@ export function mountVertControl(host, idp, level, opts, onInput){
         const dis = disabledAxes.includes(c.axis), on = state.axes.includes(c.axis);
         return `<label class="vax${dis ? ' vaxdis' : ''}" title="${dis ? disabledReason : c.label + ' · ' + c.codes}"><input type="checkbox" value="${c.axis}" id="${idp}Ax${c.axis}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}>${c.axis}-up</label>`;
       }).join('')}</div></div>
-    <div class="field bchk"><label><input type="checkbox" id="${idp}Rot"${state.mayRotate ? ' checked' : ''}> May rotate about vertical (90&deg; in plan)</label>
+    <div class="field"><label>Facing <span class="hint">horizontal rotation</span></label>
+      <div class="inp"><select id="${idp}Facing">
+        <option value="auto"${state.facing === 'auto' ? ' selected' : ''}>Auto — compare both</option>
+        <option value="p0"${state.facing === 'p0' ? ' selected' : ''} id="${idp}FacingP0"></option>
+        <option value="p1"${state.facing === 'p1' ? ' selected' : ''} id="${idp}FacingP1"></option>
+      </select></div>
       <div class="rotinert" id="${idp}RotHint" style="display:none">No effect with a manual grid — the grid already fixes the layout.</div></div>`;
   const boxes = () => VERTICAL_CHOICES.map(c => el(idp + 'Ax' + c.axis)).filter(Boolean);
+  const checkedAxes = () => boxes().filter(b => b.checked && !b.disabled).map(b => b.value);
+  const relabel = () => {
+    const axes = checkedAxes();
+    const p0 = el(idp + 'FacingP0'), p1 = el(idp + 'FacingP1');
+    if(p0) p0.textContent = facingLabel(axes, 0);
+    if(p1) p1.textContent = facingLabel(axes, 1);
+  };
+  relabel();
   const apply = () => {
-    let axes = boxes().filter(b => b.checked && !b.disabled).map(b => b.value);
+    let axes = checkedAxes();
     if(!axes.length){                       // a level must stand SOME way up — never leave zero
       const first = boxes().find(b => !b.disabled);
       if(first){ first.checked = true; axes = [first.value]; }
     }
-    const rot = el(idp + 'Rot').checked, set = [];
-    axes.forEach(a => verticalToOrientations(a, rot).forEach(o => { if(!set.includes(o)) set.push(o); }));
+    relabel();
+    const facing = el(idp + 'Facing').value, set = [];
+    axes.forEach(a => verticalToOrientations(a, facing === 'auto', facing === 'p1').forEach(o => { if(!set.includes(o)) set.push(o); }));
     level.allowedOrientations = set;
     onInput();
   };
   boxes().forEach(b => b.addEventListener('change', apply));
-  el(idp + 'Rot').addEventListener('change', apply);
+  el(idp + 'Facing').addEventListener('change', apply);
 }
 
 /** Resync an already-mounted vertical-axis control's displayed value from
@@ -445,8 +533,11 @@ export function refreshVertControl(idp, level){
     const b = el(idp + 'Ax' + axis);
     if(b && !isFocused(b)) b.checked = state.axes.includes(axis);
   }
-  const rotChk = el(idp + 'Rot');
-  if(rotChk && !isFocused(rotChk)) rotChk.checked = state.mayRotate;
+  const facingSel = el(idp + 'Facing');
+  if(facingSel && !isFocused(facingSel)) facingSel.value = state.facing;
+  const p0 = el(idp + 'FacingP0'), p1 = el(idp + 'FacingP1');
+  if(p0) p0.textContent = facingLabel(state.axes, 0);
+  if(p1) p1.textContent = facingLabel(state.axes, 1);
 }
 
 /** Wall/between/headspace, bound to `clearance` (mutated in place). Skips

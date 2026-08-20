@@ -110,6 +110,21 @@ t('verticalToOrientations mapping', () => {
   eq(verticalToOrientations('L', true), ['WHL', 'HWL']);
   eq(verticalToOrientations('W', false), ['LHW']);
 });
+
+/* ---- item 2: facing is a three-way choice on the SAME allowedOrientations
+   field — auto (both), or PINNED to either side of the pair via `flip`. The
+   gap this closes: mayRotate=false could only ever pin pair[0]; there was no
+   way to pin pair[1] specifically. `flip` defaults false, so every existing
+   2-arg call above keeps its exact prior meaning — auto is untouched. */
+t('verticalToOrientations: flip pins the OTHER side of the pair, ignored when mayRotate', () => {
+  eq(verticalToOrientations('H', false, false), ['LWH'], 'flip false = pair[0], same as omitting it:');
+  eq(verticalToOrientations('H', false), ['LWH'], 'omitting flip is identical to flip=false:');
+  eq(verticalToOrientations('H', false, true), ['WLH'], 'flip true = pair[1] — the previously-unreachable facing:');
+  eq(verticalToOrientations('L', false, true), ['HWL']);
+  eq(verticalToOrientations('W', false, true), ['HLW']);
+  // flip is meaningless once the solver is comparing both — ignored, not an error
+  eq(verticalToOrientations('H', true, true), ['LWH', 'WLH'], 'flip has no effect when mayRotate:');
+});
 t('locked vertical axis constrains the solver (upright loses, upright returned)', () => {
   // carton 50×50×120 in cavity 240×120×60: upright cannot fit at all
   // (120 > 60); on its side it packs 4. H-up MUST return the upright result.
@@ -305,6 +320,34 @@ t('explicit arrangement respects orientation: H-up vs L-up give different, hand-
 
   if(rH.cartonParams.L === rL.cartonParams.L && rH.cartonParams.W === rL.cartonParams.W && rH.cartonParams.H === rL.cartonParams.H)
     throw new Error('explicit arrangement ignored orientation: H-up and L-up produced identical cartons');
+});
+
+/* ---- item 2: FACING changes the resolved carton dimensions, holding the
+   vertical axis FIXED (H stays up both times — unlike the H-up-vs-L-up pin
+   above, which changes which axis is vertical). Only the in-plan rotation
+   flips: LWH puts the wrap's L across / W deep, WLH puts W across / L deep.
+   Same non-cube wrap (~224.14 x 50 x 120.03) as the pin above, so the two
+   facings are neither coincidentally equal nor a fresh, unverified fixture. */
+t('item 2: setting facing (same vertical axis) changes the resolved carton dimensions', () => {
+  const pAuto0 = multiWrapProject();
+  pAuto0.primary.allowedOrientations = verticalToOrientations('H', false, false);   // pair[0]: LWH
+  const r0 = candidateCases(pAuto0, '1mm').find(x => x.nx === 2 && x.ny === 2 && x.nz === 1 && x.orientation === 'LWH');
+  if(!r0) throw new Error('facing p0 (LWH) 2x2x1 case row missing');
+  eq(r0.cartonParams.L, 897, 'p0: carton L = 4 x wrap L (~224.14):');
+  eq(r0.cartonParams.W, 100, 'p0: carton W = 2 x wrap W (50):');
+  eq(r0.cartonParams.H, 121, 'p0: carton H = wrap H (120.03), 1 layer:');
+
+  const pAuto1 = multiWrapProject();
+  pAuto1.primary.allowedOrientations = verticalToOrientations('H', false, true);    // pair[1]: WLH
+  const rows1 = candidateCases(pAuto1, '1mm');
+  const r1 = rows1.find(x => x.nx === 2 && x.ny === 2 && x.nz === 1);
+  if(!r1) throw new Error('facing p1 (WLH) 2x2x1 case row missing');
+  eq(r1.cartonParams.L, 200, 'p1: carton L = 4 x wrap W (50) — L/W swapped from p0:');
+  eq(r1.cartonParams.W, 449, 'p1: carton W = 2 x wrap L (~224.14):');
+  eq(r1.cartonParams.H, 121, 'p1: carton H unchanged — H stayed the vertical axis both times:');
+
+  if(r0.cartonParams.L === r1.cartonParams.L && r0.cartonParams.W === r1.cartonParams.W)
+    throw new Error('facing p0 vs p1 produced identical carton L/W — the pin is not reaching the chain');
 });
 
 /* ---- Prompt 19: 'auto' must minimize the parent's MATERIAL area, not

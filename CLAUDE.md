@@ -662,3 +662,93 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   closed, not as a loose thread: anyone finding that commit in isolation
   should find this note beside it, not re-litigate a gap that was already
   closed by a later task.
+- **RESOLVED (three-from-use task): three independent fixes, one shared
+  lesson — a control or a value that answers two different questions will
+  eventually answer one of them wrong.**
+  1. **Artwork no longer locks shelf orientation.** Diagnosis first, per the
+     task's own gate: rotate was never locked; front-panel selection was,
+     at two layers — `shelfFill` forced `frontO` to the pack's declared
+     face whenever printed, and `shelf3d.js`'s printed-tube branch hardcoded
+     a fixed 180°-Y matrix, never consuming `opts.frontO` at all, because
+     `packArtGeometry`'s tube has no orientation parameter — it's built once
+     in the pack's own canonical frame (x=L, y=H, z=W, front at +Z — the
+     SAME frame `orient.js`'s `orientBasis('LWH')` already resolves to, and
+     the same one `faceShopperQuat` assumes as input). A prior attempt to
+     compose `faceShopperQuat` on top of that fixed matrix double-applied
+     the orientation (measured: a printed wrap rendered 49mm tall where it
+     should be 172) and the lock was added to hide the breakage rather than
+     fix the composition. The actual fix: route through `faceShopperQuat`
+     directly (no fixed matrix, no wrapping it), exactly like the wrap's
+     `closedWrapParts` path and the shelf's opened-cutaway path already do
+     — ONE orientation mechanism for every printed part on the shelf, not
+     two. `artPinsFront` and the `el('shFront').disabled` lock are gone
+     from `app.js`; both controls stay live under artwork, for a wrap and a
+     tube pack alike. Verified by mutation: a printed tube pack's rendered
+     mesh extents (rotation-only, translation stripped) must equal the
+     unprinted board pack's, for every front x rot combination — reverting
+     the composition to the old fixed matrix fails this pin immediately
+     (measured mismatches up to ~175mm on an axis), and it also fails the
+     literal "front alone changes the rendered mesh" pin, which the fit
+     readout alone could never catch (it moves with `frontO` regardless of
+     what the render does, since `shelfFill`'s solve was never the broken
+     half).
+  2. **Wrap facing is now a three-way choice, not a boolean.** Gate finding:
+     facing (which of a vertical axis's two in-plan rotations, e.g. `LWH`
+     vs `WLH`) was solved entirely by containment via
+     `project.primary.allowedOrientations` — genuinely not an input, not
+     merely unsurfaced. The one UI control touching that field
+     (`mountVertControl`'s "May rotate about vertical" checkbox) could only
+     ever pin `pair[0]` when off, or enumerate-and-compare both when on;
+     there was no way to pin `pair[1]` specifically. Per the ruling, this
+     extends the EXISTING control rather than adding a second fact:
+     `verticalToOrientations(axis, mayRotate, flip)` gained a third,
+     backward-compatible parameter (`flip` defaults `false`, so every
+     existing 2-arg call is untouched) that picks `pair[1]` instead of
+     `pair[0]` when not auto-comparing, and `mountVertControl`'s checkbox
+     became a 3-way `<select>` (Auto / pair[0]-facing / pair[1]-facing,
+     labelled by whichever axis lands "across" for the checked vertical
+     axis) writing the same `allowedOrientations` field the same way it
+     always has. `ORIENT_PAIRS` is now the one exported source for the
+     axis-pair table, replacing three separate inline copies
+     (`verticalToOrientations`, `orientationsToVertical`,
+     `orientationsToAxes`) that had been drifting toward a fourth. Auto
+     stays bit-identical (926/926 golden pins, untouched). Mutation-tested:
+     reverting `flip` support collapses `pair[1]` back to `pair[0]` and the
+     facing pin catches it immediately, as does the carton-dims pin (a
+     non-cube wrap's L/W visibly swap in the solved carton envelope when
+     facing flips, holding the vertical axis fixed — the case the old
+     H-up-vs-L-up pin never covered, since that changes the axis too).
+  3. **Length >= width is enforced on EDIT, never on load.** Gate finding:
+     nothing in `fefco201`/`a6120`/`sealend` (`closure.top`'s panel
+     indices, `artMap.section`'s girth walk, flap depth `F = W/2`, the
+     dieline panel run, `core/perf.js`'s corner/panel indexing) assumes
+     `L >= W` — every one of them is indexed by axis IDENTITY (which
+     girth position is a length-wall vs a width-wall), never by magnitude,
+     so `L < W` already produced geometrically CORRECT output; this was a
+     labelling/convention fix, not a correctness one, and no
+     previously-wrong-output pin was needed. Applies to `fefco201`,
+     `a6120`, `sealend`, and `tray` (the FEFCO 0300, folded in per the
+     ruling despite its different, non-girth-walk blank layout — same
+     tier slot as the RSC, and a user switching between them at the case
+     level shouldn't see L/W change meaning) — gated on the style
+     registry's own `material !== 'film'` rather than a new per-style
+     flag, so `flowwrap`/`shrinkbundle` (length is the machine direction)
+     and the bare product (any proportions) are automatically exempt and
+     can never fall out of sync with that gate. `inputs.js`'s
+     `normalizeLW` runs ONLY from an editable field's `change` listener
+     (blur/Enter, never mid-keystroke) — swapping is NOT neutral, since
+     the girth walk assignment follows whichever value is now L vs W, so
+     a mapped artwork panel resizes with it; both fields update visibly
+     and an inline advisory (reusing `mountCountArrangement`'s `countwarn`
+     look) names the swap and, when the level carries artwork, says so.
+     The advisory clears itself on the next edit that no longer needs
+     swapping, not just on the next swap. Loading is untouched by
+     construction — no swap logic exists anywhere in `persistence.js` or
+     `mountLevel`'s initial value population, only in the DOM `change`
+     handler a real edit fires. Mutation-tested: disabling the convention
+     gate fails the visible-swap pin immediately, and the
+     swap-vs-direct-entry geometry-identity pin (reaching the identical
+     `{L,W}` two ways — through a swap, and by typing in convention order
+     from the start — and diffing `cut`/`crease`/`outer`/`inner`) confirms
+     the swap is a pure relabelling, never a second, disagreeing
+     computation.

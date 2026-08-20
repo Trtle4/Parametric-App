@@ -629,14 +629,26 @@ for(const lc of LEVEL_CASES){
       }
     });
 
-    t(`${lc.level}: may-rotate checkbox reflects project.allowedOrientations after edit`, () => {
+    t(`${lc.level}: facing select reflects project.allowedOrientations after edit, and PINS EITHER side of the pair`, () => {
       const snap = snapProject();
       try{
         setVertAxis('pIn', 'H');                                     // known single-axis state first
-        el('pInRot').checked = false; fire(el('pInRot'), 'change');
+        el('pInFacing').value = 'p0'; fire(el('pInFacing'), 'change');
         const lvl = lc.vertLevel(build.project);
-        eq(lvl.allowedOrientations.length, 1, 'project has exactly one allowed orientation:');
-        eq(el('pInRot').checked, false, 'checkbox reflects it:');
+        eq(lvl.allowedOrientations.length, 1, 'p0: exactly one allowed orientation:');
+        eq(el('pInFacing').value, 'p0', 'select reflects p0:');
+        const p0o = lvl.allowedOrientations[0];
+
+        el('pInFacing').value = 'p1'; fire(el('pInFacing'), 'change');
+        eq(lvl.allowedOrientations.length, 1, 'p1: exactly one allowed orientation:');
+        eq(el('pInFacing').value, 'p1', 'select reflects p1:');
+        const p1o = lvl.allowedOrientations[0];
+        if(p1o === p0o)
+          throw new Error(`p0 and p1 both pinned "${p0o}" — flip is not reaching allowedOrientations (item 2 regression)`);
+
+        el('pInFacing').value = 'auto'; fire(el('pInFacing'), 'change');
+        eq(lvl.allowedOrientations.length, 2, 'auto: today\'s default, both orientations enumerated:');
+        eq(el('pInFacing').value, 'auto', 'select reflects auto:');
       } finally { restoreProject(snap); }
     });
   }
@@ -1219,21 +1231,21 @@ await (async () => {
     eq(build.project.secondary.enabled, true, 're-enabled via strip:');
   });
 
-  t('arrangement badge + inert rotate: MANUAL disables rotate with a hint; AUTO re-enables it', () => {
+  t('arrangement badge + inert facing: MANUAL disables the facing select with a hint; AUTO re-enables it', () => {
     const snap = snapProject(), lvl = el('style').value;
     try{
       setLevel('carton');
       el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
       let badge = el('levelPlacement').querySelector('.arrbadge');
       if(!badge || !/AUTO/.test(badge.textContent)) throw new Error('expected AUTO badge in auto mode');
-      if(el('pInRot').disabled) throw new Error('rotate should be live in auto mode');
+      if(el('pInFacing').disabled) throw new Error('facing select should be live in auto mode');
       el('pInArr').value = 'explicit'; fire(el('pInArr'), 'change');
       badge = el('levelPlacement').querySelector('.arrbadge');
       if(!badge || !badge.classList.contains('manual') || !/MANUAL/.test(badge.textContent)) throw new Error('expected MANUAL badge for an explicit grid');
-      if(!el('pInRot').disabled) throw new Error('rotate should be inert (disabled) with a manual grid');
+      if(!el('pInFacing').disabled) throw new Error('facing select should be inert (disabled) with a manual grid');
       if(el('pInRotHint').style.display === 'none') throw new Error('inert hint should be visible with a manual grid');
       el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
-      if(el('pInRot').disabled) throw new Error('rotate should be live again after returning to auto');
+      if(el('pInFacing').disabled) throw new Error('facing select should be live again after returning to auto');
     } finally { restoreProject(snap); setLevel(lvl); }   // it also left the rail on carton
   });
 
@@ -1241,6 +1253,97 @@ await (async () => {
     if(el('palRowLabel').style.display === 'none') throw new Error('row label hidden while a valid pallet result exists');
     if(!/row \d+ of \d+/.test(el('palRowLabel').textContent)) throw new Error(`row label malformed: "${el('palRowLabel').textContent}"`);
   });
+})();
+
+/* ==================================================================
+   Item 3: length >= width, enforced on EDIT only, for the corrugated/
+   folding-carton convention (cartons and cases) — never on load, never
+   for a level outside the convention. Drives the REAL #p_L/#p_W fields
+   through the real lock control, the way a user actually does it.
+   ================================================================== */
+await (async () => {
+  const snap3 = snapProject(), key3 = build.getSelectedCandidateKey(), lvl3 = el('style').value;
+
+  const unlock = () => {
+    if(el('levelLockBtn').textContent.trim() === 'Unlock to edit') el('levelLockBtn').click();
+  };
+  const setDim = (id, mmVal) => { el(id).value = String(mmVal); fire(el(id), 'input'); fire(el(id), 'change'); };
+  // Whatever the level's DERIVED dims happened to solve to before unlocking
+  // (arbitrary — driven by the rest of the chain, and can itself already
+  // have W > L) is not a safe starting point for a controlled swap test: a
+  // single setDim could trigger an unintended swap before the pin's own
+  // edit even runs. Seed a known baseline first, in an order that cannot
+  // itself cross the L>=W boundary — W tiny, then L comfortably larger —
+  // so every pin below starts from an identical, swap-free state.
+  const seed = (safeL, safeW) => { setDim('p_W', 1); setDim('p_L', safeL); setDim('p_W', safeW); };
+
+  setLevel('case'); await settle();
+  unlock(); await settle();
+
+  t('item 3: entering L < W on the case swaps the fields VISIBLY and pins L >= W', () => {
+    if(el('p_L').readOnly) throw new Error('fixture not discriminating: the case L field is not editable (still locked)');
+    seed(300, 1);                            // baseline: L=300, W=1 — no swap possible reaching it
+    if(document.querySelector('.lwswap')) throw new Error('seeding itself should never cross the convention');
+    setDim('p_W', 500);                      // NOW L(300) < W(500) — the edit under test
+    eq(+el('p_L').value, 500, 'the L field now shows the swap:');
+    eq(+el('p_W').value, 300, 'the W field now shows the swap:');
+    eq(build.project.tertiary.params.L, 500, 'the model agrees with the field:');
+    eq(build.project.tertiary.params.W, 300, 'the model agrees with the field:');
+    if(!document.querySelector('.lwswap')) throw new Error('no visible swap notice — the swap must be seen happening, not silent');
+  });
+
+  t('item 3: the swapped result is geometry-identical to entering the same two numbers the other way round', () => {
+    seed(300, 1); setDim('p_W', 500);        // reach L=500,W=300 THROUGH a swap
+    const swappedGeo = resolveActiveRow(build.project, build.getRounding(), key3).geo.case;
+    if(build.project.tertiary.params.L !== 500 || build.project.tertiary.params.W !== 300)
+      throw new Error(`fixture reached via swap: expected L=500 W=300, got L=${build.project.tertiary.params.L} W=${build.project.tertiary.params.W}`);
+
+    seed(500, 1); setDim('p_W', 300);        // reach the SAME L=500,W=300, but W was always <= L — no swap
+    if(document.querySelector('.lwswap')) throw new Error('typing in convention order should never show a swap notice');
+    if(build.project.tertiary.params.L !== 500 || build.project.tertiary.params.W !== 300)
+      throw new Error(`fixture reached directly: expected L=500 W=300, got L=${build.project.tertiary.params.L} W=${build.project.tertiary.params.W}`);
+    const directGeo = resolveActiveRow(build.project, build.getRounding(), key3).geo.case;
+
+    // eq() is strict === and cannot compare arrays/objects by value (this
+    // codebase's own idiom for that is JSON.stringify comparison — see the
+    // dims-box and hierarchy-refresh pins elsewhere in this file).
+    if(JSON.stringify(swappedGeo.cut) !== JSON.stringify(directGeo.cut)) throw new Error('cut path differs between swap and direct entry');
+    if(JSON.stringify(swappedGeo.crease) !== JSON.stringify(directGeo.crease)) throw new Error('crease lines differ between swap and direct entry');
+    if(JSON.stringify(swappedGeo.outer) !== JSON.stringify(directGeo.outer)) throw new Error('outer dims differ between swap and direct entry');
+    if(JSON.stringify(swappedGeo.inner) !== JSON.stringify(directGeo.inner)) throw new Error('inner dims differ between swap and direct entry');
+  });
+
+  restoreProject(snap3, key3); setLevel(lvl3); await settle();
+})();
+
+/* ==================================================================
+   Item 3, negative: a level OUTSIDE the corrugated/carton convention
+   (the flow wrap — flexible film, length is the machine direction, not
+   a plan proportion) is untouched. L < W stays exactly as typed.
+   ================================================================== */
+await (async () => {
+  const snap3b = snapProject(), key3b = build.getSelectedCandidateKey(), lvl3b = el('style').value;
+  const setDim = (id, mmVal) => { el(id).value = String(mmVal); fire(el(id), 'input'); fire(el(id), 'change'); };
+
+  setLevel('wrap'); await settle();
+  if(!build.project.primary.wrap){ build.project.primary.wrap = {styleId: 'flowwrap', locked: false, params: {}, options: {}}; build.recompute(); await settle(); setLevel('wrap'); await settle(); }
+  if(el('levelLockBtn') && el('levelLockBtn').textContent.trim() === 'Unlock to edit'){ el('levelLockBtn').click(); await settle(); }
+
+  t('item 3: a flow wrap keeps L < W exactly as typed — outside the convention', () => {
+    // confirm the specimen before measuring it: a readonly field cannot be
+    // typed into at all, and setDim would silently no-op against it, which
+    // would pass this pin whether or not the swap-suppression logic exists.
+    if(el('p_L').readOnly) throw new Error('fixture not discriminating: the wrap L field is not editable (still locked)');
+    setDim('p_L', 50);
+    setDim('p_W', 90);
+    eq(+el('p_L').value, 50, 'L stays as typed, no swap:');
+    eq(+el('p_W').value, 90, 'W stays as typed, no swap:');
+    eq(build.project.primary.wrap.params.L, 50, 'the model agrees — no swap reached primary.wrap.params either:');
+    eq(build.project.primary.wrap.params.W, 90);
+    if(document.querySelector('.lwswap')) throw new Error('a flow wrap must never show the L/W swap notice');
+  });
+
+  restoreProject(snap3b, key3b); setLevel(lvl3b); await settle();
 })();
 
 /* ==================================================================
@@ -3389,8 +3492,11 @@ await (async () => {
   }
   el('shFront').value = 'auto'; fire(el('shFront'), 'change');
 
-  // ---- and a printed TUBE pack stays pinned (its art is pre-laid-out) ----
-  let cartonPinned = null;
+  // ---- and a printed TUBE pack keeps front/rotate LIVE (item 1: artwork
+  // designates which panel carries the print; shelf front designates which
+  // panel faces the shopper — two different facts, so both controls stay
+  // live under artwork, exactly like the wrap above) ----
+  let cartonFixture = null;
   {
     const proj = build.project;
     proj.tray.enabled = false; proj.secondary.enabled = true;
@@ -3400,12 +3506,59 @@ await (async () => {
     const c = document.createElement('canvas'); c.width = c.height = 64;
     const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 64, 64);
     const csrc = c.toDataURL('image/png');
+
+    // the mesh's OWN rendered extent, rotation-only (translation stripped) —
+    // the observable quantity the prior double-apply bug moved: measured, it
+    // put a printed wrap 49mm tall where it should be 172.
+    const meshExtents = () => {
+      const mesh = packMeshes3().find(m => m.isInstancedMesh);
+      if(!mesh) return null;
+      if(!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox;
+      const M = new THREE.Matrix4(); mesh.getMatrixAt(0, M);
+      const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
+      M.decompose(pos, quat, scl);
+      const R = new THREE.Matrix4().makeRotationFromQuaternion(quat);
+      const pts = [];
+      for(const x of [bb.min.x, bb.max.x]) for(const y of [bb.min.y, bb.max.y]) for(const z of [bb.min.z, bb.max.z])
+        pts.push(new THREE.Vector3(x, y, z).applyMatrix4(R));
+      const lo = pts[0].clone(), hi = pts[0].clone();
+      pts.forEach(p => { lo.min(p); hi.max(p); });
+      return {x: hi.x - lo.x, y: hi.y - lo.y, z: hi.z - lo.z};
+    };
+    // a quarter of the pack's own front face, screen-projected — the same
+    // corner-sampling idiom as shCorners above, so a swap can be told from a
+    // mere repaint. Panel colours differ from the wrap's template (this is a
+    // FLAT single colour here) — used only to confirm the print is STILL
+    // THERE and covering the whole visible face, not to read a specific quadrant.
+    const facingPresent = () => printedFacings();
+
+    const COMBOS = [];
+    for(const front of ['auto', 'LWH', 'WLH', 'LHW']) for(const rot of [0, 90, 180, 270]) COMBOS.push({front, rot});
+
+    const runFor = async printed => {
+      proj.artwork = printed ? {carton: {src: csrc, fit: 'fill'}} : {};
+      build.recompute();
+      if(printed) await waitFrames(() => artImage(csrc).complete && artImage(csrc).naturalWidth > 0);
+      const out = [];
+      for(const {front, rot} of COMBOS){
+        el('shFront').value = front; fire(el('shFront'), 'change');
+        build.project.shelf.rot = rot; build.recompute();
+        await waitFrames(() => packMeshes3().length > 0);
+        out.push({front, rot, ext: meshExtents(), disabled: el('shFront').disabled,
+                   fillText: (el('shReadout').textContent || '').replace(/\s+/g, ' ').trim()});
+      }
+      return out;
+    };
+
+    const printedRuns = await runFor(true);
+    const boardRuns = await runFor(false);
+    cartonFixture = {hasArtMap: !!(cGeo && cGeo.meta.artMap), printedRuns, boardRuns};
     proj.artwork = {carton: {src: csrc, fit: 'fill'}};
     build.recompute();
-    await waitFrames(() => artImage(csrc).complete && artImage(csrc).naturalWidth > 0);
-    fire(el('shFront'), 'change');
-    await waitFrames(() => printedFacings());
-    cartonPinned = {disabled: el('shFront').disabled, hasArtMap: !!(cGeo && cGeo.meta.artMap)};
+    el('shFront').value = 'auto'; fire(el('shFront'), 'change');
+    build.project.shelf.rot = 0; build.recompute();
+    await waitFrames(() => facingPresent());
   }
 
   t('shelf AUTO stands the wrap the right way up — the declared face AND its declared up', () => {
@@ -3423,28 +3576,142 @@ await (async () => {
     if(bad.length) throw new Error(bad.join('; '));
   });
 
-  t('face selection stays available for a printed WRAP, and pinned for a printed tube pack', () => {
-    // A wrap's art rides the real pillow geometry, which orients like anything
-    // else, so every face stays selectable; a tube pack's art is built already
-    // laid out for one front, so it stays pinned. The old rule locked on "has
-    // artwork" alone and took the control away from both.
+  t('face selection stays available for a printed WRAP, and for a printed tube pack too', () => {
+    // A wrap's art rides the real pillow geometry, and a tube pack's art
+    // rides packArtGeometry's tube — both compose through faceShopperQuat
+    // now, ONE mechanism, so both stay selectable. The old rule locked the
+    // tube pack on "has artwork" alone because a naive composition there
+    // once double-applied the orientation; the fix is in the composition
+    // (verified below), not in re-imposing the lock.
     if(wrapFrontState.disabled)
       throw new Error('the face selector is locked for a printed wrap');
     const fills = wrapFrontState.fills;
-    // ...and the pick is HONOURED: a different face packs the shelf differently
     if(fills.LWH === fills.WLH && fills.WLH === fills.LHW)
       throw new Error(`every face gives the same fill — the selection is not reaching the solve: ${fills.LWH}`);
     eq(fills.auto, fills.LHW, 'Auto must resolve to the wrap\'s declared face (LHW):');
-    if(!cartonPinned.hasArtMap)
+    if(!cartonFixture.hasArtMap)
       throw new Error('fixture not discriminating: the carton carries no artMap');
-    if(!cartonPinned.disabled)
-      throw new Error('a printed TUBE pack must keep its front pinned — its art is pre-laid-out');
+    if(cartonFixture.printedRuns.some(r => r.disabled))
+      throw new Error('the face selector is locked for a printed tube pack — item 1 regression');
+  });
+
+  t('printed tube pack: changing front AND changing rot both change the render', () => {
+    const runs = cartonFixture.printedRuns;
+    const fills = new Set(runs.map(r => r.fillText));
+    if(fills.size < 2)
+      throw new Error(`every front/rot combination renders the same readout — neither control is reaching the render: ${[...fills][0]}`);
+    // isolate each control: holding the OTHER fixed, it alone must still move
+    // the rendered mesh's own extents — not just the fit readout, which (being
+    // computed independently in shelfFill) could keep moving even if the
+    // render itself had gone back to ignoring one of the two controls.
+    const byFront = f => runs.filter(r => r.front === f);
+    const byRot = r => runs.filter(r2 => r2.rot === r);
+    const varies = list => new Set(list.map(r => JSON.stringify(r.ext))).size > 1;
+    if(!['auto', 'LWH', 'WLH', 'LHW'].some(f => varies(byFront(f))))
+      throw new Error('rotate changes nothing in the RENDERED mesh for a printed tube pack, at any front — item 1 regression');
+    if(![0, 90, 180, 270].some(r => varies(byRot(r))))
+      throw new Error('front changes nothing in the RENDERED mesh for a printed tube pack, at any rot — item 1 regression');
+  });
+
+  t('printed tube pack: rendered extents match the unprinted pack\'s, for every front/rot combination', () => {
+    // THE pin for the exact prior failure. packArtGeometry and the board
+    // BoxGeometry are built two completely different ways, but they describe
+    // the SAME physical carton — their rendered world extents must agree at
+    // every (front, rot). A double-applied orientation moves this (measured:
+    // 49mm where it should be 172); a merely-repainted pack never does.
+    const TOL = 3; // mm — comfortably above the ~1.5mm PACK_GAP cosmetic inset,
+                   // far below the ~120mm the historical double-apply produced
+    const bad = [];
+    cartonFixture.printedRuns.forEach((p, i) => {
+      const b = cartonFixture.boardRuns[i];
+      if(!p.ext || !b.ext){ bad.push(`${p.front}/${p.rot}: missing extent (printed=${!!p.ext}, board=${!!b.ext})`); return; }
+      for(const ax of ['x', 'y', 'z']){
+        if(Math.abs(p.ext[ax] - b.ext[ax]) > TOL)
+          bad.push(`${p.front}/${p.rot} axis ${ax}: printed=${p.ext[ax].toFixed(1)} board=${b.ext[ax].toFixed(1)}`);
+      }
+    });
+    if(bad.length) throw new Error(bad.join('; '));
   });
 
   el('tab2d').click();
   el('shFront').value = savedFront; fire(el('shFront'), 'change');
   restoreProject(shSnap, shKey);
   setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   Item 1, at the width the user does it: front/rotate stay reachable
+   and enabled for a printed tube pack in the real-CSS mobile fixture,
+   not just against this file's CSS-free skeleton.
+   ================================================================== */
+await (async () => {
+  const mframe = document.getElementById('mobileFixture');
+  await new Promise(resolve => {
+    const ready = () => mframe.contentDocument && mframe.contentDocument.getElementById('shFront')
+      && mframe.contentDocument.getElementById('shFront').options.length > 0;
+    if(ready()) return resolve();
+    mframe.addEventListener('load', async () => {
+      const start = Date.now();
+      while(!ready() && Date.now() - start < 8000) await new Promise(r => setTimeout(r, 50));
+      resolve();
+    }, {once: true});
+  });
+  const mdoc = mframe.contentDocument;
+  const mel = id => mdoc.getElementById(id);
+  const mfire = (node, type) => node.dispatchEvent(new Event(type, {bubbles: true}));
+  const mcs = node => mframe.contentWindow.getComputedStyle(node);
+  const msettle = () => new Promise(r => setTimeout(r, 80));
+
+  // upload artwork through the REAL control (#artFileInput), inside the
+  // iframe's own realm — a File built in the OUTER realm fails an
+  // `instanceof File` check the app's own code may run inside the iframe.
+  // No window.build hook exists in either realm, so success/cleanup are
+  // read and driven through the same DOM the user would use: #artControls'
+  // visibility (updateArtPanel) is the app's own "artwork present" signal,
+  // and #btnArtRemove is the real undo.
+  mel('tab2d').click();                              // updateArtPanel only runs on 2d/3d
+  mel('style').value = 'carton'; mfire(mel('style'), 'change'); await msettle();
+  const c = mdoc.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#3c3'; g.fillRect(0, 0, 64, 64);
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  const mWin = mframe.contentWindow;
+  const file = new mWin.File([blob], 'art.png', {type: 'image/png'});
+  const dt = new mWin.DataTransfer();
+  dt.items.add(file);
+  mel('artFileInput').files = dt.files;
+  mfire(mel('artFileInput'), 'change');
+  // FileReader + Image decode is async and, in this harness's swiftshader
+  // Chromium, sometimes slower than a fixed short poll — generous timeout,
+  // not a tighter assertion, since decode SPEED was never what this pin tests.
+  const uploaded = await (async () => {
+    const t0 = Date.now();
+    while(mcs(mel('artControls')).display === 'none'){
+      if(Date.now() - t0 > 8000) return false;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    return true;
+  })();
+
+  mel('tabShelf').click(); await msettle();
+
+  t('shelf at 390px: front + rotate stay reachable and enabled for a printed tube pack', () => {
+    if(!uploaded) throw new Error('fixture: artwork upload never reached #artControls — nothing to test');
+    // "reachable" here means rendered with a real layout box, not clipped to
+    // zero/hidden by CSS — NOT "already in the viewport without scrolling":
+    // both controls sit well down the right rail's own internal scroll
+    // (`.rail{overflow:auto}`), which is normal mobile layout, not a defect.
+    const reachable = node => { const r = node.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !!node.offsetParent; };
+    const front = mel('shFront'), rotate = mel('shRotate');
+    if(mcs(front).display === 'none') throw new Error('front selector hidden at 390px');
+    if(!reachable(front)) throw new Error('front selector clipped to zero size at 390px');
+    if(front.disabled) throw new Error('front selector disabled under artwork at 390px — item 1 regression');
+    if(mcs(rotate).display === 'none') throw new Error('rotate button hidden at 390px');
+    if(!reachable(rotate)) throw new Error('rotate button clipped to zero size at 390px');
+    if(rotate.disabled) throw new Error('rotate button disabled under artwork at 390px');
+  });
+
+  mel('tab2d').click(); await msettle();
+  if(uploaded){ mel('btnArtRemove').click(); await msettle(); }
 })();
 
 /* ==================================================================
