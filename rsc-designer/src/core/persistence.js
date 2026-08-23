@@ -152,6 +152,12 @@ function fillProjectDefaults(loadedProject){
   out.links = mergeLinks(loadedProject.links, base.links, report);
   // top-level scalars (printText, …): defaulted if absent, preserved if present
   if(loadedProject.printText === undefined){ report.push('printText'); out.printText = base.printText; }
+  // INTERLAYER: the schema migration (v3->v4) already derives this from an
+  // old tray.enabled for any file that predates the field, so "absent at
+  // this point" means a hand-edited or malformed file at the CURRENT
+  // schema — same defaulted+reported treatment as any other missing field,
+  // never a silent guess.
+  if(loadedProject.interlayer === undefined){ report.push('interlayer'); out.interlayer = base.interlayer; }
   // MATERIAL RATES: absent → empty (older files, and any project that never
   // touched a rate), present → preserved verbatim. Not merged against
   // defaults, because for this bag absence IS the auto state — filling a

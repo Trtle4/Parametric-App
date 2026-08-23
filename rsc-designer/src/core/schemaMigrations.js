@@ -17,7 +17,7 @@
  * match.
  */
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * One entry per version step. `migrate` receives and returns a plain
@@ -83,6 +83,29 @@ export const MIGRATIONS = [
         ...doc,
         project: {...proj, secondary: fixLevel(proj.secondary), tertiary: fixLevel(proj.tertiary)}
       };
+    }
+  },
+  {
+    from: 3, to: 4,
+    describe: "project.interlayer ('none'|'tray', Phase B adds 'uboard') " +
+      "replaces project.tray.enabled as the single source of whether an " +
+      "interlayer sits between the product and the wrap — a per-interlayer " +
+      "boolean cannot represent 'none of them' vs 'more than one at once' " +
+      "without a validation rule alongside it; the enum makes the invalid " +
+      "state unrepresentable instead. A tray that was enabled under the old " +
+      "boolean migrates to interlayer:'tray' (every other project.tray.* " +
+      "field is untouched); tray.enabled itself is dropped, since nothing " +
+      "reads it once interlayer exists.",
+    migrate: doc => {
+      const proj = doc.project;
+      if(!proj) return doc;
+      const wasEnabled = !!(proj.tray && proj.tray.enabled);
+      let tray = proj.tray;
+      if(tray && Object.prototype.hasOwnProperty.call(tray, 'enabled')){
+        tray = {...tray};
+        delete tray.enabled;
+      }
+      return {...doc, project: {...proj, interlayer: wasEnabled ? 'tray' : 'none', tray}};
     }
   }
 ];

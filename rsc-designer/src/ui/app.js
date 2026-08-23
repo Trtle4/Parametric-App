@@ -172,8 +172,8 @@ const LEVELS = {
   // and no DXF — the product2d.js precedent (a sibling with its own view).
   // activeGeometry() already returns null for a non-style level.
   tray:   {label: 'Tray', kind: 'tray',
-           enabledOf: p => !!(p.tray && p.tray.enabled),
-           setEnabled: (p, v) => { p.tray.enabled = v; }},
+           enabledOf: p => p.interlayer === 'tray',
+           setEnabled: (p, v) => { p.interlayer = v ? 'tray' : 'none'; }},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
 // wrap disables by going null (the pre-existing pattern) rather than an
@@ -1195,7 +1195,7 @@ function pairingAfterDisabling(level){
 function setTierEnabled(level, on){
   const proj = build.project;
   if(level === 'tray'){
-    proj.tray.enabled = on;
+    proj.interlayer = on ? 'tray' : 'none';
     // "2 cells x 10 products per cell, on edge" is the specified default when
     // the tray is switched on. Per-cell belongs to the COLLATION, so this is a
     // write to that one owner — not a copy stored on the tray.
