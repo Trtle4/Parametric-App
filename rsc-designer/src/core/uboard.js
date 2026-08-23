@@ -19,6 +19,18 @@
  * whichever physical axis the chain has resolved to be the machine
  * direction, rather than a fixed product axis of its own.
  *
+ * CALL-TIME, NOT LOAD-TIME: acrossAxisOf() below is called fresh inside
+ * every function that needs it — FLOW_AXIS is read at that same moment,
+ * never cached into a module-level constant computed once at import. Today
+ * FLOW_AXIS is a plain fixed string, so this makes no observable
+ * difference — but the machine direction is only fixed because nothing in
+ * this app yet lets the collation choose its own facing independent of the
+ * wrap's seals. When that lands, FLOW_AXIS is expected to become something
+ * derived from project/collation state rather than a bare constant; a
+ * value memoized at module load would silently go stale the moment that
+ * happens, while a per-call read follows it automatically. Caching it here
+ * once was tried and rejected for exactly this reason.
+ *
  * DOM-free, mm-only, side-effect-free.
  */
 import {FLOW_AXIS} from './styles/flowwrap.js';
@@ -31,9 +43,11 @@ export const UBOARD_DEFAULTS = Object.freeze({caliper: 0.9, f: null});
 
 const PLAN_AXES = {L: 'W', W: 'L'};
 /** The in-plan axis that ISN'T the flow axis — 'W' today, since FLOW_AXIS is
- *  'L', but derived rather than assumed so a future FLOW_AXIS value doesn't
- *  silently leave this stale. */
-export const ACROSS_AXIS = PLAN_AXES[FLOW_AXIS];
+ *  'L' — derived FRESH from FLOW_AXIS on every call (see the module doc
+ *  above), never memoized into a module-level constant. */
+export function acrossAxisOf(flowAxis = FLOW_AXIS){
+  return PLAN_AXES[flowAxis];
+}
 
 /** Resolve the auto-with-override params: caliper always has a numeric
  *  default; f defaults to the content's own H when not overridden. */
@@ -60,8 +74,9 @@ export function uboardParams(overrides, contentH){
  * @returns {{L:number,W:number,H:number}}
  */
 export function uboardOuter(content, p){
+  const acrossAxis = acrossAxisOf();
   const outer = {L: content.L, W: content.W, H: 0};
-  outer[ACROSS_AXIS] = content[ACROSS_AXIS] + 2*p.caliper;
+  outer[acrossAxis] = content[acrossAxis] + 2*p.caliper;
   outer.H = p.caliper + Math.max(content.H, p.f);
   return outer;
 }
@@ -92,8 +107,8 @@ export function uboardOuter(content, p){
  */
 export function uboardBlank(content, p){
   const {caliper: t, f} = p;
-  const flowLen = content[FLOW_AXIS];      // unfolded run along the flow axis
-  const across = content[ACROSS_AXIS];     // unfolded run across it (base + 2 flaps when flat)
+  const flowLen = content[FLOW_AXIS];         // unfolded run along the flow axis
+  const across = content[acrossAxisOf()];     // unfolded run across it (base + 2 flaps when flat)
   const blankAcross = across + 2*f;
 
   const cut = [[0, 0], [flowLen, 0], [flowLen, blankAcross], [0, blankAcross]];

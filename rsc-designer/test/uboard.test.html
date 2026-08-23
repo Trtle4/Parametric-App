@@ -17,7 +17,7 @@
          y = f + W = 110         (base/flap #2 boundary)
        cut = [0,0]-[200,0]-[200,140]-[0,140]
        envelope contribution: L 200 (unchanged), W 80+2*2=84, H 2+max(30,30)=32 */
-import {uboardParams, uboardOuter, uboardBlank, UBOARD_DEFAULTS, ACROSS_AXIS} from '../src/core/uboard.js';
+import {uboardParams, uboardOuter, uboardBlank, UBOARD_DEFAULTS, acrossAxisOf} from '../src/core/uboard.js';
 import {FLOW_AXIS} from '../src/core/styles/flowwrap.js';
 
 const results = [];
@@ -34,7 +34,14 @@ const content = {L: 200, W: 80, H: 30};
 
 t('FLOW_AXIS is L today — the fold axis derivation reads it, not a bare literal', () => {
   approx(FLOW_AXIS === 'L' ? 1 : 0, 1, 'FLOW_AXIS:');
-  approx(ACROSS_AXIS === 'W' ? 1 : 0, 1, 'ACROSS_AXIS (derived from FLOW_AXIS):');
+  approx(acrossAxisOf() === 'W' ? 1 : 0, 1, 'acrossAxisOf() (derived from FLOW_AXIS):');
+});
+t('acrossAxisOf() is call-time, not a memoized snapshot: an explicit override argument is honoured', () => {
+  // proves the function genuinely RECOMPUTES from its input rather than
+  // returning a value captured once at module load — the whole point of
+  // making this a function instead of a top-level constant.
+  approx(acrossAxisOf('L') === 'W' ? 1 : 0, 1, 'flow=L -> across=W:');
+  approx(acrossAxisOf('W') === 'L' ? 1 : 0, 1, 'flow=W -> across=L:');
 });
 
 t('uboardParams: caliper defaults, f auto-defaults to the content H', () => {

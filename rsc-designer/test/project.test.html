@@ -23,6 +23,7 @@ import {styleById, styles} from '../src/core/styles/index.js';
 import {orientBasis, det3, ORIENTATIONS} from '../src/render/orient.js';
 import {splitHeight} from '../src/render/dims3d.js';
 import {estimateBCT} from '../src/core/bct.js';
+import {COST_DEFAULTS} from '../src/core/cost.js';
 
 const results = [];
 function t(name, fn){
@@ -783,6 +784,52 @@ t('BCT non-contribution pin is falsifiable: a bogus caliper term that leaked U-b
   const bctUbWrong = estimateBCT(wrongInputs(rowUb, projUb));
   if(Math.abs(bctUbWrong.bctLb - bctNoneWrong.bctLb) < 1e-6)
     throw new Error('the bogus leak term did not move BCT -- this counter-example does not actually falsify the pin above');
+});
+
+/* ================= Phase B follow-up: U-board material cost =============
+ * The U-board's blank area feeds materialCost as its own term
+ * (uboardAreaM2 * uboardBoardPerM2), distinct from carton/case board.
+ * Pinned against a LOCKED case (same fixture idiom as the BCT pins above) —
+ * that removes the CASE's own candidate re-selection, but NOT the carton's:
+ * the carton still solves fresh around whatever bigger envelope the U-board
+ * produces, so its own board/film terms legitimately move too (real
+ * cascade, not a bug — see the cascade pins in uisync.test.html). A bare
+ * "packCost rose" comparison is therefore still confounded by that carton-
+ * level effect; it is asserted below as a real, desirable property, but the
+ * TERM-LEVEL assertion right after it is what actually isolates and proves
+ * the U-board's own contribution — that is the one a missing-wiring
+ * mutation is expected to fail. */
+function lockedProjectWithUboardF(f){
+  const p = newProject();
+  p.interlayer = f == null ? 'none' : 'uboard';
+  if(f != null) p.uboard.params = {caliper: 1, f};
+  p.tertiary.params = {...p.tertiary.params, L: 2000, W: 2000, H: 2000, caliper: 5};
+  p.links[0].locked = true;
+  return p;
+}
+t('cost: at a FIXED (locked) case, enabling the U-board strictly raises pack cost', () => {
+  const rowOff = checkLockedCase(lockedProjectWithUboardF(null), '1mm');
+  const rowOn = checkLockedCase(lockedProjectWithUboardF(20), '1mm');
+  if(!rowOff.fits || !rowOn.fits) throw new Error('reference config must fit both ways');
+  if('uboard' in rowOff.cost.perPack) throw new Error('U-board off must carry no uboard term');
+  if(!(rowOn.cost.packCost > rowOff.cost.packCost))
+    throw new Error(`expected packCost to rise with the U-board on; off=${rowOff.cost.packCost}, on=${rowOn.cost.packCost}`);
+});
+t('cost: the rise is the U-BOARD term specifically, not just a side effect of the bigger envelope', () => {
+  const rowOn = checkLockedCase(lockedProjectWithUboardF(20), '1mm');
+  if(!('uboard' in rowOn.cost.perPack)) throw new Error('U-board on but no uboard cost term in the breakdown');
+  if(!(rowOn.cost.perPack.uboard > 0)) throw new Error(`uboard term must be strictly positive, got ${rowOn.cost.perPack.uboard}`);
+  approx(rowOn.cost.perUnit.uboard, rowOn.uboardAreaM2*COST_DEFAULTS.uboardBoardPerM2, 'uboard unit cost = its own area x its own rate:', 1e-9);
+});
+t('cost: at a FIXED case, the uboard cost term scales UP with flap height (f), monotonically', () => {
+  const low = checkLockedCase(lockedProjectWithUboardF(20), '1mm');
+  const mid = checkLockedCase(lockedProjectWithUboardF(60), '1mm');
+  const high = checkLockedCase(lockedProjectWithUboardF(150), '1mm');
+  [low, mid, high].forEach(r => { if(!r.fits) throw new Error('reference config must fit at every f'); });
+  const u = r => r.cost.perPack.uboard;
+  if(!(u(mid) > u(low))) throw new Error(`expected cost to rise from f=20 (${u(low)}) to f=60 (${u(mid)})`);
+  if(!(u(high) > u(mid))) throw new Error(`expected cost to rise from f=60 (${u(mid)}) to f=150 (${u(high)})`);
+  approx(u(high), high.uboardAreaM2*COST_DEFAULTS.uboardBoardPerM2, 'still area x rate at the larger flap:', 1e-9);
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

@@ -2825,7 +2825,13 @@ LEVEL_ORDER.forEach(d =>
 el('btnDXF').addEventListener('click', () => {
   if(LEVELS[activeLevel].kind === 'uboard'){
     const ub = activeUboard();
-    if(ub) downloadDXF(ub.geo, ub.geo.inner, inputs.getUnit(), 'UBOARD');
+    // the button is disabled whenever there's no U-board (updateExportButtonsState),
+    // so a real click can't reach this — but a disabled state is a CSS/DOM
+    // property, not a JS guarantee (a synthesized click, a stale listener,
+    // devtools), so fail the SAME visible way the tray's STL export does
+    // rather than a silent no-op that looks like a click that did nothing.
+    if(!ub){ showNotice('Enable the U-board to export its die.', true); return; }
+    downloadDXF(ub.geo, ub.geo.inner, inputs.getUnit(), 'UBOARD');
     return;
   }
   if(activeStyle().structure === 'flexible') return;   // no die, no DXF

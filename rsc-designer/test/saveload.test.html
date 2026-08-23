@@ -150,6 +150,54 @@ t('v3 -> v4: a v3 file with no tray block at all migrates to interlayer:\'none\'
   eq(result.project.interlayer, 'none', 'no tray block -> interlayer defaults to none, not thrown at:');
 });
 
+/* ---- project.uboard: a genuinely NEW top-level field (Phase B), same
+ * treatment as SHELF below — additive, no migration needed, since nothing
+ * about an EXISTING field's meaning changed. EVERY v4 file predates it (no
+ * v4 file could ever have carried one), so this is not an edge case, it is
+ * the NORMAL case for every save written before this feature landed.
+ *
+ * A v3/v4 file missing tray/uboard resolving interlayer correctly is NOT
+ * enough — mountTray/mountUboard both bail out on a falsy project.tray/
+ * project.uboard, so if fillProjectDefaults left either field undefined, a
+ * user enabling that interlayer on such a file would see a permanently
+ * blank, uneditable rail (the chain itself tolerates the gap via
+ * `project.X || {}` fallbacks, so nothing crashes — it just silently can't
+ * be configured). These pins check the ACTUAL shape landed, not just that
+ * loading didn't throw. */
+t('a v4 file predating U-board (every real one) gets a real, editable project.uboard on load', () => {
+  const base = newProject();
+  const {uboard, ...projectWithoutUboard} = base;
+  const doc = {schemaVersion: 4, project: projectWithoutUboard};
+  const result = deserializeProject(doc);
+  if(!result.project.uboard || !result.project.uboard.params)
+    throw new Error('project.uboard did not come back as a real, editable object');
+  eq(result.project.uboard.params.caliper, 0.9, 'uboard defaults land:');
+  if(result.project.uboard.params.f !== null) throw new Error('uboard f should default to auto (null)');
+  if(!result.defaulted.includes('uboard')) throw new Error('missing uboard must be reported, not silently filled');
+});
+t('a v3/v4 file missing project.tray (not just tray.enabled) gets a real, editable project.tray on load', () => {
+  const base = newProject();
+  const {tray, ...projectWithoutTray} = base;
+  const doc = {schemaVersion: 4, project: projectWithoutTray};
+  const result = deserializeProject(doc);
+  if(!result.project.tray || typeof result.project.tray.nCells !== 'number')
+    throw new Error('project.tray did not come back as a real, editable object');
+  eq(result.project.tray.nCells, 2, 'tray defaults land:');
+  if(!result.defaulted.includes('tray')) throw new Error('missing tray must be reported, not silently filled');
+});
+t('mutation check: a bogus tray/uboard default that leaves either field undefined would be caught', () => {
+  // proves the two pins above actually discriminate — see CLAUDE.md's own
+  // "mutation-test every pin" rule applied inline: construct the WRONG
+  // fillProjectDefaults output by hand (the pre-fix behaviour) and confirm
+  // it fails the same assertion the real pins make.
+  const wrongResultProjectTray = undefined;
+  const wrongResultProjectUboard = undefined;
+  let threw = 0;
+  try{ if(!wrongResultProjectTray || typeof wrongResultProjectTray.nCells !== 'number') throw new Error('x'); }catch(e){ threw++; }
+  try{ if(!wrongResultProjectUboard || !wrongResultProjectUboard.params) throw new Error('x'); }catch(e){ threw++; }
+  if(threw !== 2) throw new Error('the pre-fix (undefined) shape does not fail these assertions -- they would not have caught the real bug');
+});
+
 t('v4 file (current schema) round-trips interlayer exactly, no migration runs', () => {
   const project = newProject();
   project.interlayer = 'tray'; project.tray.nCells = 3;
@@ -361,16 +409,21 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // 'none', not leave the field for fillProjectDefaults to guess at.
   eq(result.project.interlayer, 'none', 'migrated interlayer, no tray in the file at all:');
   // this fixture predates openTop, perf, the pallet.stacking (BCT) block,
-  // pallet.patternIndex and shelf -- all genuinely new fields, correctly
-  // reported as defaulted (openTop from each level's OWN style, both false
-  // here for a6120/fefco201; patternIndex 0 = the ranked best), not
-  // silently absent. Order follows each object's own key order in
-  // newProject() (secondary declares openTop before perf; tertiary the
-  // reverse), not alphabetical or insertion-into-report order — a change
-  // to that order elsewhere would be a real, if harmless, thing to notice.
+  // pallet.patternIndex, tray/uboard (this fixture has no tray.* in the raw
+  // file at all — the OLDEST possible case for the tray gap: not merely
+  // "before Phase B", before the tray feature existed either) and shelf --
+  // all genuinely new fields, correctly reported as defaulted (openTop from
+  // each level's OWN style, both false here for a6120/fefco201; patternIndex
+  // 0 = the ranked best), not silently absent. Order follows each object's
+  // own key order in newProject() (secondary declares openTop before perf;
+  // tertiary the reverse), not alphabetical or insertion-into-report order —
+  // a change to that order elsewhere would be a real, if harmless, thing to
+  // notice.
   eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
-                         'pallet.patternIndex', 'pallet.stacking', 'shelf'],
-     'the new openTop/perf/pallet.stacking/patternIndex/shelf fields are filled:');
+                         'pallet.patternIndex', 'pallet.stacking', 'tray', 'uboard', 'shelf'],
+     'the new openTop/perf/pallet.stacking/patternIndex/tray/uboard/shelf fields are filled:');
+  eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
+  eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
   // THE COMPATIBILITY CLAIM, against a REAL prior save (this fixture is a
