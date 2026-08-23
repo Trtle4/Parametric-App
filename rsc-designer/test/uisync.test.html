@@ -1594,6 +1594,22 @@ await (async () => {
     eq(+el('tr_total').value, 24, 'total agrees:');
   });
 
+  tEdit('QUANTITIES: the rail\'s Total agrees with the RESOLVED chain, not just with itself', () => {
+    // the pin above compares cCells/cTotal to a hand-multiplied 6*9 — the
+    // same expression trayQuantities() itself could be computing wrongly and
+    // still satisfy. This one goes around the rail entirely: resolveActiveRow
+    // walks the full chain through resolveWrapContents via a DIFFERENT call
+    // path (solveBelowOutermost, not trayQuantities' resolvedWrapContents),
+    // so the two can only agree if the rail is actually reading the
+    // resolver's productCount rather than a second, silently-divergable copy.
+    setLevel('tray');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('tr_nCells', 5); setQ('tr_perCell', 7);
+    const resolved = resolveActiveRow(build.project, build.getRounding(), null);
+    eq(resolved.tray.total, 35, 'fixture sanity, hand-checked:');
+    eq(+el('tr_total').value, resolved.tray.total, 'rail Total === resolveActiveRow(...).tray.total:');
+  });
+
   tEdit('QUANTITIES: rounding is NEAREST, so a total can round DOWN', () => {
     // 80/3 = 26.67 rounds to 27 under ceil AND nearest, so it cannot tell them
     // apart; 100/3 = 33.33 can. Without this the rule reads "round" and

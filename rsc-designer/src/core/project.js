@@ -620,6 +620,18 @@ function resolveWrapContents(project, collation){
   }
 }
 
+/** The public door to resolveWrapContents(), for a caller outside the chain
+ *  solve itself — today, the Tray/Product rails' live "Total quantity"
+ *  preview (app.js's trayQuantities), which needs productCount BEFORE the
+ *  user has committed an edit, not just after a full resolveActiveRow(). It
+ *  exists so that preview has exactly one place to read productCount from,
+ *  same as everything downstream of the resolved chain — a rail computing
+ *  cells*perCell itself would be a second, silently-divergable derivation
+ *  of the same fact the resolver already owns. */
+export function resolvedWrapContents(project){
+  return resolveWrapContents(project, contentEnvelope(project.primary));
+}
+
 /**
  * Solve the secondary (carton) tier as a single deterministic variant
  * against `child` (whatever the wrap tier produced) — used only when
