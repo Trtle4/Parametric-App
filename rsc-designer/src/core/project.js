@@ -395,9 +395,10 @@ function solvePrimaryStage(project, resolved){
   // (roundGirthEligible) AND for a bare product (no interlayer) — with an
   // interlayer in the chain the film is pulled over THAT (a rectangular
   // thing), never the bare product inside it. resolveWrapContents() already
-  // decided both of those and hands back a diameter only when they hold.
+  // decided both of those via `kind`, and hands back `diameter` only when
+  // kind is 'round'.
   if(wp.girthBasis === 'round'){
-    if(resolved.roundDiameter != null) wp.roundDiameter = resolved.roundDiameter;
+    if(resolved.kind === 'round') wp.roundDiameter = resolved.diameter;
     else wp.girthBasis = 'rectangular';
   }
   let wrapFits = true;
@@ -573,6 +574,15 @@ export const INTERLAYERS = Object.freeze(['none', 'tray']);
  *   branch's own envelope, and the 'tray' branch's input (one tray cell
  *   holds one collation's worth of product).
  * @returns {{
+ *   kind: 'rect'|'round',                    what shape the wrap sees —
+ *     discriminates whether `diameter` is meaningful. A round girth
+ *     describes a bare on-edge slug; the moment ANY interlayer sits between
+ *     the product and the wrap (tray today, U-board in Phase B), the film is
+ *     pulled over the interlayer's own envelope, which is rectangular by
+ *     construction — so every non-'none' branch returns kind:'rect'. This
+ *     is a discriminated union, not a flag next to the data it discriminates:
+ *     a branch cannot forget to null out `diameter`, because there is no
+ *     `diameter` field to forget when kind is 'rect'.
  *   envelope: {L:number,W:number,H:number},  outside dims the wrap sees
  *   productCount: number,                    products inside one wrap
  *   interlayerKind: string,                  the enum value used
@@ -581,12 +591,10 @@ export const INTERLAYERS = Object.freeze(['none', 'tray']);
  *     result — carried through so callers needing it (row.tray, the
  *     Cookie-Tray link, the 3D tray mesh) read the SAME solve rather than
  *     re-running solveTrayStage a second time.
- *   roundDiameter: number|null               the bare product's diameter,
- *     ONLY when a round girth is physically eligible for what the wrap
- *     actually touches — null forces girthBasis to rectangular. Round girth
- *     describes a bare on-edge slug; with any interlayer in the chain the
- *     film is pulled over the interlayer's own (rectangular) envelope, so
- *     this is null whenever interlayerKind !== 'none'.
+ *   diameter: number=                        present ONLY when kind is
+ *     'round' — the bare product's circumscribing diameter. Absent (not
+ *     null) on every 'rect' result, so a consumer that reads it without
+ *     checking `kind` first gets `undefined`, not a silently-wrong 0.
  * }}
  */
 function resolveWrapContents(project, collation){
@@ -595,22 +603,31 @@ function resolveWrapContents(project, collation){
     case 'tray': {
       const trayResult = solveTrayStage(project, collation);
       return {
+        kind: 'rect',
         envelope: trayResult.outer,
         productCount: trayResult.total,
         interlayerKind: 'tray',
-        provenance: {branch: 'tray', trayResult},
-        roundDiameter: null
+        provenance: {branch: 'tray', trayResult}
       };
     }
     case 'none': {
       const eligible = collation.collation && roundGirthEligible(project.primary.collation);
-      return {
-        envelope: collation.outer,
-        productCount: collation.count,
-        interlayerKind: 'none',
-        provenance: {branch: 'collation', trayResult: null},
-        roundDiameter: eligible ? project.primary.collation.piece.diameter : null
-      };
+      return eligible
+        ? {
+            kind: 'round',
+            envelope: collation.outer,
+            productCount: collation.count,
+            interlayerKind: 'none',
+            provenance: {branch: 'collation', trayResult: null},
+            diameter: project.primary.collation.piece.diameter
+          }
+        : {
+            kind: 'rect',
+            envelope: collation.outer,
+            productCount: collation.count,
+            interlayerKind: 'none',
+            provenance: {branch: 'collation', trayResult: null}
+          };
     }
     default:
       // never a silent fall-through to a plausible-looking default: an
