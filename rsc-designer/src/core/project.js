@@ -161,16 +161,23 @@ export function newProject(){
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
       enabled: true
     },
+    // Which interlayer, if any, sits between the product collation and the
+    // wrap — 'none' or 'tray' today; Phase B adds 'uboard'. THE single
+    // discriminant: tray and (later) U-board are mutually exclusive, so this
+    // is an enum rather than a per-interlayer boolean, which would let both
+    // read active at once. resolveWrapContents() is the only place in the
+    // codebase that branches on it. Superseded the old project.tray.enabled
+    // boolean (schema v3->v4 migration carries an old save's value across).
+    interlayer: 'none',
     // Thermoformed sizing tray between the product and the wrap. OPTIONAL and
     // OFF by default, so the default chain and every golden pin are untouched
-    // until it is switched on. openTop is a fact of the part (it has no lid):
-    // its footprint constrains, its height does not.
+    // until project.interlayer is set to 'tray'. openTop is a fact of the
+    // part (it has no lid): its footprint constrains, its height does not.
     // `nCells` is the ONE stored cell count — the tray rail and the collation
     // rail are two CONTROLS onto this single value, never two values that sync.
     // `params` holds tray inputs; a null/absent cell dimension means "derive
     // from the product" (auto-with-override), any number overrides it.
     tray: {
-      enabled: false,
       nCells: 2,                       // default when enabled: 2 cells x 10 on edge
       // NOTE there is deliberately no `perCell` here. Products-per-cell is
       // owned by the COLLATION (perStack x nx x ny) and nothing else; storing
@@ -360,31 +367,37 @@ function contentEnvelope(prim){
   return {outer: col.envelope, count: col.count, collation: col, config: prim.collation};
 }
 
-/** Solve the wrap tier, if configured, against `content` — otherwise pass
- *  `content` through untouched. Either way the result's allowedOrientations/
- *  clearance are project.primary's OWN: the content's placement settings,
- *  used whether or not a wrap style actually renders any geometry. */
-function solvePrimaryStage(project, content, opts = {}){
+/** Solve the wrap tier, if configured, against `resolved` (a
+ *  resolveWrapContents() result) — otherwise pass its envelope through
+ *  untouched. Either way the result's allowedOrientations/clearance are
+ *  project.primary's OWN: the content's placement settings, used whether or
+ *  not a wrap style actually renders any geometry.
+ *
+ *  READS ONLY `resolved` for anything about what the wrap encloses — never
+ *  the collation, the tray, or project.primary.collation directly. Every
+ *  fact this function used to reach past `resolved` for (the envelope
+ *  dimensions, whether a round girth is even eligible, the product's own
+ *  diameter) is something resolveWrapContents() already decided; reading it
+ *  again here would be a second, potentially-disagreeing source for the
+ *  same question the moment a second interlayer (Phase B) exists. */
+function solvePrimaryStage(project, resolved){
   const prim = project.primary;
   const base = {allowedOrientations: prim.allowedOrientations, clearance: prim.clearance};
-  if(!prim.wrap) return {...base, outer: content.outer, geo: null, fits: true, wrapAxis: null, wp: null};
+  if(!prim.wrap) return {...base, outer: resolved.envelope, geo: null, fits: true, wrapAxis: null, wp: null};
 
   const wp = {...prim.wrap.params};
   // Machine direction is ALWAYS envelope L (fixed machine) — flowwrap treats
   // L as pack length directly, no axis resolution and no L/W permutation. The
   // pack shape varies upstream via the collation orientation (which decides
   // what L is), never by moving the seals.
-  const env = content.outer;
+  const env = resolved.envelope;
   // round girth is only meaningful for a single on-edge tube running along L
-  // (roundGirthEligible). A plain box has no collation to check — never round.
-  // A round girth only describes a bare on-edge slug. With a tray in the
-  // chain the film is pulled over the TRAY (a rectangular thing that happens
-  // to contain round product), so the caller forces rectangular — reading
-  // the collation here would wrongly keep hugging a cookie that is no longer
-  // what the wrap touches.
+  // (roundGirthEligible) AND for a bare product (no interlayer) — with an
+  // interlayer in the chain the film is pulled over THAT (a rectangular
+  // thing), never the bare product inside it. resolveWrapContents() already
+  // decided both of those and hands back a diameter only when they hold.
   if(wp.girthBasis === 'round'){
-    if(!opts.forceRectangularGirth && content.collation && roundGirthEligible(prim.collation))
-      wp.roundDiameter = prim.collation.piece.diameter;
+    if(resolved.roundDiameter != null) wp.roundDiameter = resolved.roundDiameter;
     else wp.girthBasis = 'rectangular';
   }
   let wrapFits = true;
@@ -470,10 +483,14 @@ export function trayAutoCells(project, content = contentEnvelope(project.primary
   return {cellLen: probe.cellLen, cellWid: probe.cellWid};
 }
 
+/** The tray stage's own solve — called ONLY from resolveWrapContents()'s
+ *  'tray' branch, which is the sole place that decides WHETHER the tray is
+ *  in the chain (project.interlayer === 'tray'). This function no longer
+ *  makes that decision itself: a second `enabled`-style check here, next to
+ *  the interlayer enum, would be exactly the two-writer shape this whole
+ *  refactor exists to prevent. Always returns a real result when called. */
 function solveTrayStage(project, content){
-  const tray = project.tray;
-  if(!tray || tray.enabled !== true) return null;      // pass-through (the default)
-
+  const tray = project.tray || {};
   const env = content.outer;                            // ONE cell's product envelope
   const ov = tray.params || {};
   const num = v => typeof v === 'number' && isFinite(v);
@@ -529,6 +546,90 @@ function solveTrayStage(project, content){
     total: nCells*content.count,
     cellAuto: {cellLen: !num(ov.cellLen), cellWid: !num(ov.cellWid), cellH: !num(ov.cellH)}
   };
+}
+
+/** Every interlayer this app can put between the product collation and the
+ *  wrap. A single discriminant, not one boolean per interlayer — two
+ *  interlayers active at once is unrepresentable rather than a state that
+ *  has to be validated against after the fact. Phase B adds 'uboard' here
+ *  and nowhere else structural; resolveWrapContents()'s switch is the one
+ *  place in the codebase allowed to branch on it (see its own comment). */
+export const INTERLAYERS = Object.freeze(['none', 'tray']);
+
+/**
+ * THE resolver — the sole writer of "what the wrap encloses." Every fact
+ * `solvePrimaryStage` needs about its contents (the outside envelope, how
+ * many products that envelope holds, whether a round girth is even eligible
+ * and at what diameter) is decided HERE, once, by branching on
+ * `project.interlayer` — never re-derived by the wrap from the collation or
+ * the tray directly, and never by a second switch elsewhere. Phase B's
+ * 'uboard' branch lands in this same switch; nowhere else in the codebase
+ * is allowed to branch on `interlayer` at all, so there is exactly one site
+ * for a lint/test to hold exhaustive (see the enum-exhaustiveness pin).
+ *
+ * @param {Object} project
+ * @param {Object} collation  contentEnvelope(project.primary) — the RAW
+ *   one-cell product layout. Needed regardless of branch: it's the 'none'
+ *   branch's own envelope, and the 'tray' branch's input (one tray cell
+ *   holds one collation's worth of product).
+ * @returns {{
+ *   envelope: {L:number,W:number,H:number},  outside dims the wrap sees
+ *   productCount: number,                    products inside one wrap
+ *   interlayerKind: string,                  the enum value used
+ *   provenance: {branch: string, trayResult: Object|null},  which branch
+ *     produced envelope, and (branch:'tray' only) the tray stage's own
+ *     result — carried through so callers needing it (row.tray, the
+ *     Cookie-Tray link, the 3D tray mesh) read the SAME solve rather than
+ *     re-running solveTrayStage a second time.
+ *   roundDiameter: number|null               the bare product's diameter,
+ *     ONLY when a round girth is physically eligible for what the wrap
+ *     actually touches — null forces girthBasis to rectangular. Round girth
+ *     describes a bare on-edge slug; with any interlayer in the chain the
+ *     film is pulled over the interlayer's own (rectangular) envelope, so
+ *     this is null whenever interlayerKind !== 'none'.
+ * }}
+ */
+function resolveWrapContents(project, collation){
+  const interlayer = project.interlayer;
+  switch(interlayer){
+    case 'tray': {
+      const trayResult = solveTrayStage(project, collation);
+      return {
+        envelope: trayResult.outer,
+        productCount: trayResult.total,
+        interlayerKind: 'tray',
+        provenance: {branch: 'tray', trayResult},
+        roundDiameter: null
+      };
+    }
+    case 'none': {
+      const eligible = collation.collation && roundGirthEligible(project.primary.collation);
+      return {
+        envelope: collation.outer,
+        productCount: collation.count,
+        interlayerKind: 'none',
+        provenance: {branch: 'collation', trayResult: null},
+        roundDiameter: eligible ? project.primary.collation.piece.diameter : null
+      };
+    }
+    default:
+      // never a silent fall-through to a plausible-looking default: an
+      // interlayer value this switch doesn't know is a bug to surface
+      // immediately, not a state to guess at.
+      throw new Error(`resolveWrapContents: unhandled interlayer "${interlayer}"`);
+  }
+}
+
+/** The public door to resolveWrapContents(), for a caller outside the chain
+ *  solve itself — today, the Tray/Product rails' live "Total quantity"
+ *  preview (app.js's trayQuantities), which needs productCount BEFORE the
+ *  user has committed an edit, not just after a full resolveActiveRow(). It
+ *  exists so that preview has exactly one place to read productCount from,
+ *  same as everything downstream of the resolved chain — a rail computing
+ *  cells*perCell itself would be a second, silently-divergable derivation
+ *  of the same fact the resolver already owns. */
+export function resolvedWrapContents(project){
+  return resolveWrapContents(project, contentEnvelope(project.primary));
 }
 
 /**
@@ -618,16 +719,20 @@ function solveSecondaryInner(project, child, step){
  */
 function solveBelowOutermost(project, shape, step){
   const collation = contentEnvelope(project.primary);
-  // The tray, when enabled, is what the wrap actually wraps: it replaces the
-  // collation envelope with its own (max cross-section, proud-aware) and
-  // multiplies the piece count by its cell count. Disabled — the default —
-  // `trayResult` is null and `content` IS the collation, bit-identical to
-  // the pre-tray chain.
-  const trayResult = solveTrayStage(project, collation);
-  const content = trayResult
-    ? {...collation, outer: trayResult.outer, count: trayResult.total}
-    : collation;
-  const primaryResult = solvePrimaryStage(project, content, {forceRectangularGirth: !!trayResult});
+  // resolveWrapContents() is the ONE place that decides what the wrap
+  // encloses — an interlayer (the tray today; Phase B adds the U-board),
+  // when the chain has one, replaces the collation envelope with its own
+  // (max cross-section, proud-aware) and multiplies the piece count by its
+  // own cell/layer count. `interlayer: 'none'` — the default — resolves to
+  // the bare collation, bit-identical to the pre-interlayer chain.
+  // `content` keeps `collation`/`config` from the RAW product collation
+  // regardless of branch (decorateRow's per-piece rendering always draws
+  // ONE collation's worth of pieces, tray or not) — only `outer`/`count`
+  // follow whatever the resolver decided.
+  const resolved = resolveWrapContents(project, collation);
+  const trayResult = resolved.provenance.trayResult;
+  const content = {...collation, outer: resolved.envelope, count: resolved.productCount};
+  const primaryResult = solvePrimaryStage(project, resolved);
   const primaryChild = {outer: primaryResult.outer, allowedOrientations: primaryResult.allowedOrientations, clearance: primaryResult.clearance};
 
   let secondaryVariant = null, child = primaryChild;

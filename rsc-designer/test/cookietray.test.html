@@ -21,7 +21,7 @@
    there is nothing here about lofts, booleans, or STEP. */
 import {trayParams, deriveTrayParams, trayOuter, isProud,
         TRAY_DEFAULTS, MIN_WALL, MIN_DIVIDER} from '../src/core/cookietray.js';
-import {newProject, resolveActiveRow} from '../src/core/project.js';
+import {newProject, resolveActiveRow, INTERLAYERS} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
 import {parseTrayLink, buildTrayLink, TRAY_KEYS, PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
 
@@ -298,13 +298,14 @@ t('cradleR and divider default from other inputs, exactly as upstream', () => {
 
 const trayProject = (patch = {}) => {
   const p = newProject();
-  Object.assign(p.tray, {enabled: true, nCells: 2}, patch);
+  p.interlayer = 'tray';
+  Object.assign(p.tray, {nCells: 2}, patch);
   return p;
 };
 
 t('CHAIN: tray is OFF by default and the chain is untouched', () => {
   const off = newProject();
-  eq(off.tray.enabled, false, 'default enabled:');
+  eq(off.interlayer, 'none', 'default interlayer:');
   eq(off.tray.openTop, true, 'openTop is a fact of the part:');
   const a = resolveActiveRow(newProject(), '1mm');
   const b = resolveActiveRow(newProject(), '1mm');
@@ -575,12 +576,13 @@ t('LINK: survives a collision on EVERY default-valued field, not just width', ()
 
 t('LINK: round trip is a FIXED POINT (export -> import -> same tray)', () => {
   const p = newProject();
-  Object.assign(p.tray, {enabled: true, nCells: 4, params: {cellLen: 219, cellH: 30, cradleR: 24, draftDeg: 7}});
+  p.interlayer = 'tray';
+  Object.assign(p.tray, {nCells: 4, params: {cellLen: 219, cellH: 30, cradleR: 24, draftDeg: 7}});
   const before = resolveActiveRow(p, '1mm').tray;
   const url = buildTrayLink(p, before);
 
   const q = newProject();
-  q.tray.enabled = true;
+  q.interlayer = 'tray';
   const parsed = parseTrayLink(url);
   ok(parsed, 'exported link must parse');
   q.tray.nCells = parsed.nCells;
@@ -684,7 +686,8 @@ t('LINK: the product half carries the collation across', () => {
   const p = newProject();
   // 5 cells x 6 per cell = 30, deliberately NOT their qty default of 24 —
   // a default-valued total is correctly omitted, which would make this vacuous
-  Object.assign(p.tray, {enabled: true, nCells: 5});
+  p.interlayer = 'tray';
+  Object.assign(p.tray, {nCells: 5});
   const row = resolveActiveRow(p, '1mm');
   eq(row.tray.total, 30, 'fixture total must differ from their default:');
   const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
@@ -700,7 +703,8 @@ t('LINK: a total equal to their default is STATED, not omitted', () => {
   // link that leaves out its own quantity is describing a different tray the
   // moment either side's default table moves.
   const p = newProject();
-  Object.assign(p.tray, {enabled: true, nCells: 4});      // 4 x 6 = 24 = their default
+  p.interlayer = 'tray';
+  Object.assign(p.tray, {nCells: 4});      // 4 x 6 = 24 = their default
   const row = resolveActiveRow(p, '1mm');
   eq(row.tray.total, 24, 'fixture hits their default exactly:');
   const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
@@ -710,7 +714,8 @@ t('LINK: a total equal to their default is STATED, not omitted', () => {
 
 t('LINK: a box collation exports as their rectangle product', () => {
   const p = newProject();
-  Object.assign(p.tray, {enabled: true, nCells: 2});
+  p.interlayer = 'tray';
+  Object.assign(p.tray, {nCells: 2});
   p.primary.collation.piece = {kind: 'box', L: 80, W: 40, H: 15};
   const row = resolveActiveRow(p, '1mm');
   const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
@@ -722,10 +727,149 @@ t('LINK: a box collation exports as their rectangle product', () => {
 
 t('LINK: the app is fully usable with no link ever used', () => {
   const p = newProject();
-  p.tray.enabled = true;
+  p.interlayer = 'tray';
   const r = resolveActiveRow(p, '1mm');
   ok(r && r.tray && r.cartonsPerPallet > 0, 'chain resolves with an untouched tray');
   eq(p.tray.params && Object.keys(p.tray.params).length, 0, 'and no link means no overrides:');
+});
+
+/* ==================================================================
+   PHASE A REFACTOR — resolveWrapContents(). This whole block exists to
+   pin the refactor itself, not any new number: "what the wrap encloses"
+   moved from ad-hoc inline branching in solveBelowOutermost/
+   solvePrimaryStage into ONE resolver, and every value below must be
+   bit-identical to what the pre-refactor code produced (verified by
+   running this sweep, and the full existing suite, both before and after
+   the refactor landed — golden.json's 926/926 stayed unchanged too).
+   ================================================================== */
+
+/* ---- differential sweep: tray on/off x several collations/aspect
+   ratios x the round-girth branch, each way roundDiameter can resolve.
+   Values captured from the verified-correct post-refactor chain (golden
+   was unchanged across the refactor, and the pre-refactor code produced
+   these same numbers — see the PR description). A pin that recomputed
+   its own expected value would agree with a bug as readily as a fix; these
+   are frozen numbers, the same shape as the "hand-checked chain" pins
+   elsewhere in this suite. */
+const SWEEP = {
+  'default round product, no interlayer': p => p,
+  'long thin box, no interlayer': p => {
+    p.primary.collation = {piece: {kind: 'box', L: 220, W: 30, H: 40},
+      perStack: 1, stackAxis: 'Z', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+    return p;
+  },
+  'round product, tray 2 cells': p => {
+    p.interlayer = 'tray'; p.tray.nCells = 2;
+    Object.assign(p.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+    return p;
+  },
+  'round product, tray 4 cells': p => {
+    p.interlayer = 'tray'; p.tray.nCells = 4;
+    Object.assign(p.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 8, nx: 1, ny: 1});
+    return p;
+  },
+  'box product, tray 3 cells': p => {
+    p.interlayer = 'tray'; p.tray.nCells = 3;
+    p.primary.collation = {piece: {kind: 'box', L: 80, W: 40, H: 15},
+      perStack: 5, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+    return p;
+  },
+  'round girth-eligible slug, no interlayer, round girthBasis': p => {
+    p.primary.collation = {piece: {kind: 'cylinder', diameter: 40, thickness: 20},
+      perStack: 6, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+    p.primary.wrap.params.girthBasis = 'round';
+    return p;
+  },
+  'same round-eligible slug, but WITH a tray -- girth forced rectangular': p => {
+    p.interlayer = 'tray'; p.tray.nCells = 2;
+    p.primary.collation = {piece: {kind: 'cylinder', diameter: 40, thickness: 20},
+      perStack: 6, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0};
+    p.primary.wrap.params.girthBasis = 'round';
+    return p;
+  }
+};
+const SWEEP_EXPECTED = {
+  'default round product, no interlayer': {
+    wrapOuter: {L: 179.14213562373095, W: 47, H: 24.03}, webWidth: 163,
+    cartonOuter: {L: 180.914, W: 188.914, H: 50.828}, caseOuter: {L: 190, W: 1143, H: 114},
+    casesPerPallet: 60, cartonsPerPallet: 720, piecesPerPallet: 34560
+  },
+  'long thin box, no interlayer': {
+    wrapOuter: {L: 274.14213562373095, W: 30, H: 40.03}, webWidth: 161,
+    cartonOuter: {L: 275.914, W: 120.914, H: 82.828}, caseOuter: {L: 285, W: 493, H: 261},
+    casesPerPallet: 40, cartonsPerPallet: 480, piecesPerPallet: 3840
+  },
+  'round product, tray 2 cells': {
+    wrapOuter: {L: 202.64213562373095, W: 119, H: 49.53}, webWidth: 358,
+    cartonOuter: {L: 203.914, W: 476.914, H: 101.828}, caseOuter: {L: 213, W: 963, H: 623},
+    casesPerPallet: 10, cartonsPerPallet: 120, piecesPerPallet: 19200
+  },
+  'round product, tray 4 cells': {
+    wrapOuter: {L: 178.64213562373095, W: 225, H: 49.53}, webWidth: 570,
+    cartonOuter: {L: 179.914, W: 900.914, H: 101.828}, caseOuter: {L: 1089, W: 910, H: 216},
+    casesPerPallet: 6, cartonsPerPallet: 72, piecesPerPallet: 18432
+  },
+  'box product, tray 3 cells': {
+    wrapOuter: {L: 460.14213562373095, W: 151, H: 27.03}, webWidth: 377,
+    cartonOuter: {L: 461.914, W: 604.914, H: 56.828}, caseOuter: {L: 933, W: 1219, H: 183},
+    casesPerPallet: 7, cartonsPerPallet: 84, piecesPerPallet: 10080
+  },
+  'round girth-eligible slug, no interlayer, round girthBasis': {
+    wrapOuter: {L: 174.14213562373095, W: 40, H: 40.03}, webWidth: 146.66370614359172,
+    cartonOuter: {L: 175.914, W: 160.914, H: 82.828}, caseOuter: {L: 185, W: 492, H: 344},
+    casesPerPallet: 48, cartonsPerPallet: 576, piecesPerPallet: 27648
+  },
+  'same round-eligible slug, but WITH a tray -- girth forced rectangular': {
+    wrapOuter: {L: 195.64213562373095, W: 105, H: 42.53}, webWidth: 316,
+    cartonOuter: {L: 196.914, W: 420.914, H: 87.828}, caseOuter: {L: 403, W: 851, H: 276},
+    casesPerPallet: 15, cartonsPerPallet: 180, piecesPerPallet: 17280
+  }
+};
+
+for(const [name, setup] of Object.entries(SWEEP)){
+  t(`resolveWrapContents differential: ${name}`, () => {
+    const row = resolveActiveRow(setup(newProject()), '1mm');
+    const want = SWEEP_EXPECTED[name];
+    const got = {
+      wrapOuter: row.wrapOuter, webWidth: row.geo.wrap.meta.film.webWidth,
+      cartonOuter: row.cartonOuter, caseOuter: row.outer,
+      casesPerPallet: row.casesPerPallet, cartonsPerPallet: row.cartonsPerPallet,
+      piecesPerPallet: row.piecesPerPallet
+    };
+    if(JSON.stringify(got) !== JSON.stringify(want))
+      throw new Error(`\nwant ${JSON.stringify(want)}\ngot  ${JSON.stringify(got)}`);
+  });
+}
+
+/* ---- enum exhaustiveness: resolveWrapContents' switch is the ONE site
+   allowed to branch on project.interlayer. Every declared enum member
+   must resolve without throwing; anything NOT in the enum (Phase B's
+   'uboard' before it lands, or a typo) must throw immediately, loudly,
+   from the very first chain resolve that touches it -- never silently
+   fall through to whichever branch happens to run last. This is the
+   plain-JS instrument for exhaustiveness this codebase has (no compiler,
+   no lint rule to hold a switch exhaustive): a default case that refuses
+   to guess, on the ONE switch site that exists. */
+t('interlayer exhaustiveness: every declared enum member resolves without throwing', () => {
+  for(const kind of INTERLAYERS){
+    const p = newProject();
+    p.interlayer = kind;
+    if(kind === 'tray'){ p.tray.nCells = 2; }
+    let threw = null;
+    try{ resolveActiveRow(p, '1mm'); }catch(e){ threw = e; }
+    if(threw) throw new Error(`interlayer:'${kind}' (a declared enum member) threw: ${threw.message}`);
+  }
+});
+t('interlayer exhaustiveness: an UNDECLARED value throws immediately, never silently resolves', () => {
+  for(const bogus of ['uboard', 'bogus', undefined, '']){
+    if(INTERLAYERS.includes(bogus)) continue;
+    const p = newProject();
+    p.interlayer = bogus;
+    let threw = null;
+    try{ resolveActiveRow(p, '1mm'); }catch(e){ threw = e; }
+    if(!threw) throw new Error(`interlayer:${JSON.stringify(bogus)} resolved without throwing -- an unhandled enum value must fail loudly, not silently pick a branch`);
+    if(!/interlayer/i.test(threw.message)) throw new Error(`threw, but the message doesn't name the problem: "${threw.message}"`);
+  }
 });
 
 /* ---------- report ---------- */

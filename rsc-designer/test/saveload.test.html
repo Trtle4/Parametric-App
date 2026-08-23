@@ -112,6 +112,55 @@ t('a plain "tray" reference (never tray_lid) round-trips untouched by the v2->v3
   eq(result.project.tertiary.params, {L: 300, W: 200, H: 80, caliper: 3, cornerFlapDepth: 40, glue: 35, slot: 6});
 });
 
+/* ---- v3 -> v4: project.interlayer replaces project.tray.enabled ---------
+ * The one place Phase A could lose a user's saved work: an old file that had
+ * the tray ON must still open with the tray ON. Direct v3 docs (not routed
+ * through the v1 fixtures, which exercise this migration only as the LAST
+ * of three hops and never with tray.enabled:true at all) — each of the three
+ * outcomes on its own. */
+t('v3 -> v4: tray.enabled:true migrates to interlayer:\'tray\', and drops tray.enabled', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 3,
+    project: {...base, tray: {...base.tray, enabled: true, nCells: 5}}
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.interlayer, 'tray', 'migrated interlayer:');
+  if('enabled' in result.project.tray) throw new Error('tray.enabled should have been dropped by the migration');
+  eq(result.project.tray.nCells, 5, 'other tray.* fields are untouched:');
+  if(!result.migrationsRun.some(m => m.startsWith('v3 -> v4'))) throw new Error('expected a v3->v4 migration step in the log');
+});
+
+t('v3 -> v4: tray.enabled:false migrates to interlayer:\'none\'', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 3,
+    project: {...base, tray: {...base.tray, enabled: false}}
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.interlayer, 'none', 'migrated interlayer:');
+  if('enabled' in result.project.tray) throw new Error('tray.enabled should have been dropped by the migration');
+});
+
+t('v3 -> v4: a v3 file with no tray block at all migrates to interlayer:\'none\'', () => {
+  const base = newProject();
+  const {tray, ...projectWithoutTray} = base;
+  const doc = {schemaVersion: 3, project: projectWithoutTray};
+  const result = deserializeProject(doc);
+  eq(result.project.interlayer, 'none', 'no tray block -> interlayer defaults to none, not thrown at:');
+});
+
+t('v4 file (current schema) round-trips interlayer exactly, no migration runs', () => {
+  const project = newProject();
+  project.interlayer = 'tray'; project.tray.nCells = 3;
+  const doc = serializeProject({project, rounding: '1mm', selectedCandidate: null, unit: 'mm', palUnit: 'in'});
+  eq(doc.schemaVersion, 4, 'serialized at the current (v4) schema:');
+  const result = deserializeProject(JSON.parse(JSON.stringify(doc)));
+  eq(result.migrationsRun, [], 'already current: no migration runs:');
+  eq(result.project.interlayer, 'tray', 'interlayer round-trips exactly:');
+  eq(result.project.tray.nCells, 3);
+});
+
 /* ---- missing fields: defaulted AND reported ----------------------------- */
 t('a missing field is filled from newProject()\'s default and reported', () => {
   const doc = {schemaVersion: 1, project: {secondary: {styleId: 'a6120', params: {caliper: 0.457}, allowedOrientations: ['LWH', 'WLH']}}};
@@ -297,14 +346,20 @@ function findSelected(rows, key){
 await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
   const result = deserializeProject(raw);
-  // this fixture predates schema v2 (finFace rename) and v3 (tray_lid
-  // removal) — it MUST run both migrations now, not stay "already
-  // current": a frozen v1 file whose migration count silently changed
-  // would mean a migration stopped applying to it, not that it caught up
-  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
+  // this fixture predates schema v2 (finFace rename), v3 (tray_lid
+  // removal) and v4 (interlayer replaces tray.enabled) — it MUST run all
+  // three migrations now, not stay "already current": a frozen v1 file
+  // whose migration count silently changed would mean a migration stopped
+  // applying to it, not that it caught up
+  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
   if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
   if(!result.migrationsRun[1].startsWith('v2 -> v3')) throw new Error(`unexpected migration: ${result.migrationsRun[1]}`);
+  if(!result.migrationsRun[2].startsWith('v3 -> v4')) throw new Error(`unexpected migration: ${result.migrationsRun[2]}`);
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
+  // this fixture predates the tray/interlayer feature entirely (no tray.*
+  // in the raw file at all) — the v3->v4 migration must still land a real
+  // 'none', not leave the field for fillProjectDefaults to guess at.
+  eq(result.project.interlayer, 'none', 'migrated interlayer, no tray in the file at all:');
   // this fixture predates openTop, perf, the pallet.stacking (BCT) block,
   // pallet.patternIndex and shelf -- all genuinely new fields, correctly
   // reported as defaulted (openTop from each level's OWN style, both false
@@ -340,8 +395,9 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
 await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
+  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
+  eq(result.project.interlayer, 'none', 'migrated interlayer:');
   eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
   // same compatibility claim as full-chain, against this fixture's own
   // real pre-shelf save.
@@ -362,8 +418,9 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
 await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 2, 'runs the v1->v2 finFace migration, then the v2->v3 tray_lid migration:');
+  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
+  eq(result.project.interlayer, 'none', 'migrated interlayer:');
   eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');
   // same compatibility claim as full-chain, against this fixture's own
   // real pre-shelf save.

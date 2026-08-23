@@ -351,7 +351,7 @@ export function mountProduct(prim, m){
   // rule for which factor absorbs the change, which is exactly where a
   // two-writers bug creeps back in.
   const tray = m.project && m.project.tray;
-  const trayOn = !!(tray && tray.enabled);
+  const trayOn = !!(m.project && m.project.interlayer === 'tray');
   const qty = (trayOn && m.quantities)
     ? m.quantities() : {cells: trayOn ? tray.nCells : 1, perCell: collationCount(c), total: 0};
   mat.innerHTML =
@@ -752,7 +752,7 @@ export function switchPalUnits(){
 export function mountTray(project, m){
   const host = el('trayFields');
   const tr = project.tray;
-  if(!tr || !tr.enabled){ host.innerHTML = ''; return; }
+  if(!tr || project.interlayer !== 'tray'){ host.innerHTML = ''; return; }
   const ov = tr.params || (tr.params = {});
   const L = v => fmtInputValue(fromMM(v, unit), unit);
 

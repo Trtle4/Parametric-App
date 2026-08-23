@@ -1417,7 +1417,7 @@ await (async () => {
 await (async () => {
   const traySnap = snapProject();
   t('tray: off by default and present in the chain between product and wrap', () => {
-    eq(build.project.tray.enabled, false, 'default enabled:');
+    eq(build.project.interlayer, 'none', 'default interlayer:');
     const opts = [...el('style').options].map(o => o.value);
     eq(opts.indexOf('tray'), opts.indexOf('product') + 1, 'tray follows product:');
     eq(opts.indexOf('wrap'), opts.indexOf('tray') + 1, 'wrap follows tray:');
@@ -1429,7 +1429,7 @@ await (async () => {
   });
 
   // enable it (through the project + the one notifier, as the toggle does)
-  build.project.tray.enabled = true;
+  build.project.interlayer = 'tray';
   build.project.tray.nCells = 2;
   Object.assign(build.project.primary.collation,
     {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
@@ -1592,6 +1592,22 @@ await (async () => {
     eq(+el('tr_nCells').value, 6, 'cells unchanged by a total edit:');
     eq(+el('tr_perCell').value, 4, 'per-cell absorbed it, seen from the tray rail:');
     eq(+el('tr_total').value, 24, 'total agrees:');
+  });
+
+  tEdit('QUANTITIES: the rail\'s Total agrees with the RESOLVED chain, not just with itself', () => {
+    // the pin above compares cCells/cTotal to a hand-multiplied 6*9 — the
+    // same expression trayQuantities() itself could be computing wrongly and
+    // still satisfy. This one goes around the rail entirely: resolveActiveRow
+    // walks the full chain through resolveWrapContents via a DIFFERENT call
+    // path (solveBelowOutermost, not trayQuantities' resolvedWrapContents),
+    // so the two can only agree if the rail is actually reading the
+    // resolver's productCount rather than a second, silently-divergable copy.
+    setLevel('tray');
+    Object.assign(qcol(), {nx: 1, ny: 1});
+    setQ('tr_nCells', 5); setQ('tr_perCell', 7);
+    const resolved = resolveActiveRow(build.project, build.getRounding(), null);
+    eq(resolved.tray.total, 35, 'fixture sanity, hand-checked:');
+    eq(+el('tr_total').value, resolved.tray.total, 'rail Total === resolveActiveRow(...).tray.total:');
   });
 
   tEdit('QUANTITIES: rounding is NEAREST, so a total can round DOWN', () => {
@@ -2408,12 +2424,12 @@ await (async () => {
     try{
       const wrapObj = saved.primary.wrap || {styleId: 'flowwrap', params: {}, locked: false};
       const chains = [
-        ['tray -> wrap -> case',           () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
-        ['tray -> wrap -> carton -> case', () => { proj.tray.enabled = true; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
-        ['wrap -> carton -> case',         () => { proj.tray.enabled = false; proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
-        ['wrap -> case',                   () => { proj.tray.enabled = false; proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
-        ['carton -> case',                 () => { proj.tray.enabled = false; proj.primary.wrap = null;    proj.secondary.enabled = true;  }, 'cartons'],
-        ['case only',                      () => { proj.tray.enabled = false; proj.primary.wrap = null;    proj.secondary.enabled = false; }, 'cases']
+        ['tray -> wrap -> case',           () => { proj.interlayer = 'tray'; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
+        ['tray -> wrap -> carton -> case', () => { proj.interlayer = 'tray'; trayCollation(); proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
+        ['wrap -> carton -> case',         () => { proj.interlayer = 'none'; proj.primary.wrap = wrapObj; proj.secondary.enabled = true;  }, 'cartons'],
+        ['wrap -> case',                   () => { proj.interlayer = 'none'; proj.primary.wrap = wrapObj; proj.secondary.enabled = false; }, 'wraps'],
+        ['carton -> case',                 () => { proj.interlayer = 'none'; proj.primary.wrap = null;    proj.secondary.enabled = true;  }, 'cartons'],
+        ['case only',                      () => { proj.interlayer = 'none'; proj.primary.wrap = null;    proj.secondary.enabled = false; }, 'cases']
       ];
       for(const [label, setup, want] of chains)
         eq(unitFor(setup), want, `${label} must merchandise the ${want.slice(0, -1)}:`);
@@ -2443,7 +2459,7 @@ await (async () => {
     const saved = snapProject(), savedFront = el('shFront').value;
     try{
       const proj = build.project;
-      proj.tray.enabled = true; proj.tray.nCells = 3;
+      proj.interlayer = 'tray'; proj.tray.nCells = 3;
       Object.assign(proj.primary.collation,
         {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
       proj.secondary.enabled = false;                 // carton off -> the WRAP is sellable
@@ -2554,7 +2570,7 @@ await (async () => {
   // UNPRINTED baseline first — same chain, no artwork
   {
     const proj = build.project;
-    proj.tray.enabled = true; proj.tray.nCells = 3;
+    proj.interlayer = 'tray'; proj.tray.nCells = 3;
     Object.assign(proj.primary.collation,
       {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
     proj.secondary.enabled = false;
@@ -2624,7 +2640,7 @@ await (async () => {
     };
     try{
       const proj = build.project;
-      proj.tray.enabled = true; proj.tray.nCells = 3;
+      proj.interlayer = 'tray'; proj.tray.nCells = 3;
       Object.assign(proj.primary.collation,
         {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
       proj.secondary.enabled = false;
@@ -3430,7 +3446,7 @@ await (async () => {
   let quadSrc = null;
   {
     const proj = build.project;
-    proj.tray.enabled = true; proj.tray.nCells = 3;
+    proj.interlayer = 'tray'; proj.tray.nCells = 3;
     Object.assign(proj.primary.collation,
       {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
     proj.secondary.enabled = false;                  // carton off -> the WRAP is sellable
@@ -3499,7 +3515,7 @@ await (async () => {
   let cartonFixture = null;
   {
     const proj = build.project;
-    proj.tray.enabled = false; proj.secondary.enabled = true;
+    proj.interlayer = 'none'; proj.secondary.enabled = true;
     Object.assign(proj.primary.collation,
       {pieceOrientation: 'flat', stackAxis: 'Z', perStack: 2, nx: 3, ny: 1});
     const cGeo = resolveActiveRow(build.project, build.getRounding(), null).geo.carton;
@@ -4348,7 +4364,7 @@ await (async () => {
     // The default chain has no tray, so the tray term must be ABSENT and
     // named — never a silent zero that reads like a free tray.
     const c = rowNow().cost;
-    const hasTray = !!(build.project.tray && build.project.tray.enabled);
+    const hasTray = build.project.interlayer === 'tray';
     if(hasTray) throw new Error('fixture: the tray is enabled here, this pin needs it off');
     if('tray' in c.perPack) throw new Error('a chain with no tray must not carry a tray term');
     if(!c.missing.includes('tray')) throw new Error('the missing tray term is not reported');

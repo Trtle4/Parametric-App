@@ -41,7 +41,7 @@ import {buildPalletPdf} from '../export/palletpdf.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection, trayAutoCells} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection, trayAutoCells, resolvedWrapContents} from '../core/project.js';
 import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
 import {buildTray3d, trayToSTL} from '../render/tray3d.js';
@@ -172,8 +172,8 @@ const LEVELS = {
   // and no DXF — the product2d.js precedent (a sibling with its own view).
   // activeGeometry() already returns null for a non-style level.
   tray:   {label: 'Tray', kind: 'tray',
-           enabledOf: p => !!(p.tray && p.tray.enabled),
-           setEnabled: (p, v) => { p.tray.enabled = v; }},
+           enabledOf: p => p.interlayer === 'tray',
+           setEnabled: (p, v) => { p.interlayer = v ? 'tray' : 'none'; }},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
 // wrap disables by going null (the pre-existing pattern) rather than an
@@ -1195,7 +1195,7 @@ function pairingAfterDisabling(level){
 function setTierEnabled(level, on){
   const proj = build.project;
   if(level === 'tray'){
-    proj.tray.enabled = on;
+    proj.interlayer = on ? 'tray' : 'none';
     // "2 cells x 10 products per cell, on edge" is the specified default when
     // the tray is switched on. Per-cell belongs to the COLLATION, so this is a
     // write to that one owner — not a copy stored on the tray.
@@ -1566,13 +1566,19 @@ function applyTrayLink(text){
 
 /** THE three linked quantities — cells, products per cell, total — read by
  *  the Tray rail and the Product rail alike, so the two can never display
- *  different numbers. Derived from the only two STORED values there are:
- *  project.tray.nCells and the collation's own grid. */
+ *  different numbers. `cells`/`perCell` are the two STORED inputs
+ *  (project.tray.nCells and the collation's own grid), read directly — that
+ *  IS the input, same as any other rail field. `total` is productCount, a
+ *  DERIVED fact the resolver owns; reading it from resolvedWrapContents()
+ *  rather than re-multiplying cells*perCell here keeps this preview from
+ *  becoming a second, silently-divergable copy of resolveWrapContents'
+ *  tray-branch arithmetic. Only called while interlayer is already 'tray'
+ *  (both mount sites gate on that), so the resolver's tray branch is live. */
 function trayQuantities(){
   const proj = build.project;
   const cells = Math.max(1, Math.round((proj.tray && proj.tray.nCells) || 1));
   const perCell = Math.max(1, collate(proj.primary.collation).count);
-  return {cells, perCell, total: cells*perCell};
+  return {cells, perCell, total: resolvedWrapContents(proj).productCount};
 }
 
 /** THE rule for an edit to any of those three, from either rail.
