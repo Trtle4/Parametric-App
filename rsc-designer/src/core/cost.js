@@ -33,6 +33,7 @@ export const COST_DEFAULTS = Object.freeze({
   caseBoardPerM2:   0.45,     // corrugated case board
   filmPerKg:        3.20,     // BOPP / PE wrap film
   trayEach:         0.18,     // thermoformed tray, per part
+  uboardBoardPerM2: 0.50,     // U-board paperboard — its own rate, never the carton/case board rate
   palletPerTrip:   12.00      // one pallet, one trip
 });
 
@@ -45,6 +46,7 @@ export const RATE_ROWS = Object.freeze([
   {key: 'caseBoardPerM2',   label: 'Case board',   unit: 'area', needs: 'case'},
   {key: 'filmPerKg',        label: 'Film',         unit: 'mass', needs: 'film'},
   {key: 'trayEach',         label: 'Tray',         unit: 'each', needs: 'tray'},
+  {key: 'uboardBoardPerM2', label: 'U-board',      unit: 'area', needs: 'uboard'},
   {key: 'palletPerTrip',    label: 'Pallet',       unit: 'trip', needs: 'pallet'}
 ]);
 
@@ -82,7 +84,7 @@ export const rateFromDisplay = (v, kind, unit) =>
  * says so, rather than quietly costing zero board.
  *
  * @param {Object} q  quantities, all already solved by the chain:
- *   {cartonBoardM2, caseBoardM2, filmKgPerPack, traysPerPack,
+ *   {cartonBoardM2, caseBoardM2, filmKgPerPack, traysPerPack, uboardAreaM2,
  *    packsPerCarton, cartonsPerCase, packsPerPallet}
  * @param {Object} [cost]  project.cost — the overrides, absent = default
  * @returns {{perPack: Object, terms: Array, packCost: number|null,
@@ -111,12 +113,19 @@ export function materialCost(q, cost){
   if(num(q.caseBoardM2))   perUnit.case   = q.caseBoardM2*R('caseBoardPerM2');
   if(num(q.filmKgPerPack)) perUnit.film   = q.filmKgPerPack*R('filmPerKg');
   if(num(q.traysPerPack))  perUnit.tray   = q.traysPerPack*R('trayEach');
+  // U-board is one per pack, same cardinality as film/tray (it wraps ONE
+  // collation's worth of product) — added directly per-pack below, never
+  // divided by a carton/case count the way board is.
+  if(num(q.uboardAreaM2))  perUnit.uboard = q.uboardAreaM2*R('uboardBoardPerM2');
 
   if(perUnit.film != null) perPack.film = perUnit.film;
   else missing.push('film');
 
   if(perUnit.tray != null) perPack.tray = perUnit.tray;
   else missing.push('tray');
+
+  if(perUnit.uboard != null) perPack.uboard = perUnit.uboard;
+  else missing.push('uboard');
 
   if(perUnit.carton != null && packsPerCarton) perPack.carton = perUnit.carton/packsPerCarton;
   else missing.push('carton');

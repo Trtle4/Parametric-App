@@ -38,6 +38,15 @@ export function finGainAxis(finFace){
 }
 const FIN_GAIN_AXIS = {bottom: 'H', top: 'H'};
 
+/** The machine (flow) direction: a flow wrapper always treats envelope L as
+ *  pack length — seals at the L-ends, no axis resolution, no L/W permutation
+ *  (see solvePrimaryStage's own comment in project.js). Exported so every
+ *  OTHER part of the chain that needs to know "which axis is the flow
+ *  direction" — today, the U-board's fold-axis derivation — reads this ONE
+ *  constant instead of a second hardcoded 'L' literal that could silently
+ *  drift from the wrap's own convention if it ever stopped being fixed. */
+export const FLOW_AXIS = 'L';
+
 /**
  * The two end-seal angles and their physical bands — ONE definition shared by
  * this math and the UI sliders (styles/index.js imports it), so the slider

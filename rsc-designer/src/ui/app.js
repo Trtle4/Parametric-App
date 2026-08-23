@@ -41,7 +41,7 @@ import {buildPalletPdf} from '../export/palletpdf.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
-import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection, trayAutoCells, resolvedWrapContents} from '../core/project.js';
+import {newProject, levelGeometry, resolveActiveRow, resolveChainShape, describeChain, linkFor, styleDefaults, styleOptionDefaults, styleOpenTopDefault, applyPatternSelection, trayAutoCells, resolvedWrapContents, uboardAutoF} from '../core/project.js';
 import {analyzeSensitivity} from '../core/sensitivity.js';
 import {collate} from '../core/collation.js';
 import {buildTray3d, trayToSTL} from '../render/tray3d.js';
@@ -68,9 +68,15 @@ let solidOverride = null;
 // keeps the knob — 'all' spreads the plan arrangement apart on every axis;
 // the pallet defaults to 'y' (vertical) — spreading cases sideways just
 // widens the footprint, pulling layers apart vertically is the point.
-const EXPLODE_LEVELS = ['carton', 'case', 'pallet'];
+// 'wrap' joins the set for the U-board: at wrap depth, exploding pulls the
+// product and the U-board apart (rather than spreading N siblings — there's
+// only ever one of each), using the SAME rank/gap math (explode.js's
+// axisOffsets), applied vertically since that IS how they're layered; it
+// defaults to 'y' for the same reason the pallet does, and degrades to a
+// no-op with no U-board in the chain (a single rank, offset 0).
+const EXPLODE_LEVELS = ['carton', 'case', 'pallet', 'wrap'];
 let explodeOn = false;                                    // the toggle; factor 0 still reads as off
-let explodeAxis = {carton: 'all', case: 'all', pallet: 'y'};
+let explodeAxis = {carton: 'all', case: 'all', pallet: 'y', wrap: 'y'};
 let explodeFactor = 0.6;   // 0..1 — the slider's live value while explodeOn
 
 // Dims overlay: L×W×H callouts on the active component, off by default. Each
@@ -174,6 +180,13 @@ const LEVELS = {
   tray:   {label: 'Tray', kind: 'tray',
            enabledOf: p => p.interlayer === 'tray',
            setEnabled: (p, v) => { p.interlayer = v ? 'tray' : 'none'; }},
+  // The U-board interlayer: also OPTIONAL and NON-style (core/uboard.js owns
+  // its geometry, not styleById) — but UNLIKE the tray, it DOES have a real
+  // blank (a rectangle + two creases), so it draws through the existing
+  // style-agnostic draw2d(), not a bespoke multiview.
+  uboard: {label: 'U-board', kind: 'uboard',
+           enabledOf: p => p.interlayer === 'uboard',
+           setEnabled: (p, v) => { p.interlayer = v ? 'uboard' : 'none'; }},
   pallet: {label: 'Pallet', kind: 'pallet'}
 };
 // wrap disables by going null (the pre-existing pattern) rather than an
@@ -186,7 +199,7 @@ const activeStyleId = () => {
   if(!lvl.enabledOf(build.project)) return DISABLED_STYLE_FALLBACK[activeLevel];
   return lvl.styleIdOf(build.project);
 };
-const LEVEL_ORDER = ['product', 'tray', 'wrap', 'carton', 'case', 'pallet'];
+const LEVEL_ORDER = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet'];
 let activeLevel = 'case';
 const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
 
@@ -213,6 +226,14 @@ function activeRow(){
 function activeTray(){
   const row = resolveActiveRow(build.project, build.getRounding(), selKey());
   return (row && row.tray) || null;
+}
+
+/** The resolved U-board stage on screen (uboardStage()'s result), or null
+ *  when the U-board is out of the chain. Mirrors activeTray(): ONE accessor
+ *  so the 2D drawing and the 3D depth read the same solve. */
+function activeUboard(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  return (row && row.uboard) || null;
 }
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
@@ -268,6 +289,32 @@ function refresh2d(){
       stat('Tray height', `${fmtLen(tray.params.overallH, u)} ${u}`) +
       stat('Cells', `${tray.nCells} × ${tray.perCell} = ${tray.total}`) +
       stat('Cell', `${fmtLen(tray.params.cellLen, u)} × ${fmtLen(tray.params.cellWid, u)} × ${fmtLen(tray.params.cellH, u)} ${u}`) +
+      levelUnitCostStat();
+    return;
+  }
+  if(activeLevel === 'uboard'){
+    // the U-board: a real rigid blank (rectangle + two creases), so it draws
+    // through the SAME style-agnostic draw2d() every carton/case dieline
+    // uses — no bespoke renderer, per the spec's own instruction.
+    const ub = activeUboard();
+    if(!ub){
+      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--ink-3)" font-family="var(--mono)" font-size="14">Enable the U-board to draw it</text>`;
+      setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
+      return;
+    }
+    const g = ub.geo;
+    const {w, h} = draw2d(el('svg'), g, u, '', null);
+    update2dTabLabel();
+    const areaU = u === 'mm' ? 'm²' : 'ft²';
+    const wq = fromMM(w, u), hq = fromMM(h, u);
+    const areaConv = u === 'mm' ? (wq*hq)/1e6 : (wq*hq)/144;
+    const outerText = `${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u}`;
+    setSummary(`${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`, outerText, `${areaConv.toFixed(3)} ${areaU}`);
+    const stat = (lab, val) => `<div class="stat"><span class="lab">${lab}</span><span class="val">${val}</span></div>`;
+    el('styleStats').innerHTML =
+      stat('Outer dimensions', outerText) +
+      stat('Caliper', `${fmtLen(ub.params.caliper, u)} ${u}`) +
+      stat('Flap panel (f)', `${fmtLen(ub.params.f, u)} ${u}`) +
       levelUnitCostStat();
     return;
   }
@@ -1153,6 +1200,7 @@ function toggleRailSections(kind){
   el('optFields').style.display = (kind === 'style') ? 'contents' : 'none';
   el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
   el('trayFields').style.display = (kind === 'tray') ? 'contents' : 'none';
+  el('uboardFields').style.display = (kind === 'uboard') ? 'contents' : 'none';
 }
 
 /* ---------- optional levels: enable/disable + the always-visible chain
@@ -1162,7 +1210,7 @@ function toggleRailSections(kind){
  * project.js is the single source for that fold; this file only surfaces
  * it (the toggle, the warning, the chain string), never re-derives it. --- */
 
-const TIER_LABEL = {tray: 'tray', wrap: 'wrap', carton: 'carton', case: 'case'};
+const TIER_LABEL = {tray: 'tray', uboard: 'U-board', wrap: 'wrap', carton: 'carton', case: 'case'};
 
 function isTierEnabled(level){ return LEVELS[level].enabledOf(build.project); }
 
@@ -1186,7 +1234,8 @@ function pairingAfterDisabling(level){
   const proj = build.project;
   const contentNoun = plainNoun('collation');
   if(level === 'tray') return `the ${contentNoun} will feed the ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly, with no tray`;
-  if(level === 'wrap') return `the ${isTierEnabled('tray') ? 'tray' : contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(level === 'uboard') return `the ${contentNoun} will feed the ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly, with no U-board`;
+  if(level === 'wrap') return `the ${isTierEnabled('tray') ? 'tray' : isTierEnabled('uboard') ? 'U-board' : contentNoun} will feed the ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(level === 'carton') return `the ${proj.primary.wrap ? 'wrap' : contentNoun} will feed the case directly`;
   if(level === 'case') return 'the carton will ride the pallet directly, with no case';
   return '';
@@ -1205,6 +1254,13 @@ function setTierEnabled(level, on){
       c.pieceOrientation = 'on-edge'; c.stackAxis = 'X';
       c.perStack = 10; c.nx = 1; c.ny = 1;
     }
+  }
+  else if(level === 'uboard'){
+    // no side-effect writes needed: project.uboard.params always carries a
+    // valid {caliper, f} shape regardless of whether the interlayer is
+    // active (unlike the tray, which reconfigures the collation grid on
+    // enable) — flipping the discriminant is the whole story.
+    proj.interlayer = on ? 'uboard' : 'none';
   }
   else if(level === 'wrap') proj.primary.wrap = on ? newDefaultWrap() : null;
   else if(level === 'carton') proj.secondary.enabled = on;
@@ -1268,6 +1324,12 @@ function nodeStyleLabel(k){
     const tr = proj.tray;
     return `${tr.nCells} cell${tr.nCells === 1 ? '' : 's'}`;
   }
+  if(k === 'uboard'){
+    if(!isTierEnabled('uboard')) return '';
+    const row = resolveActiveRow(proj, build.getRounding(), selKey());
+    const ub = row && row.uboard;
+    return ub ? `t ${fmtLen(ub.params.caliper, inputs.getUnit())} ${inputs.getUnit()}` : 'U-board';
+  }
   if(k === 'pallet'){
     const u = inputs.getPalUnit();
     return `${Math.round(fromMM(proj.pallet.L, u))}×${Math.round(fromMM(proj.pallet.W, u))} ${u}`;
@@ -1284,7 +1346,8 @@ function repointNote(k){
   const proj = build.project;
   const contentNoun = plainNoun('collation');
   if(k === 'tray')   return `${contentNoun} feeds ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly`;
-  if(k === 'wrap')   return `${isTierEnabled('tray') ? 'tray' : contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
+  if(k === 'uboard') return `${contentNoun} feeds ${isTierEnabled('wrap') ? 'wrap' : (isTierEnabled('carton') ? 'carton' : 'case')} directly`;
+  if(k === 'wrap')   return `${isTierEnabled('tray') ? 'tray' : isTierEnabled('uboard') ? 'U-board' : contentNoun} feeds ${isTierEnabled('carton') ? 'carton' : 'case'} directly`;
   if(k === 'carton') return `${proj.primary.wrap ? 'wrap' : contentNoun} feeds case directly`;
   if(k === 'case')   return 'carton rides the pallet directly';
   return '';
@@ -1295,38 +1358,84 @@ function repointNote(k){
  *  optional tiers struck-through with an enable affordance; and each arrow
  *  after a skipped tier labeled with the re-point. Derived from the enabled
  *  chain, never hardcoded. Registered with recompute() (see notify block). */
-const CHAIN_OPTIONAL = {tray: true, wrap: true, carton: true, case: true};
+const CHAIN_OPTIONAL = {tray: true, uboard: true, wrap: true, carton: true, case: true};
+
+/** The chain-STRIP's own order — distinct from LEVEL_ORDER (which still
+ *  lists 'tray' and 'uboard' separately, for the 3D depth buttons and the
+ *  level-select dropdown, where both are genuinely independent navigable
+ *  pages). The strip collapses them into ONE 'interlayer' slot: tray and
+ *  U-board are mutually exclusive states of a single project.interlayer
+ *  enum, so showing them as two separate enable/disable chips would let the
+ *  UI imply a combination the model can never actually hold. One slot, one
+ *  mode selector — exclusivity visible in the control itself, never a
+ *  validation message reacting after the fact. */
+const CHAIN_STRIP_ORDER = ['product', 'interlayer', 'wrap', 'carton', 'case', 'pallet'];
+const INTERLAYER_LABEL = {none: 'None', tray: 'Tray', uboard: 'U-board'};
+
 function renderChainString(){
   const host = el('chainString');
   host.className = 'chainStrip';
   host.innerHTML = '';
-  LEVEL_ORDER.forEach((k, i) => {
-    const enabled = CHAIN_OPTIONAL[k] ? isTierEnabled(k) : true;
+  const proj = build.project;
+  CHAIN_STRIP_ORDER.forEach((k, i) => {
     const node = document.createElement('div');
-    node.className = 'cs-node' + (k === activeLevel ? ' active' : '') + (enabled ? '' : ' disabled');
-    node.tabIndex = 0;
-    node.setAttribute('role', 'button');
-    node.setAttribute('aria-label', `${LEVELS[k].label}${enabled ? '' : ' (disabled)'}`);
-    const styleLbl = nodeStyleLabel(k);
-    node.innerHTML = `<span class="cs-lvl">${LEVELS[k].label}</span>` +
-      `<span class="cs-style">${enabled ? styleLbl : 'skipped'}</span>`;
-    if(CHAIN_OPTIONAL[k]){
-      const tog = document.createElement('button');
-      tog.className = 'cs-tog';
-      tog.textContent = enabled ? 'in chain' : 'enable';
-      tog.title = enabled ? `Disable ${k}` : `Enable ${k}`;
-      tog.addEventListener('click', e => { e.stopPropagation(); toggleTier(k); });
-      node.appendChild(tog);
+    if(k === 'interlayer'){
+      const mode = proj.interlayer;                         // 'none'|'tray'|'uboard'
+      const isActive = mode !== 'none' && mode === activeLevel;
+      node.className = 'cs-node' + (isActive ? ' active' : '') + (mode === 'none' ? ' disabled' : '');
+      node.tabIndex = 0;
+      node.setAttribute('role', 'group');
+      node.setAttribute('aria-label', `Interlayer: ${INTERLAYER_LABEL[mode]}`);
+      const styleLbl = mode === 'none' ? '' : nodeStyleLabel(mode);
+      node.innerHTML = `<span class="cs-lvl">Interlayer</span>` +
+        `<span class="cs-style">${mode === 'none' ? 'skipped' : styleLbl}</span>`;
+      const sel = document.createElement('select');
+      sel.className = 'cs-tog';
+      sel.title = 'None / Tray / U-board — mutually exclusive';
+      sel.innerHTML = ['none', 'tray', 'uboard'].map(v =>
+        `<option value="${v}"${v === mode ? ' selected' : ''}>${INTERLAYER_LABEL[v]}</option>`).join('');
+      sel.addEventListener('click', e => e.stopPropagation());
+      sel.addEventListener('change', () => {
+        const v = sel.value;
+        if(v === proj.interlayer) return;
+        if(v === 'none') setTierEnabled(proj.interlayer, false);
+        else setTierEnabled(v, true);
+      });
+      node.appendChild(sel);
+      // node body: click navigates to whichever interlayer is active; a no-op
+      // when none is (there's no page to show — use the selector to add one)
+      const activate = () => { if(mode !== 'none') setActiveLevel(mode); };
+      node.addEventListener('click', activate);
+      node.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); activate(); } });
+    }else{
+      const enabled = CHAIN_OPTIONAL[k] ? isTierEnabled(k) : true;
+      node.className = 'cs-node' + (k === activeLevel ? ' active' : '') + (enabled ? '' : ' disabled');
+      node.tabIndex = 0;
+      node.setAttribute('role', 'button');
+      node.setAttribute('aria-label', `${LEVELS[k].label}${enabled ? '' : ' (disabled)'}`);
+      const styleLbl = nodeStyleLabel(k);
+      node.innerHTML = `<span class="cs-lvl">${LEVELS[k].label}</span>` +
+        `<span class="cs-style">${enabled ? styleLbl : 'skipped'}</span>`;
+      if(CHAIN_OPTIONAL[k]){
+        const tog = document.createElement('button');
+        tog.className = 'cs-tog';
+        tog.textContent = enabled ? 'in chain' : 'enable';
+        tog.title = enabled ? `Disable ${k}` : `Enable ${k}`;
+        tog.addEventListener('click', e => { e.stopPropagation(); toggleTier(k); });
+        node.appendChild(tog);
+      }
+      // node body: click to make active (enabled), or to enable it (disabled)
+      const activate = () => { enabled ? setActiveLevel(k) : toggleTier(k); };
+      node.addEventListener('click', activate);
+      node.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); activate(); } });
     }
-    // node body: click to make active (enabled), or to enable it (disabled)
-    const activate = () => { enabled ? setActiveLevel(k) : toggleTier(k); };
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); activate(); } });
     host.appendChild(node);
-    if(i < LEVEL_ORDER.length - 1){
+    if(i < CHAIN_STRIP_ORDER.length - 1){
       const arrow = document.createElement('div');
       arrow.className = 'cs-arrow';
-      const note = (CHAIN_OPTIONAL[k] && !enabled) ? repointNote(k) : '';
+      const note = k === 'interlayer'
+        ? (proj.interlayer === 'none' ? repointNote('tray') : '')
+        : (CHAIN_OPTIONAL[k] && !isTierEnabled(k)) ? repointNote(k) : '';
       arrow.innerHTML = `<span class="cs-ar">&#9656;</span>` + (note ? `<span class="cs-repoint">${note}</span>` : '');
       host.appendChild(arrow);
     }
@@ -1399,6 +1508,11 @@ const LEGEND_2D = {
   product: [['var(--ink)', 'solid', 'Outline']],
   // read off the drawing's OWN vocabulary, never a second list beside it
   tray:    TRAY_LINE_TYPES.map(t => [t.color, t.dash ? 'dashed' : 'solid', t.label]),
+  // the U-board is a real rigid blank (cut + 2 creases) drawn by the SAME
+  // draw2d() a carton/case dieline uses, so it gets the SAME Cut/Crease
+  // legend — never a bespoke one for what is, on screen, an identical layer
+  // vocabulary.
+  uboard:  [['var(--cut)', 'solid', 'Cut'], ['var(--crease)', 'dashed', 'Crease']],
   pallet:  []
 };
 
@@ -1680,6 +1794,9 @@ function mountActiveLevel(){
                             quantities: trayQuantities, onQuantity: applyTrayQuantity,
                             onImportLink: applyTrayLink, onExportLink: currentTrayLink,
                             onInput: () => projectChanged()});
+  }else if(lvl.kind === 'uboard'){
+    inputs.mountUboard(proj, {autoF: uboardAutoF(proj), remount: () => mountActiveLevel(),
+                              onInput: () => projectChanged()});
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -1698,6 +1815,7 @@ function chainCostRows(){
   if(isTierEnabled('case')) rows.add('case');
   if(proj.primary && proj.primary.wrap) rows.add('film');
   if(isTierEnabled('tray')) rows.add('tray');
+  if(isTierEnabled('uboard')) rows.add('uboard');
   return rows;
 }
 /**
@@ -1720,7 +1838,8 @@ function levelUnitCostStat(){
   const v = activeLevel === 'carton' ? pu.carton
     : activeLevel === 'case' ? pu.case
     : activeLevel === 'wrap' ? pu.film
-    : activeLevel === 'tray' ? pu.tray : null;
+    : activeLevel === 'tray' ? pu.tray
+    : activeLevel === 'uboard' ? pu.uboard : null;
   if(v == null) return '';
   const noun = activeLevel === 'wrap' ? 'film / pack' : `material / ${LEVELS[activeLevel].label.toLowerCase()}`;
   return `<div class="stat"><span class="lab">Cost · ${noun}</span><span class="val">${fmtMoney(v)}</span></div>`;
@@ -1761,6 +1880,7 @@ function mountCostRates(){
 const LEVEL_BRAND = {
   product: {code: 'PRODUCT', sub: 'Product arrangement'},
   tray:    {code: 'TRAY',    sub: 'Thermoformed sizing tray'},
+  uboard:  {code: 'UBOARD',  sub: 'Paperboard U-board interlayer'},
   pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
 };
 
@@ -1791,6 +1911,18 @@ function updateExportButtonsState(){
   // included — checked BEFORE the style-only early return below, since the
   // pallet's `kind` is 'pallet', not 'style', and would never reach it.
   el('btnExplodedSheet').style.display = EXPLODE_LEVELS.includes(activeLevel) ? '' : 'none';
+  if(lvl.kind === 'uboard'){
+    // the U-board IS a real rigid blank — downloadDXF() takes any Geometry
+    // object generically (g, g.inner, unit, code), so this is the existing
+    // export path picking it up for free, not a second exporter.
+    const ub = isTierEnabled('uboard') ? activeUboard() : null;
+    el('btnDXF').disabled = !ub;
+    el('btnDXF').title = ub ? '' : 'Enable the U-board to export its die';
+    el('btnArt').style.display = 'none';
+    el('btnSpec').style.display = 'none';
+    setStateChip(ub ? 'valid' : 'muted', ub ? 'U-board dieline' : 'U-board disabled');
+    return;
+  }
   if(lvl.kind !== 'style'){
     el('btnDXF').disabled = true;
     el('btnDXF').title = lvl.kind === 'product'
@@ -1968,6 +2100,10 @@ function hierarchyBundle(proj = build.project, rowIn = null){
     // the tray, when it is in the chain: its resolved params + envelope, so
     // the tray depth can render and the Dims overlay can label it
     tray: row.tray || null,
+    // the U-board, when it is in the chain: its resolved params + geo +
+    // envelope, so the U-board depth can render and the Dims overlay can
+    // label it — same idiom as tray, mutually exclusive with it.
+    uboard: row.uboard || null,
     // loadH/unitStackH are the CHAIN's own pallet load height and per-unit
     // stacking pitch (project.js chainMetrics), carried so the render stacks
     // and reports at the height the fit actually reserved instead of measuring
@@ -1981,7 +2117,7 @@ function hierarchyBundle(proj = build.project, rowIn = null){
       // inner, which the chain solved. With a tray in the chain this is the
       // TRAY, not the bare collation; the renderer must loft the pillow
       // around the same box the film was cut for.
-      filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : (row.tray ? row.tray.outer : pieces.envelope),
+      filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : (row.tray ? row.tray.outer : (row.uboard ? row.uboard.outer : pieces.envelope)),
       // the per-CELL piece run, so the tray can load its cells from the one
       // collation rather than a second placement source
       cellPieces: pieces.placements,
@@ -2011,8 +2147,9 @@ function depthAvailable(bundle, d){
   // bundle now carries wraps/pieces without a wrap too (so a wrapless carton/
   // case still renders its product), so wrap availability keys on wrapGeo, not
   // on bundle.wraps.
-  // the tray depth exists only while the tray is in the chain
+  // the tray/U-board depth exists only while that interlayer is in the chain
   if(d === 'tray') return !!(bundle && bundle.tray);
+  if(d === 'uboard') return !!(bundle && bundle.uboard);
   if(d === 'product') return !!(bundle && bundle.wraps);
   if(d === 'wrap') return !!(bundle && bundle.wrapGeo);
   if(d === 'carton') return !!(bundle && bundle.cartonGeo);
@@ -2041,6 +2178,12 @@ function hudText(bundle, opened, depth){
       // cell), not a mistyped dimension — "too wide" alone read as arithmetic,
       // and was shown even when it was the LENGTH that missed
       (tr.fits ? '' : ` · DOES NOT FIT — ${tr.misfitReason}`);
+  }
+  if(depth === 'uboard' && bundle.uboard){
+    const ub = bundle.uboard, u = inputs.getUnit(), f = v => fmtLen(v, u);
+    const o = ub.outer;
+    return `U-board: base ${f(ub.geo.inner.W)} × flap ${f(ub.params.f)} ${u}, caliper ${f(ub.params.caliper)} ${u}` +
+      ` · envelope ${f(o.L)} × ${f(o.W)} × ${f(o.H)} ${u}`;
   }
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} ${hasCase ? 'cases' : 'cartons'}`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
@@ -2680,6 +2823,11 @@ LEVEL_ORDER.forEach(d =>
 // for the worst face of the Path-A bug: the DXF file could differ from what
 // was on screen. Now it cannot: one source.
 el('btnDXF').addEventListener('click', () => {
+  if(LEVELS[activeLevel].kind === 'uboard'){
+    const ub = activeUboard();
+    if(ub) downloadDXF(ub.geo, ub.geo.inner, inputs.getUnit(), 'UBOARD');
+    return;
+  }
   if(activeStyle().structure === 'flexible') return;   // no die, no DXF
   const g = activeGeometry();
   if(!g) return;
@@ -2738,7 +2886,8 @@ function pngBaseName(){
 el('btnPng2d').addEventListener('click', () => {
   if(LEVELS[activeLevel].kind === 'pallet') return;   // no 2D at the pallet level
   const suffix = isStyleLevel() ? (activeStyle().structure === 'flexible' ? 'blank' : 'dieline')
-    : LEVELS[activeLevel].kind === 'tray' ? 'tray' : 'product';
+    : LEVELS[activeLevel].kind === 'tray' ? 'tray'
+    : LEVELS[activeLevel].kind === 'uboard' ? 'uboard_dieline' : 'product';
   downloadSvgPNG(el('svg'), `${pngBaseName()}_${suffix}.png`);
 });
 // 3D: exactly the on-screen camera (fold3d reads its own canvas; the ViewCube
