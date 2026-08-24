@@ -860,6 +860,45 @@ export function mountTray(project, m){
   });
 }
 
+/** The U-board rail — mirrors mountTray's auto-with-override idiom, but with
+ *  only two inputs: the board's own caliper (a SEPARATE number from the
+ *  carton/case board caliper — never aliased to it) and the flap panel
+ *  length f (auto = the collation's own H when absent). `m.autoF` is the
+ *  live auto value for f's placeholder — the same one uboardStage() would
+ *  use, read via project.js's uboardAutoF, never re-derived here. */
+export function mountUboard(project, m){
+  const host = el('uboardFields');
+  if(!host) return;
+  const ub = project.uboard;
+  if(!ub || project.interlayer !== 'uboard'){ host.innerHTML = ''; return; }
+  const ov = ub.params || (ub.params = {});
+  const L = v => fmtInputValue(fromMM(v, unit), unit);
+  const D = (k, dflt) => (typeof ov[k] === 'number' ? ov[k] : dflt);
+  const hasF = typeof ov.f === 'number' && isFinite(ov.f);
+  const autoF = m.autoF;
+
+  host.innerHTML =
+    `<h2 style="margin-top:6px">U-board</h2>` +
+    `<div class="field"><label>Board caliper <span class="hint">t — its own paperboard, not the carton's</span></label>
+      <div class="inp"><input id="ub_caliper" type="number" min="0" step="0.05" value="${L(D('caliper', 0.9))}"><span class="unit">${unit}</span></div></div>` +
+    `<div class="field"><label>Flap panel length <span class="hint">f — folds up to this height</span></label>
+      <div class="inp"><input id="ub_f" type="number" min="0" step="0.5"
+        value="${hasF ? L(ov.f) : ''}" placeholder="${autoF != null ? L(autoF) : 'auto'}">
+        <span class="unit">${unit}</span></div>
+      <div class="hint" style="margin-top:4px">${hasF
+        ? `<button type="button" class="btn btnlink" id="ub_f_auto">reset to auto</button>`
+        : 'auto — equals the collation height (H)'}</div></div>`;
+
+  const mmv = id => toMM(+el(id).value || 0, unit);
+  el('ub_caliper').addEventListener('input', () => { ov.caliper = Math.max(0, mmv('ub_caliper')); m.onInput(); });
+  el('ub_f').addEventListener('input', () => {
+    if(el('ub_f').value === '') delete ov.f; else ov.f = mmv('ub_f');
+    m.onInput();
+  });
+  const rst = el('ub_f_auto');
+  if(rst) rst.addEventListener('click', () => { delete ov.f; m.onInput(); m.remount && m.remount(); });
+}
+
 /* ---------- material cost rates -----------------------------------------
  * Project ASSUMPTIONS, not per-level state, so one global panel writing one
  * flat bag (project.cost). Same auto-with-override contract as the tray's

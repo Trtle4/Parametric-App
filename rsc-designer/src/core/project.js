@@ -15,6 +15,8 @@ import {materialCost} from './cost.js';
 import {styleById} from './styles/index.js';
 import {withPerforation} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
+import {FLOW_AXIS} from './styles/flowwrap.js';
+import {uboardStage} from './uboard.js';
 
 /**
  * @typedef {import('./containment.js').Orientation} Orientation
@@ -162,12 +164,12 @@ export function newProject(){
       enabled: true
     },
     // Which interlayer, if any, sits between the product collation and the
-    // wrap — 'none' or 'tray' today; Phase B adds 'uboard'. THE single
-    // discriminant: tray and (later) U-board are mutually exclusive, so this
-    // is an enum rather than a per-interlayer boolean, which would let both
-    // read active at once. resolveWrapContents() is the only place in the
-    // codebase that branches on it. Superseded the old project.tray.enabled
-    // boolean (schema v3->v4 migration carries an old save's value across).
+    // wrap — 'none', 'tray', or 'uboard'. THE single discriminant: tray and
+    // U-board are mutually exclusive, so this is an enum rather than a
+    // per-interlayer boolean, which would let both read active at once.
+    // resolveWrapContents() is the only place in the codebase that branches
+    // on it. Superseded the old project.tray.enabled boolean (schema v3->v4
+    // migration carries an old save's value across).
     interlayer: 'none',
     // Thermoformed sizing tray between the product and the wrap. OPTIONAL and
     // OFF by default, so the default chain and every golden pin are untouched
@@ -195,6 +197,16 @@ export function newProject(){
       allowedOrientations: ['LWH', 'WLH'],
       clearance: {wall: 0, between: 0},
       openTop: true
+    },
+    // U-board interlayer: a flat paperboard blank folded into a U under the
+    // collation, inside the wrap. OPTIONAL and OFF by default (interlayer
+    // must be set to 'uboard'), same idiom as tray above. Its own material —
+    // NEVER the carton/case board input — so `caliper` here is a distinct
+    // number from secondary.params.caliper/tertiary.params.caliper. `f`
+    // (flap panel length) auto-defaults to the collation's own H when null;
+    // any number overrides it. See core/uboard.js.
+    uboard: {
+      params: {caliper: 0.9, f: null}
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal', patternIndex: 0,
       // stacking-strength (BCT) inputs — engineering guidance, not packing math.
@@ -395,9 +407,10 @@ function solvePrimaryStage(project, resolved){
   // (roundGirthEligible) AND for a bare product (no interlayer) — with an
   // interlayer in the chain the film is pulled over THAT (a rectangular
   // thing), never the bare product inside it. resolveWrapContents() already
-  // decided both of those and hands back a diameter only when they hold.
+  // decided both of those via `kind`, and hands back `diameter` only when
+  // kind is 'round'.
   if(wp.girthBasis === 'round'){
-    if(resolved.roundDiameter != null) wp.roundDiameter = resolved.roundDiameter;
+    if(resolved.kind === 'round') wp.roundDiameter = resolved.diameter;
     else wp.girthBasis = 'rectangular';
   }
   let wrapFits = true;
@@ -407,9 +420,12 @@ function solvePrimaryStage(project, resolved){
     wp.L = env.L; wp.W = env.W; wp.H = env.H;
   }
   const wrapGeo = {...styleById(prim.wrap.styleId).geometry(wp, prim.wrap.options)};   // true envelope axes throughout — no permutation
-  // wrapAxis stays 'L' on the row: a fixed constant the renderer/readout read
-  // so seals/fin always land on the L-ends, never a resolved-per-envelope pick.
-  return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis: 'L', wp};
+  // wrapAxis stays FLOW_AXIS on the row: a fixed constant the renderer/readout
+  // read so seals/fin always land on the L-ends, never a resolved-per-envelope
+  // pick. FLOW_AXIS is flowwrap.js's own constant — read here, not restated,
+  // so the U-board's fold-axis derivation (core/uboard.js) can share the same
+  // source rather than a second hardcoded 'L'.
+  return {...base, outer: wrapGeo.outer, geo: wrapGeo, fits: wrapFits, wrapAxis: FLOW_AXIS, wp};
 }
 
 /* ---------------- the thermoformed tray stage ----------------------------
@@ -462,6 +478,16 @@ function solvePrimaryStage(project, resolved){
  * Two calls to ONE rule — the alternative is restating the width rule here,
  * which is the duplication being removed.
  */
+/** The U-board's auto flap length placeholder: the raw collation's own H,
+ *  BEFORE any interlayer's contribution — the same content uboardStage()
+ *  itself resolves f against when the override is absent. Exported so the
+ *  rail's "auto — = H" placeholder reads the identical value the resolver
+ *  would actually use, rather than a second guess at what "the product
+ *  height" means. */
+export function uboardAutoF(project){
+  return contentEnvelope(project.primary).outer.H;
+}
+
 export function trayAutoCells(project, content = contentEnvelope(project.primary)){
   const tray = project.tray || {};
   const ov = tray.params || {};
@@ -554,7 +580,7 @@ function solveTrayStage(project, content){
  *  has to be validated against after the fact. Phase B adds 'uboard' here
  *  and nowhere else structural; resolveWrapContents()'s switch is the one
  *  place in the codebase allowed to branch on it (see its own comment). */
-export const INTERLAYERS = Object.freeze(['none', 'tray']);
+export const INTERLAYERS = Object.freeze(['none', 'tray', 'uboard']);
 
 /**
  * THE resolver — the sole writer of "what the wrap encloses." Every fact
@@ -573,20 +599,27 @@ export const INTERLAYERS = Object.freeze(['none', 'tray']);
  *   branch's own envelope, and the 'tray' branch's input (one tray cell
  *   holds one collation's worth of product).
  * @returns {{
+ *   kind: 'rect'|'round',                    what shape the wrap sees —
+ *     discriminates whether `diameter` is meaningful. A round girth
+ *     describes a bare on-edge slug; the moment ANY interlayer sits between
+ *     the product and the wrap (tray today, U-board in Phase B), the film is
+ *     pulled over the interlayer's own envelope, which is rectangular by
+ *     construction — so every non-'none' branch returns kind:'rect'. This
+ *     is a discriminated union, not a flag next to the data it discriminates:
+ *     a branch cannot forget to null out `diameter`, because there is no
+ *     `diameter` field to forget when kind is 'rect'.
  *   envelope: {L:number,W:number,H:number},  outside dims the wrap sees
  *   productCount: number,                    products inside one wrap
  *   interlayerKind: string,                  the enum value used
- *   provenance: {branch: string, trayResult: Object|null},  which branch
- *     produced envelope, and (branch:'tray' only) the tray stage's own
- *     result — carried through so callers needing it (row.tray, the
- *     Cookie-Tray link, the 3D tray mesh) read the SAME solve rather than
- *     re-running solveTrayStage a second time.
- *   roundDiameter: number|null               the bare product's diameter,
- *     ONLY when a round girth is physically eligible for what the wrap
- *     actually touches — null forces girthBasis to rectangular. Round girth
- *     describes a bare on-edge slug; with any interlayer in the chain the
- *     film is pulled over the interlayer's own (rectangular) envelope, so
- *     this is null whenever interlayerKind !== 'none'.
+ *   provenance: {branch: string, trayResult: Object|null, uboardResult: Object|null},
+ *     which branch produced envelope, and (branch:'tray'/'uboard' only) that
+ *     stage's own result — carried through so callers needing it (row.tray/
+ *     row.uboard, the Cookie-Tray link, the 3D tray/U-board mesh) read the
+ *     SAME solve rather than re-running solveTrayStage/uboardStage again.
+ *   diameter: number=                        present ONLY when kind is
+ *     'round' — the bare product's circumscribing diameter. Absent (not
+ *     null) on every 'rect' result, so a consumer that reads it without
+ *     checking `kind` first gets `undefined`, not a silently-wrong 0.
  * }}
  */
 function resolveWrapContents(project, collation){
@@ -595,22 +628,46 @@ function resolveWrapContents(project, collation){
     case 'tray': {
       const trayResult = solveTrayStage(project, collation);
       return {
+        kind: 'rect',
         envelope: trayResult.outer,
         productCount: trayResult.total,
         interlayerKind: 'tray',
-        provenance: {branch: 'tray', trayResult},
-        roundDiameter: null
+        provenance: {branch: 'tray', trayResult, uboardResult: null}
+      };
+    }
+    case 'uboard': {
+      // Sources its grid the same way 'none' does — one collation's worth of
+      // product — then applies the U-board's own dimensional contribution
+      // (core/uboard.js) on top. Product count is unaffected: a U-board
+      // holds exactly one collation, never multiplies it (unlike the tray's
+      // N cells).
+      const uboardResult = uboardStage(project, collation);
+      return {
+        kind: 'rect',
+        envelope: uboardResult.outer,
+        productCount: collation.count,
+        interlayerKind: 'uboard',
+        provenance: {branch: 'uboard', trayResult: null, uboardResult}
       };
     }
     case 'none': {
       const eligible = collation.collation && roundGirthEligible(project.primary.collation);
-      return {
-        envelope: collation.outer,
-        productCount: collation.count,
-        interlayerKind: 'none',
-        provenance: {branch: 'collation', trayResult: null},
-        roundDiameter: eligible ? project.primary.collation.piece.diameter : null
-      };
+      return eligible
+        ? {
+            kind: 'round',
+            envelope: collation.outer,
+            productCount: collation.count,
+            interlayerKind: 'none',
+            provenance: {branch: 'collation', trayResult: null, uboardResult: null},
+            diameter: project.primary.collation.piece.diameter
+          }
+        : {
+            kind: 'rect',
+            envelope: collation.outer,
+            productCount: collation.count,
+            interlayerKind: 'none',
+            provenance: {branch: 'collation', trayResult: null}
+          };
     }
     default:
       // never a silent fall-through to a plausible-looking default: an
@@ -731,6 +788,7 @@ function solveBelowOutermost(project, shape, step){
   // follow whatever the resolver decided.
   const resolved = resolveWrapContents(project, collation);
   const trayResult = resolved.provenance.trayResult;
+  const uboardResult = resolved.provenance.uboardResult;
   const content = {...collation, outer: resolved.envelope, count: resolved.productCount};
   const primaryResult = solvePrimaryStage(project, resolved);
   const primaryChild = {outer: primaryResult.outer, allowedOrientations: primaryResult.allowedOrientations, clearance: primaryResult.clearance};
@@ -740,7 +798,7 @@ function solveBelowOutermost(project, shape, step){
     secondaryVariant = solveSecondaryInner(project, primaryChild, step);
     child = {outer: secondaryVariant.geo.outer, allowedOrientations: project.secondary.allowedOrientations, clearance: project.secondary.clearance};
   }
-  return {content, collation, trayResult, primaryResult, secondaryVariant, child};
+  return {content, collation, trayResult, uboardResult, primaryResult, secondaryVariant, child};
 }
 
 /** Whatever feeds the outermost tier, fitted into its cavity in the
@@ -969,9 +1027,10 @@ export const blankAreaM2 = geo => geo.bbox.maxX*geo.bbox.maxY/1e6;
 
 function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit, outerFits = true){
   const {primaryResult, secondaryVariant, content} = below;
-  // the tray stage's own result rides the row, so every consumer (readout,
-  // 3D depth, Dims, STL) reads the ONE solve rather than re-deriving it
+  // the tray/U-board stage's own result rides the row, so every consumer
+  // (readout, 3D depth, Dims, STL) reads the ONE solve rather than re-deriving it
   row.tray = below.trayResult || null;
+  row.uboard = below.uboardResult || null;
   const cartonGeo = outerKey === 'secondary' ? outerGeo : (secondaryVariant ? secondaryVariant.geo : null);
   const caseGeo = outerKey === 'tertiary' ? outerGeo : null;
 
@@ -1042,9 +1101,14 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
     ? (requestedForPieces != null ? requestedForPieces*row.cartonsPerPallet : null)
     : row.cartonsPerPallet;
   row.traysPerPack = row.tray ? 1 : 0;
+  // one U-board per pack (it wraps one collation's worth of product, same
+  // cardinality as film/tray), so its area is a per-pack quantity, added
+  // directly rather than divided by a carton/case count — see cost.js.
+  row.uboardAreaM2 = row.uboard ? blankAreaM2(row.uboard.geo) : null;
   row.cost = materialCost({
     cartonBoardM2: row.cartonBoardM2, caseBoardM2: row.caseBoardM2,
     filmKgPerPack: row.filmKgPerPack, traysPerPack: row.traysPerPack,
+    uboardAreaM2: row.uboardAreaM2,
     packsPerCarton: row.packsPerCarton, cartonsPerCase: row.cartonsPerCase,
     packsPerPallet: row.packsPerPallet
   }, project.cost);

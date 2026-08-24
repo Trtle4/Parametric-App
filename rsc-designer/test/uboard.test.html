@@ -1,0 +1,124 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>U-board interlayer tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/uboard.js — the U-board interlayer (Phase B).
+   A flat paperboard blank folded into a U under the collation, inside the
+   wrap: base + two flap panels, no cuts/notches/glue.
+
+   Reference config, hand-derived:
+     content envelope L=200 W=80 H=30 (the collation's own outer, what the
+     resolver hands the U-board stage), caliper t=2, flap f=30 (= H, auto)
+       flat blank: length = L = 200 (flow axis, unchanged)
+                   across  = W + 2f = 80 + 60 = 140
+       creases (full-length, parallel to the flow axis) at:
+         y = f = 30              (base/flap #1 boundary)
+         y = f + W = 110         (base/flap #2 boundary)
+       cut = [0,0]-[200,0]-[200,140]-[0,140]
+       envelope contribution: L 200 (unchanged), W 80+2*2=84, H 2+max(30,30)=32 */
+import {uboardParams, uboardOuter, uboardBlank, UBOARD_DEFAULTS, acrossAxisOf} from '../src/core/uboard.js';
+import {FLOW_AXIS} from '../src/core/styles/flowwrap.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function approx(actual, expected, msg = ''){
+  if(Math.abs(actual - expected) > 1e-9) throw new Error(`${msg} expected ${expected}, got ${actual}`);
+}
+function hasCrease(g, a){ return g.crease.some(c => c.every((v, i) => Math.abs(v - a[i]) < 1e-9)); }
+
+const content = {L: 200, W: 80, H: 30};
+
+t('FLOW_AXIS is L today — the fold axis derivation reads it, not a bare literal', () => {
+  approx(FLOW_AXIS === 'L' ? 1 : 0, 1, 'FLOW_AXIS:');
+  approx(acrossAxisOf() === 'W' ? 1 : 0, 1, 'acrossAxisOf() (derived from FLOW_AXIS):');
+});
+t('acrossAxisOf() is call-time, not a memoized snapshot: an explicit override argument is honoured', () => {
+  // proves the function genuinely RECOMPUTES from its input rather than
+  // returning a value captured once at module load — the whole point of
+  // making this a function instead of a top-level constant.
+  approx(acrossAxisOf('L') === 'W' ? 1 : 0, 1, 'flow=L -> across=W:');
+  approx(acrossAxisOf('W') === 'L' ? 1 : 0, 1, 'flow=W -> across=L:');
+});
+
+t('uboardParams: caliper defaults, f auto-defaults to the content H', () => {
+  const p = uboardParams({}, content.H);
+  approx(p.caliper, UBOARD_DEFAULTS.caliper);
+  approx(p.f, 30);
+});
+t('uboardParams: explicit overrides win over auto', () => {
+  const p = uboardParams({caliper: 3, f: 50}, content.H);
+  approx(p.caliper, 3);
+  approx(p.f, 50);
+});
+
+/* ---- blank arithmetic — hand-computed from the worked example above,
+   independently of the formula (a pin that restates the formula proves
+   nothing — CLAUDE.md). ---- */
+t('blank arithmetic: bbox is exactly (L) x (W+2f), origin at (0,0)', () => {
+  const g = uboardBlank(content, {caliper: 2, f: 30});
+  approx(g.bbox.minX, 0); approx(g.bbox.minY, 0);
+  approx(g.bbox.maxX, 200, 'length = L, unchanged:');
+  approx(g.bbox.maxY, 140, 'across = W + 2f = 80 + 60:');
+});
+t('blank arithmetic: two full-length creases at f and f+W from the near edge', () => {
+  const g = uboardBlank(content, {caliper: 2, f: 30});
+  if(g.crease.length !== 2) throw new Error(`expected exactly 2 creases, got ${g.crease.length}`);
+  if(!hasCrease(g, [0, 30, 200, 30])) throw new Error('missing crease at y=f, full length x=0..200');
+  if(!hasCrease(g, [0, 110, 200, 110])) throw new Error('missing crease at y=f+W=110, full length x=0..200');
+});
+t('blank arithmetic: cut is the exact four-corner rectangle', () => {
+  const g = uboardBlank(content, {caliper: 2, f: 30});
+  const want = [[0, 0], [200, 0], [200, 140], [0, 140]];
+  if(g.cut.length !== 4) throw new Error(`expected 4 cut points, got ${g.cut.length}`);
+  g.cut.forEach((pt, i) => { approx(pt[0], want[i][0], `cut[${i}].x:`); approx(pt[1], want[i][1], `cut[${i}].y:`); });
+});
+t('blank exemption: L>=W convention does not apply — a narrow product with a tall flap produces W+2f > L, and that is fine', () => {
+  const narrow = {L: 50, W: 20, H: 10};
+  const g = uboardBlank(narrow, {caliper: 1, f: 40});   // across = 20+80=100 > L=50
+  if(g.bbox.maxY <= g.bbox.maxX) throw new Error('expected the blank across-run to exceed its length in this config');
+});
+
+/* ---- envelope contribution — +2t width, +1t height (at the f=H default),
+   +0 length, at SEVERAL calipers, each independently hand-derived. ---- */
+[
+  {t: 0.5, wantW: 81, wantH: 30.5},
+  {t: 1,   wantW: 82, wantH: 31},
+  {t: 2,   wantW: 84, wantH: 32},
+  {t: 5,   wantW: 90, wantH: 35}
+].forEach(({t: cal, wantW, wantH}) => {
+  t(`envelope contribution at caliper ${cal}: +0 length, +2t width, +1t height (f=H default)`, () => {
+    const p = uboardParams({caliper: cal}, content.H);
+    const o = uboardOuter(content, p);
+    approx(o.L, 200, 'length unchanged:');
+    approx(o.W, wantW, `width = W + 2*${cal}:`);
+    approx(o.H, wantH, `height = ${cal} + H (f=H):`);
+  });
+});
+
+/* ---- the max(H, f) branch — pinned SEPARATELY for f<H, f=H, f>H (the
+   f>H case is the one most likely to be wrong: CLAUDE.md task spec). ---- */
+t('max(H,f) branch: f < H collapses to the H term — height is caliper + H, NOT caliper + f', () => {
+  const p = uboardParams({caliper: 2, f: 20}, content.H);   // f=20 < H=30
+  const o = uboardOuter(content, p);
+  approx(o.H, 32, 'caliper + H (f is the SMALLER term, must not win):');
+  if(Math.abs(o.H - (2 + 20)) < 1e-9) throw new Error('height used f instead of H when f < H');
+});
+t('max(H,f) branch: f = H — the two terms tie, height is caliper + H (= caliper + f)', () => {
+  const p = uboardParams({caliper: 2, f: 30}, content.H);   // f=30 = H=30
+  const o = uboardOuter(content, p);
+  approx(o.H, 32, 'caliper + H = caliper + f at the tie:');
+});
+t('max(H,f) branch: f > H — the FLAP wins, height is caliper + f, NOT caliper + H', () => {
+  const p = uboardParams({caliper: 2, f: 50}, content.H);   // f=50 > H=30
+  const o = uboardOuter(content, p);
+  approx(o.H, 52, 'caliper + f (f is the LARGER term, must win):');
+  if(Math.abs(o.H - (2 + 30)) < 1e-9) throw new Error('height used H instead of f when f > H — the max() branch most likely to be wrong');
+});
+
+document.getElementById('out').textContent =
+  `${results.filter(r => r.startsWith('PASS')).length}/${results.length} passed\n` + results.join('\n');
+</script>

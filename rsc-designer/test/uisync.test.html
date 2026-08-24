@@ -120,6 +120,7 @@
 <div id="bctNote"></div><details id="bctHow"><div id="bctHowBody"></div></details>
 <!-- dimensional-sensitivity panel refreshSensitivity writes to (pallet level) -->
 <div id="trayFields" style="display:none"></div>
+<div id="uboardFields" style="display:none"></div>
 <div id="sensBlock" style="display:none">
   <span id="sensNoun"></span><span id="sensBase"></span>
   <div id="sensBody"></div><div id="sensNote"></div>
@@ -139,7 +140,7 @@
 </div>
 <div id="mode3d" style="display:none">
   <button id="m3fold">Fold</button>
-  <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_wrap">Wrap</button
+  <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_uboard">U-board</button><button id="d_wrap">Wrap</button
   ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
   ><button id="d_pallet">Pallet</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
@@ -1231,6 +1232,119 @@ await (async () => {
     eq(build.project.secondary.enabled, true, 're-enabled via strip:');
   });
 
+  /* ---- Phase B: the interlayer slot is ONE control, not two chips --------
+   * tray and U-board are mutually exclusive states of the single
+   * project.interlayer enum; the chain strip renders exactly one
+   * "Interlayer" node with a None/Tray/U-board <select>, never two
+   * independent enable/disable chips that could visually suggest both are
+   * reachable together. Driven through the REAL select element, never by
+   * writing project.interlayer directly — that would test the model, not
+   * the control a user actually operates. */
+  tEdit('interlayer slot: ONE node, a mode selector — never two independent chips', () => {
+    eq(el('chainString').querySelectorAll('.cs-node').length, 6, 'still six nodes (interlayer collapsed to one):');
+    const ilNode = stripNode('Interlayer');
+    if(!ilNode) throw new Error('no single "Interlayer" node in the chain strip');
+    const sel = ilNode.querySelector('select');
+    if(!sel) throw new Error('interlayer node has no mode selector');
+    const optVals = [...sel.options].map(o => o.value);
+    if(JSON.stringify(optVals) !== JSON.stringify(['none', 'tray', 'uboard']))
+      throw new Error(`mode selector options: expected ["none","tray","uboard"], got ${JSON.stringify(optVals)}`);
+    eq(sel.value, 'none', 'default mode:');
+  });
+  tEdit('interlayer exclusivity: picking U-board via the selector turns tray OFF, and vice versa — never both', () => {
+    const sel = stripNode('Interlayer').querySelector('select');
+    sel.value = 'tray'; fire(sel, 'change');
+    eq(build.project.interlayer, 'tray', 'after picking Tray:');
+    if(build.project.interlayer === 'uboard') throw new Error('U-board came on alongside tray — exclusivity broken');
+    sel.value = 'uboard'; fire(sel, 'change');
+    eq(build.project.interlayer, 'uboard', 'after picking U-board:');
+    if(build.project.interlayer === 'tray') throw new Error('tray stayed on alongside U-board — exclusivity broken');
+    // no reachable state has both: the model has exactly one field, so this
+    // holds by construction, but confirm the CONTROL enforces it too — the
+    // selector itself can only ever hold one value.
+    eq(sel.value, 'uboard', 'selector reflects the single live mode:');
+    sel.value = 'none'; fire(sel, 'change');
+    eq(build.project.interlayer, 'none', 'back to none:');
+  });
+
+  /* ---- Phase B follow-up: the U-board DXF path. UNLIKE the tray (a
+   * multiview with no cut/crease — no dieline, DXF stays disabled, STL
+   * offered instead — see the pre-existing tray pin above), the U-board IS
+   * a real rigid blank: DXF must be AVAILABLE for it, using the exact same
+   * dependency-free buildDXF()/downloadDXF() every carton/case dieline
+   * already uses (export/dxf.js imports nothing but core/units.js — no CDN,
+   * no new dependency; the only CDN gap in this app is test/dxf.test.html's
+   * OWN verification parser, unrelated to the production export path). And
+   * it fails VISIBLY (a notice), never silently, in the disabled-button
+   * edge case a synthesized click could still reach. */
+  tEdit('U-board exports: DXF is available (unlike the tray); the DXF matches what is on screen', () => {
+    const sel = stripNode('Interlayer').querySelector('select');
+    sel.value = 'uboard'; fire(sel, 'change');
+    setLevel('uboard');
+    if(el('btnDXF').disabled) throw new Error('the U-board has a real dieline — DXF must be available');
+    if(el('btnSTL').style.display !== 'none') throw new Error('STL (a 3D-part export) must not be offered for the U-board — it has a real dieline, use DXF');
+    const ub = build.getRows().reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null).uboard;
+    const dxf = buildDXF(ub.geo, 'mm');
+    if(!dxf || dxf.length < 10) throw new Error('DXF export produced no real content for the U-board');
+    if(!/ENTITIES/.test(dxf)) throw new Error('DXF export is missing an ENTITIES section');
+  });
+  tEdit('U-board exports: DXF is unavailable and disabled when the U-board is off', () => {
+    const sel = stripNode('Interlayer').querySelector('select');
+    sel.value = 'none'; fire(sel, 'change');
+    setLevel('uboard');
+    if(!el('btnDXF').disabled) throw new Error('no U-board in the chain — DXF must stay disabled');
+  });
+
+  /* ---- Phase B: cascade — a U-board contribution can legitimately change
+   * downstream counts. This is correct behaviour (CLAUDE.md/task spec), not
+   * a bug to suppress, so it is pinned as a real, observable change — read
+   * off the resolved row the chain already computed (never re-derived here),
+   * driven through the real chain-strip selector + the real U-board rail
+   * inputs, the way a user would actually reach this state.
+   *
+   * cartons/case is normally a FIXED requested count (link.count), not
+   * something that responds to size at all — so a pin against the DEFAULT
+   * project would be pinning the wrong quantity, not a cascade. Cartons/case
+   * only becomes a genuinely SOLVED-FOR-FIT quantity when the link carries a
+   * RANGE (link.countMax — see CLAUDE.md's "Cartons-per-case is a RANGE"),
+   * which is exactly the config this pin sets up: the freight-optimal pick
+   * within 10..20 cartons/case, before and after the U-board.
+   *
+   * build.loadProject()'s own render pipeline settles over a tick (the
+   * SAME reason the pre-existing "cases/pallet" pins above await settle()
+   * after it) — these two blocks use plain awaits between steps rather than
+   * t()/tEdit(), which refuse async bodies (see CLAUDE.md), then assert
+   * synchronously once state has actually settled. */
+  {
+    const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+    const rangedProject = () => {
+      const p = newProject();
+      p.links[0] = {parent: 'tertiary', child: 'secondary', count: 10, arrangement: 'auto', countMax: 20, locked: false};
+      return p;
+    };
+    try{
+      build.loadProject({project: rangedProject(), selectedCandidate: null}); await settle();
+      const bestOf = () => build.getRows().reduce((a, b) => (b.cartonsPerPallet > (a ? a.cartonsPerPallet : -1) ? b : a), null);
+      const before = bestOf();
+      const sel = stripNode('Interlayer').querySelector('select');
+      sel.value = 'uboard'; fire(sel, 'change'); await settle();
+      setLevel('uboard'); await settle();
+      el('ub_caliper').value = '15'; fire(el('ub_caliper'), 'input'); await settle();
+      el('ub_f').value = '80'; fire(el('ub_f'), 'input'); await settle();
+      const after = bestOf();
+      t('cascade: a large U-board contribution changes cartons/case (ranged link, freight-optimal pick)', () => {
+        if(before.cartonsPerCase === after.cartonsPerCase)
+          throw new Error(`expected cartonsPerCase to change; both are ${before.cartonsPerCase}`);
+      });
+      t('cascade: the same large U-board contribution changes cases/pallet', () => {
+        if(before.casesPerPallet === after.casesPerPallet)
+          throw new Error(`expected casesPerPallet to change; both are ${before.casesPerPallet}`);
+      });
+    }finally{
+      restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl);
+    }
+  }
+
   t('arrangement badge + inert facing: MANUAL disables the facing select with a hint; AUTO re-enables it', () => {
     const snap = snapProject(), lvl = el('style').value;
     try{
@@ -1416,11 +1530,12 @@ await (async () => {
    ================================================================== */
 await (async () => {
   const traySnap = snapProject();
-  t('tray: off by default and present in the chain between product and wrap', () => {
+  t('tray/uboard: off by default and present in the chain between product and wrap', () => {
     eq(build.project.interlayer, 'none', 'default interlayer:');
     const opts = [...el('style').options].map(o => o.value);
     eq(opts.indexOf('tray'), opts.indexOf('product') + 1, 'tray follows product:');
-    eq(opts.indexOf('wrap'), opts.indexOf('tray') + 1, 'wrap follows tray:');
+    eq(opts.indexOf('uboard'), opts.indexOf('tray') + 1, 'uboard follows tray:');
+    eq(opts.indexOf('wrap'), opts.indexOf('uboard') + 1, 'wrap follows uboard:');
   });
 
   tEdit('tray: the tray rail is empty while the tier is disabled', () => {
@@ -4370,6 +4485,60 @@ await (async () => {
     if(!c.missing.includes('tray')) throw new Error('the missing tray term is not reported');
     if(el('cost_trayEach')) throw new Error('the rate panel asks for a tray rate the chain has no use for');
   });
+})();
+
+/* ==================================================================
+   Phase B follow-up: the U-board's blank area feeds materialCost as its
+   OWN term (uboardAreaM2 * uboardBoardPerM2), distinct from carton/case
+   board — never a free size change. Without this, enabling a U-board
+   changes case and pallet counts (a real, pinned cascade) with no cost
+   consequence, which is wrong: more board is more cost. Driven through
+   the real chain-strip selector + U-board rail inputs, reading row.cost
+   (never re-derived here) — same idiom as the cascade pins above.
+   ================================================================== */
+await (async () => {
+  const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+  const stripNode2 = label => [...el('chainString').querySelectorAll('.cs-node')]
+    .find(n => n.querySelector('.cs-lvl').textContent === label);
+  const rowNow = () => resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+  try{
+    build.loadProject({project: newProject(), selectedCandidate: null}); await settle();
+    setLevel('case'); el('tab2d').click(); await settle();
+
+    t('cost: the default chain (no U-board) carries no uboard term, and says so', () => {
+      const c = rowNow().cost;
+      if('uboard' in c.perPack) throw new Error('a chain with no U-board must not carry a uboard term');
+      if(!c.missing.includes('uboard')) throw new Error('the missing uboard term is not reported');
+    });
+
+    const sel = stripNode2('Interlayer').querySelector('select');
+    sel.value = 'uboard'; fire(sel, 'change'); await settle();
+    setLevel('uboard'); await settle();
+    el('ub_caliper').value = '1'; fire(el('ub_caliper'), 'input'); await settle();
+    el('ub_f').value = '20'; fire(el('ub_f'), 'input'); await settle();
+    const rowLowF = rowNow();
+
+    t('cost: enabling the U-board adds a distinct uboard term = its own blank area x its own rate', () => {
+      const c = rowLowF.cost;
+      if(!('uboard' in c.perPack)) throw new Error('U-board enabled but no uboard cost term appeared');
+      if(c.missing.includes('uboard')) throw new Error('uboard still reported missing while enabled');
+      approx(c.perUnit.uboard, rowLowF.uboardAreaM2*COST_DEFAULTS.uboardBoardPerM2, 'uboard unit cost = its own area x its own rate:', 1e-12);
+      // NEVER the carton/case rate — the whole point of a separate input
+      if(Math.abs(c.perUnit.uboard - rowLowF.uboardAreaM2*COST_DEFAULTS.cartonBoardPerM2) < 1e-9 &&
+         COST_DEFAULTS.uboardBoardPerM2 !== COST_DEFAULTS.cartonBoardPerM2)
+        throw new Error('uboard cost matches the CARTON board rate, not its own — aliasing suspected');
+    });
+    // "cost rises / scales with f" is pinned in project.test.html against a
+    // LOCKED case: the "best" row here can legitimately RE-SELECT a different
+    // candidate once the U-board grows the envelope (the same cascade pinned
+    // above for cartons/case and cases/pallet), which can move OTHER cost
+    // terms either way — a real effect, not a bug, but it confounds a direct
+    // before/after total-cost comparison against the resolved-best row. A
+    // locked case has no candidate to re-select, so it isolates the U-board's
+    // own additive term cleanly.
+  }finally{
+    restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl);
+  }
 })();
 
 /* ==================================================================

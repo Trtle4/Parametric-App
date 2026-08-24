@@ -15,8 +15,9 @@
 import {getPivot, setCamSpan, getCamera, onFrame, kraft, kraft2, roundedBoxGeo} from './fold3d.js';
 import {perfDisplayBody, perfSurfaceLine, displayBodyExtentY} from './perf3d.js';
 import {isDisplayGeo} from '../core/perf.js';
-import {explodeTier} from './explode.js';
+import {explodeTier, axisOffsets} from './explode.js';
 import {buildTray3d} from './tray3d.js';
+import {buildUboard3d} from './uboard3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
 import {buildGmaPallet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
@@ -869,9 +870,14 @@ function stackInfoOf(w){
 export function closedWrapParts(bundle){
   const w = bundle && bundle.wraps;
   if(!w || !w.seals) return [];
-  const cEnv = bundle.tray ? (w.filmEnvelope || w.envelope) : w.envelope;
+  // U-board joins the tray as a reason the film wraps something wider than
+  // the bare collation — same cEnv/roundish guard, extended rather than
+  // duplicated. The faceted-profile last arg stays tray-only: a U-board's
+  // cross-section is already a plain rectangle, so the generic tube path
+  // (driven by cEnv) is exactly right with no bespoke profile function.
+  const cEnv = (bundle.tray || bundle.uboard) ? (w.filmEnvelope || w.envelope) : w.envelope;
   const art = wrapArtOf(bundle);
-  const parts = wrapPartsGeometry(cEnv, w.seals, bundle.tray ? false : isRoundishWrap(w),
+  const parts = wrapPartsGeometry(cEnv, w.seals, (bundle.tray || bundle.uboard) ? false : isRoundishWrap(w),
                                   stackInfoOf(w), w.wrapAxis, art || undefined, bundle.tray);
   const finGeo = wrapFinGeometry(cEnv, w.seals, w.wrapAxis, art);
   // CLOSED — so plain unprinted film, or the artwork where there is artwork.
@@ -927,7 +933,7 @@ function pieceGeo(piece, stackAxis, o){
 
 // tiers, outer→inner. Each returns a Group representing ONE unit.
 // `sel` holds the opened child index per tier; `depthTiers` is the visible chain.
-function buildWrapOpened(bundle, artInfo, solid){
+function buildWrapOpened(bundle, artInfo, solid, explode){
   // The wrap at wrap depth, in whichever of the two states the caller asks for.
   // SOLID: the closed pack — the real pillow body, opaque, no contents, plain
   // unprinted film unless there is artwork to carry (see wrapMaterials). That
@@ -978,11 +984,42 @@ function buildWrapOpened(bundle, artInfo, solid){
     g.add(t.group);
     return g;
   }
+  // With a U-board in the chain the film wraps the U-BOARD (loaded with its
+  // product), not a bare run of pieces resting on the film floor — draw the
+  // folded solid, then float the pieces on ITS base rather than the film's
+  // own floor. Unlike the tray (which centres on its own rim height and
+  // needs a proud-height correction), the U-board's own frame is ALREADY
+  // centred on this same envelope by construction — core/uboard.js's
+  // uboardOuter() is exactly what produced `envelope` here — so it drops in
+  // with zero offset.
+  const floorOffset = bundle.uboard ? bundle.uboard.params.caliper : 0;
+  // U-BOARD AS A RANK, at wrap depth: when the wrap tier is exploding, the
+  // U-board and the product are the two things a wrap-depth explosion has to
+  // pull apart (product sitting ON the U-board reads as one lump otherwise).
+  // Reuses explode.js's OWN rank function (axisOffsets) on the two parts'
+  // own vertical centres — never a bespoke gap formula — so it is bit-
+  // identical in spirit to every other rank split in this app: factor 0 is
+  // identity, and a single value (no U-board) collapses to one rank, offset 0.
+  let uboardDy = 0, productDy = 0;
+  if(bundle.uboard && explode && explode.level === 'wrap' && explode.factor &&
+     (explode.axis === 'y' || explode.axis === 'all')){
+    const t = bundle.uboard.params.caliper, f = bundle.uboard.params.f;
+    const contentH = bundle.uboard.geo.inner.H;
+    const uboardCenterY = -envelope.H/2 + (t + f)/2;
+    const productCenterY = -envelope.H/2 + floorOffset + contentH/2;
+    const unit = Math.max(t + f, contentH);
+    [uboardDy, productDy] = axisOffsets([uboardCenterY, productCenterY], unit, explode.factor);
+  }
+  if(bundle.uboard){
+    const ubGroup = buildUboard3d(bundle.uboard.geo.inner, bundle.uboard.params).group;
+    ubGroup.position.y += uboardDy;
+    g.add(ubGroup);
+  }
   const {geo, rot} = pieceGeo(piece, stackAxis, o);
   const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
   const M = new THREE.Matrix4();
   pieces.forEach((pl, i) => {
-    const pos = new THREE.Vector3(pl.x, -envelope.H/2 + pl.z, pl.y);
+    const pos = new THREE.Vector3(pl.x, -envelope.H/2 + floorOffset + pl.z + productDy, pl.y);
     if(rot) M.copy(rot); else M.identity();
     M.setPosition(pos.x, pos.y, pos.z);
     inst.setMatrixAt(i, M);
@@ -1394,12 +1431,37 @@ export function buildHierarchy(bundle, depth, sel, solid, explode){
     } : null);
     group.add(r.group);
     span = r.span; outer = r.outer;
+  }else if(depth === 'uboard'){
+    // the U-board interlayer: base + two folded flap panels, with the
+    // product resting on the base — the same "part + its contents"
+    // standalone view the tray depth gives, drawn by the sibling
+    // render/uboard3d.js builder (mirrors buildWrapOpened's own U-board
+    // contents branch, since this IS a standalone rendering of that same
+    // part+contents pair).
+    const content = bundle.uboard.geo.inner;
+    const params = bundle.uboard.params;
+    const r = buildUboard3d(content, params);
+    group.add(r.group);
+    if(bundle.wraps){
+      const {piece, stackAxis, pieces} = bundle.wraps;
+      const {geo, rot} = pieceGeo(piece, stackAxis, 'LWH');
+      const inst = new THREE.InstancedMesh(geo, pieceMat, pieces.length);
+      const M = new THREE.Matrix4();
+      const floorY = -r.outer.H/2 + params.caliper;
+      pieces.forEach((pl, i) => {
+        M.copy(rot || new THREE.Matrix4());
+        M.setPosition(pl.x, floorY + pl.z, pl.y);
+        inst.setMatrixAt(i, M);
+      });
+      group.add(inst);
+    }
+    span = r.span; outer = r.outer;
   }else if(depth === 'wrap'){
     // Solid → the closed pack (white film, or the girth artwork on that same
     // real body when there is art); Cutaway → the film + pieces. The art rides
     // the same aligned pillow geometry the cutaway uses, so it can never be
     // hollow or misaligned.
-    group.add(buildWrapOpened(bundle, wrapArt, solid));
+    group.add(buildWrapOpened(bundle, wrapArt, solid, explode));
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){

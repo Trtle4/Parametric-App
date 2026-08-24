@@ -438,6 +438,108 @@
         "piecesPerPallet": 69120,
         "coveragePct": 83, "cubeUtilPct": 66
       }
+    },
+    "uboard_rect_content": {
+      "note": "Phase B U-BOARD baseline #1 (RECT content): a single box piece 100x50x30, one per stack (envelope = the piece itself), interlayer:'uboard' caliper 2 / flap f=15 (< content H=30, so envelope H = t + H = 32, the max(H,f) branch collapsing to H). Fin STANDING 8/5, crimp 10 + bleed 3, rect girth, gauge 30 density 0.92; carton a6120 0.457; case 12 @ 4x3x1 wall 1.5; GMA pallet optimal. uboardAreaM2 is the flat blank area (flowLen=100 x (W+2f)=50+30=80 -> 0.008 m2), a distinct quantity from boardAreaM2 (the CASE's own blank). Baseline for future envelope-work regression; not a hand-derived arithmetic pin (see test/uboard.test.html for those) — captured from the real chain the same way every other 'chains' entry in this file was.",
+      "config": {
+        "collation": {"piece": {"kind": "box", "L": 100, "W": 50, "H": 30}, "perStack": 1, "stackAxis": "Z", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "interlayer": "uboard", "uboard": {"caliper": 2, "f": 15},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 1, "wrapArrangement": "auto",
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 146.14213562373095, "W": 54, "H": 40},
+        "cartonOuter": {"L": 147.914, "W": 54.914, "H": 41.828},
+        "cavity": {"L": 595, "W": 168, "H": 42},
+        "outer": {"L": 601, "W": 174, "H": 54},
+        "boardAreaM2": 0.32781,
+        "uboardAreaM2": 0.008,
+        "casesPerLayer": 11,
+        "caseLayers": 25,
+        "casesPerPallet": 275,
+        "cartonsPerPallet": 3300,
+        "piecesPerCarton": 1,
+        "piecesPerPallet": 3300,
+        "coveragePct": 93,
+        "cubeUtilPct": 67,
+        "filmAreaM2": 0.033052,
+        "filmKgPerPallet": 3.01
+      }
+    },
+    "uboard_round_onedge": {
+      "note": "Phase B U-BOARD baseline #2 (ROUND-ON-EDGE content): a single d60 x t15 cylinder ON EDGE (stackAxis X, one per stack) — round-girth ELIGIBLE on its own (confirmed: the identical config with interlayer:'none' gives wrapOuter W60/H68, the round-girth answer; with 'uboard' it is W63/H69.5, the RECTANGULAR bounding-box answer — the U-board makes round-girth sizing unreachable, per Phase B's own requirement, and this fixture is the one that actually exercises that switch rather than a config where it wouldn't have mattered). Wrap girthBasis is still nominally 'round' in the config (an unchanged user setting) — solvePrimaryStage silently falls back to rectangular because resolveWrapContents' uboard branch never hands back a diameter, with no second interlayer check anywhere. Caliper 1.5, flap f=null (auto = content H). Fin STANDING 8/5; carton a6120 0.457; case 12 @ 4x3x1 wall 1.5; GMA pallet optimal.",
+      "config": {
+        "collation": {"piece": {"kind": "cylinder", "diameter": 60, "thickness": 15}, "perStack": 1, "stackAxis": "X", "nx": 1, "ny": 1, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "standing", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "round", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "interlayer": "uboard", "uboard": {"caliper": 1.5, "f": null},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 1, "wrapArrangement": "auto",
+        "count": 12, "arrangement": {"nx": 4, "ny": 3, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 90.64213562373095, "W": 63, "H": 69.5},
+        "cartonOuter": {"L": 91.914, "W": 63.914, "H": 71.828},
+        "cavity": {"L": 371, "W": 195, "H": 72},
+        "outer": {"L": 377, "W": 201, "H": 84},
+        "boardAreaM2": 0.311589,
+        "uboardAreaM2": 0.0027,
+        "casesPerLayer": 15,
+        "caseLayers": 16,
+        "casesPerPallet": 240,
+        "cartonsPerPallet": 2880,
+        "piecesPerCarton": 1,
+        "piecesPerPallet": 2880,
+        "coveragePct": 92,
+        "cubeUtilPct": 73,
+        "filmAreaM2": 0.034553,
+        "filmKgPerPallet": 2.747
+      }
+    },
+    "uboard_multi_product": {
+      "note": "Phase B U-BOARD baseline #3 (MULTI-PRODUCT collation): d40 x t6 pucks, 4/stack Z, 2x2 grid (envelope 80x80x24, 16 pieces per collation — a genuinely multi-stack collation, not the single-piece/single-stack shape of the other two baselines), interlayer:'uboard' caliper 3 / flap f=25 (> content H=24, so envelope H = t + f = 28, the OTHER side of the max(H,f) branch from baseline #1 — deliberately picked so the three baselines together cover f<H, and f>H, not just the f=H default). Fin FOLDED 8/5; carton a6120 0.457; case 4 @ 2x2x1 wall 1.5 (a smaller case count than the other two baselines — the default 12 @ 4x3x1 does not palletize at this collation's size, by design of picking a genuinely different product footprint rather than shrinking it back down to the other baselines' proportions); GMA pallet optimal.",
+      "config": {
+        "collation": {"piece": {"kind": "cylinder", "diameter": 40, "thickness": 6}, "perStack": 4, "stackAxis": "Z", "nx": 2, "ny": 2, "stackGap": 0, "pieceGap": 0},
+        "primaryOrientations": ["LWH"],
+        "primaryClearance": {"wall": 0, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "wrap": {"sealType": "fin", "finHeight": 8, "finSealBand": 5, "finTreatment": "folded", "lapOverlap": 12, "endSealWidth": 10, "endSealBleed": 3, "girthBasis": "rectangular", "roundDiameter": 0, "gauge": 30, "density": 0.92},
+        "interlayer": "uboard", "uboard": {"caliper": 3, "f": 25},
+        "cartonMaterial": {"caliper": 0.457},
+        "wrapCount": 1, "wrapArrangement": "auto",
+        "count": 4, "arrangement": {"nx": 2, "ny": 2, "nz": 1},
+        "orientations": ["LWH", "WLH"],
+        "clearance": {"wall": 1.5, "between": 0, "bottom": 0, "top": 0, "betweenZ": 0},
+        "rounding": "1mm"
+      },
+      "expected": {
+        "wrapOuter": {"L": 122.14213562373095, "W": 86, "H": 28.03},
+        "cartonOuter": {"L": 123.914, "W": 86.914, "H": 30.828},
+        "cavity": {"L": 251, "W": 177, "H": 31},
+        "outer": {"L": 257, "W": 183, "H": 43},
+        "boardAreaM2": 0.185328,
+        "uboardAreaM2": 0.0104,
+        "casesPerLayer": 23,
+        "caseLayers": 32,
+        "casesPerPallet": 736,
+        "cartonsPerPallet": 2944,
+        "piecesPerCarton": 16,
+        "piecesPerPallet": 47104,
+        "coveragePct": 87,
+        "cubeUtilPct": 57,
+        "filmAreaM2": 0.036254,
+        "filmKgPerPallet": 2.946
+      }
     }
   }
 }

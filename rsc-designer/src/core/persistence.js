@@ -158,6 +158,23 @@ function fillProjectDefaults(loadedProject){
   // schema — same defaulted+reported treatment as any other missing field,
   // never a silent guess.
   if(loadedProject.interlayer === undefined){ report.push('interlayer'); out.interlayer = base.interlayer; }
+  // TRAY / U-BOARD payload objects: like SHELF below, genuinely new top-level
+  // fields — additive, never changing an EXISTING field's shape or meaning,
+  // so no schema migration is needed for either. Without this, a file that
+  // predates the field entirely (tray: any v1/v2 fixture written before the
+  // interlayer feature landed; uboard: EVERY file written before Phase B,
+  // since no v4 file could ever have carried one) loads with project.tray or
+  // project.uboard flatly undefined — invisible here (defaulted+reported
+  // catches it), but it silently breaks the rail the moment a user enables
+  // that interlayer: mountTray/mountUboard both bail out on a falsy payload
+  // object, so the fields render permanently blank with no way to edit them,
+  // even though the chain itself tolerates the gap (uboardStage/solveTrayStage
+  // both fall back to `project.X || {}`). Confirmed via the v3-file-with-no-
+  // tray-block fixture already pinned above (saveload.test.html): it only
+  // asserted interlayer:'none', never that project.tray came back as a real,
+  // editable object — this closes that gap for both fields at once.
+  out.tray = mergeDefaults(loadedProject.tray, base.tray, 'tray', report);
+  out.uboard = mergeDefaults(loadedProject.uboard, base.uboard, 'uboard', report);
   // MATERIAL RATES: absent → empty (older files, and any project that never
   // touched a rate), present → preserved verbatim. Not merged against
   // defaults, because for this bag absence IS the auto state — filling a
