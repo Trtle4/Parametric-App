@@ -84,6 +84,13 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
     p.primary.wrap = ch.config.wrap
       ? {styleId: 'flowwrap', params: {...ch.config.wrap}, locked: false}   // machine direction fixed at L; no wrapAxis
       : null;                                    // pins that predate the wrap
+    // Phase B: the U-board interlayer, between the collation and the wrap.
+    // Pins that omit ch.config.interlayer keep the implicit 'none' default —
+    // bit-identical to every pin recorded before this existed.
+    if(ch.config.interlayer){
+      p.interlayer = ch.config.interlayer;
+      if(ch.config.uboard) p.uboard.params = {...p.uboard.params, ...ch.config.uboard};
+    }
     p.secondary.params = {...p.secondary.params, ...ch.config.cartonMaterial};
     if(ch.config.wrapCount !== undefined){        // wraps-per-carton link (links[1]); pins that
       p.links[1].count = ch.config.wrapCount;      // omit this keep the implicit single-wrap default
@@ -134,6 +141,9 @@ for(const [name, ch] of Object.entries(golden.chains || {})){
   cmp(name, 'cavity.L', e.cavity.L, r.cavity.L); cmp(name, 'cavity.W', e.cavity.W, r.cavity.W); cmp(name, 'cavity.H', e.cavity.H, r.cavity.H);
   cmp(name, 'outer.L', e.outer.L, r.outer.L); cmp(name, 'outer.W', e.outer.W, r.outer.W); cmp(name, 'outer.H', e.outer.H, r.outer.H);
   cmp(name, 'boardAreaM2', e.boardAreaM2, +r.boardAreaM2.toFixed(6));
+  // Phase B: the U-board's own blank area — a distinct quantity from the
+  // case's boardAreaM2 above, only present when the chain actually has one.
+  if(e.uboardAreaM2 !== undefined) cmp(name, 'uboardAreaM2', e.uboardAreaM2, r.uboardAreaM2 != null ? +r.uboardAreaM2.toFixed(6) : null);
   // shrink film: the standalone Shrink Bundle publishes meta.film.filmAreaM2;
   // the shrink-wrapped tray gets meta.shrinkFilmM2 (chain-computed over proud
   // contents). Assert whichever the pin declares.
