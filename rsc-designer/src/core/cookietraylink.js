@@ -43,16 +43,30 @@ export const PRODUCT_KEYS = Object.freeze({
 
 const STRING_FIELDS = new Set(['longAxis', 'productType', 'distributeBy']);
 
-/** Their PRODUCT_DEFAULTS, verbatim. No longer used to omit anything on export
- *  (see buildTrayLink) — kept and exported as the reference table of what
- *  Cookie-Tray falls back to for a key we do not send, which is what the
- *  cross-app pin needs in order to model their resolution rather than ours. */
+/** Their PRODUCT_DEFAULTS, verbatim. LIVE on import (parseTrayLink fills every
+ *  absent product key from this table, mirroring exactly what Cookie-Tray's
+ *  own encoder omits and what its app would therefore resolve the field to)
+ *  — no longer used to omit anything on export (see buildTrayLink), which is
+ *  a genuinely different question: over there, an absent PRODUCT key means
+ *  "their static default" (this table), but an absent TRAY/cell key means
+ *  AUTO (re-derive from the product), which is why buildTrayLink states every
+ *  tray value and never consults this table for that half. */
 export const PRODUCT_DEFAULTS = Object.freeze({
   productType: 'round', cookieDiameter: 45, cookieThickness: 12,
   productWidth: 45, productHeight: 20, productThickness: 12,
   edgeRTop: 2, edgeRBot: 2, qtyTotal: 24,
   distributeBy: 'nCells', nCellsProduct: 3, cookiesPerCell: 8
 });
+
+/** Our OWN link-schema version, stamped on export (see buildTrayLink) and
+ *  checked on import. Cookie-Tray's own encoder never sends this key at all
+ *  — it is ours alone, so we can tell OUR OWN future exports apart from
+ *  today's if this schema ever changes, and fail loudly on a link from a
+ *  newer version rather than silently misinterpret a key whose meaning
+ *  moved. We cannot migrate the other side (Cookie-Tray's own links never
+ *  carry it), so an absent `v` is treated as v1 — the version this schema
+ *  has always been — never as an error. */
+export const CURRENT_LINK_VERSION = 1;
 
 /** At most 4 decimals, no trailing zeros — their fmtNum. */
 const fmtNum = n => Number(n.toFixed(4)).toString();
@@ -69,17 +83,33 @@ function toParams(input){
 /**
  * Parse a Cookie-Tray link into this project's terms.
  *
- * IMPORTANT — imported values are PINNED, not auto. Cookie-Tray omits any
- * value equal to its default, so an absent `cl` there means "their default
- * cell length", NOT "derive it from my product". Treating absences as auto
- * would silently reproduce a DIFFERENT tray than the link describes, so
- * every tray dimension the link determines (present, or their default) comes
- * back as an explicit override. Reset any field to auto afterwards to hand
- * it back to this app's product-driven derivation.
+ * IMPORTANT — imported values are PINNED, not auto, on BOTH halves, but for
+ * two different reasons:
+ *
+ *   TRAY half: Cookie-Tray omits any cell/shell value equal to its default,
+ *   so an absent `cl` there means "their default cell length", NOT "derive
+ *   it from my product". Treating absences as auto would silently reproduce
+ *   a DIFFERENT tray than the link describes, so every tray dimension the
+ *   link determines (present, or their default) comes back as an explicit
+ *   override. Reset any field to auto afterwards to hand it back to this
+ *   app's product-driven derivation. Do NOT change this: it is a deliberate
+ *   asymmetry with the product half below, not an oversight.
+ *
+ *   PRODUCT half: the same omit-if-default encoding applies (Cookie-Tray's
+ *   encodeGroup has one rule for the whole payload), but there is no "auto"
+ *   concept for a product's own dimensions to fall back to — PRODUCT_DEFAULTS
+ *   IS what an absent key means, full stop. Every product key is filled from
+ *   PRODUCT_DEFAULTS below so the returned `product` is never sparse:
+ *   downstream code must never see `undefined` here and must never invent
+ *   its own fallback for an absent key (that was the bug — a default-
+ *   thickness product importing as some unrelated caller-side magic number).
  *
  * @param {string} input a share URL or querystring
  * @returns {{nCells: number, params: Object, product: Object, keysFound: string[]}|null}
  *   null when the string carries no Cookie-Tray keys at all.
+ * @throws {Error} if the link's own `v` (our schema version, absent = v1)
+ *   is newer than this app understands — fail loudly rather than silently
+ *   misparse a key whose meaning moved in a schema we don't know yet.
  */
 export function parseTrayLink(input){
   const sp = toParams(input);
@@ -98,17 +128,36 @@ export function parseTrayLink(input){
   }
   const product = {};
   for(const [long, short] of Object.entries(PRODUCT_KEYS)){
-    if(!sp.has(short)) continue;
-    keysFound.push(short);
+    if(sp.has(short)) keysFound.push(short);
     const raw = sp.get(short);
-    product[long] = STRING_FIELDS.has(long) ? raw : parseFloat(raw);
+    if(STRING_FIELDS.has(long)){
+      product[long] = raw != null && raw !== '' ? raw : PRODUCT_DEFAULTS[long];
+    }else{
+      const v = raw != null && raw !== '' ? parseFloat(raw) : NaN;
+      // absent -> Cookie-Tray's own static default for this product field —
+      // never left undefined for a caller to guess at.
+      product[long] = Number.isFinite(v) ? v : PRODUCT_DEFAULTS[long];
+    }
   }
   if(keysFound.length === 0) return null;          // not a Cookie-Tray link
+
+  // OUR OWN version stamp (see CURRENT_LINK_VERSION) — absent means v1, the
+  // version this schema has always been, since Cookie-Tray's real links
+  // never send it. Only a link claiming a version NEWER than we understand
+  // is refused; this cannot fire against a real Cookie-Tray link or any
+  // link this app itself has ever exported, only against a future export
+  // from a schema change not yet made.
+  const vRaw = sp.get('v');
+  const linkVersion = vRaw != null && vRaw !== '' ? parseInt(vRaw, 10) : 1;
+  if(Number.isFinite(linkVersion) && linkVersion > CURRENT_LINK_VERSION)
+    throw new Error(`This link uses a newer tray-link format (v${linkVersion}) than this app understands (v${CURRENT_LINK_VERSION}) — update the app to open it.`);
 
   const nCells = Math.max(1, Math.round(params.nCells || TRAY_DEFAULTS.nCells));
   delete params.nCells;                             // the cell count is its own field
   // null overrides mean "let the tray stage derive it" — drop them so the
-  // auto-with-override contract (absent key = auto) is preserved
+  // auto-with-override contract (absent key = auto) is preserved. Product
+  // fields never carry this shape (every PRODUCT_DEFAULTS entry is a real
+  // value or a defaulted string), so no equivalent pass runs over `product`.
   for(const k of Object.keys(params)) if(params[k] == null) delete params[k];
   return {nCells, params, product, keysFound};
 }
@@ -130,6 +179,11 @@ export function buildTrayLink(project, trayResult, base = 'https://trtle4.github
   if(!trayResult || !trayResult.params) return null;
   const p = trayResult.params;
   const out = new URLSearchParams();
+  // OUR OWN schema version (see CURRENT_LINK_VERSION) — Cookie-Tray's own
+  // site ignores unrecognized querystring keys, so this rides along
+  // harmlessly when the link is opened there; it only matters when a link
+  // WE exported is later pasted back into US (parseTrayLink checks it).
+  out.set('v', String(CURRENT_LINK_VERSION));
 
   // STATE EVERY VALUE. This used to omit anything equal to Cookie-Tray's own
   // static default, mirroring their encoder — and that is wrong, because over

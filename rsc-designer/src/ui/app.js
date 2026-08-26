@@ -1652,27 +1652,36 @@ function changeLevelStyle(newId){
 /** Apply a pasted Cookie-Tray share link to the tray level. Returns a short
  *  status string for the panel. Imported dimensions are PINNED (see
  *  parseTrayLink): the link describes a specific tray, and treating its
- *  omitted-because-default values as "auto" would rebuild a different one. */
+ *  omitted-because-default values as "auto" would rebuild a different one.
+ *
+ *  ATOMIC REPLACEMENT. Per the product decision, an imported link is the new
+ *  source of truth for the product it describes — parseTrayLink already
+ *  fills every absent product key from Cookie-Tray's own PRODUCT_DEFAULTS,
+ *  so `pr` below is never sparse and this function never falls back to
+ *  whatever piece was on screen before. The whole new piece (and the
+ *  collation grid fields it implies) is built into local variables first and
+ *  assigned in ONE write — never merged field-by-field with the prior
+ *  collation, which is exactly the shape that used to leave a hybrid of two
+ *  products (a second writer of the collation in all but name). */
 function applyTrayLink(text){
   let parsed = null;
-  try{ parsed = parseTrayLink(text); }catch(e){ return 'Could not read that link.'; }
+  try{ parsed = parseTrayLink(text); }catch(e){ return e.message || 'Could not read that link.'; }
   if(!parsed) return 'No Cookie-Tray parameters found in that link.';
   const tr = build.project.tray;
   tr.nCells = parsed.nCells;
   tr.params = {...parsed.params};
-  // the product half, when present, writes the COLLATION — the one owner of
-  // per-cell content — rather than being stored on the tray
-  const pr = parsed.product, col = build.project.primary.collation;
-  if(pr.productType === 'round' && pr.cookieDiameter > 0)
-    col.piece = {kind: 'cylinder', diameter: pr.cookieDiameter,
-                 thickness: pr.cookieThickness > 0 ? pr.cookieThickness : col.piece.thickness};
-  else if(pr.productType === 'rectangle' && pr.productWidth > 0)
-    col.piece = {kind: 'box', L: pr.productThickness || 90, W: pr.productWidth, H: pr.productHeight || 20};
-  if(pr.qtyTotal > 0){
-    const per = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
-    col.pieceOrientation = 'on-edge'; col.stackAxis = 'X';
-    col.perStack = per; col.nx = 1; col.ny = 1;
-  }
+
+  const pr = parsed.product;
+  const piece = pr.productType === 'round'
+    ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
+    : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
+  const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+  // the product half writes the COLLATION — the one owner of per-cell
+  // content — never the tray. One assignment: piece + the grid it implies,
+  // together, so there is no window where they describe two different runs.
+  Object.assign(build.project.primary.collation, {
+    piece, pieceOrientation: 'on-edge', stackAxis: 'X', perStack: perCell, nx: 1, ny: 1
+  });
   projectChanged();
   mountActiveLevel();
   return `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;

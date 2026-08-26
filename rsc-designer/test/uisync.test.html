@@ -261,6 +261,7 @@ import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
+import {PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
 import {shelfBay} from '../src/render/shelf3d.js';
 import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
 import {COST_DEFAULTS, rateToDisplay, rateFromDisplay, FT2_PER_M2} from '../src/core/cost.js';
@@ -2215,6 +2216,82 @@ await (async () => {
     setLevel('case');
     if(el('btnSTL').style.display !== 'none') throw new Error('STL must not be offered away from the tray');
     setLevel('tray');
+  });
+
+  /* ---- Cookie-Tray link IMPORT, driven through the real "Apply link" UI —
+   * #tr_link / #tr_linkImport, the same elements a user types into and
+   * clicks. Cookie-Tray's own encoder omits any field equal to its default
+   * (encodeGroup), so a realistic pasted link is SPARSE; encodeProductLikeCookieTray
+   * reproduces that omission rule rather than hand-writing a complete key
+   * set (a fixture with every key present never reaches the omission bug —
+   * CLAUDE.md's fixture-hygiene rule), matching the encoder already proven
+   * against the deployed Cookie-Tray build in cookietray.test.html. */
+  const encodeProductLikeCookieTray = spec => {
+    const out = new URLSearchParams();
+    for(const [long, short] of Object.entries(PRODUCT_KEYS)){
+      if(!(long in spec)) continue;
+      const v = spec[long], d = PRODUCT_DEFAULTS[long];
+      if(typeof v === 'number' && typeof d === 'number' && Math.abs(v - d) < 1e-9) continue;
+      if(typeof v === 'string' && v === d) continue;
+      out.set(short, typeof v === 'number' ? String(v) : v);
+    }
+    return out.toString();
+  };
+  const importLink = qs => { el('tr_link').value = `?n=2&${qs}`; el('tr_linkImport').click(); };
+  const pieceNow = () => build.project.primary.collation.piece;
+
+  tEdit('Cookie-Tray link import: a round product AT their exact defaults resolves to 45x12, never stale prior state', () => {
+    setLevel('tray');
+    // seed a piece that looks NOTHING like the defaults, so a fallback to
+    // "whatever was there" would be visibly wrong, not accidentally right
+    Object.assign(build.project.primary.collation, {piece: {kind: 'cylinder', diameter: 999, thickness: 999}});
+    const qs = encodeProductLikeCookieTray({
+      productType: 'round', cookieDiameter: 45, cookieThickness: 12,
+      qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+    });
+    if(/pdia=|pthk=/.test(qs)) throw new Error(`fixture does not exhibit the omitted-defaults condition: ${qs}`);
+    importLink(qs);
+    const piece = pieceNow();
+    eq(piece.kind, 'cylinder', 'kind:');
+    eq(piece.diameter, 45, 'diameter falls back to Cookie-Tray default, not stale 999:');
+    eq(piece.thickness, 12, 'thickness falls back to Cookie-Tray default, not stale 999:');
+  });
+  tEdit('Cookie-Tray link import: a rectangle AT their exact defaults resolves to 12/45/20, never 90', () => {
+    setLevel('tray');
+    Object.assign(build.project.primary.collation, {piece: {kind: 'box', L: 999, W: 999, H: 999}});
+    const qs = encodeProductLikeCookieTray({
+      productType: 'rectangle', productWidth: 45, productHeight: 20, productThickness: 12,
+      qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+    });
+    if(/ptk=|pw=|ph=/.test(qs)) throw new Error(`fixture does not exhibit the omitted-defaults condition: ${qs}`);
+    importLink(qs);
+    const piece = pieceNow();
+    eq(piece.kind, 'box', 'kind:');
+    eq(piece.L, 12, 'thickness falls back to Cookie-Tray default (not the old || 90 fallback):');
+    eq(piece.W, 45, 'width falls back to Cookie-Tray default:');
+    eq(piece.H, 20, 'height falls back to Cookie-Tray default (not the old || 20 fallback landing right by accident):');
+  });
+  tEdit('Cookie-Tray link import: ATOMIC REPLACEMENT — link B leaves no field of link A', () => {
+    setLevel('tray');
+    const qsA = encodeProductLikeCookieTray({
+      productType: 'round', cookieDiameter: 60, cookieThickness: 20,
+      qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+    });
+    importLink(qsA);
+    const a = JSON.stringify(pieceNow());
+    if(a !== JSON.stringify({kind: 'cylinder', diameter: 60, thickness: 20}))
+      throw new Error(`link A did not apply cleanly: ${a}`);
+    const qsB = encodeProductLikeCookieTray({
+      productType: 'rectangle', productWidth: 30, productHeight: 15, productThickness: 8,
+      qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+    });
+    importLink(qsB);
+    const b = pieceNow();
+    if(JSON.stringify(b) !== JSON.stringify({kind: 'box', L: 8, W: 30, H: 15}))
+      throw new Error(`link B produced a hybrid, not a clean replacement: ${JSON.stringify(b)}`);
+    // no trace of A's round shape or its dimensions anywhere in the new piece
+    if('diameter' in b || b.kind === 'cylinder')
+      throw new Error(`link A survived alongside link B: ${JSON.stringify(b)}`);
   });
 
   // restore what this block FOUND — tray state, the collation, the quantities
