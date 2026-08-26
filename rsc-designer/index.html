@@ -806,6 +806,45 @@
         </select></div>
       </div>
 
+      <h2 style="margin-top:6px">Stack</h2>
+      <div class="field">
+        <label>Load positions <span class="hint">bottom &rarr; top, 1-4</span></label>
+        <div class="inp"><input id="stackPositions" type="number" min="1" max="4" step="1" value="1"></div>
+      </div>
+      <div class="field">
+        <label>Base per position</label>
+        <div class="inp" id="stackBases"></div>
+      </div>
+      <div class="field">
+        <label>Quick set</label>
+        <div class="inp"><button type="button" class="btn" id="stackAllPallet">All pallets</button
+          ><button type="button" class="btn" id="stackSlipAbove" title="Pallet on the bottom, slipsheets above">Slipsheets above</button></div>
+      </div>
+      <div class="field">
+        <label>Pallet tare weight <span class="hint">lb, empty deck</span></label>
+        <div class="inp"><input id="palTareLb" type="number" min="0" step="1" value="45"></div>
+      </div>
+      <div id="ssField" style="display:contents">
+        <h2 style="margin-top:6px">Slipsheet</h2>
+        <div class="field">
+          <label>Caliper <span class="hint">mm</span></label>
+          <div class="inp"><input id="ssCaliper" type="number" min="0" step="0.1" value="3"></div>
+        </div>
+        <div class="field">
+          <label>Material density <span class="hint">kg/m&sup3;</span></label>
+          <div class="inp"><input id="ssDensity" type="number" min="0" step="10" value="950"></div>
+        </div>
+        <div class="field">
+          <label>Weight override <span class="hint">lb, blank = auto</span></label>
+          <div class="inp"><input id="ssWeightLb" type="number" min="0" step="0.1" placeholder="auto"></div>
+        </div>
+        <div class="field">
+          <label>Footprint <span class="hint">mm, blank = pallet + 1in/side</span></label>
+          <div class="inp"><input id="ssL" type="number" min="0" step="0.1" placeholder="auto L">
+          <input id="ssW" type="number" min="0" step="0.1" placeholder="auto W"></div>
+        </div>
+      </div>
+
       <h2 style="margin-top:6px">Stacking (BCT)</h2>
       <div class="field">
         <label>Edge crush ECT <span class="hint">lb/in</span></label>
@@ -818,9 +857,6 @@
       <div class="field">
         <label>Target safety factor <span class="hint">short-term</span></label>
         <div class="inp"><input id="bctTarget" type="number" min="0" step="0.5" value="3"></div>
-      </div>
-      <div class="field bchk">
-        <label><input type="checkbox" id="bctDouble"> Double-stack (two unit loads high)</label>
       </div>
     </div>
   </aside>

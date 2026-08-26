@@ -9,7 +9,8 @@
      ECT 32 lb/in, caliper 0.16 in, box 12 x 10 in -> perimeter 44 in
      BCT = 5.87 * 32 * sqrt(0.16 * 44) = 187.84 * sqrt(7.04) = 498.394 lb
    In mm: caliper 4.064 mm, box 304.8 x 254 mm, perimeter 1117.6 mm. */
-import {estimateBCT, stackAnalysis, boxesAboveBottom, MCKEE_K, DERATINGS} from '../src/core/bct.js';
+import {estimateBCT, stackAnalysis, MCKEE_K, DERATINGS} from '../src/core/bct.js';
+import {boxesAboveBottom} from '../src/core/stack.js';
 
 const results = [];
 function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
@@ -55,6 +56,31 @@ t('stackAnalysis: full chain, ratio and target flag', () => {
   if(a.approximate) throw new Error('an RSC is not approximate');
 });
 
+t('stackAnalysis: tareAboveLb is spread across casesPerLayer and ADDED to the box load', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
+                           boxesAbove: 8, tareAboveLb: 45, casesPerLayer: 5,
+                           unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.boxLoadLb, 160, 'box load unaffected by tare');
+  approx(a.tarePerColumnLb, 9, 'tare spread: 45 / 5 per layer');
+  approx(a.loadLb, 169, 'total load = box load + tare per column');
+  approx(a.ratio, bctRef/169, 'ratio reflects the combined load', 1e-9);
+});
+
+t('stackAnalysis: tareAboveLb defaults to 0 (no stack context given) -- loadLb is box load alone', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
+                           boxesAbove: 8, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.tarePerColumnLb, 0, 'no tare given -> no tare term');
+  approx(a.loadLb, a.boxLoadLb, 'loadLb collapses to the box load alone');
+});
+
+t('stackAnalysis: tareAboveLb with casesPerLayer=0 (no fit) contributes nothing -- no divide-by-zero', () => {
+  const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
+                           boxesAbove: 8, tareAboveLb: 45, casesPerLayer: 0,
+                           unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(a.tarePerColumnLb, 0, 'no layer count to spread across -> 0, not Infinity/NaN');
+  if(!Number.isFinite(a.loadLb)) throw new Error('loadLb must stay finite with no casesPerLayer');
+});
+
 t('below-target load flags meetsTarget=false', () => {
   const a = stackAnalysis({ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4,
                            boxesAbove: 20, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
@@ -63,20 +89,26 @@ t('below-target load flags meetsTarget=false', () => {
   if(a.meetsTarget) throw new Error('should not meet target');
 });
 
-t('boxesAboveBottom: (layers-1), doubled for double-stack; never negative', () => {
-  approx(boxesAboveBottom(9, false), 8, 'single');
-  approx(boxesAboveBottom(9, true), 16, 'double = 2x');
-  approx(boxesAboveBottom(1, false), 0, 'a lone box carries nothing');
-  approx(boxesAboveBottom(1, true), 0);
-  approx(boxesAboveBottom(0, true), 0, 'never negative');
+t('boxesAboveBottom (core/stack.js): N*layers-1, N=1 identical to the old single-stack formula; never negative', () => {
+  approx(boxesAboveBottom(9, 1), 8, 'single (N=1, default)');
+  approx(boxesAboveBottom(9), 8, 'N defaults to 1');
+  approx(boxesAboveBottom(9, 2), 17, 'N=2: 2*9-1');
+  approx(boxesAboveBottom(1, 1), 0, 'a lone box carries nothing');
+  approx(boxesAboveBottom(1, 2), 1, 'N=2, 1 layer: 2*1-1');
+  approx(boxesAboveBottom(0, 2), 0, 'never negative');
 });
 
-t('double-stack doubles the bottom-box load and HALVES the safety factor', () => {
+t('a 2-high stack (both pallet-based) doubles the bottom-box BOX load and roughly halves the safety factor', () => {
   const base = {ectLbPerIn: ECT, caliperMm: 0.16*25.4, L_mm: 12*25.4, W_mm: 10*25.4, unitWeightLb: 20, targetRatio: 3.0, isRSC: true};
-  const single = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, false)});
-  const dbl    = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, true)});
-  approx(dbl.loadLb, single.loadLb*2, 'load doubles');
-  approx(dbl.ratio, single.ratio/2, 'safety factor halves', 1e-9);
+  const single = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, 1)});
+  const dbl    = stackAnalysis({...base, boxesAbove: boxesAboveBottom(9, 2)});
+  // N*layers-1 at N=2 is 2*9-1=17, not 2*(9-1)=16 -- one MORE box than a bare
+  // doubling, because the bottom case also carries the extra layer's-worth of
+  // its OWN column that a naive "double the load" would miss. With no tare
+  // term (both calls omit tareAboveLb/casesPerLayer) boxLoadLb IS loadLb.
+  approx(single.loadLb, 8*20, 'single load = 8 boxes x 20 lb');
+  approx(dbl.loadLb, 17*20, 'doubled-stack load = 17 boxes x 20 lb');
+  if(!(dbl.ratio < single.ratio/2 + 1e-9)) throw new Error('a 2-high stack must be at least as hard on the bottom box as a bare doubling');
 });
 
 t('non-RSC style is flagged approximate (rougher McKee fit)', () => {

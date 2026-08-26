@@ -109,11 +109,23 @@
   <div id="palBaseHNote" style="display:none"></div>
   <select id="palUnits"><option value="in">in</option><option value="mm">mm</option></select>
   <select id="palPattern"><option value="optimal">optimal</option><option value="column">column</option><option value="interlock">interlock</option></select>
+  <!-- stack positions (core/stack.js) the real app wires at boot -->
+  <input id="stackPositions" type="number" value="1">
+  <div id="stackBases"></div>
+  <button id="stackAllPallet"></button>
+  <button id="stackSlipAbove"></button>
+  <input id="palTareLb" type="number" value="45">
+  <div id="ssField" style="display:none">
+    <input id="ssCaliper" type="number" value="3">
+    <input id="ssDensity" type="number" value="950">
+    <input id="ssWeightLb" type="number" value="">
+    <input id="ssL" type="number" value="">
+    <input id="ssW" type="number" value="">
+  </div>
   <!-- BCT stacking inputs the real app wires at boot -->
   <input id="bctEct" type="number" value="32">
   <input id="bctWeight" type="number" value="20">
   <input id="bctTarget" type="number" value="3">
-  <input id="bctDouble" type="checkbox">
 </div>
 <!-- BCT readout elements refreshPal writes to -->
 <span id="bctRatio"></span><span id="bctVal"></span><span id="bctLoad"></span>
@@ -2494,14 +2506,16 @@ await (async () => {
 })();
 
 /* ==================================================================
-   DOUBLE-STACK renders: two decks + two loads, in the ONE buildPallet
-   path. MUTATION-TESTED companion to the BCT doubling (bct.js): the
-   Palletize removal (5e103c6) deleted the renderer that drew the second
-   unit load while keeping the BCT math — this pin fails if the drawing
-   is ever dropped again. Asserts against the LIVE scene: deck count
-   (named gmaPallet groups), closed-unit instance count, and the
-   rendered total height doubling (both decks included).
-   ================================================================== */
+   STACK POSITIONS renders: N unit loads, each on its own base, in the ONE
+   buildPallet path (core/stack.js resolveStack + hierarchy3d.js buildPallet).
+   MUTATION-TESTED companion to the BCT compression formula (bct.js/stack.js):
+   the Palletize removal (5e103c6) deleted the renderer that drew a second
+   unit load while keeping the BCT math — this pin fails if the drawing is
+   ever dropped again. Driven through the REAL #stackPositions input the way
+   a user does it (fire 'input', matching app.js's own listener), not by
+   writing build.project.pallet.stack directly. Asserts against the LIVE
+   scene: deck count (named gmaPallet groups), closed-unit instance count,
+   and the rendered total height (every position's own base + every load). */
 await (async () => {
   setLevel('case'); await settle();
   el('tab3d').click(); await settle();
@@ -2534,15 +2548,19 @@ await (async () => {
   // run first — they failed with "expected null" when run on their own.
   const offH = hier.renderedOuter().H, offDecks = countDecks(), offClosed = closedUnits();
 
-  t('double-stack OFF: one deck, one load (the baseline this block doubles)', () => {
+  t('stack positions OFF (N=1): one deck, one load (the baseline this block stacks higher)', () => {
     eq(offDecks, 1, 'single-stack deck count:');
     if(!(offClosed >= 1)) throw new Error('no closed pallet units in the baseline scene');
     if(!(offH > 0)) throw new Error('no rendered pallet height');
   });
 
-  el('bctDouble').checked = true; fire(el('bctDouble'), 'change'); await settle();
+  // drive the REAL #stackPositions field the way a user does — 'input',
+  // matching app.js's own onPalletEdited listener. New positions pad as
+  // 'pallet' (setStackPositionCount), so N=2 here reproduces the old
+  // doubleStack:true render exactly: two IDENTICAL pallet-based positions.
+  el('stackPositions').value = '2'; fire(el('stackPositions'), 'input'); await settle();
 
-  t('double-stack ON: TWO decks and TWO loads; total height includes both decks', () => {
+  t('stack positions N=2 (both pallet): TWO decks and TWO loads; total height sums both', () => {
     eq(countDecks(), 2, 'deck count:');
     // bottom load opens one unit (N-1 closed), the top load is all N closed
     eq(closedUnits(), 2*offClosed + 1, 'closed units across both loads:');
@@ -2550,7 +2568,7 @@ await (async () => {
       throw new Error(`total H must be two full unit loads (deck+load, twice): ${hier.renderedOuter().H} != 2*${offH}`);
   });
 
-  t('double-stack: the upper pallet RESTS on the lower load — no floating layer', () => {
+  t('stack N=2: the upper pallet RESTS on the lower load — no floating layer', () => {
     const d = deckSpans();
     eq(d.length, 2, 'decks:');
     const gap = d[1].ymin - loadTopBelow(d[1].ymin);
@@ -2561,12 +2579,50 @@ await (async () => {
       throw new Error(`upper deck must rest on the lower load: gap ${gap.toFixed(2)}mm (only the 1mm case seam is allowed)`);
   });
 
-  el('bctDouble').checked = false; fire(el('bctDouble'), 'change'); await settle();
+  el('stackPositions').value = '1'; fire(el('stackPositions'), 'input'); await settle();
 
-  t('double-stack off again: the single load restores exactly', () => {
+  t('stack positions back to N=1: the single load restores exactly', () => {
     eq(countDecks(), 1, 'deck count:');
     eq(closedUnits(), offClosed, 'closed units:');
     if(Math.abs(hier.renderedOuter().H - offH) > 1e-9) throw new Error('single-stack height must restore');
+  });
+
+  // MIXED BASES: position[0] pallet, position[1] slipsheet -- driven through
+  // the real #stackPositions field AND the real per-position <select>
+  // (renderStackBasesUI), never by writing build.project.pallet.stack by
+  // hand. A slipsheet position must draw a THIN slipsheet, not a second
+  // full-height GMA pallet -- the whole visual point of the feature.
+  el('stackPositions').value = '2'; fire(el('stackPositions'), 'input'); await settle();
+  const baseSel = () => document.querySelectorAll('.stackBaseSel');
+  eq(baseSel().length, 2, 'two per-position selects rendered:');
+  baseSel()[1].value = 'slipsheet'; fire(baseSel()[1], 'change'); await settle();
+
+  const countSlipsheets = () => { let n = 0; getPivot().traverse(o => { if(o.name === 'slipsheet') n++; }); return n; };
+
+  t('mixed stack (pallet + slipsheet): ONE gmaPallet, ONE slipsheet -- never two identical decks', () => {
+    eq(countDecks(), 1, 'exactly one full pallet deck:');
+    eq(countSlipsheets(), 1, 'exactly one slipsheet:');
+  });
+
+  t('mixed stack: total height uses the slipsheet\'s OWN (thin) caliper, not the pallet\'s baseH', () => {
+    // resolveStack's own per-position heights are the single source (see
+    // core/stack.js) -- a render that fell back to "every position is
+    // deck-height" would report a MUCH taller total than this.
+    const ssCaliper = +el('ssCaliper').value;
+    const palBaseHmm = build.project.pallet.baseH;
+    const withDeckMMxN = 2*palBaseHmm + 2*offH - palBaseHmm;   // the wrong formula: deckH x N + loads (for comparison)
+    const rendered = hier.renderedOuter().H;
+    if(Math.abs(rendered - withDeckMMxN) < 1e-6)
+      throw new Error('rendered height must NOT equal the deckH x N formula this replaces (slipsheet is much thinner)');
+    if(!(ssCaliper < palBaseHmm)) throw new Error('vacuous fixture: slipsheet caliper must be thinner than the pallet baseH');
+    if(!(rendered < withDeckMMxN)) throw new Error('a pallet+slipsheet stack must be SHORTER than two full pallets');
+  });
+
+  // restore: back to the single-position default for later blocks
+  baseSel()[1].value = 'pallet'; fire(baseSel()[1], 'change'); await settle();
+  el('stackPositions').value = '1'; fire(el('stackPositions'), 'input'); await settle();
+  t('mixed-stack restore: back to N=1, single deck, no slipsheet', () => {
+    eq(countDecks(), 1); eq(countSlipsheets(), 0);
   });
 
   t('pallet render TAKES its load height from the chain, never measures it', () => {
@@ -2586,7 +2642,12 @@ await (async () => {
       caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: null, tray: null,
       cases: {placements: cases.placements, count: cases.count, deck: cases.deck,
               loadH: DECLARED, unitStackH: row.unitStackH},
-      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {}
+      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {},
+      // a hand-built bundle (no chain resolveStack behind it): the single-
+      // pallet-position default, matching cases.deck's own footprint/baseH —
+      // buildPallet reads bundle.stack unconditionally, same as any real one.
+      stack: {positions: [{base: 'pallet'}], baseHeightMM: [cases.deck.baseH],
+              footprintMM: [{L: cases.deck.L, W: cases.deck.W}]}
     }, 'pallet', {}, true);
     approx(hier.renderedOuter().H, cases.deck.baseH + DECLARED,
            'rendered pallet height must be deck + the load height it was GIVEN:');
@@ -3010,7 +3071,9 @@ await (async () => {
       caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: null, tray: null,
       cases: {placements: cases.placements, count: cases.count, deck: cases.deck,
               loadH: row.loadH, unitStackH: row.unitStackH},
-      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {}
+      cartons: {placements: cartons.placements}, wraps: null, counts: {}, art: {},
+      stack: {positions: [{base: 'pallet'}], baseHeightMM: [cases.deck.baseH],
+              footprintMM: [{L: cases.deck.L, W: cases.deck.W}]}
     }, 'pallet', {}, true);                       // solid: every unit closed, the heavy path
     let meshes = 0, unitInstances = 0;
     getPivot().traverse(o => {

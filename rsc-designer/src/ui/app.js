@@ -27,7 +27,8 @@ import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
 import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
-import {stackAnalysis, boxesAboveBottom, DERATINGS} from '../core/bct.js';
+import {stackAnalysis, DERATINGS} from '../core/bct.js';
+import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT} from '../core/stack.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
 import {LEGEND} from '../render/hierarchy3d.js';
@@ -786,7 +787,7 @@ function refreshPal(){
   }else{
     rl.style.display = 'none';
   }
-  renderBCT(g, {perLayer, layers, total, coveragePct: row.coveragePct});
+  renderBCT(g, row);
   drawDims();
 }
 
@@ -852,7 +853,7 @@ function clearBCT(){
   ['bctRatio', 'bctVal', 'bctLoad'].forEach(id => el(id).textContent = '--');
   el('bctRatio').style.color = ''; el('bctNote').textContent = ''; el('bctHowBody').innerHTML = '';
 }
-function renderBCT(g, stats){
+function renderBCT(g, row){
   const st = build.project.pallet.stacking || {};
   // McKee ASSUMES A CLOSED BOX. A container in display state has no lid and a
   // profiled front, so the formula does not describe it — and a plausible
@@ -874,16 +875,21 @@ function renderBCT(g, stats){
   // off, so reading it would misjudge the style). Identical for the default
   // case-enabled chain, where outerKey is 'tertiary'.
   const isRSC = build.project[describeChain(build.project).outerKey].styleId === 'fefco201';
-  const boxesAbove = boxesAboveBottom(stats.layers || 0, !!st.doubleStack);
+  // THE stack, resolved once (core/stack.js) from the chain's own pallet-fit
+  // numbers — boxesAboveBottom and the tare bearing on the bottom case come
+  // from here, never recomputed independently.
+  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
   const a = stackAnalysis({
     ectLbPerIn: st.ect, caliperMm: g.meta.caliper || 0, L_mm: g.outer.L, W_mm: g.outer.W,
-    boxesAbove, unitWeightLb: st.unitWeightLb, targetRatio: st.target, isRSC
+    boxesAbove: stack.boxesAboveBottom, tareAboveLb: stack.tareAboveLb, casesPerLayer: row.casesPerLayer || 0,
+    unitWeightLb: st.unitWeightLb, targetRatio: st.target, isRSC
   });
   const noLoad = a.ratio === Infinity;
   el('bctRatio').textContent = (noLoad ? '— : 1' : `${a.ratio.toFixed(2)} : 1`) + ` (target ${(+st.target).toFixed(1)})`;
   el('bctRatio').style.color = noLoad ? 'var(--ink-3)' : (a.meetsTarget ? 'var(--valid)' : 'var(--danger)');
   el('bctVal').textContent = `${Math.round(a.bctLb)} lb${a.approximate ? ' · approx' : ''}`;
-  el('bctLoad').textContent = `${Math.round(a.loadLb)} lb  (${boxesAbove} box${boxesAbove === 1 ? '' : 'es'} × ${st.unitWeightLb} lb${st.doubleStack ? ', double-stack' : ''})`;
+  const tareNote = a.tarePerColumnLb > 0.05 ? ` + ${a.tarePerColumnLb.toFixed(1)} lb tare` : '';
+  el('bctLoad').textContent = `${Math.round(a.loadLb)} lb  (${stack.boxesAboveBottom} box${stack.boxesAboveBottom === 1 ? '' : 'es'} × ${st.unitWeightLb} lb${tareNote}${stack.positions.length > 1 ? `, ${stack.positions.length}-high stack` : ''})`;
   el('bctNote').innerHTML = (noLoad ? '' : a.meetsTarget ? '' : '<strong>Below target.</strong> ') +
     (a.approximate ? 'Non-RSC style — McKee is a rougher estimate here. ' : '') + 'An estimate, not a guarantee.';
   el('bctNote').style.color = (!noLoad && !a.meetsTarget) ? 'var(--danger)' : 'var(--ink-3)';
@@ -895,7 +901,9 @@ function renderBCT(g, stats){
       `<tr><td>caliper</td><td>${f2(a.caliperIn)} in</td></tr>` +
       `<tr><td>perimeter 2(L+W)</td><td>${f2(a.perimeterIn)} in</td></tr>` +
       `<tr><td>→ BCT</td><td>${Math.round(a.bctLb)} lb${a.approximate ? ' (approx — non-RSC)' : ''}</td></tr>` +
-      `<tr><td>load = boxes × weight</td><td>${boxesAbove} × ${st.unitWeightLb} = ${Math.round(a.loadLb)} lb</td></tr>` +
+      `<tr><td>load = boxes × weight</td><td>${stack.boxesAboveBottom} × ${st.unitWeightLb} = ${Math.round(a.boxLoadLb)} lb</td></tr>` +
+      `<tr><td>+ pallet/slipsheet tare</td><td>${f2(stack.tareAboveLb)} lb ÷ ${row.casesPerLayer || 0} per layer = ${f2(a.tarePerColumnLb)} lb</td></tr>` +
+      `<tr><td>→ load on bottom box</td><td>${Math.round(a.loadLb)} lb</td></tr>` +
       `<tr><td>safety = BCT ÷ load</td><td>${noLoad ? '∞' : f2(a.ratio)} : 1 (target ${(+st.target).toFixed(1)})</td></tr>` +
     `</table>` +
     `<div class="bctderate">McKee predicts <em>short-term lab</em> strength. Real field strength is reduced by:` +
@@ -2139,10 +2147,12 @@ function hierarchyBundle(proj = build.project, rowIn = null){
       wrapsPerCarton: wraps ? wraps.count : 0,
       piecesPerWrap: pieces ? pieces.placements.length : 0
     },
-    // warehouse double-stack (two unit loads high): read from the ONE home,
-    // project.pallet.stacking — the render draws the second deck+load and the
-    // BCT doubles its column from this same flag
-    doubleStack: !!(proj.pallet.stacking && proj.pallet.stacking.doubleStack)
+    // THE stack (core/stack.js): how many unit loads are on the pallet and
+    // what each one rests on. The render draws one base+load per position
+    // and the BCT panel reads the same resolved boxesAboveBottom/tare —
+    // ONE resolver, read here and in renderBCT, never two independent
+    // derivations of "how many loads are stacked".
+    stack: resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0})
   };
 }
 
@@ -2252,19 +2262,14 @@ function applyHierarchy(resetCam){
     ? {level: depth, axis: explodeAxis[depth], factor: explodeFactor} : null;
   const res = hier.buildHierarchy(bundle, depth, hierSel, solid, explode);
   // at pallet depth, flag it so the Dims overlay splits the height (deck vs load)
-  // palletMM is the TOTAL timber in the stack (drawDims splits H into
-  // Pallet / Load / Total): two decks when double-stacked, so the second
-  // deck is never mislabeled as load height.
-  // It reads the CHAIN's own deck height (pallet.baseH — what the fit budgets
-  // and what buildPallet stacks the load at), NOT palletmesh's PALLET_HEIGHT
-  // constant. Those are two independent 127s coupled only by a comment, and
-  // the split believed the wrong one: at baseH 140 the overlay read Pallet 254
-  // / Load 2316 where the truth is 280 / 2290. Total was right either way,
-  // which is why it went unnoticed — the error is a pure transfer between the
-  // two component lines, nLoads x (baseH - 127).
-  const deckMM = (bundle.cases && bundle.cases.deck && typeof bundle.cases.deck.baseH === 'number')
-    ? bundle.cases.deck.baseH : PALLET_HEIGHT;
-  subjectDims.nest = res.outer ? (depth === 'pallet' ? {...res.outer, palletMM: deckMM*(bundle.doubleStack ? 2 : 1)} : res.outer) : null;
+  // palletMM is the TOTAL base (pallet+slipsheet) contribution in the stack
+  // (drawDims splits H into Pallet / Load / Total): the SUM of every
+  // position's own baseHeightMM (core/stack.js resolveStack), so a mixed
+  // pallet+slipsheet stack is never mislabeled as N identical decks.
+  // resolveStack's own per-position heights are the single source now, so
+  // there is nothing left to disagree with.
+  subjectDims.nest = res.outer ? (depth === 'pallet'
+    ? {...res.outer, palletMM: bundle.stack.baseHeightMM.reduce((s, h) => s + h, 0)} : res.outer) : null;
   hier.show(true);
   el('orbithint').textContent = solid
     ? 'drag orbit · right-drag pan · scroll zoom · Solid — artwork on every face'
@@ -2502,6 +2507,66 @@ levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
 
 // pallet fields write straight into project.pallet — the single home for
 // pallet dims (no more copy into a detached object)
+// ---- stack positions (core/stack.js): per-position base, 1-4, bottom first ----
+const STACK_MAX_POSITIONS = 4;
+
+/** Rebuild the #stackBases selects from the live project — one <select>
+ *  per position, its own base ('pallet'/'slipsheet' — BASE_KINDS, so a
+ *  future third kind shows up here with no UI change needed). Called after
+ *  any edit that changes the position COUNT; a base edit within the same
+ *  count just writes the model (see the change listener below), no rebuild. */
+function renderStackBasesUI(){
+  const positions = build.project.pallet.stack.positions;
+  el('stackBases').innerHTML = positions.map((p, i) =>
+    `<select class="stackBaseSel" data-i="${i}">` +
+      BASE_KINDS.map(k => `<option value="${k}"${p.base === k ? ' selected' : ''}>${k === 'pallet' ? 'Pallet' : 'Slipsheet'}</option>`).join('') +
+    `</select>`
+  ).join('');
+  el('stackBases').querySelectorAll('.stackBaseSel').forEach(sel => {
+    sel.addEventListener('change', () => {
+      build.project.pallet.stack.positions[+sel.dataset.i].base = sel.value;
+      syncSlipsheetVisibility();
+      projectChanged();
+    });
+  });
+  el('ssField').style.display = positions.some(p => p.base === 'slipsheet') ? '' : 'none';
+}
+function syncSlipsheetVisibility(){
+  const show = build.project.pallet.stack.positions.some(p => p.base === 'slipsheet');
+  el('ssField').style.display = show ? '' : 'none';
+}
+/** Grow/shrink positions to `n` (1-4), preserving existing bases and padding
+ *  new positions as 'pallet' — never the array's stale tail from a larger
+ *  count the user is shrinking away from. */
+function setStackPositionCount(n){
+  const clamped = Math.max(1, Math.min(STACK_MAX_POSITIONS, Math.round(n) || 1));
+  const cur = build.project.pallet.stack.positions;
+  const next = Array.from({length: clamped}, (_, i) => cur[i] || {base: 'pallet'});
+  build.project.pallet.stack = {positions: next};
+  el('stackPositions').value = clamped;
+  renderStackBasesUI();
+}
+el('stackPositions').addEventListener('input', () => {
+  setStackPositionCount(+el('stackPositions').value);
+  projectChanged();
+});
+// Quick-set buttons over the real per-position model — never a second,
+// mode-enum representation of it (see project.js's own comment on this).
+el('stackAllPallet').addEventListener('click', () => {
+  build.project.pallet.stack = {positions: build.project.pallet.stack.positions.map(() => ({base: 'pallet'}))};
+  renderStackBasesUI();
+  projectChanged();
+});
+el('stackSlipAbove').addEventListener('click', () => {
+  const n = Math.max(2, build.project.pallet.stack.positions.length);
+  build.project.pallet.stack = {
+    positions: Array.from({length: n}, (_, i) => ({base: i === 0 ? 'pallet' : 'slipsheet'}))
+  };
+  el('stackPositions').value = n;
+  renderStackBasesUI();
+  projectChanged();
+});
+
 function commitPallet(){
   const {L, W, maxH, baseH} = inputs.readPallet();
   build.project.pallet.L = L; build.project.pallet.W = W; build.project.pallet.maxH = maxH;
@@ -2521,7 +2586,18 @@ function commitPallet(){
   st.ect = Math.max(0, +el('bctEct').value || 0);
   st.unitWeightLb = Math.max(0, +el('bctWeight').value || 0);
   st.target = Math.max(0, +el('bctTarget').value || 0);
-  st.doubleStack = el('bctDouble').checked;
+  build.project.pallet.tareLb = Math.max(0, +el('palTareLb').value || 0);
+  // slipsheet inputs -> project.pallet.slipsheet (one writer). Blank fields
+  // are auto (null): caliper/density always carry a numeric default so they
+  // are never blank-to-zero, but weight/footprint are genuinely optional
+  // overrides — an empty string must resolve to null (auto), not 0.
+  const ss = build.project.pallet.slipsheet || (build.project.pallet.slipsheet = {});
+  ss.caliper = Math.max(0, +el('ssCaliper').value || 0);
+  ss.density = Math.max(0, +el('ssDensity').value || 0);
+  const numOrNull = v => v === '' ? null : (Number.isFinite(+v) ? +v : null);
+  ss.weightLb = numOrNull(el('ssWeightLb').value);
+  ss.L = numOrNull(el('ssL').value);
+  ss.W = numOrNull(el('ssW').value);
 }
 /** Write project.pallet back into the pallet rail fields (after a load). */
 /** Warn at the mesh's faithful-shape boundary rather than drawing something
@@ -2553,7 +2629,17 @@ function writePalletFields(){
   el('bctEct').value = st.ect ?? 32;
   el('bctWeight').value = st.unitWeightLb ?? 20;
   el('bctTarget').value = st.target ?? 3;
-  el('bctDouble').checked = !!st.doubleStack;
+  el('palTareLb').value = p.tareLb ?? PALLET_TARE_LB_DEFAULT;
+  const positions = (p.stack && p.stack.positions && p.stack.positions.length) ? p.stack.positions : STACK_DEFAULTS.positions;
+  if(!p.stack) p.stack = {positions};
+  el('stackPositions').value = positions.length;
+  renderStackBasesUI();
+  const ss = p.slipsheet || {};
+  el('ssCaliper').value = ss.caliper ?? SLIPSHEET_DEFAULTS.caliper;
+  el('ssDensity').value = ss.density ?? SLIPSHEET_DEFAULTS.density;
+  el('ssWeightLb').value = ss.weightLb ?? '';
+  el('ssL').value = ss.L ?? '';
+  el('ssW').value = ss.W ?? '';
 }
 function onPalletEdited(){
   commitPallet();
@@ -2562,8 +2648,9 @@ function onPalletEdited(){
   // all of them instead of a hand-picked subset keyed off the current tab
   projectChanged();
 }
-['pal', 'palMaxH', 'palBaseH', 'bctEct', 'bctWeight', 'bctTarget'].forEach(id => el(id).addEventListener('input', onPalletEdited));
-['palPattern', 'bctDouble'].forEach(id => el(id).addEventListener('change', onPalletEdited));
+['pal', 'palMaxH', 'palBaseH', 'bctEct', 'bctWeight', 'bctTarget', 'palTareLb',
+ 'ssCaliper', 'ssDensity', 'ssWeightLb', 'ssL', 'ssW'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+['palPattern'].forEach(id => el(id).addEventListener('change', onPalletEdited));
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
@@ -2954,8 +3041,10 @@ function exportPalletPdf(){
 
   const u = inputs.getUnit(), f = v => fmtLen(v, u);
   const pal = build.project.pallet;
-  const nLoads = (pal.stacking && pal.stacking.doubleStack) ? 2 : 1;
-  const deckH = pal.baseH ?? 127;
+  // THE stack (core/stack.js): read straight off the bundle resolveStack
+  // already computed — never re-derived from pallet.stacking here.
+  const stack = bundle.stack;
+  const nLoads = stack.positions.length;
 
   const prevBg = fold.getStageBackground();
   fold.setStageBackground('white');
@@ -3058,7 +3147,11 @@ function exportPalletPdf(){
   }
   sections.push({label: 'Pallet', rows: [
     ['Load (on deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(row.loadH*nLoads)} ${u}`],
-    ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(nLoads*(deckH + row.loadH))} ${u}`]
+    // Overall height is resolveStack's own totalHeightMM — the sum of every
+    // position's ACTUAL base contribution (pallet.baseH or the slipsheet's
+    // caliper) plus each load's height, never nLoads x one deck height,
+    // which would be wrong the moment a position is a slipsheet.
+    ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(stack.totalHeightMM)} ${u}`]
   ]});
 
   const bytes = buildPalletPdf({

@@ -23,6 +23,10 @@ const DECK_PITCH = 190;                              // target top-deck spacing 
 const NOTCH_H = 42, LEG_L = 150;                     // 4-way stringer notch: legs at ends+centre, gaps between = fork openings
 
 const wood = new THREE.MeshStandardMaterial({color: 0xA0815A, roughness: 0.95, metalness: 0});
+// slipsheet: a thin, flat, kraft-coloured sheet — visually distinct from the
+// GMA pallet's timber so a mixed pallet+slipsheet stack reads as two
+// different bases at a glance, not two identical decks.
+const kraft = new THREE.MeshStandardMaterial({color: 0xC7A874, roughness: 0.85, metalness: 0});
 
 /** The NOMINAL GMA deck height (127mm) — the sensible default for a caller
  *  with no project to read, and the value project.pallet.baseH defaults to.
@@ -109,5 +113,25 @@ export function buildGmaPallet(pl, pw, deckH = PALLET_HEIGHT){
     const cx = -pl/2 + DECK_W/2 + i*((pl - DECK_W)/(nTop - 1));
     acrossBoard(S.deck, cx, S.bottom + S.notch + S.rail + S.deck/2);
   }
+  return g;
+}
+
+/**
+ * A slipsheet — a single thin flat board, no timber. base at y=0, top face
+ * at y=caliperMm. Named 'slipsheet' so the pallet-depth render can identify
+ * it apart from a GMA pallet at the same stack position.
+ * @param {number} l  slipsheet length (its own footprint, may exceed the
+ *        pallet's own L by the handling lip — core/stack.js slipsheetFootprintMM)
+ * @param {number} w  slipsheet width
+ * @param {number} caliperMm  sheet thickness, mm
+ * @returns {THREE.Group} base at y=0, top face at y=caliperMm
+ */
+export function buildSlipsheet(l, w, caliperMm){
+  const g = new THREE.Group();
+  g.name = 'slipsheet';
+  const h = Math.max(0.1, caliperMm);
+  const sheet = new THREE.Mesh(new THREE.BoxGeometry(l, h, w), kraft);
+  sheet.position.set(0, h/2, 0);
+  g.add(sheet);
   return g;
 }

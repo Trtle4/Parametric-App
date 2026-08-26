@@ -19,7 +19,7 @@ import {explodeTier, axisOffsets} from './explode.js';
 import {buildTray3d} from './tray3d.js';
 import {buildUboard3d} from './uboard3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
-import {buildGmaPallet} from './palletmesh.js';
+import {buildGmaPallet, buildSlipsheet} from './palletmesh.js';
 import {orientBasis} from './orient.js';
 
 // One shared texture per pack type drives a whole InstancedMesh (one draw call
@@ -1567,7 +1567,6 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opt
 function buildPallet(bundle, outerTier, S, solid, explode){
   const {cases} = bundle;
   const co = outerTier.geo.outer;
-  const deckH = bundle.cases.deck.baseH;
 
   // EXPLODED VIEW — same transform-on-placements rule as buildContainer, but
   // there is no SHELL to lift at pallet depth: cases sit on an open deck,
@@ -1635,28 +1634,42 @@ function buildPallet(bundle, outerTier, S, solid, explode){
   // pallet layout regardless of whether that outer tier is the case or carton.
   const openIdx = solid ? -1 : (S.pallet ?? nearestCameraCorner(cases.placements));
 
-  // DOUBLE-STACK: two full unit loads high — pallet, load, PALLET, load. The
-  // warehouse condition the BCT doubling models (bct.js boxesAboveBottom) is
-  // drawn here too, in this ONE pallet render path (the deleted Palletize
-  // renderer used to draw it; the consolidation, 5e103c6, dropped the drawing
-  // while keeping the BCT math). Each unit load repeats deck + stack at its
-  // own y offset, so the second load carries its own timber — never a load
-  // floating deckless on the first. The cutaway opens a unit in the BOTTOM
-  // load only; the upper load is all closed (there is one selection, and the
-  // bottom load is the one whose slot it names).
-  const nLoads = bundle.doubleStack ? 2 : 1;
-  const oneLoadH = deckH + loadH;
+  // THE STACK (core/stack.js resolveStack, carried on the bundle): 1-4 unit
+  // loads high, each on its own base — a pallet, or a slipsheet. Drawn here,
+  // in this ONE pallet render path (the deleted Palletize renderer used to
+  // draw the old two-pallet double-stack; the consolidation, 5e103c6, dropped
+  // the drawing while keeping the BCT math — this restores it, generalized to
+  // N positions of either base). Each position repeats its OWN base + the
+  // unit load at its own y offset — the running sum of every earlier
+  // position's baseHeightMM + loadH, never a uniform oneLoadH, since a
+  // slipsheet position is much thinner than a pallet one. The cutaway opens a
+  // unit in the BOTTOM load only; every load above it is all closed (there is
+  // one selection, and the bottom load is the one whose slot it names).
+  const positions = bundle.stack.positions;
+  const nLoads = positions.length;
+  const baseHeights = bundle.stack.baseHeightMM;
+  const footprints = bundle.stack.footprintMM;
+  const posOffsets = [];
+  { let acc = 0; for(let u = 0; u < nLoads; u++){ posOffsets.push(acc); acc += baseHeights[u] + loadH; } }
+  const totalStackH = posOffsets[nLoads - 1] + baseHeights[nLoads - 1] + loadH;
   for(let u = 0; u < nLoads; u++){
-    const yOff = u*oneLoadH;
+    const yOff = posOffsets[u];
     const uOpenIdx = u === 0 ? openIdx : -1;
+    const baseH = baseHeights[u];
+    const fp = footprints[u];
 
-    // the ONE shared GMA pallet (base at y=0, top-deck face at deckH == 127) —
-    // the SAME asset the Palletize view built, so every load rides identical
-    // timber instead of a bare slab. Named so tests can count decks.
-    // built to the CHAIN's deck height, the same deckH the load is stacked
-    // from — a fixed-height mesh floats the load above its own deck
-    const timber = buildGmaPallet(bundle.cases.deck.L, bundle.cases.deck.W, deckH);
-    timber.name = 'gmaPallet';
+    // this position's own base — the ONE shared GMA pallet asset (base at
+    // y=0, top face at baseH) for a 'pallet' position, or a thin flat
+    // slipsheet for a 'slipsheet' position, built to its OWN resolved height
+    // and footprint (core/stack.js), never assumed deck-sized. Named so
+    // tests can count/identify decks.
+    let timber;
+    if(positions[u].base === 'slipsheet'){
+      timber = buildSlipsheet(fp.L, fp.W, baseH);        // names itself 'slipsheet'
+    }else{
+      timber = buildGmaPallet(fp.L, fp.W, baseH);
+      timber.name = 'gmaPallet';
+    }
     timber.position.y = yOff;
     group.add(timber);
 
@@ -1679,17 +1692,17 @@ function buildPallet(bundle, outerTier, S, solid, explode){
       // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
       // cartons + skin). One draw pass instances the parts across the pallet;
       // the shrink skin is a translucent box per unit rising to the loaded top.
-      openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, yOff + deckH + restOffset,
+      openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, yOff + baseH + restOffset,
         {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
     }else if(art && art.am && art.canvas && closed.length){
-      for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: yOff + deckH + pl.z, z: pl.y}), 'pallet')) group.add(m);
+      for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: yOff + baseH + pl.z, z: pl.y}), 'pallet')) group.add(m);
     }else{
       for(const [o, list] of groupByOrientation(explodedCases, uOpenIdx)){
         const od = orient(co, o);
         const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
         const inst = new THREE.InstancedMesh(cgeo, board, list.length);
         const M = new THREE.Matrix4();
-        list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, yOff + deckH + pl.z, pl.y); inst.setMatrixAt(k, M); });
+        list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, yOff + baseH + pl.z, pl.y); inst.setMatrixAt(k, M); });
         inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
         pickables.push({mesh: inst, tier: 'pallet'});
         group.add(inst);
@@ -1698,20 +1711,20 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     if(u === 0 && !solid && explodedCases[openIdx]){
       const pl = explodedCases[openIdx];
       const cg = buildContainer(outerTier, bundle, S, [openIdx], {explode});
-      cg.position.set(pl.x, yOff + deckH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
+      cg.position.set(pl.x, yOff + baseH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
       cg.quaternion.copy(orientQuat(pl.orientation));
       group.add(cg);
     }
   }
-  group.position.y = -(nLoads*oneLoadH)/2;
+  group.position.y = -totalStackH/2;
   return {
     // span drives camera framing: single-load framing is bit-identical to
-    // before (loadH), a double stack frames the full two-load column
-    span: Math.max(bundle.cases.deck.L, bundle.cases.deck.W, nLoads === 1 ? loadH : nLoads*oneLoadH),
+    // before (loadH), a multi-position stack frames the full stacked column
+    span: Math.max(bundle.cases.deck.L, bundle.cases.deck.W, nLoads === 1 ? loadH : totalStackH),
     // loaded pallet: the deck footprint x the FULL stacked height — every
-    // deck and every load (pallet+load, doubled when double-stacked), so the
-    // Dims overlay total is the real floor-to-top height
-    outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: nLoads*oneLoadH}
+    // position's own base and every load (core/stack.js resolveStack), so
+    // the Dims overlay total is the real floor-to-top height
+    outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: totalStackH}
   };
 }
 
