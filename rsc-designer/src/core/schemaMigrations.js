@@ -17,7 +17,7 @@
  * match.
  */
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * One entry per version step. `migrate` receives and returns a plain
@@ -106,6 +106,30 @@ export const MIGRATIONS = [
         delete tray.enabled;
       }
       return {...doc, project: {...proj, interlayer: wasEnabled ? 'tray' : 'none', tray}};
+    }
+  },
+  {
+    from: 4, to: 5,
+    describe: "project.pallet.stack.positions (per-position base, 'pallet' " +
+      "or 'slipsheet', 1-4 positions bottom-first) replaces project.pallet." +
+      "stacking.doubleStack — a single boolean could only say 'one or two " +
+      "identical pallets', never a slipsheet, nor three or four positions. " +
+      "doubleStack:true migrates to two pallet-based positions, reproducing " +
+      "the old boolean's stacking geometry exactly; false or absent " +
+      "migrates to the single-position default (bit-identical to the old " +
+      "single stack). doubleStack itself is dropped from stacking, since " +
+      "nothing reads it once pallet.stack exists.",
+    migrate: doc => {
+      const proj = doc.project;
+      if(!proj || !proj.pallet) return doc;
+      const wasDouble = !!(proj.pallet.stacking && proj.pallet.stacking.doubleStack);
+      let stacking = proj.pallet.stacking;
+      if(stacking && Object.prototype.hasOwnProperty.call(stacking, 'doubleStack')){
+        stacking = {...stacking};
+        delete stacking.doubleStack;
+      }
+      const positions = wasDouble ? [{base: 'pallet'}, {base: 'pallet'}] : [{base: 'pallet'}];
+      return {...doc, project: {...proj, pallet: {...proj.pallet, stacking, stack: {positions}}}};
     }
   }
 ];

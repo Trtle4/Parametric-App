@@ -211,9 +211,30 @@ export function newProject(){
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal', patternIndex: 0,
       // stacking-strength (BCT) inputs — engineering guidance, not packing math.
       // ect: edge crush lb/in; unitWeightLb: gross weight per box (tare +
-      // contents, which the app can't know); target: required safety factor;
-      // doubleStack: two unit loads high in the warehouse (doubles the column).
-      stacking: {ect: 32, unitWeightLb: 20, target: 3.0, doubleStack: false}},
+      // contents, which the app can't know); target: required safety factor.
+      // doubleStack (two unit loads high, a single boolean) is retired —
+      // see pallet.stack below, the schema v4->v5 migration carries an old
+      // save's value across.
+      stacking: {ect: 32, unitWeightLb: 20, target: 3.0},
+      // pallet's own empty (tare) weight — see core/stack.js baseWeightLb.
+      // A placeholder order-of-magnitude for a 48x40 GMA pallet, same idiom
+      // as the BCT inputs above; a real project overrides it.
+      tareLb: 45,
+      // THE stack: 1-4 positions, bottom first, each resting on its own base
+      // (a pallet, or a slipsheet). Single source for how many unit loads are
+      // stacked and what each one rides on — core/stack.js resolveStack() is
+      // the sole reader/writer of what this implies for height, weight and
+      // the BCT load. One position on a pallet (the default) is
+      // bit-identical to the old doubleStack:false; two positions each on
+      // 'pallet' reproduces the old doubleStack:true's stacking geometry
+      // exactly (see the v4->v5 migration).
+      stack: {positions: [{base: 'pallet'}]},
+      // the slipsheet's own material — NEVER carton/case board or the
+      // U-board's paperboard (uboard.params.caliper is a distinct number).
+      // weightLb/L/W null = auto (derived from footprint x caliper x
+      // density, or pallet footprint + 1in/side); a number overrides.
+      // See core/stack.js slipsheetFootprintMM/slipsheetWeightLb.
+      slipsheet: {caliper: 3, density: 950, weightLb: null, L: null, W: null}},
     // MATERIAL RATES — project assumptions, not per-level state, so one flat
     // bag. Empty = every rate at its default (core/cost.js COST_DEFAULTS);
     // the presence of a key IS the override, the same auto-with-override

@@ -198,15 +198,45 @@ t('mutation check: a bogus tray/uboard default that leaves either field undefine
   if(threw !== 2) throw new Error('the pre-fix (undefined) shape does not fail these assertions -- they would not have caught the real bug');
 });
 
-t('v4 file (current schema) round-trips interlayer exactly, no migration runs', () => {
+t('current-schema file round-trips interlayer exactly, no migration runs', () => {
   const project = newProject();
   project.interlayer = 'tray'; project.tray.nCells = 3;
   const doc = serializeProject({project, rounding: '1mm', selectedCandidate: null, unit: 'mm', palUnit: 'in'});
-  eq(doc.schemaVersion, 4, 'serialized at the current (v4) schema:');
+  eq(doc.schemaVersion, CURRENT_SCHEMA_VERSION, 'serialized at the current schema:');
   const result = deserializeProject(JSON.parse(JSON.stringify(doc)));
   eq(result.migrationsRun, [], 'already current: no migration runs:');
   eq(result.project.interlayer, 'tray', 'interlayer round-trips exactly:');
   eq(result.project.tray.nCells, 3);
+});
+
+/* ---- v4 -> v5: project.pallet.stack.positions replaces doubleStack ------ */
+t('v4 -> v5: stacking.doubleStack:true migrates to two pallet-based positions', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 4,
+    project: {...base, pallet: {...base.pallet, stacking: {...base.pallet.stacking, doubleStack: true}}}
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}, {base: 'pallet'}]}, 'migrated stack:');
+  if('doubleStack' in result.project.pallet.stacking) throw new Error('doubleStack should have been dropped by the migration');
+  if(!result.migrationsRun.some(m => m.startsWith('v4 -> v5'))) throw new Error('expected a v4->v5 migration step in the log');
+});
+t('v4 -> v5: stacking.doubleStack:false migrates to the single-position default', () => {
+  const base = newProject();
+  const doc = {
+    schemaVersion: 4,
+    project: {...base, pallet: {...base.pallet, stacking: {...base.pallet.stacking, doubleStack: false}}}
+  };
+  const result = deserializeProject(doc);
+  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'migrated stack:');
+  if('doubleStack' in result.project.pallet.stacking) throw new Error('doubleStack should have been dropped by the migration');
+});
+t('v4 -> v5: a v4 file with no pallet.stacking at all migrates to the single-position default', () => {
+  const base = newProject();
+  const {stacking, ...palletWithoutStacking} = base.pallet;
+  const doc = {schemaVersion: 4, project: {...base, pallet: palletWithoutStacking}};
+  const result = deserializeProject(doc);
+  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'no stacking block -> single pallet position, not thrown at:');
 });
 
 /* ---- missing fields: defaulted AND reported ----------------------------- */
@@ -395,14 +425,16 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   const raw = await loadFixture('fixtures/v1/full-chain.pkg.json');
   const result = deserializeProject(raw);
   // this fixture predates schema v2 (finFace rename), v3 (tray_lid
-  // removal) and v4 (interlayer replaces tray.enabled) — it MUST run all
-  // three migrations now, not stay "already current": a frozen v1 file
-  // whose migration count silently changed would mean a migration stopped
-  // applying to it, not that it caught up
-  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
+  // removal), v4 (interlayer replaces tray.enabled) and v5 (pallet.stack
+  // replaces doubleStack) — it MUST run all four migrations now, not stay
+  // "already current": a frozen v1 file whose migration count silently
+  // changed would mean a migration stopped applying to it, not that it
+  // caught up
+  eq(result.migrationsRun.length, 4, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer, v4->v5 stack:');
   if(!result.migrationsRun[0].startsWith('v1 -> v2')) throw new Error(`unexpected migration: ${result.migrationsRun[0]}`);
   if(!result.migrationsRun[1].startsWith('v2 -> v3')) throw new Error(`unexpected migration: ${result.migrationsRun[1]}`);
   if(!result.migrationsRun[2].startsWith('v3 -> v4')) throw new Error(`unexpected migration: ${result.migrationsRun[2]}`);
+  if(!result.migrationsRun[3].startsWith('v4 -> v5')) throw new Error(`unexpected migration: ${result.migrationsRun[3]}`);
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   // this fixture predates the tray/interlayer feature entirely (no tray.*
   // in the raw file at all) — the v3->v4 migration must still land a real
@@ -419,11 +451,18 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // tertiary the reverse), not alphabetical or insertion-into-report order —
   // a change to that order elsewhere would be a real, if harmless, thing to
   // notice.
+  // pallet.stack is NOT in this list: the v4->v5 migration (which runs
+  // BEFORE this defaulting pass, since this fixture predates it) already
+  // derives a real pallet.stack from the absent doubleStack, so it is never
+  // "missing" by the time fillProjectDefaults looks at it — only tareLb and
+  // slipsheet, which that migration never touches, are genuinely new here.
   eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
-                         'pallet.patternIndex', 'pallet.stacking', 'tray', 'uboard', 'shelf'],
-     'the new openTop/perf/pallet.stacking/patternIndex/tray/uboard/shelf fields are filled:');
+                         'pallet.patternIndex', 'pallet.stacking', 'pallet.tareLb', 'pallet.slipsheet',
+                         'tray', 'uboard', 'shelf'],
+     'the new openTop/perf/pallet.stacking/patternIndex/tareLb/slipsheet/tray/uboard/shelf fields are filled:');
   eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
   eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
+  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'pallet.stack migrated to the single-pallet-position default (absent doubleStack):');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
   // THE COMPATIBILITY CLAIM, against a REAL prior save (this fixture is a
@@ -448,7 +487,7 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
 await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/no-carton.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
+  eq(result.migrationsRun.length, 4, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer, v4->v5 stack:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.interlayer, 'none', 'migrated interlayer:');
   eq(result.project.secondary.enabled, false, 'carton is disabled, as saved:');
@@ -471,7 +510,7 @@ await tAsync('v1 fixture "no-carton": loads, migrates to current, reproduces its
 await tAsync('v1 fixture "carton-only": loads, migrates to current, reproduces its hand-checked chain', async () => {
   const raw = await loadFixture('fixtures/v1/carton-only.pkg.json');
   const result = deserializeProject(raw);
-  eq(result.migrationsRun.length, 3, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer:');
+  eq(result.migrationsRun.length, 4, 'runs v1->v2 finFace, v2->v3 tray_lid, v3->v4 interlayer, v4->v5 stack:');
   eq(result.project.primary.wrap.params.finFace, 'bottom', 'migrated finFace:');
   eq(result.project.interlayer, 'none', 'migrated interlayer:');
   eq(result.project.tertiary.enabled, false, 'case is disabled, as saved:');

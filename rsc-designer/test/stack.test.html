@@ -1,0 +1,195 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pallet stack model (core/stack.js) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/stack.js -- the per-position pallet/slipsheet stack
+   model that replaced project.pallet.stacking.doubleStack. DOM-free, pure:
+   these construct a bare project shape (pallet.L/W/baseH/tareLb/stack/
+   slipsheet/stacking) by hand rather than going through newProject(), so
+   every hand-computed expected value in this file is independent of
+   whatever newProject()'s own defaults happen to be today. */
+import {resolveStack, boxesAboveBottom, baseHeightMM, baseWeightLb, baseFootprintMM,
+        BASE_KINDS, STACK_DEFAULTS, PALLET_TARE_LB_DEFAULT, SLIPSHEET_DEFAULTS,
+        slipsheetFootprintMM, slipsheetWeightLb} from '../src/core/stack.js';
+import {stackAnalysis} from '../src/core/bct.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-9){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+// A minimal, explicit project shape -- every field this module reads, spelled
+// out, so a pin never inherits a value from newProject()'s own defaults.
+function proj({baseH = 127, tareLb = 45, positions = STACK_DEFAULTS.positions,
+                ssCaliper = 3, ssDensity = 950, ssWeightLb = null, ssL = null, ssW = null,
+                palL = 48*25.4, palW = 40*25.4, unitWeightLb = 20} = {}){
+  return {
+    pallet: {
+      L: palL, W: palW, baseH, tareLb,
+      stack: {positions},
+      slipsheet: {caliper: ssCaliper, density: ssDensity, weightLb: ssWeightLb, L: ssL, W: ssW},
+      stacking: {ect: 32, unitWeightLb, target: 3.0}
+    }
+  };
+}
+
+/* ---- exhaustiveness on BASE_KINDS (same instrument as cookietray.test.html's
+   interlayer pins: a default case that refuses to guess, on the ONE set of
+   functions allowed to branch on position.base) ---------------------------- */
+t('BASE_KINDS exhaustiveness: every declared kind resolves height/weight/footprint without throwing', () => {
+  const p = proj();
+  for(const kind of BASE_KINDS){
+    const pos = {base: kind};
+    let threw = null;
+    try{ baseHeightMM(pos, p); baseWeightLb(pos, p); baseFootprintMM(pos, p); }catch(e){ threw = e; }
+    if(threw) throw new Error(`base:'${kind}' (a declared enum member) threw: ${threw.message}`);
+  }
+});
+t('BASE_KINDS exhaustiveness: an UNDECLARED base throws immediately, never silently resolves', () => {
+  const p = proj();
+  for(const bogus of ['crate', 'bogus', undefined, '']){
+    if(BASE_KINDS.includes(bogus)) continue;
+    const pos = {base: bogus};
+    for(const fn of [baseHeightMM, baseWeightLb, baseFootprintMM]){
+      let threw = null;
+      try{ fn(pos, p); }catch(e){ threw = e; }
+      if(!threw) throw new Error(`base:${JSON.stringify(bogus)} resolved without throwing in ${fn.name}`);
+      if(!/base/i.test(threw.message)) throw new Error(`threw, but the message doesn't name the problem: "${threw.message}"`);
+    }
+  }
+});
+
+/* ---- compression formula: N*layers-1, hand-computed at N=2,3,4 (never the
+   expression under test re-run against itself) ----------------------------- */
+t('boxesAboveBottom hand-computed: N=1 (baseline, identical to pre-Phase-C layers-1)', () => {
+  approx(boxesAboveBottom(9, 1), 8);
+});
+t('boxesAboveBottom hand-computed: N=2, layers=5 -> 9 (not 8, a bare doubling)', () => {
+  approx(boxesAboveBottom(5, 2), 9);
+});
+t('boxesAboveBottom hand-computed: N=3, layers=4 -> 11', () => {
+  approx(boxesAboveBottom(4, 3), 11);
+});
+t('boxesAboveBottom hand-computed: N=4, layers=3 -> 11', () => {
+  approx(boxesAboveBottom(3, 4), 11);
+});
+t('resolveStack.boxesAboveBottom agrees with the hand-computed formula at N=2,3,4', () => {
+  const mk = n => resolveStack(proj({positions: Array.from({length: n}, () => ({base: 'pallet'}))}),
+                                {layers: n === 2 ? 5 : n === 3 ? 4 : 3, casesPerLayer: 5, loadH: 300});
+  approx(mk(2).boxesAboveBottom, 9, 'N=2, layers=5');
+  approx(mk(3).boxesAboveBottom, 11, 'N=3, layers=4');
+  approx(mk(4).boxesAboveBottom, 11, 'N=4, layers=3');
+});
+
+/* ---- single-stack invariance: N=1 is bit-identical to the pre-Phase-C
+   formula for every layer count -- the golden set's own invariance claim,
+   restated at the unit level (the golden pins themselves cover the full
+   chain; this covers the formula in isolation). --------------------------- */
+t('single-stack (N=1) matches layers-1 for a spread of layer counts', () => {
+  for(const layers of [0, 1, 2, 5, 9, 20])
+    approx(boxesAboveBottom(layers, 1), Math.max(0, layers - 1), `layers=${layers}`);
+});
+
+/* ---- tare allocation: all-pallet vs pallet-bottom-slipsheets-above at the
+   SAME N -- the load difference must equal exactly the removed pallet tare,
+   spread over casesPerLayer. Hand-computed independently of resolveStack's
+   own expression. -------------------------------------------------------- */
+t('tare allocation: swapping position[1] pallet->slipsheet removes exactly (tareLb - slipsheetLb)/casesPerLayer from the load', () => {
+  const casesPerLayer = 5, layers = 4, loadH = 300;
+  const allPallet   = proj({positions: [{base: 'pallet'}, {base: 'pallet'}], tareLb: 45});
+  const slipAbove   = proj({positions: [{base: 'pallet'}, {base: 'slipsheet'}], tareLb: 45,
+                             ssCaliper: 3, ssDensity: 950});
+  const fit = {layers, casesPerLayer, loadH};
+  const sAll = resolveStack(allPallet, fit);
+  const sSlip = resolveStack(slipAbove, fit);
+  // hand-computed slipsheet weight: footprint (pallet + 1in/side) x caliper x
+  // density, independent of slipsheetWeightLb's own expression -- computed
+  // here from the raw geometry, not by calling the function under test.
+  const L_m = (48*25.4 + 2*25.4)/1000, W_m = (40*25.4 + 2*25.4)/1000, t_m = 3/1000;
+  const ssKg = L_m*W_m*t_m*950, ssLb = ssKg/0.45359237;
+  approx(sAll.tareAboveLb, 45, 'all-pallet: position[1] alone contributes its tare');
+  approx(sSlip.tareAboveLb, ssLb, 'slipsheet above: position[1] contributes the slipsheet weight instead', 1e-6);
+
+  const aAll  = stackAnalysis({ectLbPerIn: 32, caliperMm: 4, L_mm: 300, W_mm: 200,
+                                boxesAbove: sAll.boxesAboveBottom, tareAboveLb: sAll.tareAboveLb,
+                                casesPerLayer, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  const aSlip = stackAnalysis({ectLbPerIn: 32, caliperMm: 4, L_mm: 300, W_mm: 200,
+                                boxesAbove: sSlip.boxesAboveBottom, tareAboveLb: sSlip.tareAboveLb,
+                                casesPerLayer, unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  approx(aAll.boxLoadLb, aSlip.boxLoadLb, 'box load is IDENTICAL -- only the base changed, not the cases');
+  const expectedDiff = (45 - ssLb)/casesPerLayer;
+  approx(aAll.loadLb - aSlip.loadLb, expectedDiff, 'load difference equals exactly the removed tare, spread over casesPerLayer', 1e-6);
+});
+
+/* ---- stack height: per-position bases, mixed pallet/slipsheet, height is
+   the SUM of the actual per-position contributions -- never deckMM x N,
+   which would be wrong the moment one position isn't deck-height. -------- */
+t('totalHeightMM: mixed pallet/slipsheet/pallet sums the ACTUAL per-position heights, not baseH x N', () => {
+  const positions = [{base: 'pallet'}, {base: 'slipsheet'}, {base: 'pallet'}];
+  const p = proj({positions, baseH: 100, ssCaliper: 3});
+  const loadH = 250;
+  const s = resolveStack(p, {layers: 4, casesPerLayer: 5, loadH});
+  eq(s.baseHeightMM, [100, 3, 100], 'per-position heights: pallet, slipsheet, pallet');
+  // the WRONG formula this replaces: baseH(=100) x 3 positions + 3 loads
+  const wrongTotal = 100*3 + 3*loadH;
+  const rightTotal = (100 + 3 + 100) + 3*loadH;
+  approx(s.totalHeightMM, rightTotal, 'sum of real per-position heights + N loads');
+  if(Math.abs(s.totalHeightMM - wrongTotal) < 1e-9)
+    throw new Error('totalHeightMM must NOT equal the deckMM x N formula this replaces');
+});
+t('totalHeightMM: single pallet position (N=1) is bit-identical to baseH + loadH', () => {
+  const p = proj({positions: [{base: 'pallet'}], baseH: 127});
+  const s = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 400});
+  approx(s.totalHeightMM, 527, 'baseH(127) + loadH(400)');
+});
+
+/* ---- footprint: a pallet position uses the pallet's own L/W; a slipsheet
+   position uses its own (lipped) footprint -- never assumed deck-sized. -- */
+t('baseFootprintMM: pallet position reads pallet.L/W; slipsheet reads its own lipped footprint', () => {
+  const p = proj({palL: 1219.2, palW: 1016});
+  eq(baseFootprintMM({base: 'pallet'}, p), {L: 1219.2, W: 1016});
+  const fp = baseFootprintMM({base: 'slipsheet'}, p);
+  approx(fp.L, 1219.2 + 2*25.4, 'slipsheet L = pallet L + 1in/side');
+  approx(fp.W, 1016 + 2*25.4, 'slipsheet W = pallet W + 1in/side');
+});
+t('slipsheet footprint override wins over the auto (pallet + 1in) default', () => {
+  const p = proj({ssL: 1300, ssW: 1100});
+  const fp = slipsheetFootprintMM(p);
+  eq(fp, {L: 1300, W: 1100});
+});
+t('slipsheet weight override wins over the derived (area x caliper x density) default', () => {
+  const p = proj({ssWeightLb: 12.5});
+  approx(slipsheetWeightLb(p), 12.5);
+});
+
+/* ---- totalWeightLb: the whole stack's weight, for Phase D. Every base's
+   own tare (INCLUDING the bottom one, unlike tareAboveLb) plus every load's
+   product weight. ---------------------------------------------------------*/
+t('totalWeightLb includes every base (bottom included) plus every load\'s own product weight', () => {
+  const positions = [{base: 'pallet'}, {base: 'pallet'}];
+  const p = proj({positions, tareLb: 45, unitWeightLb: 20});
+  const s = resolveStack(p, {layers: 4, casesPerLayer: 5, loadH: 300});
+  // 2 pallets x 45 lb + 2 loads x (5*4 cases) x 20 lb/case
+  approx(s.totalWeightLb, 2*45 + 2*20*20, 'bottom pallet tare counted here, unlike tareAboveLb');
+});
+
+/* ---- defaults / fallbacks ------------------------------------------------ */
+t('resolveStack falls back to the single-pallet-position default when pallet.stack is absent', () => {
+  const p = proj();
+  delete p.pallet.stack;
+  const s = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 300});
+  eq(s.positions, [{base: 'pallet'}]);
+  approx(s.boxesAboveBottom, 4);
+});
+t('baseWeightLb/baseHeightMM fall back to PALLET_TARE_LB_DEFAULT/127 when pallet.tareLb/baseH are absent', () => {
+  const p = proj();
+  delete p.pallet.tareLb; delete p.pallet.baseH;
+  approx(baseWeightLb({base: 'pallet'}, p), PALLET_TARE_LB_DEFAULT);
+  approx(baseHeightMM({base: 'pallet'}, p), 127);
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

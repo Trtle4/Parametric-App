@@ -46,33 +46,32 @@ export function estimateBCT({ectLbPerIn, caliperMm, perimeterMm}){
   return {bctLb, caliperIn, perimeterIn};
 }
 
-/** Boxes bearing on the bottom box of the load's own column. Single stack: the
- *  rest of its column (layers − 1). Double stack (two unit loads high) doubles
- *  the column above the bottom box, per the design intent — so the load
- *  doubles and the safety factor halves. */
-export function boxesAboveBottom(layers, doubleStack){
-  const single = Math.max(0, layers - 1);
-  return doubleStack ? single*2 : single;
-}
-
 /**
  * Full stacking analysis for the load-bearing bottom box.
  * @param {Object} p
  *   ectLbPerIn, caliperMm, L_mm, W_mm  — the CASE (bottom box) board + footprint
- *   boxesAbove                          — from boxesAboveBottom()
+ *   boxesAbove                          — core/stack.js resolveStack().boxesAboveBottom
+ *   tareAboveLb                         — core/stack.js resolveStack().tareAboveLb (default 0)
+ *   casesPerLayer                       — the chain's own pallet fit (project.js), read not
+ *                                          recomputed; used only to spread tareAboveLb per column
  *   unitWeightLb                        — gross weight per box (tare + contents), user input
  *   targetRatio                         — required safety factor (default 3.0)
  *   isRSC                               — true only for a regular RSC (fefco201)
- * @returns {Object} bctLb, loadLb, ratio (Infinity if no load), meetsTarget,
- *                   perimeterMm/In, caliperIn, approximate
+ * @returns {Object} bctLb, loadLb, boxLoadLb, tarePerColumnLb, ratio (Infinity if
+ *                   no load), meetsTarget, perimeterMm/In, caliperIn, approximate
  */
-export function stackAnalysis({ectLbPerIn, caliperMm, L_mm, W_mm, boxesAbove, unitWeightLb, targetRatio, isRSC}){
+export function stackAnalysis({ectLbPerIn, caliperMm, L_mm, W_mm, boxesAbove, tareAboveLb = 0, casesPerLayer = 0, unitWeightLb, targetRatio, isRSC}){
   const perimeterMm = 2*(L_mm + W_mm);
   const {bctLb, caliperIn, perimeterIn} = estimateBCT({ectLbPerIn, caliperMm, perimeterMm});
-  const loadLb = Math.max(0, boxesAbove) * Math.max(0, unitWeightLb);
+  const boxLoadLb = Math.max(0, boxesAbove) * Math.max(0, unitWeightLb);
+  // Tare (pallet/slipsheet weight bearing on the bottom case) is carried by
+  // the whole deck, so it is spread evenly across the columns the deck's
+  // own pattern actually placed — casesPerLayer, the chain's own number.
+  const tarePerColumnLb = casesPerLayer > 0 ? Math.max(0, tareAboveLb)/casesPerLayer : 0;
+  const loadLb = boxLoadLb + tarePerColumnLb;
   const ratio = loadLb > 0 ? bctLb / loadLb : Infinity;
   return {
-    bctLb, loadLb, ratio,
+    bctLb, loadLb, boxLoadLb, tarePerColumnLb, ratio,
     meetsTarget: ratio >= targetRatio,
     perimeterMm, perimeterIn, caliperIn,
     approximate: !isRSC   // non-RSC: the 5.87 constant is a rougher fit

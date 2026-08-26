@@ -23,7 +23,7 @@ import {trayParams, deriveTrayParams, trayOuter, isProud,
         TRAY_DEFAULTS, MIN_WALL, MIN_DIVIDER} from '../src/core/cookietray.js';
 import {newProject, resolveActiveRow, INTERLAYERS} from '../src/core/project.js';
 import {collate} from '../src/core/collation.js';
-import {parseTrayLink, buildTrayLink, TRAY_KEYS, PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
+import {parseTrayLink, buildTrayLink, TRAY_KEYS, PRODUCT_KEYS, PRODUCT_DEFAULTS, CURRENT_LINK_VERSION} from '../src/core/cookietraylink.js';
 
 const results = [];
 function t(name, fn){
@@ -458,6 +458,106 @@ t('LINK: absent keys take COOKIE-TRAY defaults, not our auto-derivation', () => 
      'a null default must not be stored as null');
 });
 
+/** Build a querystring the way Cookie-Tray's OWN encodeGroup actually would:
+ *  a field whose value equals its default is OMITTED, never sent — the
+ *  encoder's own rule (`if (typeof d === "number" && Math.abs(num - d) <
+ *  1e-9) continue`), reproduced here so a fixture can exhibit the sparse-
+ *  link condition instead of hand-writing a complete key set (a fixture
+ *  with every key present never reaches the code path the omission bug
+ *  lives in — CLAUDE.md's own fixture-hygiene rule). `spec` may be a
+ *  PARTIAL product spec; only the keys given are considered, matching a
+ *  caller who's stating a full product but expects defaults to fall away. */
+function encodeProductLikeCookieTray(spec){
+  const out = new URLSearchParams();
+  for(const [long, short] of Object.entries(PRODUCT_KEYS)){
+    if(!(long in spec)) continue;
+    const v = spec[long], d = PRODUCT_DEFAULTS[long];
+    if(typeof v === 'number' && typeof d === 'number' && Math.abs(v - d) < 1e-9) continue;
+    if(typeof v === 'string' && v === d) continue;
+    out.set(short, typeof v === 'number' ? String(v) : v);
+  }
+  return out.toString();
+}
+
+/* ---- the product-half omission bug: Cookie-Tray's encoder applies its
+   omit-if-default rule to EVERY field, product included — a product sitting
+   exactly at their defaults sends NO product keys at all. The old importer
+   only ever wrote a product key it found present in the querystring, so an
+   absent key vanished from the returned `product` object entirely rather
+   than resolving to Cookie-Tray's own default; callers were left to invent
+   their own fallback (the `|| 90` bug) or silently keep stale state. ---- */
+t('LINK product half: a round product at Cookie-Tray\'s exact defaults sends NO product keys', () => {
+  // fixture hygiene: prove the encoded link actually omits them, not just
+  // assume it — a fixture stating every key never exercises the bug
+  const qs = encodeProductLikeCookieTray({
+    productType: 'round', cookieDiameter: 45, cookieThickness: 12,
+    qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+  });
+  ok(qs === '', `expected every default-valued product key to be omitted, got: ${qs}`);
+});
+t('LINK product half: absent keys resolve to Cookie-Tray\'s PRODUCT_DEFAULTS, not undefined', () => {
+  const qs = encodeProductLikeCookieTray({
+    productType: 'round', cookieDiameter: 45, cookieThickness: 12,
+    qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+  });
+  const r = parseTrayLink(`?n=2&${qs}`);        // n=2 is the one REAL key present — a link with zero keys is not a link
+  ok(r, 'should still parse (a real tray key is present)');
+  eq(r.product.productType, 'round', 'productType:');
+  eq(r.product.cookieDiameter, 45, 'diameter falls back to Cookie-Tray default:');
+  eq(r.product.cookieThickness, 12, 'thickness falls back to Cookie-Tray default:');
+  eq(r.product.qtyTotal, 24, 'qtyTotal falls back to Cookie-Tray default:');
+});
+t('LINK product half: a rectangle at defaults (45x20x12) with all three dims omitted resolves to 45x20x12, not undefined', () => {
+  const qs = encodeProductLikeCookieTray({
+    productType: 'rectangle', productWidth: 45, productHeight: 20, productThickness: 12,
+    qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+  });
+  ok(!/pw=|ph=|ptk=/.test(qs), `fixture does not exhibit the omitted-dims condition: ${qs}`);
+  const r = parseTrayLink(`?n=2&${qs}`);
+  eq(r.product.productType, 'rectangle', 'productType:');
+  eq(r.product.productThickness, 12, 'thickness (ptk) falls back to default:');
+  eq(r.product.productWidth, 45, 'width (pw) falls back to default:');
+  eq(r.product.productHeight, 20, 'height (ph) falls back to default:');
+});
+t('LINK product half: a NON-default value still overrides (the omission rule only drops default collisions)', () => {
+  const qs = encodeProductLikeCookieTray({
+    productType: 'round', cookieDiameter: 60, cookieThickness: 12,   // thickness collides with default, diameter does not
+    qtyTotal: 24, nCellsProduct: 3, distributeBy: 'nCells'
+  });
+  ok(/pdia=60/.test(qs) && !/pthk=/.test(qs), `fixture shape wrong: ${qs}`);
+  const r = parseTrayLink(`?n=2&${qs}`);
+  eq(r.product.cookieDiameter, 60, 'the stated override wins:');
+  eq(r.product.cookieThickness, 12, 'the omitted one still falls back to default:');
+});
+
+/* ---- our own link-schema version stamp (fix item 4). Cookie-Tray's real
+   links never carry `v` at all, so an absent key must mean v1 — never an
+   error — while a link claiming a version NEWER than this app understands
+   must fail loudly rather than silently reinterpret a key whose meaning
+   moved in a schema we don't know yet. ---- */
+t('LINK version: our export always stamps the current version', () => {
+  const p = newProject();
+  p.interlayer = 'tray';
+  const row = resolveActiveRow(p, '1mm');
+  const qs = new URLSearchParams(buildTrayLink(p, row.tray).split('?')[1]);
+  eq(qs.get('v'), String(CURRENT_LINK_VERSION), 'v key on our own export:');
+});
+t('LINK version: absent v (every real Cookie-Tray link) is treated as v1, never an error', () => {
+  const r = parseTrayLink('?n=2&cl=200');       // no v key at all — a real Cookie-Tray link shape
+  ok(r, 'must still parse with no v key present');
+});
+t('LINK version: a link claiming a newer version than we understand throws, rather than silently misparsing', () => {
+  let threw = null;
+  try{ parseTrayLink(`?n=2&cl=200&v=${CURRENT_LINK_VERSION + 1}`); }catch(e){ threw = e; }
+  ok(threw, 'a newer-than-understood version must throw');
+  ok(/newer/i.test(threw.message), `error should say why: ${threw && threw.message}`);
+});
+t('LINK version: our own current version round-trips without throwing', () => {
+  let threw = null;
+  try{ parseTrayLink(`?n=2&cl=200&v=${CURRENT_LINK_VERSION}`); }catch(e){ threw = e; }
+  ok(!threw, `current version must not throw: ${threw && threw.message}`);
+});
+
 t('LINK: accepts a URL, a bare querystring, or a ?-prefixed one', () => {
   for(const form of ['https://x.example/Cookie-Tray/?n=5&cl=100', '?n=5&cl=100', 'n=5&cl=100']){
     const r = parseTrayLink(form);
@@ -529,7 +629,10 @@ t('LINK: every resolved value is STATED (absent != default over there)', () => {
   // always be present — including when they collide with a default of theirs
   for(const k of ['cl', 'cw', 'ch', 'cr', 'n'])
     ok(qs.has(k), `the link must state ${k} even when it equals a Cookie-Tray default`);
-  const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS)]);
+  // 'v' is OUR OWN link-schema version stamp (fix item 4) — not one of
+  // Cookie-Tray's own key maps, but a deliberate, expected addition on our
+  // export side, not an unknown/stray key.
+  const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS), 'v']);
   for(const k of qs.keys()) ok(known.has(k), `unknown key in the link: ${k}`);
 });
 
