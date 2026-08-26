@@ -130,6 +130,24 @@
 <!-- BCT readout elements refreshPal writes to -->
 <span id="bctRatio"></span><span id="bctVal"></span><span id="bctLoad"></span>
 <div id="bctNote"></div><details id="bctHow"><div id="bctHowBody"></div></details>
+<!-- trailer fit (Phase D) — the real app wires all of these at boot -->
+<div id="trailerFields" style="display:none">
+  <input id="trlLW" type="text" value="630 x 98.5">
+  <span id="uTrlLW">in</span>
+  <input id="trlH" type="number" value="110">
+  <span id="uTrlH">in</span>
+  <input id="trlDoorH" type="number" value="105">
+  <input id="trlDoorW" type="number" value="98">
+  <span id="uTrlDoor">in</span>
+  <input id="trlMaxPayload" type="number" value="45000">
+  <select id="trlFloorPattern"><option value="column">column</option><option value="optimal">optimal</option></select>
+  <input id="trlDetailFloor" type="number" value="">
+  <input id="trlDetailVert" type="number" value="">
+  <span id="trlCounts"></span><span id="trlOrientation"></span><span id="trlCube"></span>
+  <span id="trlWeight"></span><span id="trlBinding"></span><span id="trlInterior"></span>
+  <span id="trlDoor"></span><span id="trlRemFloor"></span><span id="trlRemHeight"></span>
+  <div id="trlNote"></div>
+</div>
 <!-- dimensional-sensitivity panel refreshSensitivity writes to (pallet level) -->
 <div id="trayFields" style="display:none"></div>
 <div id="uboardFields" style="display:none"></div>
@@ -154,7 +172,7 @@
   <button id="m3fold">Fold</button>
   <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_uboard">U-board</button><button id="d_wrap">Wrap</button
   ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
-  ><button id="d_pallet">Pallet</button>
+  ><button id="d_pallet">Pallet</button><button id="d_trailer">Trailer</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
   <!-- exploded view toolbar the real app wires at boot (m3explodeToggle/
@@ -2623,6 +2641,74 @@ await (async () => {
   el('stackPositions').value = '1'; fire(el('stackPositions'), 'input'); await settle();
   t('mixed-stack restore: back to N=1, single deck, no slipsheet', () => {
     eq(countDecks(), 1); eq(countSlipsheets(), 0);
+  });
+
+  // ================================================================
+  // TRAILER CASCADE (Phase D): this is the U-board/slipsheet feature's
+  // WHOLE REASON TO EXIST — switching upper stack positions from pallet to
+  // slipsheet must be able to turn an otherwise-too-tall configuration into
+  // one that fits the trailer, INCREASING valid loads/trailer. Driven
+  // entirely through the real #stackPositions input, the per-position
+  // <select>, and the real #trlH field -- never by writing
+  // build.project.trailer/pallet.stack by hand.
+  // ================================================================
+  tEdit('trailer cascade: pallet->slipsheet on the upper position increases valid loads/trailer under a height limit', () => {
+    const parseLoads = () => +el('trlCounts').textContent.split('/')[1].trim();
+    // the trailer's own interior height is user-editable mm/in like every
+    // other length field -- read the CURRENT unit rather than forcing one,
+    // so this pin doesn't depend on (or fight) whatever unit another test
+    // left active. fmtLen-formatted numbers are recovered the same way any
+    // other pin in this file would: strip the unit and, for inches, undo
+    // the 25.4 factor.
+    setLevel('trailer');
+    // TWO different units are live at once here, same as the pallet rail's
+    // own long-standing split: #trlH (a RAIL FIELD) follows the pallet-unit
+    // toggle (#palUnits, #uTrlH's own text), while #trlRemHeight (a READOUT)
+    // follows the general display unit (#units) -- reading the wrong one
+    // for the other silently multiplies by 25.4 in the wrong direction.
+    const railU = el('uTrlH').textContent;
+    const mmToRailU = mm => railU === 'mm' ? mm : mm/25.4;
+    const readoutU = el('units').value;
+    const readoutToMM = displayVal => readoutU === 'mm' ? displayVal : displayVal*25.4;
+
+    // Single-position stack height, read off the SAME resolver the readout
+    // uses (interior - remaining = the stack height) -- never a hand-guessed
+    // constant, so this pin tracks the default chain's own case height
+    // instead of silently drifting from it.
+    setLevel('pallet');
+    el('stackPositions').value = '1'; fire(el('stackPositions'), 'input');
+    setLevel('trailer');
+    const singleStackHMM = build.project.trailer.H - readoutToMM(parseFloat(el('trlRemHeight').textContent));
+    // tight enough that TWO full pallet-based positions overflow it, but a
+    // pallet + a slipsheet (a few mm instead of a full pallet base) fits --
+    // margin is a fraction of one pallet baseH, always well under the
+    // pallet-vs-slipsheet height gap.
+    const targetHMM = 2*singleStackHMM - build.project.pallet.baseH*0.25;
+    el('trlH').value = String(mmToRailU(targetHMM));
+    fire(el('trlH'), 'input');
+
+    setLevel('pallet');
+    el('stackPositions').value = '1'; fire(el('stackPositions'), 'input');
+    setLevel('trailer');
+    if(el('trlInterior').textContent !== 'Clears')
+      throw new Error('vacuous fixture: N=1 must fit the (now-tightened) interior height to start');
+    const n1Loads = parseLoads();
+
+    setLevel('pallet');
+    el('stackPositions').value = '2'; fire(el('stackPositions'), 'input');
+    setLevel('trailer');
+    if(el('trlInterior').textContent === 'Clears')
+      throw new Error('vacuous fixture: N=2 all-pallet must NOT fit the interior -- otherwise the slipsheet swap proves nothing');
+
+    setLevel('pallet');
+    const upperSel = document.querySelectorAll('.stackBaseSel')[1];
+    upperSel.value = 'slipsheet'; fire(upperSel, 'change');
+    setLevel('trailer');
+    if(el('trlInterior').textContent !== 'Clears')
+      throw new Error('switching the upper position to a slipsheet must bring the N=2 stack within the interior height');
+    const n2SlipLoads = parseLoads();
+    if(!(n2SlipLoads > n1Loads))
+      throw new Error(`loads/trailer must increase: N=1(valid)=${n1Loads}, N=2-with-slipsheet(valid)=${n2SlipLoads}`);
   });
 
   t('pallet render TAKES its load height from the chain, never measures it', () => {

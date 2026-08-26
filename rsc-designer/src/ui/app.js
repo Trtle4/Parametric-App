@@ -29,6 +29,7 @@ import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../re
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, DERATINGS} from '../core/bct.js';
 import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT} from '../core/stack.js';
+import {resolveTrailer, TRAILER_DEFAULTS, FLOOR_FAMILY_DEFAULT} from '../core/trailer.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
 import {LEGEND} from '../render/hierarchy3d.js';
@@ -188,7 +189,15 @@ const LEVELS = {
   uboard: {label: 'U-board', kind: 'uboard',
            enabledOf: p => p.interlayer === 'uboard',
            setEnabled: (p, v) => { p.interlayer = v ? 'uboard' : 'none'; }},
-  pallet: {label: 'Pallet', kind: 'pallet'}
+  pallet: {label: 'Pallet', kind: 'pallet'},
+  // The trailer: a CONSTRAINT LAYER (Phase D), never a chain tier. Nothing
+  // is packed inside it the way a carton is packed inside a case, so it has
+  // no styleId, no geoLevel, no DXF, no material cost and no exploded rank
+  // (deliberately absent from EXPLODE_LEVELS below) -- it consumes the
+  // finished pallet stack (core/stack.js resolveStack) and reports fit.
+  // Same non-style-level treatment as tray/uboard/pallet: no dieline, so
+  // the generic `!isStyleLevel()` branch in refresh2d() already covers it.
+  trailer: {label: 'Trailer', kind: 'trailer'}
 };
 // wrap disables by going null (the pre-existing pattern) rather than an
 // `enabled` flag, so there's no styleId to read once disabled — fall back
@@ -200,7 +209,7 @@ const activeStyleId = () => {
   if(!lvl.enabledOf(build.project)) return DISABLED_STYLE_FALLBACK[activeLevel];
   return lvl.styleIdOf(build.project);
 };
-const LEVEL_ORDER = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet'];
+const LEVEL_ORDER = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet', 'trailer'];
 let activeLevel = 'case';
 const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
 
@@ -1209,6 +1218,7 @@ function toggleRailSections(kind){
   el('palletFields').style.display = (kind === 'pallet') ? 'contents' : 'none';
   el('trayFields').style.display = (kind === 'tray') ? 'contents' : 'none';
   el('uboardFields').style.display = (kind === 'uboard') ? 'contents' : 'none';
+  el('trailerFields').style.display = (kind === 'trailer') ? 'contents' : 'none';
 }
 
 /* ---------- optional levels: enable/disable + the always-visible chain
@@ -1814,6 +1824,9 @@ function mountActiveLevel(){
   }else if(lvl.kind === 'uboard'){
     inputs.mountUboard(proj, {autoF: uboardAutoF(proj), remount: () => mountActiveLevel(),
                               onInput: () => projectChanged()});
+  }else if(lvl.kind === 'trailer'){
+    // trailer: a CONSTRAINT LAYER, static DOM fields like pallet's own
+    writeTrailerFields();
   }else{
     // pallet: the fields are static DOM; ensure their unit chips are current
     writePalletFields();
@@ -1898,7 +1911,8 @@ const LEVEL_BRAND = {
   product: {code: 'PRODUCT', sub: 'Product arrangement'},
   tray:    {code: 'TRAY',    sub: 'Thermoformed sizing tray'},
   uboard:  {code: 'UBOARD',  sub: 'Paperboard U-board interlayer'},
-  pallet:  {code: 'PALLET',  sub: 'Load on the pallet'}
+  pallet:  {code: 'PALLET',  sub: 'Load on the pallet'},
+  trailer: {code: 'TRAILER', sub: 'Trailer fit'}
 };
 
 /** DXF/artwork/spec button availability: flexible styles have no die (film
@@ -2109,6 +2123,9 @@ function hierarchyBundle(proj = build.project, rowIn = null){
     case:   artCanvasFor('case', row.geo.case, null, proj),
     wrap:   artCanvasFor('wrap', row.geo.wrap, null, proj)
   };
+  // computed once, read by BOTH bundle.stack and bundle.trailer below —
+  // never a second resolveStack() call for the trailer's own use.
+  const theStack = resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
   return {
     art,
     caseGeo: row.geo.case,
@@ -2152,7 +2169,12 @@ function hierarchyBundle(proj = build.project, rowIn = null){
     // and the BCT panel reads the same resolved boxesAboveBottom/tare —
     // ONE resolver, read here and in renderBCT, never two independent
     // derivations of "how many loads are stacked".
-    stack: resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0})
+    stack: theStack,
+    // THE trailer (core/trailer.js): a CONSTRAINT LAYER consuming the SAME
+    // stack above — never a second computation of stack height/weight,
+    // casesPerLoad read straight off the chain's own row (casesPerPallet:
+    // cases in ONE unit load), exactly what resolveTrailer's own doc asks for.
+    trailer: resolveTrailer(proj, theStack, row.casesPerPallet || 0)
   };
 }
 
@@ -2203,6 +2225,13 @@ function hudText(bundle, opened, depth){
     const o = ub.outer;
     return `U-board: base ${f(ub.geo.inner.W)} × flap ${f(ub.params.f)} ${u}, caliper ${f(ub.params.caliper)} ${u}` +
       ` · envelope ${f(o.L)} × ${f(o.W)} × ${f(o.H)} ${u}`;
+  }
+  if(depth === 'trailer' && bundle.trailer){
+    const tr = bundle.trailer, u = inputs.getUnit(), f = v => fmtLen(v, u);
+    return `Trailer: ${tr.stacksPerTrailer} stacks · ${tr.unitLoadsPerTrailer} unit loads · ${tr.casesPerTrailer} ${hasCase ? 'cases' : 'cartons'}` +
+      ` · cube ${Math.round(tr.cubeUtilPct)}% · weight ${Math.round(tr.weightUtilPct)}% (${tr.bindingConstraint}-bound)` +
+      (tr.interiorHeightOk ? '' : ' · DOES NOT FIT — exceeds interior height') +
+      (tr.interiorHeightOk && !tr.doorOk ? ' · WARNING — will not pass through the door' : '');
   }
   if(depth === 'pallet') parts.push(`Pallet: ${c.cases} ${hasCase ? 'cases' : 'cartons'}`);
   else if(depth === 'case') parts.push(`Case: ${c.cartonsPerCase} cartons`);
@@ -2660,7 +2689,109 @@ el('units').addEventListener('change', () => {
 });
 el('palUnits').addEventListener('change', () => {
   if(inputs.switchPalUnits()) refreshPal();   // pallet dims re-display; keep the readout in sync
+  writeTrailerFields();   // the trailer rail follows the SAME pallet-unit toggle — re-display it too
 });
+
+// ---- trailer (core/trailer.js): a CONSTRAINT LAYER, never a chain tier ----
+const TRL_RE = /^\s*([\d.]+)\s*x\s*([\d.]+)\s*$/i;
+const trlUnit = () => inputs.getPalUnit();
+
+/** Read the trailer rail fields as mm, straight into project.trailer — the
+ *  single home for trailer dims (same one-writer shape as commitPallet). */
+function commitTrailer(){
+  const u = trlUnit();
+  const t = build.project.trailer || (build.project.trailer = {...TRAILER_DEFAULTS});
+  const m = (el('trlLW').value || '').match(TRL_RE);
+  if(m){ t.L = toMM(+m[1], u); t.W = toMM(+m[2], u); }
+  const h = toMM(+el('trlH').value || 0, u); if(h > 0) t.H = h;
+  const doorH = toMM(+el('trlDoorH').value || 0, u); if(doorH > 0) t.doorH = doorH;
+  const doorW = toMM(+el('trlDoorW').value || 0, u); if(doorW > 0) t.doorW = doorW;
+  t.maxPayloadLb = Math.max(0, +el('trlMaxPayload').value || 0);
+  t.floorPattern = el('trlFloorPattern').value;
+}
+/** Write project.trailer back into the trailer rail fields (after a load,
+ *  a unit switch, or the initial mount). */
+function writeTrailerFields(){
+  const t = build.project.trailer || TRAILER_DEFAULTS, u = trlUnit();
+  const fmtT = v => u === 'mm' ? Math.round(v).toString() : (+v.toFixed(3)).toString();
+  el('trlLW').value = `${fmtT(fromMM(t.L, u))} x ${fmtT(fromMM(t.W, u))}`;
+  el('trlH').value = fmtT(fromMM(t.H, u));
+  el('trlDoorH').value = fmtT(fromMM(t.doorH, u));
+  el('trlDoorW').value = fmtT(fromMM(t.doorW, u));
+  el('trlMaxPayload').value = t.maxPayloadLb;
+  el('trlFloorPattern').value = t.floorPattern || FLOOR_FAMILY_DEFAULT;
+  ['uTrlLW', 'uTrlH', 'uTrlDoor'].forEach(id => el(id).textContent = u);
+  // detail-load selection is VIEW STATE (hierSel), reset to auto on every
+  // fresh mount (a level switch, a load) same as the 3D depth's own reset
+  el('trlDetailFloor').value = hierSel.trailerFloor != null ? hierSel.trailerFloor + 1 : '';
+  el('trlDetailVert').value = hierSel.trailerVert != null ? hierSel.trailerVert + 1 : '';
+}
+function onTrailerEdited(){
+  commitTrailer();
+  projectChanged();
+}
+['trlLW', 'trlH', 'trlDoorH', 'trlDoorW', 'trlMaxPayload'].forEach(id => el(id).addEventListener('input', onTrailerEdited));
+['trlFloorPattern'].forEach(id => el(id).addEventListener('change', onTrailerEdited));
+
+/** Which floor/vertical position the trailer's ONE full-detail load renders
+ *  at — VIEW STATE (hierSel), not a project value, same idiom as S.pallet/
+ *  S.case: a blank field means "let buildTrailer pick its own default
+ *  (front-left bottom)", a 1-based rail number becomes hierSel's 0-based
+ *  index. Rebuilds the 3D view in place when trailer depth is on screen. */
+function onTrailerDetailEdited(){
+  const f = +el('trlDetailFloor').value, v = +el('trlDetailVert').value;
+  hierSel.trailerFloor = f > 0 ? f - 1 : undefined;
+  hierSel.trailerVert = v > 0 ? v - 1 : undefined;
+  if(view === '3d' && mode3d === 'hier' && activeLevel === 'trailer') applyHierarchy(false);
+}
+['trlDetailFloor', 'trlDetailVert'].forEach(id => el(id).addEventListener('input', onTrailerDetailEdited));
+
+/** The trailer-fit readout — a CONSTRAINT LAYER's whole story: stacks / unit
+ *  loads / cases, cube vs weight utilisation and which one binds, the
+ *  interior-height and door-clearance verdicts SEPARATELY (a stack that
+ *  clears one and not the other must never collapse into one verdict), and
+ *  what floor/height room is left. Reads resolveTrailer()'s own fields —
+ *  nothing here recomputes a stack or floor count of its own. Registered as
+ *  a recompute consumer so it updates live, the same shape as refreshPal. */
+function clearTrailer(){
+  ['trlCounts', 'trlOrientation', 'trlCube', 'trlWeight', 'trlBinding', 'trlInterior', 'trlDoor',
+   'trlRemFloor', 'trlRemHeight'].forEach(id => el(id).textContent = '--');
+  el('trlNote').textContent = '';
+}
+function refreshTrailer(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const outerNoun = describeChain(build.project).outerNoun;
+  if(!row || !row.geo || !row.geo[outerNoun] || !(row.casesPerPallet > 0)){ clearTrailer(); return; }
+  const u = inputs.getUnit(), f = v => fmtLen(v, u);
+  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
+  const tr = resolveTrailer(build.project, stack, row.casesPerPallet);
+  const hasCase = outerNoun === 'case';
+  el('trlCounts').textContent = `${tr.stacksPerTrailer} / ${tr.unitLoadsPerTrailer} / ${tr.casesPerTrailer} ${hasCase ? 'cases' : 'cartons'}`;
+  el('trlOrientation').textContent = tr.stacksPerTrailer > 0
+    ? (tr.floorPattern.label || tr.floorOrientation || '—') : 'does not fit the floor';
+  el('trlCube').textContent = `${tr.cubeUtilPct.toFixed(1)}%`;
+  el('trlWeight').textContent = `${tr.weightUtilPct.toFixed(1)}% (${Math.round(tr.totalWeightLb).toLocaleString()} lb)`;
+  el('trlBinding').textContent = tr.bindingConstraint === 'weight' ? 'Weight' : 'Cube';
+  el('trlBinding').style.color = 'var(--ink)';
+  el('trlInterior').textContent = tr.interiorHeightOk ? 'Clears' : 'DOES NOT FIT';
+  el('trlInterior').style.color = tr.interiorHeightOk ? 'var(--valid)' : 'var(--danger)';
+  // door clearance is its OWN verdict, height and width both named -- a
+  // stack that clears the interior but not the door must read differently
+  // from one that clears both, never folded into the interior line above.
+  const doorWhy = !tr.doorHeightOk ? 'height' : !tr.doorWidthOk ? 'width' : null;
+  el('trlDoor').textContent = tr.doorOk ? 'Clears' : `DOES NOT FIT (${doorWhy})`;
+  el('trlDoor').style.color = tr.doorOk ? 'var(--valid)' : 'var(--danger)';
+  const areaU = u === 'mm' ? 'm²' : 'ft²';
+  const areaConv = u === 'mm' ? tr.remainingFloorAreaMM2/1e6 : tr.remainingFloorAreaMM2/(25.4*25.4*144);
+  el('trlRemFloor').textContent = `${areaConv.toFixed(2)} ${areaU}`;
+  el('trlRemHeight').textContent = `${f(tr.remainingHeightMM)} ${u}`;
+  el('trlNote').innerHTML = (tr.interiorHeightOk && tr.doorOk) ? '' :
+    '<strong>Will not load as configured.</strong> ' +
+    (!tr.interiorHeightOk ? 'The stack exceeds the trailer\'s interior height. ' : '') +
+    (tr.interiorHeightOk && !tr.doorOk ? 'The stack clears the interior but not the door opening. ' : '');
+  el('trlNote').style.color = (tr.interiorHeightOk && tr.doorOk) ? 'var(--ink-3)' : 'var(--danger)';
+}
+notify.onRefresh('trailer', refreshTrailer);
 
 // STL export: the tray mesh's own triangles, built from the SAME ported
 // dimensions the envelope comes from. No CAD kernel — STL is a triangle soup.

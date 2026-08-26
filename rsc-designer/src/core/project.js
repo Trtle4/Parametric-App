@@ -17,6 +17,7 @@ import {withPerforation} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
 import {FLOW_AXIS} from './styles/flowwrap.js';
 import {uboardStage} from './uboard.js';
+import {TRAILER_DEFAULTS} from './trailer.js';
 
 /**
  * @typedef {import('./containment.js').Orientation} Orientation
@@ -235,6 +236,15 @@ export function newProject(){
       // density, or pallet footprint + 1in/side); a number overrides.
       // See core/stack.js slipsheetFootprintMM/slipsheetWeightLb.
       slipsheet: {caliper: 3, density: 950, weightLb: null, L: null, W: null}},
+    // TRAILER: a CONSTRAINT LAYER (Phase D), not a chain tier — nothing is
+    // packed inside it the way a carton is packed inside a case. It
+    // consumes the finished pallet stack (core/stack.js resolveStack) and
+    // reports fit; core/trailer.js resolveTrailer() is the sole resolver.
+    // Genuinely new top-level field, additive like uboard/shelf — no schema
+    // migration needed. Defaults are a 53' dry van, CPG default, confirmed
+    // with the user rather than pulled from a spec sheet; all lengths mm,
+    // weight lb (matching the BCT convention), one preset among others later.
+    trailer: {...TRAILER_DEFAULTS},
     // MATERIAL RATES — project assumptions, not per-level state, so one flat
     // bag. Empty = every rate at its default (core/cost.js COST_DEFAULTS);
     // the presence of a key IS the override, the same auto-with-override

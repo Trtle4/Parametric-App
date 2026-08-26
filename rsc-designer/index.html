@@ -859,6 +859,54 @@
         <div class="inp"><input id="bctTarget" type="number" min="0" step="0.5" value="3"></div>
       </div>
     </div>
+
+    <!-- Trailer fit — a CONSTRAINT LAYER (Phase D), never a chain tier: no
+         dieline, no exploded rank, no material cost. It consumes the
+         finished pallet stack and reports whether/how many fit. -->
+    <div id="trailerFields" style="display:none">
+      <h2 style="margin-top:6px">Trailer</h2>
+      <div class="field">
+        <label>Interior size <span class="hint">L x W</span></label>
+        <div class="inp"><input id="trlLW" type="text" value="630 x 98.5" autocomplete="off"><span class="unit" id="uTrlLW">in</span></div>
+      </div>
+      <div class="field">
+        <label>Interior height</label>
+        <div class="inp"><input id="trlH" type="number" min="0" step="1" value="110"><span class="unit" id="uTrlH">in</span></div>
+      </div>
+      <div class="field">
+        <label>Door opening <span class="hint">H x W — a separate, often tighter, constraint</span></label>
+        <div class="inp"><input id="trlDoorH" type="number" min="0" step="1" value="105">
+        <input id="trlDoorW" type="number" min="0" step="1" value="98"><span class="unit" id="uTrlDoor">in</span></div>
+      </div>
+      <div class="field">
+        <label>Max payload <span class="hint">lb</span></label>
+        <div class="inp"><input id="trlMaxPayload" type="number" min="0" step="100" value="45000"></div>
+      </div>
+      <div class="field">
+        <label>Floor pattern</label>
+        <div class="inp"><select id="trlFloorPattern">
+          <option value="column">Column (both orientations)</option>
+          <option value="optimal">Optimal (ranked, incl. mixed)</option>
+        </select></div>
+      </div>
+      <div class="field">
+        <label>Detail load <span class="hint">floor # (1-N) / stack # (1-4), blank = front-left bottom</span></label>
+        <div class="inp"><input id="trlDetailFloor" type="number" min="1" step="1" placeholder="auto">
+        <input id="trlDetailVert" type="number" min="1" step="1" placeholder="auto"></div>
+      </div>
+
+      <h2 style="margin-top:6px">Fit</h2>
+      <div class="stat"><span class="lab">Stacks / unit loads / cases</span><span class="val" id="trlCounts">--</span></div>
+      <div class="stat"><span class="lab">Floor orientation</span><span class="val" id="trlOrientation">--</span></div>
+      <div class="stat"><span class="lab">Cube utilisation</span><span class="val" id="trlCube">--</span></div>
+      <div class="stat"><span class="lab">Weight utilisation</span><span class="val" id="trlWeight">--</span></div>
+      <div class="stat"><span class="lab">Binding constraint</span><span class="val" id="trlBinding">--</span></div>
+      <div class="stat"><span class="lab">Interior height</span><span class="val" id="trlInterior">--</span></div>
+      <div class="stat"><span class="lab">Door clearance</span><span class="val" id="trlDoor">--</span></div>
+      <div class="stat"><span class="lab">Remaining floor area</span><span class="val" id="trlRemFloor">--</span></div>
+      <div class="stat"><span class="lab">Remaining height above top load</span><span class="val" id="trlRemHeight">--</span></div>
+      <div id="trlNote" class="bnote"></div>
+    </div>
   </aside>
 
   <!-- CENTER: drawing (the hero) -->
@@ -883,7 +931,7 @@
       <div class="seg depthsel">
         <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_uboard">U-board</button><button id="d_wrap">Wrap</button
         ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
-        ><button id="d_pallet">Pallet</button>
+        ><button id="d_pallet">Pallet</button><button id="d_trailer">Trailer</button>
       </div>
       <!-- ONE pair of cycle arrows, two ranked lists by depth: case depth
            steps the Build table's candidate list (same order + row-select the

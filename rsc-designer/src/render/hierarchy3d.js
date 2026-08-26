@@ -19,7 +19,8 @@ import {explodeTier, axisOffsets} from './explode.js';
 import {buildTray3d} from './tray3d.js';
 import {buildUboard3d} from './uboard3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
-import {buildGmaPallet, buildSlipsheet} from './palletmesh.js';
+import {buildGmaPallet, buildSlipsheet, PALLET_MATERIAL, SLIPSHEET_MATERIAL} from './palletmesh.js';
+import {buildTrailerShell} from './trailermesh.js';
 import {orientBasis} from './orient.js';
 
 // One shared texture per pack type drives a whole InstancedMesh (one draw call
@@ -1398,7 +1399,11 @@ export function buildHierarchy(bundle, depth, sel, solid, explode){
     pallet: sel.pallet ?? nearestCameraCorner(bundle.cases.placements),
     case:   sel.case   ?? nearestCameraCorner(bundle.cases.placements),
     carton: sel.carton ?? nearestCameraCorner(bundle.cartons.placements),
-    wrap:   sel.wrap   ?? (bundle.wraps ? nearestCameraCorner(bundle.wraps.placements) : 0)
+    wrap:   sel.wrap   ?? (bundle.wraps ? nearestCameraCorner(bundle.wraps.placements) : 0),
+    // which floor position/vertical position renders in full case-level
+    // detail at trailer depth — undefined means "let buildTrailer pick its
+    // own default (front-left bottom)", never a hardcoded 0/0 here.
+    trailerFloor: sel.trailerFloor, trailerVert: sel.trailerVert
   };
 
   // `outer` = the top-level subject's world x/y/z extent (L,W,H mm), centred on
@@ -1484,6 +1489,12 @@ export function buildHierarchy(bundle, depth, sel, solid, explode){
     const r = buildPallet(bundle, bundle.caseGeo ? caseTier : cartonTier, S, solid, explode);
     span = r.span; outer = r.outer;
     if(!solid) opened = {case: S.case, carton: S.carton, wrap: S.wrap};
+  }else if(depth === 'trailer'){
+    // a CONSTRAINT LAYER, not a chain tier — see core/trailer.js's own doc.
+    // No cutaway, no explode: buildTrailer ignores both, always rendering
+    // the same simplified-fleet + one-detailed-load composition.
+    const r = buildTrailer(bundle, bundle.caseGeo ? caseTier : cartonTier, S);
+    span = r.span; outer = r.outer;
   }
 
   pivot.add(group);
@@ -1725,6 +1736,155 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     // position's own base and every load (core/stack.js resolveStack), so
     // the Dims overlay total is the real floor-to-top height
     outer: {L: bundle.cases.deck.L, W: bundle.cases.deck.W, H: totalStackH}
+  };
+}
+
+/**
+ * ONE unit load's real case-level geometry, closed — the same low-level
+ * conventions buildPallet's own closed-case branch uses (groupByOrientation,
+ * roundedBoxGeo, the `board` material, artInstances for a printed pack),
+ * factored out so buildTrailer's single full-detail load draws with real
+ * per-case geometry too, at an arbitrary (offsetX, offsetZ) world position —
+ * never a second rendering convention, just this one called from a second
+ * place. Deliberately does NOT reuse buildPallet's open-tray/shrink/cutaway
+ * branches: at trailer scale "one load in full detail" means the CASE
+ * PATTERN is visible, not every display-state edge case reproduced on a
+ * moving truck.
+ */
+function buildClosedLoadCases(targetGroup, outerTier, bundle, casePlacements, yBase, offsetX, offsetZ){
+  const co = outerTier.geo.outer;
+  const art = outerTier.art;
+  const all = casePlacements.map((pl, i) => ({pl, i}));
+  if(art && art.am && art.canvas && all.length){
+    for(const m of artInstances(art.am, art.canvas, all, pl => ({x: pl.x + offsetX, y: yBase + pl.z, z: pl.y + offsetZ}), 'pallet'))
+      targetGroup.add(m);
+  }else{
+    for(const [o, list] of groupByOrientation(casePlacements, -1)){
+      const od = orient(co, o);
+      const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
+      const inst = new THREE.InstancedMesh(cgeo, board, list.length);
+      const M = new THREE.Matrix4();
+      list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x + offsetX, yBase + pl.z, pl.y + offsetZ); inst.setMatrixAt(k, M); });
+      inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
+      pickables.push({mesh: inst, tier: 'pallet'});
+      targetGroup.add(inst);
+    }
+  }
+}
+
+/**
+ * The trailer view — a CONSTRAINT LAYER, not a chain tier (core/trailer.js's
+ * own doc). Draws the trailer shell, every floor position x every vertical
+ * stack position as a SIMPLIFIED instanced block (never per-case — up to
+ * ~120 unit loads would be 10,000+ meshes at per-case detail), and ONE
+ * user-selected load in full case-level detail so the pattern stays visible
+ * without paying for it everywhere. Pallets and slipsheets are distinct
+ * thin solids (their own materials, imported from palletmesh.js — never a
+ * second colour convention) so the stack composition reads at a glance.
+ *
+ * No cutaway, no explode, no per-case picking outside the one detailed load:
+ * a constraint layer has no "open this unit" interaction to offer.
+ */
+function buildTrailer(bundle, outerTier, S){
+  const tr = bundle.trailer, st = bundle.stack;
+  const tp = tr.provenance.trailer;
+  group.add(buildTrailerShell(tp.L, tp.W, tp.H, tp.doorH, tp.doorW));
+
+  const outerEnvelope = {L: tp.L, W: tp.W, H: tp.H};
+  if(tr.stacksPerTrailer === 0 || !st.positions.length){
+    // nothing fits the floor -- the shell alone says so; nothing more to draw
+    return {span: Math.max(tp.L, tp.W, tp.H), outer: outerEnvelope};
+  }
+
+  const placements = tr.floorPattern.build().placements;   // [{x,y,rot}], centred on the floor origin
+  const N = st.positions.length;
+  const heights = st.baseHeightMM;
+  const kinds = st.positions.map(p => p.base);
+  const loadH = st.provenance.loadH;
+  // every placement in ONE floor pattern shares the same orientation (a
+  // grid layout never mixes rot within itself), so the L/W swap is uniform
+  const rotAll = placements.length ? !!placements[0].rot : false;
+  const swap = fp => rotAll ? {L: fp.W, W: fp.L} : fp;
+  // per-position footprint depends only on its BASE KIND (pallet vs
+  // slipsheet), never on which floor cell or which stack it's in — see
+  // core/stack.js: baseFootprintMM is a pure function of position.base.
+  const fpByKind = {}; kinds.forEach((k, i) => { if(!fpByKind[k]) fpByKind[k] = swap(st.footprintMM[i]); });
+  const heightByKind = {}; kinds.forEach((k, i) => { if(heightByKind[k] === undefined) heightByKind[k] = heights[i]; });
+
+  const posOffsets = []; { let acc = 0; for(let u = 0; u < N; u++){ posOffsets.push(acc); acc += heights[u] + loadH; } }
+  const totalStackH = posOffsets[N - 1] + heights[N - 1] + loadH;
+
+  // DEFAULT SELECTED LOAD: front-left bottom — the floor cell with the
+  // smallest X (deepest toward the nose, +X per trailermesh.js's own
+  // convention... rather the SMALLEST x is nearest the door; "front" here
+  // means the first-loaded, reference position a loader checks first,
+  // which is the smallest-x, smallest-z cell), vertical index 0 (bottom).
+  let frontLeft = 0;
+  for(let i = 1; i < placements.length; i++){
+    const a = placements[i], b = placements[frontLeft];
+    if(a.x < b.x - 1e-6 || (Math.abs(a.x - b.x) < 1e-6 && a.y < b.y - 1e-6)) frontLeft = i;
+  }
+  const detailFloorIdx = (S.trailerFloor != null && S.trailerFloor < placements.length) ? S.trailerFloor : frontLeft;
+  const detailVertIdx = (S.trailerVert != null && S.trailerVert < N) ? S.trailerVert : 0;
+
+  // SIMPLIFIED FLEET: one InstancedMesh per base kind present (pallet/
+  // slipsheet — each kind's dims are uniform, see fpByKind above) plus ONE
+  // InstancedMesh for every load's own case-column, drawn as a single block.
+  // The detailed slot is excluded from every instance set below.
+  const M = new THREE.Matrix4();
+  for(const kind of Object.keys(fpByKind)){
+    const fp = fpByKind[kind], h = heightByKind[kind];
+    const mat = kind === 'slipsheet' ? SLIPSHEET_MATERIAL : PALLET_MATERIAL;
+    const slots = [];
+    for(let fi = 0; fi < placements.length; fi++) for(let u = 0; u < N; u++){
+      if(kinds[u] !== kind || (fi === detailFloorIdx && u === detailVertIdx)) continue;
+      slots.push({fi, u});
+    }
+    if(!slots.length) continue;
+    const geo = new THREE.BoxGeometry(fp.L, Math.max(h, 0.1), fp.W);
+    const inst = new THREE.InstancedMesh(geo, mat, slots.length);
+    slots.forEach(({fi, u}, k) => {
+      const pl = placements[fi];
+      M.identity(); M.setPosition(pl.x, posOffsets[u] + h/2, pl.y);
+      inst.setMatrixAt(k, M);
+    });
+    group.add(inst);
+  }
+  const cellFP = swap(bundle.cases.deck);
+  const loadGeo = new THREE.BoxGeometry(Math.max(cellFP.L - 4, 1), Math.max(loadH, 0.1), Math.max(cellFP.W - 4, 1));
+  const loadSlots = [];
+  for(let fi = 0; fi < placements.length; fi++) for(let u = 0; u < N; u++){
+    if(fi === detailFloorIdx && u === detailVertIdx) continue;
+    loadSlots.push({fi, u});
+  }
+  if(loadSlots.length){
+    const loadInst = new THREE.InstancedMesh(loadGeo, board, loadSlots.length);
+    loadSlots.forEach(({fi, u}, k) => {
+      const pl = placements[fi];
+      M.identity(); M.setPosition(pl.x, posOffsets[u] + heights[u] + loadH/2, pl.y);
+      loadInst.setMatrixAt(k, M);
+    });
+    group.add(loadInst);
+  }
+
+  // ONE FULL-DETAIL LOAD: real base mesh + real per-case geometry, at the
+  // selected floor/vertical slot's own world position.
+  const dpl = placements[detailFloorIdx];
+  const dKind = kinds[detailVertIdx], dH = heights[detailVertIdx];
+  const dFp = fpByKind[dKind];
+  const dTimber = dKind === 'slipsheet' ? buildSlipsheet(dFp.L, dFp.W, dH) : buildGmaPallet(dFp.L, dFp.W, dH);
+  if(dKind !== 'slipsheet') dTimber.name = 'gmaPallet';
+  dTimber.position.set(dpl.x, posOffsets[detailVertIdx], dpl.y);
+  group.add(dTimber);
+  buildClosedLoadCases(group, outerTier, bundle, bundle.cases.placements,
+    posOffsets[detailVertIdx] + dH, dpl.x, dpl.y);
+
+  // deck at y=0 (matching the shell's own floor plane); the load column
+  // rides straight up from it, no re-centring needed the way a lone pallet
+  // stack centres itself — the trailer's own shell is the reference frame.
+  return {
+    span: Math.max(tp.L, tp.W, totalStackH),
+    outer: outerEnvelope
   };
 }
 
