@@ -2831,6 +2831,45 @@ await (async () => {
     if(ratio > 50000) throw new Error(`ratio ${ratio} is still catastrophically large -- near is not scaling with scene span`);
   });
 
+  tEdit('trailer render: selecting 2 load positions (2 stacked pallets) renders BOTH as real, distinct instances -- never one level dropped or the two collapsed onto one Y', () => {
+    setLevel('pallet');
+    el('stackPositions').value = '2'; fire(el('stackPositions'), 'input');
+    setLevel('trailer');
+    el('d_trailer').click();
+
+    const M = new THREE.Matrix4();
+    const floorXZ = new Set(), levelY = new Set();
+    let baseCount = 0;
+    getPivot().updateMatrixWorld(true);
+    getPivot().traverse(o => {
+      if(o.name === 'trailerBase'){
+        for(let i = 0; i < o.count; i++){
+          o.getMatrixAt(i, M);
+          const v = new THREE.Vector3().setFromMatrixPosition(M);
+          floorXZ.add(`${Math.round(v.x)},${Math.round(v.z)}`);
+          levelY.add(Math.round(v.y));
+          baseCount++;
+        }
+      }
+      if(o.name === 'gmaPallet' || o.name === 'slipsheet'){
+        // built with the mesh's own local origin at its BOTTOM face (unlike
+        // the centred BoxGeometry instances above), so compare like-for-like
+        // via the world-space bounding-box CENTRE, not raw .position.
+        const c = new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3());
+        floorXZ.add(`${Math.round(c.x)},${Math.round(c.z)}`);
+        levelY.add(Math.round(c.y));
+        baseCount++;
+      }
+    });
+    if(floorXZ.size < 1) throw new Error('vacuous fixture: no floor positions rendered at all');
+    // TWO distinct world-Y bands -- not one band with double the count (a
+    // duplicated/collapsed level) and not one band alone (a dropped level).
+    if(levelY.size !== 2)
+      throw new Error(`expected exactly 2 distinct stacked levels rendered, found ${levelY.size} (Y bands: ${JSON.stringify([...levelY].sort((a, b) => a - b))})`);
+    if(baseCount !== floorXZ.size*2)
+      throw new Error(`expected ${floorXZ.size} floor position(s) x 2 levels = ${floorXZ.size*2} base instances total, found ${baseCount}`);
+  });
+
   // restore: back to pallet depth for the pins that follow
   el('d_pallet').click(); await settle();
 
