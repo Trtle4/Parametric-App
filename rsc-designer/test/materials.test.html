@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>material registry + cost (core/materials.js, core/cost.js) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/materials.js (the material registry: pricing BASIS
+   discriminant, exhaustiveness) and its integration into core/cost.js's
+   materialCost -- specifically the corner-post stream, the first to use a
+   basis other than perArea. DOM-free, pure. */
+import {PRICING_BASES, MATERIAL_REGISTRY, costForBasis, registryRateOf,
+        cornerPostBasisOf, cornerPostRateOf} from '../src/core/materials.js';
+import {materialCost, COST_DEFAULTS, rateOf, rateToDisplay, rateFromDisplay, FT2_PER_M2, FT_PER_M} from '../src/core/cost.js';
+import {cornerPostCostQuantities} from '../src/core/stack.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-9){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+const ok = (cond, msg) => { if(!cond) throw new Error(msg); };
+
+/* ---- registry exhaustiveness over PRICING_BASES: the whole point of
+   deciding the discriminant before migrating streams onto it. ------------ */
+t('PRICING_BASES: every declared basis resolves through costForBasis without throwing, given its own quantity', () => {
+  const q = {areaM2: 2, lengthM: 3, count: 4};
+  for(const basis of PRICING_BASES){
+    let threw = null, v;
+    try{ v = costForBasis(basis, 10, q); }catch(e){ threw = e; }
+    if(threw) throw new Error(`basis '${basis}' (a declared enum member) threw: ${threw.message}`);
+    ok(typeof v === 'number' && v > 0, `basis '${basis}' must price a positive number given a matching quantity`);
+  }
+});
+t('PRICING_BASES: an UNDECLARED basis throws immediately, never silently resolves as zero', () => {
+  for(const bogus of ['perWeight', 'flat', undefined, '']){
+    if(PRICING_BASES.includes(bogus)) continue;
+    let threw = null;
+    try{ costForBasis(bogus, 10, {areaM2: 1, lengthM: 1, count: 1}); }catch(e){ threw = e; }
+    if(!threw) throw new Error(`basis ${JSON.stringify(bogus)} resolved without throwing`);
+    if(!/basis/i.test(threw.message)) throw new Error(`threw, but the message doesn't name the problem: "${threw.message}"`);
+  }
+});
+t('costForBasis prices EXACTLY the quantity its own basis names, ignoring the other two entirely', () => {
+  // a bogus/huge value on the OTHER quantities must never leak into the price
+  approx(costForBasis('perArea', 5, {areaM2: 2, lengthM: 999, count: 999}), 10);
+  approx(costForBasis('perLength', 5, {areaM2: 999, lengthM: 3, count: 999}), 15);
+  approx(costForBasis('perPiece', 5, {areaM2: 999, lengthM: 999, count: 4}), 20);
+});
+t('costForBasis returns null for a non-positive/absent rate or quantity, never zero (zero would look like a real $0 price)', () => {
+  eq(costForBasis('perLength', 0, {lengthM: 5}), null, 'zero rate');
+  eq(costForBasis('perLength', 5, {lengthM: 0}), null, 'zero quantity');
+  eq(costForBasis('perLength', 5, {}), null, 'absent quantity');
+  eq(costForBasis('perLength', -1, {lengthM: 5}), null, 'negative rate');
+});
+
+t('MATERIAL_REGISTRY carries exactly the four named streams -- cartonBoard, uboardBoard, slipsheet, cornerPost', () => {
+  eq(Object.keys(MATERIAL_REGISTRY).sort(), ['cartonBoard', 'cornerPost', 'slipsheet', 'uboardBoard']);
+});
+t('cartonBoard/uboardBoard registry defaults are BIT-IDENTICAL to cost.js COST_DEFAULTS -- one source, not two copies', () => {
+  approx(MATERIAL_REGISTRY.cartonBoard.defaultRate, COST_DEFAULTS.cartonBoardPerM2);
+  approx(MATERIAL_REGISTRY.uboardBoard.defaultRate, COST_DEFAULTS.uboardBoardPerM2);
+});
+t('cornerPost allowedBases is exactly {perLength, perPiece} -- never perArea (angle board is not sold by area)', () => {
+  eq([...MATERIAL_REGISTRY.cornerPost.allowedBases].sort(), ['perLength', 'perPiece']);
+  eq(MATERIAL_REGISTRY.cornerPost.defaultBasis, 'perLength');
+});
+t('cornerPostBasisOf falls back to the registry default on an absent or unrecognized override, never adopts an unknown basis', () => {
+  eq(cornerPostBasisOf({pallet: {stack: {}}}), 'perLength', 'absent cornerPost config');
+  eq(cornerPostBasisOf({pallet: {stack: {cornerPost: {costBasis: 'perPiece'}}}}), 'perPiece', 'valid override honoured');
+  eq(cornerPostBasisOf({pallet: {stack: {cornerPost: {costBasis: 'perWeight'}}}}), 'perLength', 'unrecognized override falls back to default, not adopted');
+});
+
+/* ---- cost by basis: perLength scales with post height, perPiece does not,
+   both scale with stack positions. Hand-computed against the task's own
+   formulas: postCost = 4 x positions x (pricePerLength x postHeight), or
+   4 x positions x pricePerPost. -------------------------------------------- */
+function proj({positions = 2, basis = 'perLength', rate = 2, height = 900} = {}){
+  return {
+    pallet: {
+      L: 1219.2, W: 1016, baseH: 127, tareLb: 45,
+      stack: {positions: Array.from({length: positions}, () => ({base: 'pallet'})),
+              cornerPost: {enabled: true, height, legL: 76.2, legW: 76.2, caliper: 3, density: 700, costBasis: basis}},
+      slipsheet: {caliper: 3, density: 950, weightLb: null, L: null, W: null},
+      stacking: {ect: 32, unitWeightLb: 20, target: 3.0}
+    },
+    cost: basis === 'perLength' ? {cornerPostPerLengthM: rate} : {cornerPostPerPiece: rate}
+  };
+}
+t('cornerPostCostQuantities: both lengthM and count are ALWAYS computed when enabled -- costForBasis picks the one its basis needs and ignores the other (already pinned above)', () => {
+  const p = proj({positions: 3, basis: 'perLength', height: 900});
+  const q = cornerPostCostQuantities(p, 900, 3);
+  eq(q.basis, 'perLength');
+  approx(q.lengthM, 4*3*(900/1000), 'lengthM = 4 x positions x heightM', 1e-9);
+  eq(q.count, 4*3, 'count = 4 x positions, computed regardless of the active basis');
+});
+t('cornerPostCostQuantities: switching to perPiece changes only `basis`, not the underlying lengthM/count numbers', () => {
+  const pLength = proj({positions: 3, basis: 'perLength', height: 900});
+  const pPiece = proj({positions: 3, basis: 'perPiece', height: 900});
+  const qLength = cornerPostCostQuantities(pLength, 900, 3);
+  const qPiece = cornerPostCostQuantities(pPiece, 900, 3);
+  eq(qPiece.basis, 'perPiece');
+  approx(qPiece.lengthM, qLength.lengthM, 'lengthM unaffected by basis choice');
+  eq(qPiece.count, qLength.count, 'count unaffected by basis choice');
+});
+t('cornerPostCostQuantities: off -> basis null, both quantities null', () => {
+  const p = {pallet: {stack: {positions: [{base: 'pallet'}], cornerPost: {enabled: false}}}};
+  const q = cornerPostCostQuantities(p, 900, 1);
+  eq(q, {basis: null, lengthM: null, count: null});
+});
+
+function cornerPostRowCost(p, loadH, positions, packsPerPallet = 10){
+  const cpQ = cornerPostCostQuantities(p, loadH, positions);
+  return materialCost({packsPerPallet,
+    cornerPostBasis: cpQ.basis, cornerPostLengthM: cpQ.lengthM, cornerPostCount: cpQ.count}, p.cost);
+}
+t('perLength cost SCALES with post height (raising height must move cost) -- the whole reason perLength exists', () => {
+  const short = cornerPostRowCost(proj({basis: 'perLength', rate: 2, height: 900, positions: 2}), 900, 2);
+  const tall  = cornerPostRowCost(proj({basis: 'perLength', rate: 2, height: 1400, positions: 2}), 1400, 2);
+  ok(short.perUnit.cornerPost > 0 && tall.perUnit.cornerPost > 0, 'vacuous fixture: both must actually price');
+  ok(tall.perUnit.cornerPost > short.perUnit.cornerPost, `raising height must raise cost: short=${short.perUnit.cornerPost}, tall=${tall.perUnit.cornerPost}`);
+  // hand-computed: 4 x positions x rate x heightM
+  approx(short.perUnit.cornerPost, 4*2*2*(900/1000), '', 1e-6);
+  approx(tall.perUnit.cornerPost, 4*2*2*(1400/1000), '', 1e-6);
+});
+t('perPiece cost does NOT move when height changes -- the "held flat by pricing basis" case', () => {
+  const short = cornerPostRowCost(proj({basis: 'perPiece', rate: 3, height: 900, positions: 2}), 900, 2);
+  const tall  = cornerPostRowCost(proj({basis: 'perPiece', rate: 3, height: 1400, positions: 2}), 1400, 2);
+  approx(short.perUnit.cornerPost, tall.perUnit.cornerPost, 'perPiece cost must be height-insensitive');
+  approx(short.perUnit.cornerPost, 4*2*3, 'hand-computed: 4 x positions x pricePerPost', 1e-9);
+});
+t('both bases scale with stack positions: doubling N doubles the total corner-post cost', () => {
+  for(const basis of ['perLength', 'perPiece']){
+    const n1 = cornerPostRowCost(proj({basis, rate: 2, height: 900, positions: 1}), 900, 1);
+    const n2 = cornerPostRowCost(proj({basis, rate: 2, height: 900, positions: 2}), 900, 2);
+    approx(n2.perUnit.cornerPost, 2*n1.perUnit.cornerPost, `basis=${basis}: N=2 must be exactly 2x N=1's total`, 1e-9);
+  }
+});
+t('cornerPost is a PER-PALLET quantity: perUnit.cornerPost / packsPerPallet == perPack.cornerPost, same shape as the pallet trip fee', () => {
+  const p = proj({basis: 'perLength', rate: 2, height: 900, positions: 2});
+  const r = cornerPostRowCost(p, 900, 2, 10);
+  approx(r.perPack.cornerPost, r.perUnit.cornerPost/10, '', 1e-9);
+});
+t('no rate configured -> cornerPost lands in `missing`, never a silent $0', () => {
+  const p = proj({basis: 'perLength', rate: 2, height: 900, positions: 2});
+  p.cost = {};   // no override, and the registry default rate is 0 (see materials.js)
+  const r = cornerPostRowCost(p, 900, 2);
+  ok(r.missing.includes('cornerPost'), 'expected cornerPost in missing when the rate is at its zero default');
+});
+t('posts OFF -> cornerPost always in `missing` (same "not in this chain" idiom as film/tray/uboard for a chain that never had the stream)', () => {
+  const p = {pallet: {stack: {positions: [{base: 'pallet'}], cornerPost: {enabled: false}}}, cost: {}};
+  const r = cornerPostRowCost(p, 900, 1);
+  ok(r.missing.includes('cornerPost'));
+  eq(r.perPack.cornerPost, undefined);
+});
+
+/* ---- rate display: perLength stores $/m canonically, shows $/ft in an inch
+   project -- the length-basis analogue of the existing $/m2 <-> $/ft2 rule. */
+t('rateToDisplay/rateFromDisplay round-trip a length-basis rate through $/ft, same shape as the area rule', () => {
+  const storedPerM = 12;
+  const shownPerFt = rateToDisplay(storedPerM, 'length', 'in');
+  approx(shownPerFt, storedPerM/FT_PER_M);
+  approx(rateFromDisplay(shownPerFt, 'length', 'in'), storedPerM, '', 1e-9);
+  approx(rateToDisplay(storedPerM, 'length', 'mm'), storedPerM, 'mm project: no conversion, same as area');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

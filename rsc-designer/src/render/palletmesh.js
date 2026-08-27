@@ -35,6 +35,65 @@ const kraft = new THREE.MeshStandardMaterial({color: 0xC7A874, roughness: 0.85, 
 export const PALLET_MATERIAL = wood;
 export const SLIPSHEET_MATERIAL = kraft;
 
+// Corner post: a distinct grey, visually separate from the pallet/slipsheet
+// colours above and from the case board it stands beside. DoubleSide because
+// buildCornerPostSet mirrors ONE L-shaped mesh into the other 3 corners via
+// negative scale (simpler and less error-prone than four rotation matrices
+// for a profile with no diagonal symmetry) — a negative-scale mirror flips
+// triangle winding, which FrontSide culling would read as facing away.
+const cornerPostMat = new THREE.MeshStandardMaterial({color: 0x6B6F73, roughness: 0.6, metalness: 0.15, side: THREE.DoubleSide});
+export const CORNER_POST_MATERIAL = cornerPostMat;
+
+/** One post's own L-profile: two boxes sharing the caliper x caliper corner
+ *  square once (matching core/stack.js's cornerPostSectionAreaMM2), bottom
+ *  at y=0 (same bottom-origin convention as buildGmaPallet/buildSlipsheet).
+ *  Local origin is the post's own OUTER corner; both arms extend into the
+ *  +x/+z quadrant — buildCornerPostSet mirrors this into whichever quadrant
+ *  a given corner of the load actually needs. */
+function buildCornerPostL(legL, legW, caliper, height){
+  const g = new THREE.Group();
+  const h = Math.max(0.1, height);
+  const armX = new THREE.Mesh(new THREE.BoxGeometry(Math.max(legL, 0.1), h, Math.max(caliper, 0.1)), cornerPostMat);
+  armX.position.set(legL/2, h/2, caliper/2);
+  g.add(armX);
+  const armZ = new THREE.Mesh(new THREE.BoxGeometry(Math.max(caliper, 0.1), h, Math.max(legW, 0.1)), cornerPostMat);
+  armZ.position.set(caliper/2, h/2, legW/2);
+  g.add(armZ);
+  return g;
+}
+
+/**
+ * All 4 corner posts for one unit load, standing OUTBOARD of the case
+ * corner on footprint `fp` (mm) — the load's bounding footprint grows by
+ * 2 x caliper in each of L and W, one post caliper-thick at each end of a
+ * face (core/stack.js cornerPostFootprintGrowthMM). Local origin is the
+ * SAME point the load's own base/case footprint is centred on; y=0 is
+ * where the post's own base sits (callers position this at the base's top
+ * — see hierarchy3d.js's buildPallet/buildTrailer).
+ * @param {{L:number,W:number}} fp  the CASE footprint the posts stand outboard of
+ * @param {number} height  post height, mm (core/stack.js cornerPostHeightMM)
+ * @param {number} legL  leg length along L, mm
+ * @param {number} legW  leg length along W, mm
+ * @param {number} caliper  mm
+ */
+export function buildCornerPostSet(fp, height, legL, legW, caliper){
+  const g = new THREE.Group();
+  g.name = 'cornerPosts';
+  if(height <= 0 || caliper <= 0) return g;
+  const hx = fp.L/2 + caliper, hz = fp.W/2 + caliper;   // outer-corner distance from centre
+  const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
+  for(const c of corners){
+    const post = buildCornerPostL(legL, legW, caliper, height);
+    // mirror the +x/+z-quadrant base shape into whichever quadrant this
+    // corner needs, so the legs always point INWARD (opposite the corner's
+    // own quadrant) toward the load's centre.
+    post.scale.set(-Math.sign(c.x), 1, -Math.sign(c.z));
+    post.position.set(c.x, 0, c.z);
+    g.add(post);
+  }
+  return g;
+}
+
 /** The NOMINAL GMA deck height (127mm) — the sensible default for a caller
  *  with no project to read, and the value project.pallet.baseH defaults to.
  *  It is no longer a second source of truth: the chain's own baseH is what

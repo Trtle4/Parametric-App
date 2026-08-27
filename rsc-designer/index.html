@@ -845,6 +845,45 @@
         </div>
       </div>
 
+      <h2 style="margin-top:6px">Corner posts</h2>
+      <div class="field">
+        <label>Enable</label>
+        <div class="inp"><input id="cpEnabled" type="checkbox"></div>
+      </div>
+      <div id="cpFields" style="display:contents">
+        <div class="field">
+          <label>Height <span class="hint">blank = case stack height &minus; 1in</span></label>
+          <div class="inp"><input id="cpHeight" type="number" min="0" step="0.1" placeholder="auto"></div>
+        </div>
+        <div id="cpStructNote"></div>
+        <div class="field">
+          <label>Legs <span class="hint">blank = 3in each</span></label>
+          <div class="inp"><input id="cpLegL" type="number" min="0" step="0.1" placeholder="auto L">
+          <input id="cpLegW" type="number" min="0" step="0.1" placeholder="auto W"></div>
+        </div>
+        <div class="field">
+          <label>Caliper <span class="hint">mm</span></label>
+          <div class="inp"><input id="cpCaliper" type="number" min="0" step="0.1" value="3"></div>
+        </div>
+        <div class="field">
+          <label>Material density <span class="hint">kg/m&sup3;</span></label>
+          <div class="inp"><input id="cpDensity" type="number" min="0" step="10" value="700"></div>
+        </div>
+        <div id="cpOverhangNote"></div>
+        <div class="field">
+          <label>Pricing basis</label>
+          <div class="inp"><select id="cpBasis">
+            <option value="perLength">Per length</option>
+            <option value="perPiece">Per piece</option>
+          </select></div>
+        </div>
+        <div class="field">
+          <label>Rate <span class="hint" id="cpRateHint">$/ft</span></label>
+          <div class="inp"><input id="cpRate" type="number" min="0" step="0.01" placeholder="0"></div>
+        </div>
+        <div id="cpCostNote"></div>
+      </div>
+
       <h2 style="margin-top:6px">Stacking (BCT)</h2>
       <div class="field">
         <label>Edge crush ECT <span class="hint">lb/in</span></label>

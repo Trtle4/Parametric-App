@@ -20,7 +20,7 @@ import {composeSheet, saveSheet} from '../render/sheet.js';
 import {drawProduct2d, resolveProductPiece} from '../render/product2d.js';
 import {drawTray2d, TRAY_LINE_TYPES} from '../render/tray2d.js';
 import {dateStamp} from '../core/stamp.js';
-import {fmtMoney} from '../core/cost.js';
+import {fmtMoney, rateToDisplay, rateFromDisplay, FT_PER_M} from '../core/cost.js';
 import * as fold from '../render/fold3d.js';
 import {dimsSVG, splitHeight} from '../render/dims3d.js';
 import {foldBuilders} from '../render/folds/index.js';
@@ -28,7 +28,9 @@ import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
 import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, DERATINGS} from '../core/bct.js';
-import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT} from '../core/stack.js';
+import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT,
+  CORNER_POST_DEFAULTS, cornerPostConfig, cornerPostHeightMM, cornerPostReachesCaseStack} from '../core/stack.js';
+import {cornerPostBasisOf, cornerPostRateOf} from '../core/materials.js';
 import {resolveTrailer, TRAILER_DEFAULTS, FLOOR_FAMILY_DEFAULT} from '../core/trailer.js';
 import {showNest, showProduct} from '../render/nest3d.js';
 import * as hier from '../render/hierarchy3d.js';
@@ -797,7 +799,34 @@ function refreshPal(){
     rl.style.display = 'none';
   }
   renderBCT(g, row);
+  renderCornerPostNotes(row);
   drawDims();
+}
+
+/** Two advisories the model owes the user, per the corner-post task's own
+ *  framing: the model being quietly insensitive to (or quietly not crediting)
+ *  an input the user just changed is the failure mode, not the missing
+ *  feature itself. Both use the same `countwarn` look as the tray rail's own
+ *  advisory. Plus the post-overhang WARNING (a different condition — the
+ *  load footprint plus posts stands proud of the deck, never a rejection). */
+function renderCornerPostNotes(row){
+  const cfg = cornerPostConfig(build.project);
+  const structEl = el('cpStructNote'), costEl = el('cpCostNote'), ohEl = el('cpOverhangNote');
+  if(!cfg.enabled){
+    structEl.innerHTML = ''; costEl.innerHTML = ''; ohEl.innerHTML = '';
+    return;
+  }
+  const reaches = cornerPostReachesCaseStack(build.project, row.loadH || 0);
+  structEl.innerHTML = `<div class="countwarn">${reaches
+    ? 'Posts now reach the case stack height. The model still credits them ZERO compression contribution — it is treated as non-structural regardless of height.'
+    : 'Posts are modelled as non-structural (edge protection only) at their current height.'}</div>`;
+  costEl.innerHTML = cornerPostBasisOf(build.project) === 'perPiece'
+    ? `<div class="countwarn">Cost basis is <strong>per piece</strong>: raising or lowering post height will NOT change corner-post cost. Switch to per-length to have cost follow height.</div>`
+    : '';
+  const oh = row.postOverhang;
+  ohEl.innerHTML = oh
+    ? `<div class="countwarn">Corner posts stand proud of the pallet deck by ${fmtLen(oh.L, inputs.getUnit())} (L) / ${fmtLen(oh.W, inputs.getUnit())} (W). Normal practice — the pallet pattern is unaffected; the trailer footprint accounts for it.</div>`
+    : '';
 }
 
 /* ---------- dimensional sensitivity: which case dimension is binding ---------
@@ -917,7 +946,24 @@ function renderBCT(g, row){
     `</table>` +
     `<div class="bctderate">McKee predicts <em>short-term lab</em> strength. Real field strength is reduced by:` +
       `<ul>${DERATINGS.map(d => `<li>${d}</li>`).join('')}</ul>` +
-      `The safety factor is what absorbs these.</div>`;
+      `The safety factor is what absorbs these.</div>` +
+    cornerPostStructuralNote(build.project, row.loadH || 0);
+}
+/** Corner posts get ZERO compression credit, unconditionally — even once a
+ *  user raises height to actually reach the case stack, where in reality
+ *  the post could bear load. The model staying silent there would be the
+ *  tool quietly wrong (it never re-derives BCT/the safety ratio from post
+ *  height), so this note says so explicitly once that's true, and stays a
+ *  softer disclaimer otherwise. Absent entirely when posts are off. */
+function cornerPostStructuralNote(project, loadH){
+  const cfg = cornerPostConfig(project);
+  if(!cfg.enabled) return '';
+  const reaches = cornerPostReachesCaseStack(project, loadH);
+  return `<div class="bctderate" style="margin-top:6px">` +
+    (reaches
+      ? '<strong>Corner posts now reach the case stack.</strong> In reality a post at this height could bear load, but this model gives corner posts ZERO compression credit unconditionally — the ratio above does not reflect any support they might actually provide.'
+      : 'Corner posts are modelled as non-structural edge protection only: at their current height they stand short of the case stack and contribute nothing to the compression load above.') +
+    `</div>`;
 }
 
 /* ---------- retail shelf fill: fitInto with the shelf as the parent cavity ----
@@ -2178,6 +2224,16 @@ function hierarchyBundle(proj = build.project, rowIn = null){
     // ONE resolver, read here and in renderBCT, never two independent
     // derivations of "how many loads are stacked".
     stack: theStack,
+    // Corner posts, resolved once here (never a raw project reference handed
+    // to the render layer, same as stack/trailer above): null when off, else
+    // the four numbers buildPallet/buildTrailer need to draw them. height is
+    // resolved from THIS row's own loadH — never re-derived in hierarchy3d.js.
+    cornerPost: (() => {
+      const cpCfg = cornerPostConfig(proj);
+      return cpCfg.enabled
+        ? {height: cornerPostHeightMM(proj, row.loadH || 0), legL: cpCfg.legL, legW: cpCfg.legW, caliper: cpCfg.caliper}
+        : null;
+    })(),
     // THE trailer (core/trailer.js): a CONSTRAINT LAYER consuming the SAME
     // stack above — never a second computation of stack height/weight,
     // casesPerLoad read straight off the chain's own row (casesPerPallet:
@@ -2635,6 +2691,35 @@ function commitPallet(){
   ss.weightLb = numOrNull(el('ssWeightLb').value);
   ss.L = numOrNull(el('ssL').value);
   ss.W = numOrNull(el('ssW').value);
+  commitCornerPost();
+}
+/** Corner post inputs -> project.pallet.stack.cornerPost / project.cost
+ *  (ONE writer each). Height/legs are auto-with-override (blank = null =
+ *  auto); caliper/density always carry a numeric value, same shape as the
+ *  slipsheet block above. The rate is stored canonically ($/m for
+ *  perLength, matching every other length-basis rate's stored unit) and
+ *  keyed by whichever basis is CURRENTLY selected — switching basis never
+ *  overwrites the other basis's own stored rate. */
+function commitCornerPost(){
+  const stack = build.project.pallet.stack || (build.project.pallet.stack = {positions: [{base: 'pallet'}]});
+  const cp = stack.cornerPost || (stack.cornerPost = {...CORNER_POST_DEFAULTS});
+  const pu = inputs.getPalUnit();
+  const numOrNull = v => v === '' ? null : (Number.isFinite(+v) ? +v : null);
+  cp.enabled = el('cpEnabled').checked;
+  const h = numOrNull(el('cpHeight').value);
+  cp.height = h != null ? toMM(h, pu) : null;
+  const lL = numOrNull(el('cpLegL').value);
+  cp.legL = lL != null ? toMM(lL, pu) : null;
+  const lW = numOrNull(el('cpLegW').value);
+  cp.legW = lW != null ? toMM(lW, pu) : null;
+  cp.caliper = Math.max(0, toMM(+el('cpCaliper').value || 0, pu));
+  cp.density = Math.max(0, +el('cpDensity').value || 0);
+  cp.costBasis = el('cpBasis').value === 'perPiece' ? 'perPiece' : 'perLength';
+
+  const cost = build.project.cost || (build.project.cost = {});
+  const rateIn = +el('cpRate').value || 0;
+  if(cp.costBasis === 'perLength') cost.cornerPostPerLengthM = Math.max(0, rateFromDisplay(rateIn, 'length', pu));
+  else cost.cornerPostPerPiece = Math.max(0, rateIn);
 }
 /** Write project.pallet back into the pallet rail fields (after a load). */
 /** Warn at the mesh's faithful-shape boundary rather than drawing something
@@ -2677,6 +2762,30 @@ function writePalletFields(){
   el('ssWeightLb').value = ss.weightLb ?? '';
   el('ssL').value = ss.L ?? '';
   el('ssW').value = ss.W ?? '';
+  writeCornerPostFields();
+}
+/** Corner post rail fields, mirroring the slipsheet block's own auto/
+ *  override shape: height/legs blank = auto, caliper/density always
+ *  numeric (never blank-to-zero), pricing basis + its own rate. `#cpFields`
+ *  is hidden (not removed) when disabled — same idiom as `#ssField`. */
+function writeCornerPostFields(){
+  const raw = (build.project.pallet.stack && build.project.pallet.stack.cornerPost) || {};
+  const cfg = cornerPostConfig(build.project);
+  el('cpEnabled').checked = cfg.enabled;
+  el('cpFields').style.display = cfg.enabled ? 'contents' : 'none';
+  const pu = inputs.getPalUnit();
+  el('cpHeight').value = raw.height != null ? fmtInputValue(fromMM(raw.height, pu), pu) : '';
+  el('cpLegL').value = raw.legL != null ? fmtInputValue(fromMM(raw.legL, pu), pu) : '';
+  el('cpLegW').value = raw.legW != null ? fmtInputValue(fromMM(raw.legW, pu), pu) : '';
+  el('cpCaliper').value = fmtInputValue(fromMM(cfg.caliper, pu), pu);
+  el('cpDensity').value = cfg.density;
+  const basis = cornerPostBasisOf(build.project);
+  el('cpBasis').value = basis;
+  el('cpRateHint').textContent = basis === 'perLength' ? (pu === 'mm' ? '$/m' : '$/ft') : '$/post';
+  const rate = cornerPostRateOf(build.project.cost, basis);
+  el('cpRate').value = basis === 'perLength'
+    ? (rate ? +rateToDisplay(rate, 'length', pu).toFixed(4) : '')
+    : (rate || '');
 }
 function onPalletEdited(){
   commitPallet();
@@ -2686,8 +2795,15 @@ function onPalletEdited(){
   projectChanged();
 }
 ['pal', 'palMaxH', 'palBaseH', 'bctEct', 'bctWeight', 'bctTarget', 'palTareLb',
- 'ssCaliper', 'ssDensity', 'ssWeightLb', 'ssL', 'ssW'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+ 'ssCaliper', 'ssDensity', 'ssWeightLb', 'ssL', 'ssW',
+ 'cpHeight', 'cpLegL', 'cpLegW', 'cpCaliper', 'cpDensity', 'cpRate'].forEach(id => el(id).addEventListener('input', onPalletEdited));
 ['palPattern'].forEach(id => el(id).addEventListener('change', onPalletEdited));
+function onCornerPostToggled(){
+  commitCornerPost();
+  writeCornerPostFields();   // re-derive the rate hint / auto placeholders for the (possibly new) basis
+  projectChanged();
+}
+['cpEnabled', 'cpBasis'].forEach(id => el(id).addEventListener('change', onCornerPostToggled));
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;

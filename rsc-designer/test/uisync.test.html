@@ -122,6 +122,21 @@
     <input id="ssL" type="number" value="">
     <input id="ssW" type="number" value="">
   </div>
+  <!-- corner posts (core/stack.js cornerPostConfig) the real app wires at boot -->
+  <input id="cpEnabled" type="checkbox">
+  <div id="cpFields" style="display:none">
+    <input id="cpHeight" type="number" value="">
+    <div id="cpStructNote"></div>
+    <input id="cpLegL" type="number" value="">
+    <input id="cpLegW" type="number" value="">
+    <input id="cpCaliper" type="number" value="3">
+    <input id="cpDensity" type="number" value="700">
+    <div id="cpOverhangNote"></div>
+    <select id="cpBasis"><option value="perLength">Per length</option><option value="perPiece">Per piece</option></select>
+    <span id="cpRateHint"></span>
+    <input id="cpRate" type="number" value="">
+    <div id="cpCostNote"></div>
+  </div>
   <!-- BCT stacking inputs the real app wires at boot -->
   <input id="bctEct" type="number" value="32">
   <input id="bctWeight" type="number" value="20">

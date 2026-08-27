@@ -229,22 +229,34 @@ const memo = new Map();
  *   Left false, no generated arrangement may extend past the deck (see the
  *   deck-validity block above). Set true and the rejection is skipped —
  *   the caller then owes the BCT an overhang derating.
+ * @param {number} [opts.postCaliperMM=0]  corner-post caliper, mm. NOT the
+ *   same condition as case overhang above (which REJECTS): this only
+ *   attaches `postOverhang` to a candidate that otherwise passed the deck
+ *   gate, when its case envelope plus 2x this caliper would stand proud of
+ *   the deck. Never rejects, never touches which candidates are returned —
+ *   see core/palletpatterns.js's own module doc and the "Overhang" section
+ *   of the corner-post task for why this must stay a different code path
+ *   from case overhang at a different severity.
  * @param {boolean} [opts.noMemo=false]  skip the result cache. For
  *   hypothetical probes (core/sensitivity.js) whose dimensions never recur:
  *   caching them would only evict the real chain's entries.
  * @returns ranked candidates: {family, interlock, orientation, perLayer,
- *   layers, total, label, envelope, density, utilization, build()} —
- *   build() expands the fitInto-compatible Arrangement (placements included)
- *   on demand and caches it. Empty when nothing fits the deck: an honest
- *   "does not fit", never an overhanging fallback.
+ *   layers, total, label, envelope, density, utilization, postOverhang,
+ *   build()} — build() expands the fitInto-compatible Arrangement
+ *   (placements included) on demand and caches it. Empty when nothing fits
+ *   the deck: an honest "does not fit", never an overhanging fallback.
+ *   `postOverhang` is `{L, W}` (mm proud in each dimension, 0 if not proud
+ *   in that dimension) when corner posts would stand proud of the deck,
+ *   else `null` — a WARNING annotation, never a rejection.
  */
 export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal', opts = {}){
   const allowOverhang = !!opts.allowOverhang, noMemo = !!opts.noMemo;
+  const postCaliperMM = typeof opts.postCaliperMM === 'number' && opts.postCaliperMM > 0 ? opts.postCaliperMM : 0;
   const key = noMemo ? null
     : [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
        cavity.L, cavity.W, cavity.H,
        clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
-       family, allowOverhang ? 'oh' : ''].join('|');
+       family, allowOverhang ? 'oh' : '', postCaliperMM].join('|');
   if(key !== null){
     const hit = memo.get(key);
     if(hit) return hit;
@@ -302,12 +314,25 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       const envVol = envelope.L*envelope.W*envelope.H;
       const symmetric = sym180(lay.positions);
 
+      // POST OVERHANG — a DIFFERENT condition from the deck-validity gate
+      // above, checked on a candidate that already passed it. The corner
+      // posts stand outboard of the CASE envelope, so the post-inflated
+      // footprint can stand proud of the deck by a few mm even though the
+      // cases themselves fit cleanly — normal practice, not a fault. Never
+      // rejects (the gate above already ran); never derates BCT (nothing
+      // here touches it); does feed the trailer's load footprint elsewhere
+      // (core/trailer.js reads postOverhang via the resolved row, not this
+      // module — palletpatterns.js only reports the geometric fact).
+      const ohL = Math.max(0, (envelope.L + 2*postCaliperMM) - cavity.L);
+      const ohW = Math.max(0, (envelope.W + 2*postCaliperMM) - cavity.W);
+      const postOverhang = (ohL > DECK_EPS || ohW > DECK_EPS) ? {L: ohL, W: ohW} : null;
+
       const mk = interlock => {
         const cand = {
           family: lay.family, interlock, orientation: o,
           perLayer, layers: st.layers, total: st.total,
           label: lay.label + (interlock ? ' · interlocked' : ''),
-          envelope,
+          envelope, postOverhang,
           density: envVol > 0 ? st.total*childVol/envVol : 0,
           utilization: cavityVol > 0 ? st.total*childVol/cavityVol : 0,
           build(){

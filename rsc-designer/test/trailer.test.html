@@ -8,21 +8,22 @@
    test/stack.test.html, so every hand-computed expected value here is
    independent of newProject()'s own defaults. */
 import {resolveTrailer, trailerFloorPattern, trailerParams, TRAILER_DEFAULTS, FLOOR_FAMILY_DEFAULT} from '../src/core/trailer.js';
-import {resolveStack} from '../src/core/stack.js';
+import {resolveStack, cornerPostWeightLb} from '../src/core/stack.js';
 
 const results = [];
 function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
 function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function ok(cond, msg){ if(!cond) throw new Error(msg); }
 
 const MM_PER_IN = 25.4;
 const GMA_L = 48*MM_PER_IN, GMA_W = 40*MM_PER_IN;   // 1219.2, 1016
 
 function proj({trailer = {}, palletL = GMA_L, palletW = GMA_W, stackPositions = [{base: 'pallet'}],
-                tareLb = 45, ssCaliper = 3, ssDensity = 950} = {}){
+                tareLb = 45, ssCaliper = 3, ssDensity = 950, cornerPost = null} = {}){
   return {
     pallet: {
       L: palletL, W: palletW, baseH: 127, tareLb,
-      stack: {positions: stackPositions},
+      stack: {positions: stackPositions, cornerPost},
       slipsheet: {caliper: ssCaliper, density: ssDensity, weightLb: null, L: null, W: null},
       stacking: {ect: 32, unitWeightLb: 20, target: 3.0}
     },
@@ -182,6 +183,47 @@ t('resolveTrailer: nothing fits the floor (pallet bigger than the trailer) -> 0 
   approx(r.stacksPerTrailer, 0);
   approx(r.unitLoadsPerTrailer, 0);
   approx(r.totalWeightLb, 0);
+});
+
+/* ================================================================
+   CORNER POSTS (task: "Corner posts") -- footprint growth feeding the
+   trailer floor count, and payload rising by exactly 4 x post weight x
+   positions. Both hand-computed independently of resolveTrailer's own
+   expressions.
+   ================================================================ */
+t('corner-post footprint growth (2 x caliper) reduces stacksPerTrailer exactly as hand-computed, both orientations', () => {
+  const caliper = 20; // mm -- large enough to flip the tight-margin axis (see the file's own 26/30 pin: turned's W-axis margin is only ~63.6mm, needs 4xcaliper > 63.6)
+  const inflatedL = GMA_L + 2*caliper, inflatedW = GMA_W + 2*caliper;
+  const straight = Math.floor(TRAILER_DEFAULTS.L/inflatedL)*Math.floor(TRAILER_DEFAULTS.W/inflatedW);
+  const turned   = Math.floor(TRAILER_DEFAULTS.L/inflatedW)*Math.floor(TRAILER_DEFAULTS.W/inflatedL);
+  const expected = Math.max(straight, turned);
+  const p = proj({cornerPost: {enabled: true, caliper, height: 300, legL: 76.2, legW: 76.2, density: 700}});
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 300});
+  const r = resolveTrailer(p, stack, 25);
+  ok(expected < 30, `vacuous fixture: caliper=${caliper} must actually reduce the count below the bare-pallet baseline (30)`);
+  approx(r.stacksPerTrailer, expected, 'hand-computed both orientations on the INFLATED footprint, take the max');
+});
+t('corner-post footprint growth is ZERO when posts are off -- stacksPerTrailer bit-identical to the bare pallet', () => {
+  const off = proj({cornerPost: {enabled: false, caliper: 50}});   // a caliper that WOULD matter if it leaked through while disabled
+  const bare = proj();
+  const fit = {layers: 5, casesPerLayer: 5, loadH: 300};
+  const rOff = resolveTrailer(off, resolveStack(off, fit), 25);
+  const rBare = resolveTrailer(bare, resolveStack(bare, fit), 25);
+  approx(rOff.stacksPerTrailer, rBare.stacksPerTrailer, 'a disabled corner-post caliper must not leak into the footprint');
+});
+t('trailer payload rises by exactly 4 x post weight x positions x stacksPerTrailer', () => {
+  const stackPositions = [{base: 'pallet'}, {base: 'pallet'}];
+  const cornerPost = {enabled: true, height: 300, legL: 76.2, legW: 76.2, caliper: 3, density: 700};
+  const pOn = proj({stackPositions, cornerPost});
+  const pOff = proj({stackPositions, cornerPost: {enabled: false}});
+  const fit = {layers: 5, casesPerLayer: 5, loadH: 300};
+  const sOn = resolveStack(pOn, fit), sOff = resolveStack(pOff, fit);
+  const rOn = resolveTrailer(pOn, sOn, 25), rOff = resolveTrailer(pOff, sOff, 25);
+  approx(rOn.stacksPerTrailer, rOff.stacksPerTrailer, 'fixture check: this caliper (3mm) must not itself change the floor count here');
+  const onePostLb = cornerPostWeightLb(pOn, fit.loadH);
+  ok(onePostLb > 0, 'vacuous fixture: post weight must be nonzero');
+  const expectedDiff = 4*onePostLb*stackPositions.length*rOn.stacksPerTrailer;
+  approx(rOn.totalWeightLb - rOff.totalWeightLb, expectedDiff, '', 1e-6);
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

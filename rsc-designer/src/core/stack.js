@@ -15,6 +15,8 @@
  * DOM-free, mm-only, pure — a sibling to core/bct.js and core/uboard.js.
  */
 
+import {cornerPostBasisOf} from './materials.js';
+
 /** Every base a stack position can rest on. A single discriminant per
  *  position (not a per-kind boolean) so "unrepresentable" states — a
  *  position that is both, or neither — don't need a validation rule to
@@ -52,6 +54,114 @@ const MM_PER_IN = 25.4;
 const KG_PER_LB = 0.45359237;
 
 const num = v => typeof v === 'number' && isFinite(v);
+
+/** Corner posts: one config for the WHOLE stack, applied to every position
+ *  uniformly — not a per-position override like `positions[i].base`. Two
+ *  things force this shape rather than a per-position one: (1) `loadH` (the
+ *  case-stack height a load carries) is already uniform across positions in
+ *  this model, so a height default computed "per load" comes out identical
+ *  at every position regardless of where the config lives; (2) the cost
+ *  formula the task itself specifies is a flat `4 x positions x rate` — a
+ *  single rate/height times a position COUNT, never a sum of N independently
+ *  configured posts. `enabled` is a real toggle (not an absence-is-auto
+ *  field): posts are an opt-in feature, not a value with a sensible zero.
+ *  `caliper` has no auto concept per the task ("its own input") — a plain
+ *  overridable default, same shape as project.pallet.baseH. */
+export const CORNER_POST_DEFAULTS = Object.freeze({
+  enabled: false,
+  height: null,   // mm; null = auto = that load's case-stack height - 1in
+  legL: null,     // mm; null = auto = 3in
+  legW: null,     // mm; null = auto = 3in
+  caliper: 3,     // mm
+  density: 700,   // kg/m^3 — corrugated "post board" order of magnitude, a placeholder like every other density default in this file
+  costBasis: 'perLength'
+});
+
+const CORNER_POST_HEIGHT_MARGIN_MM = MM_PER_IN;   // 1in short of the case stack, by design (see cornerPostHeightMM)
+const CORNER_POST_LEG_DEFAULT_MM = 3*MM_PER_IN;   // 3in each side
+
+/** The resolved corner-post config: every field either the project's own
+ *  override or CORNER_POST_DEFAULTS — never a mix of the two per field left
+ *  to callers to sort out (the same fully-resolved shape slipsheetFootprintMM
+ *  etc. hand back). `height` is deliberately NOT resolved here — its auto
+ *  value depends on `loadH`, which this function doesn't have; see
+ *  cornerPostHeightMM. */
+function cornerPostRaw(project){
+  return (project.pallet.stack && project.pallet.stack.cornerPost) || {};
+}
+export function cornerPostConfig(project){
+  const cp = cornerPostRaw(project);
+  return {
+    enabled: !!cp.enabled,
+    legL: num(cp.legL) ? cp.legL : CORNER_POST_LEG_DEFAULT_MM,
+    legW: num(cp.legW) ? cp.legW : CORNER_POST_LEG_DEFAULT_MM,
+    caliper: num(cp.caliper) ? cp.caliper : CORNER_POST_DEFAULTS.caliper,
+    density: num(cp.density) ? cp.density : CORNER_POST_DEFAULTS.density,
+    costBasis: cp.costBasis === 'perPiece' ? 'perPiece' : 'perLength'
+  };
+}
+
+/** This stack's corner-post HEIGHT, mm — an override if given, else that
+ *  load's own case-stack height minus 1in. Short of the top BY DESIGN: at
+ *  the default height nothing above can bear on the post, which is why the
+ *  model gives posts zero compression credit unconditionally (see
+ *  tareAboveLb below and bct.js) rather than only when they happen to be
+ *  short. `loadH` is the chain's own solved case-stack height (project.js),
+ *  read here, never re-derived. */
+export function cornerPostHeightMM(project, loadH){
+  const cp = cornerPostRaw(project);
+  return num(cp.height) ? cp.height : Math.max(0, (loadH || 0) - CORNER_POST_HEIGHT_MARGIN_MM);
+}
+
+/** True once the post's CURRENT height reaches the case stack — the model
+ *  never credits posts structurally either way, but a UI note explaining
+ *  why only matters once a user has actually raised height to meet the
+ *  stack (see the "non-structural" note in app.js). */
+export function cornerPostReachesCaseStack(project, loadH){
+  return cornerPostHeightMM(project, loadH) >= (loadH || 0) - 1e-6;
+}
+
+/** One post's own cross-section area, mm² — an L-profile: two rectangular
+ *  legs sharing one caliper x caliper corner square once, not twice. */
+export function cornerPostSectionAreaMM2(cfg){
+  return cfg.legL*cfg.caliper + cfg.legW*cfg.caliper - cfg.caliper*cfg.caliper;
+}
+
+/** One post's own weight, lb — section area x height x density, the exact
+ *  volume-x-density shape slipsheetWeightLb already uses. Zero when posts
+ *  are off, so every caller can add this in unconditionally. */
+export function cornerPostWeightLb(project, loadH){
+  const cfg = cornerPostConfig(project);
+  if(!cfg.enabled) return 0;
+  const h = cornerPostHeightMM(project, loadH);
+  const volM3 = (cornerPostSectionAreaMM2(cfg)/1e6)*(h/1000);
+  return (volM3*cfg.density)/KG_PER_LB;
+}
+
+/** The load footprint growth from corner posts, mm — 2 x caliper in EACH of
+ *  L and W (one post at each end of a face, each caliper thick, standing
+ *  outboard of the case corner). Zero when posts are off. */
+export function cornerPostFootprintGrowthMM(project){
+  const cfg = cornerPostConfig(project);
+  return cfg.enabled ? 2*cfg.caliper : 0;
+}
+
+/** The corner-post COST quantities materialCost needs, in the ONE unit each
+ *  pricing basis actually prices against — a total post LENGTH in metres, or
+ *  a flat post COUNT. 4 posts per position (see cornerPostWeightLb's own
+ *  doc for why this is one shared config times a position count, not N
+ *  independent posts). Computed here once so project.js's decorateRow never
+ *  re-derives "4 x positions" itself — the exact `4 x positions x rate`
+ *  shape the cost spec calls for falls out of costForBasis(basis, rate,
+ *  {lengthM, count}) unchanged. `basis` is null when posts are off, so the
+ *  caller can tell "no cost to compute" apart from "compute it as zero". */
+export function cornerPostCostQuantities(project, loadH, positionsCount){
+  const cfg = cornerPostConfig(project);
+  if(!cfg.enabled) return {basis: null, lengthM: null, count: null};
+  const totalPosts = 4*Math.max(1, positionsCount);
+  const heightM = cornerPostHeightMM(project, loadH)/1000;
+  return {basis: cornerPostBasisOf(project), lengthM: totalPosts*heightM, count: totalPosts};
+}
 
 /** The slipsheet's own footprint — pallet footprint + 1in per side unless
  *  explicitly overridden. The 1in lip is handling clearance only: it is
@@ -145,6 +255,7 @@ export function boxesAboveBottom(layers, positionsCount = 1){
  *   boxesAboveBottom: number,
  *   tareAboveLb: number,
  *   totalWeightLb: number,
+ *   cornerPostWeightLb: number,
  *   provenance: Object
  * }}
  */
@@ -160,18 +271,33 @@ export function resolveStack(project, fit = {}){
   const weights = positions.map(p => baseWeightLb(p, project));
   const footprints = positions.map(p => baseFootprintMM(p, project));
   const totalHeightMM = heights.reduce((s, h) => s + h, 0) + n*loadH;
+  // 4 posts per position, uniform across positions (ONE cornerPost config
+  // for the whole stack — see cornerPostConfig's own doc for why). Zero when
+  // posts are off, so every term below stays bit-identical to before posts
+  // existed.
+  const postsPerPositionLb = 4*cornerPostWeightLb(project, loadH);
   // Each base ABOVE the bottom case bears down on it through the column
   // below; the bottom position's own base is underneath the whole stack and
-  // carries nothing onto the case riding on it.
-  const tareAboveLb = weights.slice(1).reduce((s, w) => s + w, 0);
+  // carries nothing onto the case riding on it. A position's OWN corner
+  // posts stand BESIDE its cases, not on them, so they never enter that
+  // position's own compression column — but a post on position 2..N stands
+  // on THAT position's base, which rests on the load below, so its weight
+  // transmits down exactly like the base's own tare does. Bottom-position
+  // posts are excluded from this sum for the same reason the bottom base is.
+  const tareAboveLb = weights.slice(1).reduce((s, w) => s + w, 0) + (n - 1)*postsPerPositionLb;
   const unitWeightLb = (project.pallet.stacking && project.pallet.stacking.unitWeightLb) || 0;
   const casesPerLoad = casesPerLayer*layers;
-  const totalWeightLb = weights.reduce((s, w) => s + w, 0) + n*casesPerLoad*unitWeightLb;
+  // Post weight joins EVERY position's contribution to the load's total
+  // weight (trailer payload reads this) — including the bottom position,
+  // whose posts are excluded from tareAboveLb above but still physically
+  // ride on the trailer.
+  const totalWeightLb = weights.reduce((s, w) => s + w, 0) + n*casesPerLoad*unitWeightLb + n*postsPerPositionLb;
   return {
     positions,
     totalHeightMM,
     baseHeightMM: heights,
     footprintMM: footprints,
+    cornerPostWeightLb: postsPerPositionLb,
     boxesAboveBottom: boxesAboveBottom(layers, n),
     tareAboveLb,
     totalWeightLb,
