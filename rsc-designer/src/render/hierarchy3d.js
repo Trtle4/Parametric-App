@@ -1685,12 +1685,14 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     group.add(timber);
 
     // Corner posts: 4 per position, standing on THIS position's own base top
-    // (yOff + baseH), outboard of the deck footprint. bundle.cornerPost is
-    // null when posts are off — resolved once in app.js's hierarchyBundle,
-    // never re-derived here (see core/stack.js cornerPostHeightMM/Config).
+    // (yOff + baseH), outboard of the CASE STACK's own footprint (bundle.
+    // cornerPost.footprint == row.casesFit.envelope) -- NOT the deck, so a
+    // deck bigger than the case stack doesn't pin the posts to the deck's
+    // farther-out corner. bundle.cornerPost is null when posts are off —
+    // resolved once in app.js's hierarchyBundle, never re-derived here.
     if(bundle.cornerPost){
       const cp = bundle.cornerPost;
-      const posts = buildCornerPostSet(cases.deck, cp.height, cp.legL, cp.legW, cp.caliper);
+      const posts = buildCornerPostSet(cp.footprint, cp.height, cp.legL, cp.legW, cp.caliper);
       posts.position.y = yOff + baseH;
       group.add(posts);
     }
@@ -1902,6 +1904,11 @@ function buildTrailer(bundle, outerTier, S){
   // null when posts are off.
   if(bundle.cornerPost){
     const cp = bundle.cornerPost;
+    // The CASE STACK's own footprint (row.casesFit.envelope, swapped for
+    // this floor's own orientation like cellFP already is) -- NOT the deck.
+    // A post stands outboard of the case corner, so it must touch the
+    // actual case envelope even when the deck is bigger than the load.
+    const postFP = swap(cp.footprint);
     if(cp.height > 0 && cp.caliper > 0){
       const armXGeo = new THREE.BoxGeometry(Math.max(cp.legL, 0.1), Math.max(cp.height, 0.1), Math.max(cp.caliper, 0.1));
       armXGeo.translate(cp.legL/2, cp.height/2, cp.caliper/2);
@@ -1913,7 +1920,7 @@ function buildTrailer(bundle, outerTier, S){
         postSlots.push({fi, u});
       }
       if(postSlots.length){
-        const hx = cellFP.L/2 + cp.caliper, hz = cellFP.W/2 + cp.caliper;
+        const hx = postFP.L/2 + cp.caliper, hz = postFP.W/2 + cp.caliper;
         const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
         const armXInst = new THREE.InstancedMesh(armXGeo, CORNER_POST_MATERIAL, postSlots.length*4);
         const armZInst = new THREE.InstancedMesh(armZGeo, CORNER_POST_MATERIAL, postSlots.length*4);
@@ -1953,7 +1960,7 @@ function buildTrailer(bundle, outerTier, S){
   // slot should show everything in full detail, posts included.
   if(bundle.cornerPost){
     const cp = bundle.cornerPost;
-    const posts = buildCornerPostSet(cellFP, cp.height, cp.legL, cp.legW, cp.caliper);
+    const posts = buildCornerPostSet(swap(cp.footprint), cp.height, cp.legL, cp.legW, cp.caliper);
     posts.position.set(dpl.x, posOffsets[detailVertIdx] + dH, dpl.y);
     group.add(posts);
   }

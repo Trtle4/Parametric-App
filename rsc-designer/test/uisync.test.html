@@ -2888,6 +2888,33 @@ await (async () => {
   // restore: back to pallet depth for the pins that follow
   el('d_pallet').click(); await settle();
 
+  tEdit('corner posts touch the CASE STACK envelope, not the pallet deck -- a deck bigger than the case footprint must not push posts out to the deck edge', () => {
+    setLevel('pallet');
+    el('cpEnabled').checked = true; fire(el('cpEnabled'), 'change');
+    el('tab3d').click(); el('d_pallet').click();
+
+    const row = resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
+    const env = row.casesFit && row.casesFit.envelope;
+    if(!env || !(env.L > 0)) throw new Error('vacuous fixture: no real case envelope to compare against');
+    const deck = build.project.pallet;
+    if(Math.abs(env.L - deck.L) < 1 && Math.abs(env.W - deck.W) < 1)
+      throw new Error(`vacuous fixture: case envelope (${env.L}x${env.W}) is indistinguishable from the deck (${deck.L}x${deck.W}) -- pick a chain where they differ`);
+
+    getPivot().updateMatrixWorld(true);
+    let postsGroup = null;
+    getPivot().traverse(o => { if(o.name === 'cornerPosts' && !postsGroup) postsGroup = o; });
+    if(!postsGroup) throw new Error('no cornerPosts group rendered at pallet depth');
+    const corner = postsGroup.children[0];
+    const v = new THREE.Vector3(); corner.getWorldPosition(v);
+    const caliper = build.project.pallet.stack.cornerPost.caliper;
+    const expectedFromEnvelope = Math.abs(v.x) - caliper;
+    const expectedFromDeck = deck.L/2;
+    if(Math.abs(expectedFromEnvelope*2 - env.L) > 1)
+      throw new Error(`post corner sits at ${expectedFromEnvelope*2}, expected to match the case envelope L=${env.L}`);
+    if(Math.abs(expectedFromEnvelope - expectedFromDeck) < 1)
+      throw new Error('vacuous fixture: envelope-derived and deck-derived corner positions coincide, cannot discriminate');
+  });
+
   t('pallet render TAKES its load height from the chain, never measures it', () => {
     // The render used to derive the load height from the placements. That was
     // wrong twice: as a recomputed layer COUNT (114mm), and still by

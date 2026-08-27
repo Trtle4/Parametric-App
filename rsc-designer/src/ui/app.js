@@ -2226,13 +2226,22 @@ function hierarchyBundle(proj = build.project, rowIn = null){
     stack: theStack,
     // Corner posts, resolved once here (never a raw project reference handed
     // to the render layer, same as stack/trailer above): null when off, else
-    // the four numbers buildPallet/buildTrailer need to draw them. height is
+    // the numbers buildPallet/buildTrailer need to draw them. height is
     // resolved from THIS row's own loadH — never re-derived in hierarchy3d.js.
+    // `footprint` is the CASE STACK's own occupied envelope (row.casesFit.
+    // envelope, the same number palletpatterns.js's post-overhang check
+    // reads) — NOT the deck/pallet L x W. Posts stand outboard of the case
+    // corner, not the pallet corner (see core/stack.js's cornerPostFootprint
+    // GrowthMM doc): a deck bigger than the case stack must not pin the
+    // posts to the deck's own, farther-out edge. Falls back to the deck only
+    // when nothing actually fit (an empty arrangement has no real envelope
+    // to touch).
     cornerPost: (() => {
       const cpCfg = cornerPostConfig(proj);
-      return cpCfg.enabled
-        ? {height: cornerPostHeightMM(proj, row.loadH || 0), legL: cpCfg.legL, legW: cpCfg.legW, caliper: cpCfg.caliper}
-        : null;
+      if(!cpCfg.enabled) return null;
+      const env = row.casesFit && row.casesFit.envelope;
+      const footprint = (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : {L: cases.deck.L, W: cases.deck.W};
+      return {height: cornerPostHeightMM(proj, row.loadH || 0), legL: cpCfg.legL, legW: cpCfg.legW, caliper: cpCfg.caliper, footprint};
     })(),
     // THE trailer (core/trailer.js): a CONSTRAINT LAYER consuming the SAME
     // stack above — never a second computation of stack height/weight,
