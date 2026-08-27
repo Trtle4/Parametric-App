@@ -1785,6 +1785,12 @@ function buildClosedLoadCases(targetGroup, outerTier, bundle, casePlacements, yB
  * No cutaway, no explode, no per-case picking outside the one detailed load:
  * a constraint layer has no "open this unit" interaction to offer.
  */
+// mm shrunk off EVERY axis of a base/load proxy box, centred (so it costs a
+// gap on every face, not just the ones between neighbours) -- the same 2mm/
+// side magnitude this function already used for load-block L/W only; see
+// the shrink call sites below for why it now covers height and bases too.
+// Exported so a pin can assert the remedy value directly, not a copy of it.
+export const TRAILER_LOAD_SHRINK = 4;
 function buildTrailer(bundle, outerTier, S){
   const tr = bundle.trailer, st = bundle.stack;
   const tp = tr.provenance.trailer;
@@ -1841,8 +1847,17 @@ function buildTrailer(bundle, outerTier, S){
       slots.push({fi, u});
     }
     if(!slots.length) continue;
-    const geo = new THREE.BoxGeometry(fp.L, Math.max(h, 0.1), fp.W);
+    // TRAILER_LOAD_SHRINK (below) applies here too: adjacent floor positions'
+    // bases touch at zero gap (same as the load blocks they carry did before
+    // that shrink existed), and every base's OWN top face sits exactly flush
+    // with its load block's bottom (posOffsets math never inserts a gap) --
+    // a second, vertical coplanar seam distinct from the horizontal one the
+    // load blocks were already shrunk for. One constant, all three axes, on
+    // both base and load geometry, since centring (setMatrixAt below) never
+    // moves -- the box just shrinks symmetrically around its own centre.
+    const geo = new THREE.BoxGeometry(Math.max(fp.L - TRAILER_LOAD_SHRINK, 1), Math.max(h - TRAILER_LOAD_SHRINK, 0.1), Math.max(fp.W - TRAILER_LOAD_SHRINK, 1));
     const inst = new THREE.InstancedMesh(geo, mat, slots.length);
+    inst.name = 'trailerBase';
     slots.forEach(({fi, u}, k) => {
       const pl = placements[fi];
       M.identity(); M.setPosition(pl.x, posOffsets[u] + h/2, pl.y);
@@ -1851,7 +1866,7 @@ function buildTrailer(bundle, outerTier, S){
     group.add(inst);
   }
   const cellFP = swap(bundle.cases.deck);
-  const loadGeo = new THREE.BoxGeometry(Math.max(cellFP.L - 4, 1), Math.max(loadH, 0.1), Math.max(cellFP.W - 4, 1));
+  const loadGeo = new THREE.BoxGeometry(Math.max(cellFP.L - TRAILER_LOAD_SHRINK, 1), Math.max(loadH - TRAILER_LOAD_SHRINK, 0.1), Math.max(cellFP.W - TRAILER_LOAD_SHRINK, 1));
   const loadSlots = [];
   for(let fi = 0; fi < placements.length; fi++) for(let u = 0; u < N; u++){
     if(fi === detailFloorIdx && u === detailVertIdx) continue;
@@ -1859,6 +1874,7 @@ function buildTrailer(bundle, outerTier, S){
   }
   if(loadSlots.length){
     const loadInst = new THREE.InstancedMesh(loadGeo, board, loadSlots.length);
+    loadInst.name = 'trailerLoadBlock';
     loadSlots.forEach(({fi, u}, k) => {
       const pl = placements[fi];
       M.identity(); M.setPosition(pl.x, posOffsets[u] + heights[u] + loadH/2, pl.y);

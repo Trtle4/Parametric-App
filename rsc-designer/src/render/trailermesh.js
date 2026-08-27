@@ -16,7 +16,16 @@
  * lengths in mm.
  */
 
-const wall = new THREE.MeshStandardMaterial({color: 0xBFC7CE, roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.18, side: THREE.DoubleSide});
+// depthWrite:false -- the shell is 4 large, overlapping DoubleSide transparent
+// boxes (nose/2 sides/ceiling) sharing edges at every corner. With depth
+// writes on, whichever overlapping face rasterizes first at a pixel blocks
+// the other from blending there at all, and WHICH one wins can flip as the
+// camera moves a hair -- a classic three.js transparent-sort flicker. None of
+// these boxes need to occlude each other (they're one translucent cage, not
+// solid geometry), so turning off depth writes costs nothing and removes the
+// flicker source outright; opaque contents behind them are unaffected since
+// those are depth-tested normally in the opaque pass before this ever draws.
+const wall = new THREE.MeshStandardMaterial({color: 0xBFC7CE, roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false});
 const floorMat = new THREE.MeshStandardMaterial({color: 0x8A8F94, roughness: 0.85, metalness: 0.05});
 const doorOutline = new THREE.LineBasicMaterial({color: 0xE0A030, linewidth: 2});
 

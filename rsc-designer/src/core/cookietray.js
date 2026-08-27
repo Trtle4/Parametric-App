@@ -42,6 +42,15 @@ const deg = r => r*180/Math.PI;
  *  and `divider` default from other inputs, so they start null. */
 export const TRAY_DEFAULTS = Object.freeze({
   nCells: 3,
+  // Cookie-Tray's own column split. This port's layout is 1×N (a single row
+  // of `nCells` cradles along one channel — see deriveTrayParams's own doc),
+  // so nCols has NO geometric effect here: it rides through trayParams()'s
+  // spread untouched (same shape as flangeT, validated/tracked upstream but
+  // not consumed by any of this port's derived dimensions) purely so a
+  // Cookie-Tray link round-trips losslessly instead of silently resetting
+  // this field to their default. Building real 2D row x column trays is a
+  // separate, larger feature this does not attempt.
+  nCols: 1,
   longAxis: 'X',        // 'X' = channels run along L; 'Y' rotates the part 90°
   cellLen: 170,
   cellWid: 48,

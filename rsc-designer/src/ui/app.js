@@ -1702,7 +1702,15 @@ function applyTrayLink(text){
   });
   projectChanged();
   mountActiveLevel();
-  return `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;
+  const status = `Applied ${parsed.keysFound.length} parameters — dimensions are pinned; reset a field to auto to re-derive.`;
+  // UNKNOWN-KEY WARNING (the class fix): never silently drop a field this
+  // app doesn't recognize — say so, through the SAME status note the import
+  // result already uses, and still finish the import with whatever it DID
+  // understand. An unnoticed partial import is worse than a noisy one.
+  if(!parsed.unknownKeys.length) return status;
+  const n = parsed.unknownKeys.length;
+  return `${status} This link contains ${n} setting${n === 1 ? '' : 's'} this app doesn't understand ` +
+    `(${parsed.unknownKeys.join(', ')}); the tray may not match.`;
 }
 
 /** THE three linked quantities — cells, products per cell, total — read by
