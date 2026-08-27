@@ -15,7 +15,7 @@ import {a6120} from './a6120.js';
 import {flowwrap, SEAL_ANGLES} from './flowwrap.js';
 import {trayGeometry} from './tray.js';
 import {sealend} from './sealend.js';
-import {shrinkBundle} from './shrinkbundle.js';
+import {shrinkBundle, FILM_OPACITY_DEFAULT_PCT} from './shrinkbundle.js';
 
 const trayReadouts = geo => [
   {label: 'Board layers, bottom', text: String(geo.meta.boardLayersBottom)},
@@ -221,15 +221,29 @@ export const styles = [
       {key: 'L',        label: 'Length',   hint: 'L', group: 'dims',     min: 1, step: 1,   default: 300},
       {key: 'W',        label: 'Width',    hint: 'W', group: 'dims',     min: 1, step: 1,   default: 200},
       {key: 'H',        label: 'Height',   hint: 'H', group: 'dims',     min: 1, step: 1,   default: 150},
+      // 'vertical' is the migration default -- the ONLY shape this style ever
+      // shipped, so existing saves/goldens must load unchanged. 'L'/'W' are a
+      // real bull's-eye bundle: a horizontal sleeve with two open, gathered
+      // ends instead of a tucked top/bottom -- see shrinkbundle.js's own doc.
+      {key: 'filmAxis', label: 'Film axis', hint: 'sleeve direction', group: 'material', type: 'select', default: 'vertical',
+       choices: [{value: 'vertical', label: 'Vertical (tucked top/bottom)'},
+                 {value: 'L', label: 'Along length (bull’s-eye at L-ends)'},
+                 {value: 'W', label: 'Along width (bull’s-eye at W-ends)'}]},
       {key: 'drawdown', label: 'Draw-down allowance', hint: 'overlap + tenting', group: 'material', min: 0, step: 1, default: 10, fixedUnit: '%'},
       {key: 'gauge',    label: 'Film gauge', hint: '', group: 'material', min: 1,   step: 1,    default: 50,   fixedUnit: 'µm'},
-      {key: 'density',  label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'}
+      {key: 'density',  label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'},
+      // render-only (never touches filmArea/mass/cost) -- live-updates the 3D
+      // skin as it's dragged, same slider+number pattern as the flow wrap's
+      // seal angles.
+      {key: 'filmOpacity', label: 'Film opacity', hint: 'how solid the wrap looks', group: 'material',
+       type: 'range', min: 10, max: 100, step: 5, default: FILM_OPACITY_DEFAULT_PCT, chip: '%'}
     ],
     options: [],
     geometry: shrinkBundle,
     readouts: geo => [
       {label: 'Enclosing surface', text: `${geo.meta.film.surfaceM2.toFixed(4)} m²`},
       {label: `Film area (+${geo.meta.film.drawdownPct}% draw-down)`, text: `${geo.meta.film.filmAreaM2.toFixed(4)} m²`},
+      {label: 'Girth', len: geo.meta.film.girth},
       {label: 'Film mass / 1000 bundles', text: `${Math.round(geo.meta.film.massPer1000g)} g`}
     ],
     // a bundle conforms to the contents' footprint AND height (a full skin), so
