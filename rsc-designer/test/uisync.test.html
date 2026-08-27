@@ -2916,11 +2916,13 @@ await (async () => {
   });
 
   t('shrink bundle render: material settings (opacity, depthWrite, polygon offset) are pinned as VALUES', () => {
-    // hier.shrinkMat is the ONE material every shrink-film part (skin, bull's-
-    // eye ring, gather cone) shares -- these settings fix a real transparent-
-    // sort/z-fight defect (see the material's own comment in hierarchy3d.js),
-    // not a look, so a later "just tweak the material" edit can't silently
-    // drop them back toward the near-invisible 0.16 the user reported.
+    // hier.shrinkMat is the ONE material every shrink-film part (the skin's
+    // faces and the bull's-eye end caps) shares -- these settings fix a real
+    // transparent-sort/z-fight defect (see the material's own comment in
+    // hierarchy3d.js, still load-bearing even at opacity 1 -- adjacent
+    // bundles on a pallet), not a look, so a later "just tweak the material"
+    // edit can't silently drop them, or walk opacity back toward the
+    // near-invisible 0.16 the user originally reported.
     eq(hier.shrinkMat.opacity, hier.SHRINK_OPACITY, 'opacity:');
     if(hier.SHRINK_OPACITY <= 0.16) throw new Error(`SHRINK_OPACITY must be raised well past the reported near-invisible 0.16, got ${hier.SHRINK_OPACITY}`);
     if(hier.shrinkMat.depthWrite !== false) throw new Error('shrinkMat must have depthWrite:false (stacked skins would get hard seams)');

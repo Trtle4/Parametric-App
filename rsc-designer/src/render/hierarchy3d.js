@@ -63,24 +63,32 @@ const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, m
 // end to end — the crimped ends are the same film, not a coloured feature.
 const wrapSolidMat = new THREE.MeshStandardMaterial({color: C_WRAP_SOLID, roughness: 0.45, metalness: 0, side: THREE.DoubleSide});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
-// Shrink film skin: CLEAR wrap, not the teal conforming film — a cool-white
-// sheen so the contents read cleanly through it. polygonOffset pushes it just
-// in front of the pack faces so it never z-fights the cartons/cans it wraps;
-// depthWrite off so stacked skins layer without hard seams. THESE THREE
-// (opacity, depthWrite, polygonOffset*) are pinned by test/uisync.test.html —
-// they fix a real transparent-sort/z-fight defect, not a look, so a later
+// Shrink film skin: an OPAQUE wrap — the bundle reads as a real wrapped pack,
+// not a translucent box, everywhere except the bull's-eye (a genuine
+// geometric hole cut at each open end, see bullsEyeAt/endCapWithHole below —
+// the one place the contents actually show through). polygonOffset pushes it
+// just in front of the pack faces so it never z-fights the cartons/cans it
+// wraps; depthWrite off so adjacent/stacked bundles on a pallet layer
+// without hard seams. THESE THREE (opacity, depthWrite, polygonOffset*) are
+// pinned by test/uisync.test.html — they fix a real transparent-sort/
+// z-fight defect (still load-bearing even at opacity 1: e.g. two shrink
+// bundles' skins sitting side by side on a pallet), not a look, so a later
 // "just tweak the material" edit can't silently drop them.
 //
-// SHRINK_OPACITY was raised from 0.16 (near-invisible — the reported defect:
-// "you cannot tell the bundle is wrapped at all") to 0.4: high enough that
-// the film itself reads as a distinct wrapped surface, low enough that the
-// contents underneath stay legible. roughness dropped to 0.05 (from 0.12) so
-// specular highlights read as a hard plastic sheen rather than matte haze.
-// MeshPhysicalMaterial (a drop-in superset of MeshStandardMaterial, already
-// vendored in this app's three.r128) adds a clearcoat layer on top of the
-// base material for free — its own Fresnel term brightens grazing angles
-// exactly the way real film sheen does, without a custom shader.
-export const SHRINK_OPACITY = 0.4;
+// SHRINK_OPACITY: was raised from 0.16 (near-invisible — the reported
+// defect: "you cannot tell the bundle is wrapped at all") to a fully
+// opaque 1 — the film now reads as a real wrapped surface, and the ONE
+// place contents show through is the literal hole at the bull's-eye, not a
+// translucent haze over the whole pack. `transparent` stays true (opacity 1
+// under `transparent:true` renders identically to a fully opaque material,
+// and keeps the same render-list/sort path multi-bundle fleets rely on).
+// roughness dropped to 0.05 (from 0.12) so specular highlights read as a
+// hard plastic sheen rather than matte haze. MeshPhysicalMaterial (a
+// drop-in superset of MeshStandardMaterial, already vendored in this app's
+// three.r128) adds a clearcoat layer on top of the base material for free —
+// its own Fresnel term brightens grazing angles exactly the way real film
+// sheen does, without a custom shader.
+export const SHRINK_OPACITY = 1;
 export const shrinkMat = new THREE.MeshPhysicalMaterial({color: 0xEAF3F5, roughness: 0.05, metalness: 0,
   clearcoat: 0.6, clearcoatRoughness: 0.15,
   transparent: true, opacity: SHRINK_OPACITY, side: THREE.DoubleSide, depthWrite: false,
@@ -212,37 +220,106 @@ function isOpenTop(geo){ return geo && geo.meta && geo.meta.boardLayersTop === 0
 function isShrink(geo){ return geo && geo.meta && (geo.meta.style === 'shrinkbundle' || geo.meta.shrinkWrapped); }
 function isShrinkBundle(geo){ return geo && geo.meta && geo.meta.style === 'shrinkbundle'; }
 
-// Bull's-eye: the single strongest visual cue that a shrink bundle is really
-// WRAPPED rather than a translucent box — an annulus at the centre of an
-// OPEN end (a face the sleeve does not wrap around, gathered to a hole) plus
-// a short open cone suggesting the film drawn inward toward that hole. Built
-// in the ring's own local frame (ring facing local +Z, "outward"; the cone's
-// apex pulled to local -Z, "inward" toward the bundle interior) — the caller
-// rotates/positions the whole group onto whichever world face it belongs to.
-// Sized off the SHORTER of the two in-plane extents so a narrow end never
-// draws a ring bigger than the face itself.
-function bullsEyeAt(crossA, crossB){
-  const short = Math.min(crossA, crossB);
-  const rOuter = short*0.38, rInner = short*0.14, gatherDepth = short*0.22;
+// A flat "stadium" outline (a rectangle capped with semicircles) — the
+// SINGLE shape behind the bull's-eye hole. Its corner radius is always half
+// the SHORTER side, so it is not two shapes switched by a branch: a square
+// (w===h) degenerates the stadium into a plain circle, and it stretches
+// toward a rounded rectangle as the end grows oblong — one parametric shape
+// covering both cases in the task's own words ("circle or rounded
+// rectangle depending on the bundled geometry").
+function stadiumShape(w, h){
+  const r = Math.min(w, h)/2;
+  if(h > w){
+    // Build the horizontal-long-axis version below (the arc math only
+    // closes correctly when the straight run is along x, r === h/2), then
+    // swap x<->y of its sampled outline -- a stadium is symmetric under
+    // that swap, so this is an exact 90° turn, not an approximation, and it
+    // avoids re-deriving the arc sweep directions for a second orientation.
+    const swapped = stadiumShape(h, w);
+    const pts = swapped.getPoints(48);
+    const s = new THREE.Shape();
+    pts.forEach((p, i) => { if(i === 0) s.moveTo(p.y, p.x); else s.lineTo(p.y, p.x); });
+    return s;
+  }
+  const x = w/2 - r;   // straight-run half-length (0 when square)
+  const s = new THREE.Shape();
+  s.moveTo(-x, -r);
+  s.lineTo(x, -r);
+  s.absarc(x, 0, r, -Math.PI/2, Math.PI/2, false);
+  s.lineTo(-x, r);
+  s.absarc(-x, 0, r, Math.PI/2, 3*Math.PI/2, false);
+  return s;
+}
+
+// Which pair of box faces the open film axis punches through — the LOCAL
+// axis (x or z; the skin box's own H is never an open axis), not hardcoded
+// to one filmAxis: this is the same switch bullsEyePair uses.
+function skinOpenAxis(filmAxis){
+  if(filmAxis === 'L') return 'x';
+  if(filmAxis === 'W') return 'z';
+  return null;   // 'vertical', or no axis info: no open faces
+}
+
+// A box's faces, built as individual planes rather than one BoxGeometry, so
+// an "open" axis's pair of end faces can be OMITTED as real geometry — no
+// triangles there at all, never merely an invisible material standing in
+// for them. (A per-face material array on a single BoxGeometry was tried
+// first and produced a rendering artifact under this app's software
+// rasterizer fallback; real per-face geometry has no such failure mode.)
+function openSidedBox(w, h, d, openAxis){
   const g = new THREE.Group();
-  g.add(new THREE.Mesh(new THREE.RingGeometry(rInner, rOuter, 28), shrinkMat));
-  const gather = new THREE.Mesh(new THREE.ConeGeometry(rInner, gatherDepth, 20, 1, true), shrinkMat);
-  gather.rotation.x = -Math.PI/2;      // cone's base-to-apex axis (+Y) onto local -Z ("inward")
-  gather.position.z = -gatherDepth/2;  // base flush with the ring's inner edge, apex pulled inward
-  g.add(gather);
+  const plane = (pw, ph, x, y, z, rx, ry) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), shrinkMat);
+    m.position.set(x, y, z);
+    m.rotation.set(rx, ry, 0);
+    g.add(m);
+  };
+  if(openAxis !== 'x'){
+    plane(d, h,  w/2, 0, 0, 0,  Math.PI/2);
+    plane(d, h, -w/2, 0, 0, 0, -Math.PI/2);
+  }
+  if(openAxis !== 'z'){
+    plane(w, h, 0, 0,  d/2, 0, 0);
+    plane(w, h, 0, 0, -d/2, 0, Math.PI);
+  }
+  plane(w, d, 0,  h/2, 0, -Math.PI/2, 0);
+  plane(w, d, 0, -h/2, 0,  Math.PI/2, 0);
   return g;
 }
 
+// The end cap at an OPEN face: an opaque rectangle the exact size of the box
+// face it replaces, with a genuine HOLE cut at its centre — the bull's-eye
+// is empty space (the contents actually show through it), not a shape drawn
+// on top of the film. Deliberately simple (a plain hole, not a raised
+// ring+cone — an earlier, more sculptural version read as "aggressive"
+// against a real render). Lies flat in the mesh's own local XY plane
+// (facing local +Z, "outward") — the caller rotates/positions it onto
+// whichever world face it belongs to. The hole is sized off BOTH in-plane
+// extents (not just the shorter one) so an oblong end gets an oblong hole,
+// never a circle sized to its narrow side.
+function bullsEyeAt(crossA, crossB){
+  const HOLE = 0.65;   // fraction of the face the hole itself covers
+  const cap = new THREE.Shape();
+  cap.moveTo(-crossA/2, -crossB/2);
+  cap.lineTo(crossA/2, -crossB/2);
+  cap.lineTo(crossA/2, crossB/2);
+  cap.lineTo(-crossA/2, crossB/2);
+  cap.lineTo(-crossA/2, -crossB/2);
+  cap.holes.push(stadiumShape(crossA*HOLE, crossB*HOLE));
+  return new THREE.Mesh(new THREE.ShapeGeometry(cap, 16), shrinkMat);
+}
+
 /**
- * Both bull's-eyes for a shrink bundle's TWO open ends, placed from
- * `filmAxis` alone — never hardcoded to one axis, which is the visible proof
- * the axis has one writer (core/styles/shrinkbundle.js). `vertical` has no
- * open ends at all (both ends are tucked, closed film — see the style's own
- * doc), so it draws nothing here; only 'L'/'W' get bull's-eyes.
+ * Both end caps for a shrink bundle's TWO open ends, placed from `filmAxis`
+ * alone — never hardcoded to one axis, which is the visible proof the axis
+ * has one writer (core/styles/shrinkbundle.js). `vertical` has no open ends
+ * at all (both ends are tucked, closed film — see the style's own doc), so
+ * it draws nothing here; only 'L'/'W' get end caps (and their bull's-eye
+ * holes).
  * @param {number} L skin L extent (already SKIN_MARGIN-inflated)
  * @param {number} H0 skin H extent (already inflated)
  * @param {number} W skin W extent (already inflated)
- * @param {string} [filmAxis] one of FILM_AXES, or undefined (no bull's-eyes — e.g. a shrink-wrapped tray finish, which has no sleeve axis at all)
+ * @param {string} [filmAxis] one of FILM_AXES, or undefined (no end caps — e.g. a shrink-wrapped tray finish, which has no sleeve axis at all)
  */
 function bullsEyePair(L, H0, W, filmAxis){
   const g = new THREE.Group();
@@ -265,22 +342,25 @@ function bullsEyePair(L, H0, W, filmAxis){
   return g;
 }
 
-// A translucent shrink skin over a bundle: a thin box at L×H×W (centred, floor
-// at −H/2 like every unit) in the same conforming film look the wraps use, so
-// the contents read clearly THROUGH it. `h` overrides H when the skin must rise
-// to the proud contents of an open tray (meta.shrinkLoadedH); omitted for a
-// bundle whose own outer.H already IS the content height. `filmAxis` (from
-// the geometry's OWN meta, never re-derived) draws the two bull's-eyes at
-// whichever faces are actually open; absent/'vertical' draws none.
+// An OPAQUE shrink skin over a bundle: a thin box at L×H×W (centred, floor
+// at −H/2 like every unit) in the same wrapped-film look the wraps use. `h`
+// overrides H when the skin must rise to the proud contents of an open tray
+// (meta.shrinkLoadedH); omitted for a bundle whose own outer.H already IS
+// the content height. `filmAxis` (from the geometry's OWN meta, never
+// re-derived) both draws the two end caps at whichever faces are actually
+// open AND omits the box's own faces there (skinOpenAxis) — the box and
+// its end caps agree on which two faces are open because one function
+// (skinOpenAxis) answers that question for both; absent/'vertical' draws a
+// plain closed box, no holes anywhere.
 function filmSkin(outer, h, filmAxis){
   const H0 = h != null ? h : outer.H;                     // contents height from the floor
-  // inflate a hair past the contents on every side (SKIN_MARGIN) so the clear
-  // film reads as a skin OVER the pack, never coplanar with it (no z-fighting),
-  // and NO wireframe — the faint translucent faces are the whole skin.
+  // inflate a hair past the contents on every side (SKIN_MARGIN) so the film
+  // reads as a skin OVER the pack, never coplanar with it (no z-fighting),
+  // and NO wireframe — the opaque faces are the whole skin.
   const skinL = outer.L + 2*SKIN_MARGIN, skinH = H0 + 2*SKIN_MARGIN, skinW = outer.W + 2*SKIN_MARGIN;
-  const skin = new THREE.Mesh(new THREE.BoxGeometry(skinL, skinH, skinW), shrinkMat);
-  skin.position.y = -outer.H/2 + H0/2;                    // floor−margin … content-top+margin
   const g = new THREE.Group();
+  const skin = openSidedBox(skinL, skinH, skinW, skinOpenAxis(filmAxis));
+  skin.position.y = -outer.H/2 + H0/2;                    // floor−margin … content-top+margin
   g.add(skin);
   const bullsEyes = bullsEyePair(skinL, skinH, skinW, filmAxis);
   bullsEyes.position.copy(skin.position);
