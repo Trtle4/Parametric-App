@@ -15,7 +15,7 @@ import {a6120} from './a6120.js';
 import {flowwrap, SEAL_ANGLES} from './flowwrap.js';
 import {trayGeometry} from './tray.js';
 import {sealend} from './sealend.js';
-import {shrinkBundle} from './shrinkbundle.js';
+import {shrinkBundle, FILM_OPACITY_DEFAULT_PCT} from './shrinkbundle.js';
 
 const trayReadouts = geo => [
   {label: 'Board layers, bottom', text: String(geo.meta.boardLayersBottom)},
@@ -231,7 +231,12 @@ export const styles = [
                  {value: 'W', label: 'Along width (bull’s-eye at W-ends)'}]},
       {key: 'drawdown', label: 'Draw-down allowance', hint: 'overlap + tenting', group: 'material', min: 0, step: 1, default: 10, fixedUnit: '%'},
       {key: 'gauge',    label: 'Film gauge', hint: '', group: 'material', min: 1,   step: 1,    default: 50,   fixedUnit: 'µm'},
-      {key: 'density',  label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'}
+      {key: 'density',  label: 'Density',    hint: '', group: 'material', min: 0.1, step: 0.01, default: 0.92, fixedUnit: 'g/cm³'},
+      // render-only (never touches filmArea/mass/cost) -- live-updates the 3D
+      // skin as it's dragged, same slider+number pattern as the flow wrap's
+      // seal angles.
+      {key: 'filmOpacity', label: 'Film opacity', hint: 'how solid the wrap looks', group: 'material',
+       type: 'range', min: 10, max: 100, step: 5, default: FILM_OPACITY_DEFAULT_PCT, chip: '%'}
     ],
     options: [],
     geometry: shrinkBundle,

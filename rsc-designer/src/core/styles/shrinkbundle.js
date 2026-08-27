@@ -64,14 +64,23 @@ function axisGeometry(L, W, H, filmAxis){
   }
 }
 
+// Default film opacity (%) when a project carries no explicit value —
+// "much more see-through" than a solid pack, while the sheen (roughness/
+// clearcoat, set in the renderer) still reads as plastic film rather than
+// a plain translucent box. A render preference, not a physical fact: it
+// never enters filmArea/mass/cost, so it lives alongside drawdown/gauge/
+// density as a plain UI-adjustable percent rather than a derived quantity.
+export const FILM_OPACITY_DEFAULT_PCT = 30;
+
 /**
- * @param {Object} p  {L, W, H, drawdown(%), gauge(µm), density(g/cm³), filmAxis}
+ * @param {Object} p  {L, W, H, drawdown(%), gauge(µm), density(g/cm³), filmAxis, filmOpacity(%)}
  * @returns {import('../types.js').Geometry}
  */
 export function shrinkBundle(p){
   const {L, W, H} = p;
   const drawdown = p.drawdown != null ? p.drawdown : 10;   // % film overage (overlap + tenting)
   const filmAxis = p.filmAxis || 'vertical';                // absent = the migration default, bit-identical to the original geometry
+  const filmOpacityPct = p.filmOpacity != null ? p.filmOpacity : FILM_OPACITY_DEFAULT_PCT;
 
   const {run, girth, capArea, tuck} = axisGeometry(L, W, H, filmAxis);
 
@@ -110,6 +119,7 @@ export function shrinkBundle(p){
         surfaceM2: surface/1e6,
         filmAreaM2: filmArea/1e6,
         drawdownPct: drawdown,
+        opacityPct: filmOpacityPct,                         // the ONE source the 3D skin material reads — never a hardcoded render constant
         girth,                                              // exposed for readouts/pins — the axis-dependent wrap-around distance
         massPer1000g: (filmArea/1e6)*(p.gauge || 0)*(p.density || 0)*1000   // m²·µm·g/cm³ = g
       },

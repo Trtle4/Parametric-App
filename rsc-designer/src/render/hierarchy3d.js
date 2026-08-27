@@ -63,36 +63,45 @@ const sealMat = new THREE.MeshStandardMaterial({color: C_SEAL, roughness: 0.5, m
 // end to end — the crimped ends are the same film, not a coloured feature.
 const wrapSolidMat = new THREE.MeshStandardMaterial({color: C_WRAP_SOLID, roughness: 0.45, metalness: 0, side: THREE.DoubleSide});
 const edgeMat = new THREE.LineBasicMaterial({color: 0x6b5636, transparent: true, opacity: 0.5});
-// Shrink film skin: an OPAQUE wrap — the bundle reads as a real wrapped pack,
-// not a translucent box, everywhere except the bull's-eye (a genuine
-// geometric hole cut at each open end, see bullsEyeAt/endCapWithHole below —
-// the one place the contents actually show through). polygonOffset pushes it
-// just in front of the pack faces so it never z-fights the cartons/cans it
-// wraps; depthWrite off so adjacent/stacked bundles on a pallet layer
-// without hard seams. THESE THREE (opacity, depthWrite, polygonOffset*) are
-// pinned by test/uisync.test.html — they fix a real transparent-sort/
-// z-fight defect (still load-bearing even at opacity 1: e.g. two shrink
-// bundles' skins sitting side by side on a pallet), not a look, so a later
-// "just tweak the material" edit can't silently drop them.
+// Shrink film skin: mostly SEE-THROUGH (the packs must read clearly through
+// the wrap, not just through the bull's-eye), but glossy enough to still
+// read as a wrapped surface rather than a bare translucent box, plus a
+// genuine geometric hole cut at each open end (see bullsEyeAt/endCapWithHole
+// below) as an extra, stronger cue at the gather point. polygonOffset pushes
+// it just in front of the pack faces so it never z-fights the cartons/cans
+// it wraps; depthWrite off so adjacent/stacked bundles on a pallet layer
+// without hard seams. THESE THREE (depthWrite, polygonOffset*, transparent)
+// are pinned by test/uisync.test.html — they fix a real transparent-sort/
+// z-fight defect, not a look, so a later "just tweak the material" edit
+// can't silently drop them.
 //
-// SHRINK_OPACITY: was raised from 0.16 (near-invisible — the reported
-// defect: "you cannot tell the bundle is wrapped at all") to a fully
-// opaque 1 — the film now reads as a real wrapped surface, and the ONE
-// place contents show through is the literal hole at the bull's-eye, not a
-// translucent haze over the whole pack. `transparent` stays true (opacity 1
-// under `transparent:true` renders identically to a fully opaque material,
-// and keeps the same render-list/sort path multi-bundle fleets rely on).
-// roughness dropped to 0.05 (from 0.12) so specular highlights read as a
-// hard plastic sheen rather than matte haze. MeshPhysicalMaterial (a
-// drop-in superset of MeshStandardMaterial, already vendored in this app's
-// three.r128) adds a clearcoat layer on top of the base material for free —
-// its own Fresnel term brightens grazing angles exactly the way real film
-// sheen does, without a custom shader.
-export const SHRINK_OPACITY = 1;
+// Opacity is a RENDER PREFERENCE, not a fixed constant: core/styles/
+// shrinkbundle.js's `filmOpacity` param (a live slider) is the one writer,
+// carried on `geo.meta.film.opacityPct`, and setShrinkOpacity (below) is the
+// one place that applies it to this shared material before a shrink part is
+// built — never a second, independently-tuned opacity living in this file.
+// SHRINK_OPACITY_DEFAULT is the fallback for a consumer with no such param
+// at all (the tray's "shrink-wrap this tray" finish has no sleeve axis and
+// no opacity slider of its own). roughness stays low (0.05, down from a
+// matte 0.12) so specular highlights read as a hard plastic sheen rather
+// than haze at any opacity. MeshPhysicalMaterial (a drop-in superset of
+// MeshStandardMaterial, already vendored in this app's three.r128) adds a
+// clearcoat layer on top of the base material for free — its own Fresnel
+// term brightens grazing angles exactly the way real film sheen does,
+// without a custom shader.
+export const SHRINK_OPACITY_DEFAULT = 0.3;
 export const shrinkMat = new THREE.MeshPhysicalMaterial({color: 0xEAF3F5, roughness: 0.05, metalness: 0,
   clearcoat: 0.6, clearcoatRoughness: 0.15,
-  transparent: true, opacity: SHRINK_OPACITY, side: THREE.DoubleSide, depthWrite: false,
+  transparent: true, opacity: SHRINK_OPACITY_DEFAULT, side: THREE.DoubleSide, depthWrite: false,
   polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2});
+// Apply a shrink geometry's own opacity (percent, from its `film.opacityPct`)
+// to the one shared shrinkMat, or fall back to the default when a consumer
+// (the tray finish) carries no such field. Called once per shrink part build
+// so every part in the same render (skin, bull's-eye end caps, the pallet's
+// simplified instanced fleet) reads the SAME value.
+function setShrinkOpacity(opacityPct){
+  shrinkMat.opacity = opacityPct != null ? opacityPct/100 : SHRINK_OPACITY_DEFAULT;
+}
 const SKIN_MARGIN = 2;   // mm the film stands off the bundle it wraps
 
 let group = null;                       // the whole hierarchy scene
@@ -1431,7 +1440,9 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
     // filmAxis only exists on a real Shrink Bundle's own meta (core/styles/
     // shrinkbundle.js) — a shrink-wrapped TRAY finish has no sleeve axis at
     // all, so it's undefined there and bullsEyePair draws nothing, same as
-    // 'vertical'.
+    // 'vertical'. Same story for film.opacityPct: absent on a tray finish,
+    // so setShrinkOpacity falls back to its own default.
+    setShrinkOpacity(geo.meta.film && geo.meta.film.opacityPct);
     const skin = filmSkin(geo.outer, geo.meta.shrinkLoadedH, geo.meta.filmAxis);
     if(ex.shell.x || ex.shell.y || ex.shell.z) skin.position.add(new THREE.Vector3(ex.shell.x, ex.shell.y, ex.shell.z));
     g.add(skin);
@@ -1722,6 +1733,7 @@ function openTrayInstances(placements, trayGeo, cartonGeo, cartonPls, deckH, opt
   // the bundle's own height otherwise). Drawn last so contents read through it.
   if(opts.skin){
     const H0 = opts.skinH != null ? opts.skinH : co.H;
+    setShrinkOpacity(trayGeo.meta && trayGeo.meta.film && trayGeo.meta.film.opacityPct);
     instanceUnit(new THREE.BoxGeometry(co.L + 2*SKIN_MARGIN, H0 + 2*SKIN_MARGIN, co.W + 2*SKIN_MARGIN), shrinkMat,
       () => local.makeTranslation(0, -co.H/2 + H0/2, 0));
   }

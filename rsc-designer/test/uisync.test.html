@@ -2915,21 +2915,38 @@ await (async () => {
       throw new Error('vacuous fixture: envelope-derived and deck-derived corner positions coincide, cannot discriminate');
   });
 
-  t('shrink bundle render: material settings (opacity, depthWrite, polygon offset) are pinned as VALUES', () => {
+  t('shrink bundle render: the FIXED material settings (depthWrite, transparent, polygon offset) are pinned as VALUES', () => {
     // hier.shrinkMat is the ONE material every shrink-film part (the skin's
-    // faces and the bull's-eye end caps) shares -- these settings fix a real
+    // faces and the bull's-eye end caps) shares. These settings fix a real
     // transparent-sort/z-fight defect (see the material's own comment in
-    // hierarchy3d.js, still load-bearing even at opacity 1 -- adjacent
-    // bundles on a pallet), not a look, so a later "just tweak the material"
-    // edit can't silently drop them, or walk opacity back toward the
-    // near-invisible 0.16 the user originally reported.
-    eq(hier.shrinkMat.opacity, hier.SHRINK_OPACITY, 'opacity:');
-    if(hier.SHRINK_OPACITY <= 0.16) throw new Error(`SHRINK_OPACITY must be raised well past the reported near-invisible 0.16, got ${hier.SHRINK_OPACITY}`);
+    // hierarchy3d.js -- still load-bearing at any opacity: e.g. two shrink
+    // bundles' skins sitting side by side on a pallet), not a look, so a
+    // later "just tweak the material" edit can't silently drop them. Opacity
+    // itself is NOT pinned to one value here -- it is a live per-project
+    // slider now (core/styles/shrinkbundle.js's filmOpacity), covered by the
+    // next pin.
     if(hier.shrinkMat.depthWrite !== false) throw new Error('shrinkMat must have depthWrite:false (stacked skins would get hard seams)');
     if(hier.shrinkMat.transparent !== true) throw new Error('shrinkMat must stay transparent');
     if(hier.shrinkMat.polygonOffset !== true) throw new Error('shrinkMat must use polygonOffset (avoids z-fighting the wrapped pack faces)');
     eq(hier.shrinkMat.polygonOffsetFactor, -2, 'polygonOffsetFactor:');
     eq(hier.shrinkMat.polygonOffsetUnits, -2, 'polygonOffsetUnits:');
+  });
+
+  tEdit('shrink bundle render: the film opacity SLIDER actually drives the rendered material, not a fixed constant', () => {
+    setLevel('case');
+    el('levelStyleSel').value = 'shrinkbundle'; fire(el('levelStyleSel'), 'change');
+    el('tab3d').click(); el('d_case').click();
+
+    const setOpacityPct = pct => { el('p_filmOpacity').value = pct; fire(el('p_filmOpacity'), 'input'); };
+
+    setOpacityPct(20);
+    approx(hier.shrinkMat.opacity, 0.20, 'opacity at 20%:', 1e-6);
+    setOpacityPct(80);
+    approx(hier.shrinkMat.opacity, 0.80, 'opacity at 80%:', 1e-6);
+    // moved, not coincidentally identical -- the two checks above already
+    // prove this, but state it directly so a future refactor that collapses
+    // both checks to the same value fails loudly rather than silently.
+    if(Math.abs(0.20 - 0.80) < 1e-6) throw new Error('vacuous fixture: the two probed percentages must differ');
   });
 
   tEdit("shrink bundle: bull's-eyes are placed from filmAxis, not hardcoded -- the open ends move to a different pair of faces when the axis changes", () => {
