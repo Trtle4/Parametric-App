@@ -194,6 +194,11 @@ function fillProjectDefaults(loadedProject){
   // field this function fills; not a schema migration, since nothing about
   // an EXISTING field's shape or meaning changed.
   out.shelf = mergeDefaults(loadedProject.shelf, base.shelf, 'shelf', report);
+  // TRAILER: a genuinely new top-level field (Phase D), same additive
+  // treatment as shelf/uboard above — a CONSTRAINT LAYER, not a chain tier,
+  // so no schema migration is needed for it either. Absent → the documented
+  // 53' dry van default, defaulted + reported like any other missing field.
+  out.trailer = mergeDefaults(loadedProject.trailer, base.trailer, 'trailer', report);
   return {project: out, defaulted: report};
 }
 

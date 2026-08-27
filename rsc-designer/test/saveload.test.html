@@ -185,6 +185,17 @@ t('a v3/v4 file missing project.tray (not just tray.enabled) gets a real, editab
   eq(result.project.tray.nCells, 2, 'tray defaults land:');
   if(!result.defaulted.includes('tray')) throw new Error('missing tray must be reported, not silently filled');
 });
+t('a v5 file predating the trailer (Phase D) gets a real, editable project.trailer on load', () => {
+  const base = newProject();
+  const {trailer, ...projectWithoutTrailer} = base;
+  const doc = {schemaVersion: 5, project: projectWithoutTrailer};
+  const result = deserializeProject(doc);
+  if(!result.project.trailer || typeof result.project.trailer.L !== 'number')
+    throw new Error('project.trailer did not come back as a real, editable object');
+  eq(result.project.trailer.L, 16002, 'trailer defaults land (53\' van interior length):');
+  eq(result.project.trailer.maxPayloadLb, 45000, 'trailer defaults land (max payload):');
+  if(!result.defaulted.includes('trailer')) throw new Error('missing trailer must be reported, not silently filled');
+});
 t('mutation check: a bogus tray/uboard default that leaves either field undefined would be caught', () => {
   // proves the two pins above actually discriminate — see CLAUDE.md's own
   // "mutation-test every pin" rule applied inline: construct the WRONG
@@ -458,10 +469,11 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // slipsheet, which that migration never touches, are genuinely new here.
   eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
                          'pallet.patternIndex', 'pallet.stacking', 'pallet.tareLb', 'pallet.slipsheet',
-                         'tray', 'uboard', 'shelf'],
-     'the new openTop/perf/pallet.stacking/patternIndex/tareLb/slipsheet/tray/uboard/shelf fields are filled:');
+                         'tray', 'uboard', 'shelf', 'trailer'],
+     'the new openTop/perf/pallet.stacking/patternIndex/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
   eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
   eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
+  eq(result.project.trailer.L, 16002, 'trailer defaulted to a real, editable 53\' van (not left undefined):');
   eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'pallet.stack migrated to the single-pallet-position default (absent doubleStack):');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');

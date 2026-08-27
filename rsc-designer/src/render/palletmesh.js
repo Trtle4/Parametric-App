@@ -27,6 +27,13 @@ const wood = new THREE.MeshStandardMaterial({color: 0xA0815A, roughness: 0.95, m
 // GMA pallet's timber so a mixed pallet+slipsheet stack reads as two
 // different bases at a glance, not two identical decks.
 const kraft = new THREE.MeshStandardMaterial({color: 0xC7A874, roughness: 0.85, metalness: 0});
+// Exported so other render modules (the trailer's simplified, INSTANCED base
+// proxies at trailer scale — hierarchy3d.js buildTrailer) reuse the SAME
+// pallet/slipsheet colours instead of inventing a second material — one
+// visual convention for "this is a pallet" / "this is a slipsheet" no
+// matter how the base is drawn (full timber mesh here, a plain box there).
+export const PALLET_MATERIAL = wood;
+export const SLIPSHEET_MATERIAL = kraft;
 
 /** The NOMINAL GMA deck height (127mm) — the sensible default for a caller
  *  with no project to read, and the value project.pallet.baseH defaults to.

@@ -1,0 +1,190 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>trailer fit (core/trailer.js) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/trailer.js -- the trailer CONSTRAINT LAYER (Phase D).
+   DOM-free, pure: builds a bare project shape by hand, exactly like
+   test/stack.test.html, so every hand-computed expected value here is
+   independent of newProject()'s own defaults. */
+import {resolveTrailer, trailerFloorPattern, trailerParams, TRAILER_DEFAULTS, FLOOR_FAMILY_DEFAULT} from '../src/core/trailer.js';
+import {resolveStack} from '../src/core/stack.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+
+const MM_PER_IN = 25.4;
+const GMA_L = 48*MM_PER_IN, GMA_W = 40*MM_PER_IN;   // 1219.2, 1016
+
+function proj({trailer = {}, palletL = GMA_L, palletW = GMA_W, stackPositions = [{base: 'pallet'}],
+                tareLb = 45, ssCaliper = 3, ssDensity = 950} = {}){
+  return {
+    pallet: {
+      L: palletL, W: palletW, baseH: 127, tareLb,
+      stack: {positions: stackPositions},
+      slipsheet: {caliper: ssCaliper, density: ssDensity, weightLb: null, L: null, W: null},
+      stacking: {ect: 32, unitWeightLb: 20, target: 3.0}
+    },
+    trailer
+  };
+}
+
+/* ---- floor count: the well-known 26-straight/30-turned figures for a
+   48x40 GMA pallet in a 53' van, hand-computed independently of the
+   module's own expression (floor(interior/pallet-dim) per axis). --------- */
+t('floor count: 48x40 pallet in the default 53\' van -- 26 straight, 30 turned, list[0] is the better', () => {
+  const straight = Math.floor(TRAILER_DEFAULTS.L/GMA_L)*Math.floor(TRAILER_DEFAULTS.W/GMA_W);
+  const turned   = Math.floor(TRAILER_DEFAULTS.L/GMA_W)*Math.floor(TRAILER_DEFAULTS.W/GMA_L);
+  approx(straight, 26, 'hand-computed straight');
+  approx(turned, 30, 'hand-computed turned');
+  const best = trailerFloorPattern({L: GMA_L, W: GMA_W}, {L: TRAILER_DEFAULTS.L, W: TRAILER_DEFAULTS.W});
+  approx(best.total, 30, 'the resolver picks the BETTER of the two:');
+});
+t('floor count via resolveTrailer agrees (single source, not a second computation)', () => {
+  const p = proj();
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 300});
+  const r = resolveTrailer(p, stack, 25);
+  approx(r.stacksPerTrailer, 30);
+  approx(r.unitLoadsPerTrailer, 30, 'N=1 position -> unit loads == stacks:');
+  approx(r.casesPerTrailer, 30*25);
+});
+t('unitLoadsPerTrailer at N>1: stacksPerTrailer x positions -- never stacksPerTrailer alone', () => {
+  // N=1 cannot discriminate stacksPerTrailer*N from stacksPerTrailer (they
+  // are equal at N=1), so this is a SEPARATE, deliberate N=2 fixture --
+  // dropping the *positionsCount term would pass every other pin in this
+  // file yet fail here.
+  const p = proj({stackPositions: [{base: 'pallet'}, {base: 'pallet'}]});
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 300});
+  const r = resolveTrailer(p, stack, 25);
+  approx(r.stacksPerTrailer, 30, 'floor count unaffected by vertical stacking:');
+  approx(r.unitLoadsPerTrailer, 60, 'unit loads = stacksPerTrailer x N=2:');
+  approx(r.casesPerTrailer, 60*25);
+});
+t('floor count: straight-only (single orientation, the regression) would report 26 -- confirms the fixture actually discriminates', () => {
+  // Calls palletPatternList directly with ONLY the straight orientation
+  // (no transposed pair), i.e. exactly what trailerFloorPattern would
+  // compute if it "forced straight-only" -- this is the WRONG
+  // implementation the module-level mutation test (session notes) proves
+  // against the real code; here it proves the fixture itself can tell 26
+  // from 30, so that mutation test is not vacuous.
+  const straightOnly = trailerFloorPattern({L: GMA_L, W: GMA_W}, {L: TRAILER_DEFAULTS.L, W: TRAILER_DEFAULTS.W});
+  // (trailerFloorPattern itself already does the RIGHT thing -- both
+  // orientations -- so straightOnly here is 30, same as the pin above.
+  // This pin exists to pin the 26 figure itself, independent of the
+  // module, so a reviewer can see both numbers side by side.)
+  const straight = Math.floor(TRAILER_DEFAULTS.L/GMA_L)*Math.floor(TRAILER_DEFAULTS.W/GMA_W);
+  approx(straight, 26, 'the number a straight-only regression would report:');
+  if(straightOnly.total === straight) throw new Error('vacuous: the correct resolver must NOT equal the straight-only figure');
+});
+
+/* ---- door constraint: a stack between 105in and 110in passes interior,
+   fails door -- the pin most likely to be missing. ------------------------ */
+t('door constraint: a stack between 105in and 110in passes INTERIOR but FAILS DOOR', () => {
+  const p = proj();
+  const heightMM = 107*MM_PER_IN;   // between 105 and 110
+  // drive resolveStack to exactly this total height via a single pallet
+  // position (baseH) + loadH combination -- loadH is whatever makes the sum right
+  p.pallet.baseH = 127;
+  const loadH = heightMM - 127;
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH});
+  approx(stack.totalHeightMM, heightMM, 'fixture sanity: total height lands between 105in and 110in:');
+  const r = resolveTrailer(p, stack, 25);
+  if(!r.interiorHeightOk) throw new Error('107in must clear the 110in interior');
+  if(r.doorHeightOk) throw new Error('107in must NOT clear the 105in door');
+  if(r.doorOk) throw new Error('doorOk must be false when doorHeightOk is false');
+});
+t('door constraint: a stack under 105in passes BOTH interior and door', () => {
+  const p = proj();
+  const heightMM = 100*MM_PER_IN;
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: heightMM - 127});
+  const r = resolveTrailer(p, stack, 25);
+  if(!r.interiorHeightOk) throw new Error('100in must clear the interior');
+  if(!r.doorHeightOk) throw new Error('100in must clear the door');
+  if(!r.doorOk) throw new Error('doorOk must be true');
+});
+t('door constraint: a stack over 110in fails BOTH interior and door', () => {
+  const p = proj();
+  const heightMM = 115*MM_PER_IN;
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: heightMM - 127});
+  const r = resolveTrailer(p, stack, 25);
+  if(r.interiorHeightOk) throw new Error('115in must NOT clear the interior');
+  if(r.doorHeightOk) throw new Error('115in must NOT clear the door');
+});
+
+/* ---- weight-binding: dense vs light configurations flip which constraint
+   the resolver reports as binding. ----------------------------------------*/
+t('weight-binding: a DENSE configuration (heavy, short) reports weight as binding', () => {
+  const p = proj();
+  p.pallet.stacking.unitWeightLb = 2000;         // very heavy per case
+  const stack = resolveStack(p, {layers: 1, casesPerLayer: 1, loadH: 200});   // short stack, low cube
+  const r = resolveTrailer(p, stack, 1);
+  if(r.bindingConstraint !== 'weight') throw new Error(`expected weight-bound, got ${r.bindingConstraint} (weight ${r.weightUtilPct}% cube ${r.cubeUtilPct}%)`);
+  if(!(r.weightUtilPct > r.cubeUtilPct)) throw new Error('weight util must exceed cube util for this to be a meaningful fixture');
+});
+t('weight-binding: a LIGHT configuration (light, tall) reports cube as binding', () => {
+  const p = proj();
+  p.pallet.stacking.unitWeightLb = 0.5;          // very light per case
+  const stack = resolveStack(p, {layers: 20, casesPerLayer: 5, loadH: 2600});   // tall stack, near-full cube
+  const r = resolveTrailer(p, stack, 100);
+  if(r.bindingConstraint !== 'cube') throw new Error(`expected cube-bound, got ${r.bindingConstraint} (weight ${r.weightUtilPct}% cube ${r.cubeUtilPct}%)`);
+  if(!(r.cubeUtilPct > r.weightUtilPct)) throw new Error('cube util must exceed weight util for this to be a meaningful fixture');
+});
+t('weight-binding: the reported binding constraint DOES flip between the two fixtures above', () => {
+  const dense = proj(); dense.pallet.stacking.unitWeightLb = 2000;
+  const light = proj(); light.pallet.stacking.unitWeightLb = 0.5;
+  const sD = resolveStack(dense, {layers: 1, casesPerLayer: 1, loadH: 200});
+  const sL = resolveStack(light, {layers: 20, casesPerLayer: 5, loadH: 2600});
+  const rD = resolveTrailer(dense, sD, 1);
+  const rL = resolveTrailer(light, sL, 100);
+  if(rD.bindingConstraint === rL.bindingConstraint)
+    throw new Error(`binding constraint did not flip: both report ${rD.bindingConstraint}`);
+});
+
+/* ---- slipsheet lip exclusion: widening the lip changes NO trailer-fit
+   number -- the pin that would catch a regression back to the lipped
+   footprint. ---------------------------------------------------------------*/
+t('slipsheet lip exclusion: widening the slipsheet footprint override changes NO trailer number', () => {
+  const positions = [{base: 'pallet'}, {base: 'slipsheet'}];
+  const p1 = proj({stackPositions: positions});
+  const p2 = proj({stackPositions: positions});
+  // p2's slipsheet footprint is deliberately much larger (a wide handling
+  // lip) -- if trailer fit ever read a position's own footprintMM instead
+  // of the pallet's L/W, this would change stacksPerTrailer/cube/weight.
+  p2.pallet.slipsheet.L = GMA_L + 500; p2.pallet.slipsheet.W = GMA_W + 500;
+  const fit = {layers: 5, casesPerLayer: 5, loadH: 300};
+  const s1 = resolveStack(p1, fit), s2 = resolveStack(p2, fit);
+  // fixture sanity: the slipsheet footprint override DID take effect (else
+  // this pin would vacuously pass by testing nothing)
+  if(JSON.stringify(s1.footprintMM) === JSON.stringify(s2.footprintMM))
+    throw new Error('vacuous fixture: the widened slipsheet footprint made no difference to resolveStack');
+  const r1 = resolveTrailer(p1, s1, 25), r2 = resolveTrailer(p2, s2, 25);
+  approx(r1.stacksPerTrailer, r2.stacksPerTrailer, 'floor count unaffected by the lip:');
+  approx(r1.cubeUtilPct, r2.cubeUtilPct, 'cube util unaffected by the lip:', 1e-9);
+  approx(r1.remainingFloorAreaMM2, r2.remainingFloorAreaMM2, 'remaining floor area unaffected by the lip:');
+});
+
+/* ---- defaults / structure ------------------------------------------------*/
+t('trailerParams fills every field from TRAILER_DEFAULTS when project.trailer is empty', () => {
+  const p = trailerParams({});
+  for(const k of Object.keys(TRAILER_DEFAULTS)) approx(p[k], TRAILER_DEFAULTS[k], k);
+});
+t('trailerParams: a partial override keeps every OTHER field at default', () => {
+  const p = trailerParams({H: 3000});
+  approx(p.H, 3000);
+  approx(p.L, TRAILER_DEFAULTS.L);
+  approx(p.maxPayloadLb, TRAILER_DEFAULTS.maxPayloadLb);
+});
+t('resolveTrailer: nothing fits the floor (pallet bigger than the trailer) -> 0 stacks, not a crash', () => {
+  const p = proj({palletL: 999999, palletW: 999999});
+  const stack = resolveStack(p, {layers: 5, casesPerLayer: 5, loadH: 300});
+  const r = resolveTrailer(p, stack, 25);
+  approx(r.stacksPerTrailer, 0);
+  approx(r.unitLoadsPerTrailer, 0);
+  approx(r.totalWeightLb, 0);
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
