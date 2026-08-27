@@ -2915,6 +2915,65 @@ await (async () => {
       throw new Error('vacuous fixture: envelope-derived and deck-derived corner positions coincide, cannot discriminate');
   });
 
+  t('shrink bundle render: material settings (opacity, depthWrite, polygon offset) are pinned as VALUES', () => {
+    // hier.shrinkMat is the ONE material every shrink-film part (skin, bull's-
+    // eye ring, gather cone) shares -- these settings fix a real transparent-
+    // sort/z-fight defect (see the material's own comment in hierarchy3d.js),
+    // not a look, so a later "just tweak the material" edit can't silently
+    // drop them back toward the near-invisible 0.16 the user reported.
+    eq(hier.shrinkMat.opacity, hier.SHRINK_OPACITY, 'opacity:');
+    if(hier.SHRINK_OPACITY <= 0.16) throw new Error(`SHRINK_OPACITY must be raised well past the reported near-invisible 0.16, got ${hier.SHRINK_OPACITY}`);
+    if(hier.shrinkMat.depthWrite !== false) throw new Error('shrinkMat must have depthWrite:false (stacked skins would get hard seams)');
+    if(hier.shrinkMat.transparent !== true) throw new Error('shrinkMat must stay transparent');
+    if(hier.shrinkMat.polygonOffset !== true) throw new Error('shrinkMat must use polygonOffset (avoids z-fighting the wrapped pack faces)');
+    eq(hier.shrinkMat.polygonOffsetFactor, -2, 'polygonOffsetFactor:');
+    eq(hier.shrinkMat.polygonOffsetUnits, -2, 'polygonOffsetUnits:');
+  });
+
+  tEdit("shrink bundle: bull's-eyes are placed from filmAxis, not hardcoded -- the open ends move to a different pair of faces when the axis changes", () => {
+    setLevel('case');
+    el('levelStyleSel').value = 'shrinkbundle'; fire(el('levelStyleSel'), 'change');
+    el('tab3d').click(); el('d_case').click();
+
+    const bullsEyePts = () => {
+      getPivot().updateMatrixWorld(true);
+      let grp = null;
+      getPivot().traverse(o => { if(o.name === 'shrinkBullsEyes' && !grp) grp = o; });
+      if(!grp) throw new Error('no shrinkBullsEyes group rendered at case depth');
+      return grp.children.map(c => { const v = new THREE.Vector3(); c.getWorldPosition(v); return v; });
+    };
+    const setAxis = axis => { el('p_filmAxis').value = axis; fire(el('p_filmAxis'), 'change'); };
+
+    setAxis('vertical');
+    const ptsV = bullsEyePts();
+    if(ptsV.length !== 0) throw new Error(`vertical axis has both ends tucked/closed -- expected 0 bull's-eyes, found ${ptsV.length}`);
+
+    setAxis('L');
+    const ptsL = bullsEyePts();
+    if(ptsL.length !== 2) throw new Error(`L axis: expected 2 bull's-eyes (one per open end), found ${ptsL.length}`);
+    const vL = ptsL[0].clone().sub(ptsL[1]);
+
+    setAxis('W');
+    const ptsW = bullsEyePts();
+    if(ptsW.length !== 2) throw new Error(`W axis: expected 2 bull's-eyes, found ${ptsW.length}`);
+    const vW = ptsW[0].clone().sub(ptsW[1]);
+
+    // vacuous-fixture guard: if the two axes' separations coincide, this pin
+    // cannot tell axis-driven placement from a hardcoded one.
+    if(vL.distanceTo(vW) < 1 && vL.clone().add(vW).length() < 1)
+      throw new Error(`vacuous fixture: L-axis and W-axis bull's-eye separations are indistinguishable (vL=${JSON.stringify(vL)}, vW=${JSON.stringify(vW)})`);
+
+    // the case's own body sits unrotated at its own depth (render-local x=L,
+    // z=W), so the pair must separate along X for the L axis and along Z for
+    // the W axis -- never the other way, and never the same way for both.
+    if(Math.abs(vL.x) < Math.abs(vL.z))
+      throw new Error(`L axis bull's-eyes should separate along X (length), not Z: vL=${JSON.stringify(vL)}`);
+    if(Math.abs(vW.z) < Math.abs(vW.x))
+      throw new Error(`W axis bull's-eyes should separate along Z (width), not X: vW=${JSON.stringify(vW)}`);
+  });
+  // restore: back to pallet depth for the pins that follow
+  el('d_pallet').click(); await settle();
+
   t('pallet render TAKES its load height from the chain, never measures it', () => {
     // The render used to derive the load height from the placements. That was
     // wrong twice: as a recomputed layer COUNT (114mm), and still by

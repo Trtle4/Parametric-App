@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shrink bundle film axis (core/styles/shrinkbundle.js) tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Unit tests for core/styles/shrinkbundle.js -- the filmAxis model fact
+   (vertical | L | W) that decides which faces the sleeve wraps and which
+   two are the open, gathered ends. DOM-free, pure. */
+import {shrinkBundle, FILM_AXES} from '../src/core/styles/shrinkbundle.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function approx(a, e, msg = '', tol = 1e-9){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+const ok = (cond, msg) => { if(!cond) throw new Error(msg); };
+
+// A fixture where L, W, H all differ, so a wrong axis cannot coincidentally
+// produce the right number.
+const L = 300, W = 180, H = 120, drawdown = 10, gauge = 50, density = 0.92;
+const base = {L, W, H, drawdown, gauge, density};
+
+/* ---- girth + flat film size, hand-computed per axis -----------------------
+   vertical: girth 2(L+W), tuck min(L,W)/2 folds over the top/bottom edge.
+   L axis:   girth 2(W+H), no tuck -- an open end draws in, it doesn't fold
+             over an edge (see the module's own doc on why tuck doesn't
+             transfer).
+   W axis:   girth 2(L+H), no tuck, same reasoning. ------------------------- */
+t('vertical: girth = 2(L+W), flat = girth x (H + 2*tuck), tuck = min(L,W)/2 -- the ORIGINAL geometry, hand-computed', () => {
+  const g = shrinkBundle({...base, filmAxis: 'vertical'});
+  const girth = 2*(L + W), tuck = Math.min(L, W)/2, flatH = H + 2*tuck;
+  approx(g.meta.film.girth, girth, 'girth');
+  approx(g.bbox.maxX, girth, 'flatW (bbox)');
+  approx(g.bbox.maxY, flatH, 'flatH (bbox)');
+});
+t('L axis: girth = 2(W+H), flat height = L (no tuck -- an open end gathers, it does not fold over an edge)', () => {
+  const g = shrinkBundle({...base, filmAxis: 'L'});
+  const girth = 2*(W + H);
+  approx(g.meta.film.girth, girth, 'girth');
+  approx(g.bbox.maxX, girth, 'flatW (bbox)');
+  approx(g.bbox.maxY, L, 'flatH (bbox) -- bare run, no tuck');
+});
+t('W axis: girth = 2(L+H), flat height = W (no tuck)', () => {
+  const g = shrinkBundle({...base, filmAxis: 'W'});
+  const girth = 2*(L + H);
+  approx(g.meta.film.girth, girth, 'girth');
+  approx(g.bbox.maxX, girth, 'flatW (bbox)');
+  approx(g.bbox.maxY, W, 'flatH (bbox)');
+});
+t('the three girths are all genuinely different at this fixture (vacuous-fixture guard)', () => {
+  const gv = shrinkBundle({...base, filmAxis: 'vertical'}).meta.film.girth;
+  const gl = shrinkBundle({...base, filmAxis: 'L'}).meta.film.girth;
+  const gw = shrinkBundle({...base, filmAxis: 'W'}).meta.film.girth;
+  ok(gv !== gl && gl !== gw && gv !== gw, `girths must differ: vertical=${gv}, L=${gl}, W=${gw}`);
+});
+
+/* ---- film area / weight / cost move WITH the axis, in the direction the
+   girth does -- compared against the 'vertical' baseline (the one comparison
+   this model actually guarantees a consistent direction for; L vs W directly
+   is NOT monotonic with girth alone, since the run dimension moves opposite
+   to girth for a fixed L/W/H box -- see the module's own surface formula,
+   girth x run + 2 x cap). ---------------------------------------------------- */
+t('film area/mass move in the SAME direction as girth, axis vs the vertical baseline (both L and W)', () => {
+  const v = shrinkBundle({...base, filmAxis: 'vertical'});
+  for(const axis of ['L', 'W']){
+    const g = shrinkBundle({...base, filmAxis: axis});
+    const girthDown = g.meta.film.girth < v.meta.film.girth;
+    const areaDown = g.meta.film.filmAreaM2 < v.meta.film.filmAreaM2;
+    const massDown = g.meta.film.massPer1000g < v.meta.film.massPer1000g;
+    ok(girthDown === areaDown, `axis=${axis}: filmArea must move the same direction as girth vs vertical (girth ${girthDown ? 'down' : 'up'}, area ${areaDown ? 'down' : 'up'})`);
+    ok(girthDown === massDown, `axis=${axis}: mass must move the same direction as girth vs vertical`);
+  }
+});
+t('switching the axis actually changes filmAreaM2/massPer1000g -- not a silent no-op', () => {
+  const areas = FILM_AXES.map(axis => shrinkBundle({...base, filmAxis: axis}).meta.film.filmAreaM2);
+  eq(new Set(areas.map(a => a.toFixed(6))).size, FILM_AXES.length, `expected ${FILM_AXES.length} distinct areas, got ${JSON.stringify(areas)}`);
+});
+t('hand-computed film area for each axis (surface = girth x run + 2 x capArea; capArea real only for vertical)', () => {
+  const surfV = 2*(L + W)*H + 2*(L*W);           // original formula: 2(LW+LH+WH)
+  approx(surfV, 2*(L*W + L*H + W*H), 'sanity: matches the original bounding-surface expression');
+  const surfL = 2*(W + H)*L;                     // open ends: zero cap
+  const surfW = 2*(L + H)*W;
+  const mk = surf => surf*(1 + drawdown/100)/1e6;
+  approx(shrinkBundle({...base, filmAxis: 'vertical'}).meta.film.filmAreaM2, mk(surfV), 'vertical', 1e-9);
+  approx(shrinkBundle({...base, filmAxis: 'L'}).meta.film.filmAreaM2, mk(surfL), 'L', 1e-9);
+  approx(shrinkBundle({...base, filmAxis: 'W'}).meta.film.filmAreaM2, mk(surfW), 'W', 1e-9);
+});
+
+/* ---- migration: absent filmAxis == 'vertical', bit-identical to the
+   original (pre-filmAxis) geometry -- no existing save or golden may move
+   until a user actually changes the axis. ----------------------------------- */
+t('migration: filmAxis absent is bit-identical to filmAxis:"vertical" explicitly', () => {
+  const withoutAxis = shrinkBundle({...base});
+  const withVertical = shrinkBundle({...base, filmAxis: 'vertical'});
+  eq(withoutAxis, withVertical);
+});
+t('migration: the absent-axis geometry matches the ORIGINAL (pre-task) hand-derived numbers exactly', () => {
+  const g = shrinkBundle({...base});
+  const surface = 2*(L*W + L*H + W*H);
+  approx(g.meta.film.surfaceM2, surface/1e6, 'surfaceM2 unchanged');
+  approx(g.meta.film.filmAreaM2, surface*(1 + drawdown/100)/1e6, 'filmAreaM2 unchanged');
+  const tuck = Math.min(L, W)/2;
+  eq(g.bbox, {minX: 0, minY: 0, maxX: 2*(L + W), maxY: H + 2*tuck});
+  eq(g.meta.print, {x0: 0, x1: 2*(L + W), y0: tuck, y1: tuck + H});
+});
+
+/* ---- exhaustiveness on FILM_AXES -- the same instrument as BASE_KINDS/
+   INTERLAYERS elsewhere in this codebase. ------------------------------------ */
+t('FILM_AXES exhaustiveness: every declared axis resolves without throwing', () => {
+  for(const axis of FILM_AXES){
+    let threw = null;
+    try{ shrinkBundle({...base, filmAxis: axis}); }catch(e){ threw = e; }
+    if(threw) throw new Error(`filmAxis:'${axis}' (a declared enum member) threw: ${threw.message}`);
+  }
+});
+t('FILM_AXES exhaustiveness: an UNDECLARED axis throws immediately, never silently resolves', () => {
+  // '' is deliberately excluded: `p.filmAxis || 'vertical'` treats any falsy
+  // value as "not specified" and defaults it, the same absence-is-auto idiom
+  // used elsewhere in this codebase (girthBasis, cost's COST_DEFAULTS) --
+  // that's a real design choice, not an enum violation, so it must NOT throw.
+  for(const bogus of ['H', 'horizontal', 'diagonal']){
+    if(FILM_AXES.includes(bogus)) continue;
+    let threw = null;
+    try{ shrinkBundle({...base, filmAxis: bogus}); }catch(e){ threw = e; }
+    if(!threw) throw new Error(`filmAxis:${JSON.stringify(bogus)} resolved without throwing`);
+    if(!/filmAxis/i.test(threw.message)) throw new Error(`threw, but the message doesn't name the problem: "${threw.message}"`);
+  }
+});
+t("falsy filmAxis (e.g. '') is treated as absent and defaults to vertical -- not a thrown enum violation", () => {
+  eq(shrinkBundle({...base, filmAxis: ''}), shrinkBundle({...base, filmAxis: 'vertical'}));
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
