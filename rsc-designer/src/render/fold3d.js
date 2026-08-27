@@ -390,6 +390,15 @@ function updateTween(){
 export function jumpClosed(){ folding = false; foldT = 1; applyFold(1); }
 export function showBox(v){ if(boxGroup) boxGroup.visible = v; }
 
+// far is r*10 -- a fixed near (0.1) worked while every scene was carton-scale,
+// but a trailer's r runs into the tens of thousands of mm, driving far past
+// half a million and the near:far ratio past 5,000,000:1 -- far beyond what a
+// 24-bit depth buffer can resolve, which reads as z-fighting between anything
+// that shares a depth (adjacent floor loads, a base touching its load block).
+// NEAR_FAR_RATIO caps that ratio at any scale: near grows with r exactly like
+// far already does, floored at the original 0.1 so small/close-up scenes (a
+// single product, a zoomed-in carton) are bit-identical to before.
+export const NEAR_FAR_RATIO = 20000;
 function frameCamera(){
   const span = camSpan || 100; // set by buildBox / buildPallet for the active scene
   const r = span*2.4*dist;
@@ -398,7 +407,9 @@ function frameCamera(){
   camera.position.set(t.x + pose.x, t.y + pose.y, t.z + pose.z);
   camera.up.set(0, pose.upY, 0);          // flips past a pole — see orbitPose
   camera.lookAt(t.x, t.y, t.z);
-  camera.far = r*10; camera.updateProjectionMatrix();
+  camera.far = r*10;
+  camera.near = Math.max(0.1, camera.far/NEAR_FAR_RATIO);
+  camera.updateProjectionMatrix();
 }
 
 /** Snapshot the current 3D view (exactly the on-screen camera/orbit/zoom, the

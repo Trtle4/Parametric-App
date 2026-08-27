@@ -289,7 +289,7 @@ import * as inputs from '../src/ui/inputs.js';
 import * as save from '../src/ui/save.js';
 import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
-import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT} from '../src/render/fold3d.js';
+import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT, getCamera, NEAR_FAR_RATIO} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
 import {shelfBay} from '../src/render/shelf3d.js';
@@ -2324,6 +2324,31 @@ await (async () => {
       throw new Error(`link A survived alongside link B: ${JSON.stringify(b)}`);
   });
 
+  tEdit('Cookie-Tray link import: an unrecognized key surfaces a visible warning in the SAME status note, and the import still succeeds', () => {
+    setLevel('tray');
+    Object.assign(build.project.primary.collation, {piece: {kind: 'cylinder', diameter: 999, thickness: 999}});
+    // a link with one real, recognized key plus one this app has never heard
+    // of -- driven through the exact DOM path a user pastes a link with
+    // (fill #tr_link, click #tr_linkImport), never calling parseTrayLink
+    // directly.
+    el('tr_link').value = '?n=2&pdia=60&pthk=20&zzq=999';
+    el('tr_linkImport').click();
+    const note = el('tr_linkNote').textContent;
+    if(!note.includes('zzq')) throw new Error(`warning must name the unrecognized key: "${note}"`);
+    if(!/doesn't understand|does not understand/.test(note)) throw new Error(`warning must say this app doesn't understand it: "${note}"`);
+    // the rest of the import still worked -- a warning is not a failure
+    const piece = pieceNow();
+    eq(piece.diameter, 60, 'the recognized keys still applied:');
+    eq(piece.thickness, 20);
+  });
+  tEdit('Cookie-Tray link import: a link with only recognized keys shows NO unknown-key warning', () => {
+    setLevel('tray');
+    el('tr_link').value = '?n=2&pdia=60&pthk=20';
+    el('tr_linkImport').click();
+    const note = el('tr_linkNote').textContent;
+    if(/doesn't understand|does not understand/.test(note)) throw new Error(`unexpected warning with no unrecognized keys: "${note}"`);
+  });
+
   // restore what this block FOUND — tray state, the collation, the quantities
   // it walked through. This used to write back an ASSUMED default collation
   // ({perStack 2, nx 3, ny 1}), which is a second source of truth for "the
@@ -2710,6 +2735,104 @@ await (async () => {
     if(!(n2SlipLoads > n1Loads))
       throw new Error(`loads/trailer must increase: N=1(valid)=${n1Loads}, N=2-with-slipsheet(valid)=${n2SlipLoads}`);
   });
+
+  // ================================================================
+  // TRAILER RENDER REMEDY (defect pass): three settled fixes for a reported
+  // flicker / vanish-through-walls glitch at trailer depth. Rendering
+  // artefacts resist unit pinning (a static screenshot can't show
+  // frame-to-frame flicker), so these pin the REMEDY the diagnosis landed
+  // on, not the symptom -- so a later change can't silently revert it.
+  //   (a) trailermesh.js's wall material was transparent + DoubleSide +
+  //       depthWrite:true. Four large overlapping boxes (nose/2 sides/
+  //       ceiling) sharing edges is exactly the shape that bug takes:
+  //       whichever overlapping face rasterizes first at a pixel blocks the
+  //       other from blending there, and which one wins can flip as the
+  //       camera moves a hair. depthWrite:false costs nothing (the shell
+  //       never needs to occlude itself) and removes the source outright.
+  //   (b) buildTrailer's base (pallet/slipsheet) proxy boxes had NO render
+  //       shrink, unlike the load-block proxies right beside them in the
+  //       same function -- adjacent bases on the floor, AND every base's own
+  //       top face against its load's bottom face (posOffsets never leaves a
+  //       gap), touched at zero gap: a coplanar face, the textbook z-fight.
+  //   (c) camera.near was fixed at a carton-scale 0.1 no matter the scene.
+  //       At trailer scale (~16m span) that drove far/near past
+  //       5,000,000:1 -- measured live before this fix -- far beyond what a
+  //       24-bit depth buffer resolves. NEAR_FAR_RATIO caps it at any scale.
+  // ================================================================
+  el('tab3d').click(); await settle();
+  el('d_trailer').click();
+  await waitFrames(() => { let n = 0; getPivot().traverse(o => { if(o.name === 'trailerLoadBlock') n++; }); return n > 0; });
+  await settle();
+
+  t('trailer render: shell wall material has depthWrite off, still transparent (cutaway stays see-through)', () => {
+    const wallMats = [];
+    getPivot().traverse(o => {
+      if(o.isMesh && o.material && o.material.transparent && Math.abs(o.material.opacity - 0.18) < 1e-6)
+        wallMats.push(o.material);
+    });
+    if(!wallMats.length) throw new Error('trailer shell wall material not found in the rendered scene');
+    for(const m of wallMats){
+      if(m.depthWrite !== false) throw new Error('wall material must have depthWrite:false (self-occlusion flicker fix)');
+      if(m.transparent !== true) throw new Error('wall material must stay transparent -- this is a depth-write fix, not a visibility one');
+    }
+  });
+
+  t('trailer render: TRAILER_LOAD_SHRINK is the settled remedy value (2mm/side on every axis), not zero', () => {
+    eq(hier.TRAILER_LOAD_SHRINK, 4, 'shrink constant:');
+  });
+
+  t('trailer render: a base proxy and its own load block have a REAL vertical gap, not a coincident face', () => {
+    getPivot().updateMatrixWorld(true);
+    const bases = [], loads = [];
+    getPivot().traverse(o => {
+      if(o.name === 'trailerBase') bases.push(o);
+      if(o.name === 'trailerLoadBlock') loads.push(o);
+    });
+    if(!bases.length) throw new Error('no trailerBase instances in the rendered scene');
+    if(!loads.length) throw new Error('no trailerLoadBlock instances in the rendered scene');
+    // find ONE base instance and the load instance stacked directly above it
+    // (same floor x/z) -- instance order across the two meshes isn't
+    // guaranteed to line up, so match by world position, not by index.
+    let found = false;
+    const mb = new THREE.Matrix4(), ml = new THREE.Matrix4();
+    for(const base of bases){
+      for(let bi = 0; bi < base.count && !found; bi++){
+        base.getMatrixAt(bi, mb);
+        const pb = new THREE.Vector3().setFromMatrixPosition(mb);
+        for(const load of loads){
+          for(let li = 0; li < load.count; li++){
+            load.getMatrixAt(li, ml);
+            const pl = new THREE.Vector3().setFromMatrixPosition(ml);
+            if(Math.abs(pb.x - pl.x) < 1e-6 && Math.abs(pb.z - pl.z) < 1e-6 && pl.y > pb.y){
+              found = true;
+              const baseTop = pb.y + base.geometry.parameters.height/2;
+              const loadBottom = pl.y - load.geometry.parameters.height/2;
+              if(!(loadBottom > baseTop))
+                throw new Error(`base top (${baseTop}) must sit strictly below its load's bottom (${loadBottom}) -- coincident face`);
+              break;
+            }
+          }
+          if(found) break;
+        }
+      }
+      if(found) break;
+    }
+    if(!found) throw new Error('vacuous fixture: no matching base/load pair found to compare');
+  });
+
+  t('trailer render: camera near/far ratio stays within NEAR_FAR_RATIO at trailer scale', () => {
+    const cam = getCamera();
+    const ratio = cam.far/cam.near;
+    if(ratio > NEAR_FAR_RATIO*1.01)
+      throw new Error(`near/far ratio ${ratio} exceeds NEAR_FAR_RATIO (${NEAR_FAR_RATIO}) -- reads the LIVE camera`);
+    // the pre-fix defect measured ~5,184,648:1 at this exact view (a fixed
+    // 0.1 near regardless of scene span) -- this stays well under it even
+    // allowing generous slack, so a regression to a fixed near fails loudly.
+    if(ratio > 50000) throw new Error(`ratio ${ratio} is still catastrophically large -- near is not scaling with scene span`);
+  });
+
+  // restore: back to pallet depth for the pins that follow
+  el('d_pallet').click(); await settle();
 
   t('pallet render TAKES its load height from the chain, never measures it', () => {
     // The render used to derive the load height from the placements. That was

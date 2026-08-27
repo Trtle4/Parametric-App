@@ -478,6 +478,70 @@ function encodeProductLikeCookieTray(spec){
   }
   return out.toString();
 }
+/** Same omission rule, for the TRAY half (TRAY_KEYS/TRAY_DEFAULTS) — a
+ *  sibling to encodeProductLikeCookieTray above, needed because nCols
+ *  ('nc') lives in TRAY_KEYS, not PRODUCT_KEYS. */
+function encodeTrayLikeCookieTray(spec){
+  const out = new URLSearchParams();
+  for(const [long, short] of Object.entries(TRAY_KEYS)){
+    if(!(long in spec)) continue;
+    const v = spec[long], d = TRAY_DEFAULTS[long];
+    if(typeof v === 'number' && typeof d === 'number' && Math.abs(v - d) < 1e-9) continue;
+    if(typeof v === 'string' && v === d) continue;
+    out.set(short, typeof v === 'number' ? String(v) : v);
+  }
+  return out.toString();
+}
+
+/* ---- nCols: Cookie-Tray's column split, dropped on import and never
+   re-emitted because TRAY_KEYS had no entry for it at all — a silent
+   round-trip data loss, not a missing feature. It has no geometric effect
+   in this port (a 1xN layout — see cookietray.js's TRAY_DEFAULTS comment),
+   so the fix is round-trip fidelity only: it must survive import->export
+   unchanged. ---- */
+t('LINK: nCols (their "nc" column split) round-trips -- nc=3 imports and re-exports as nc=3', () => {
+  // fixture hygiene: nc=3 is NON-default (TRAY_DEFAULTS.nCols=1), so the
+  // real encoder actually SENDS it -- the condition this pin needs.
+  const qs = encodeTrayLikeCookieTray({nCells: 2, cellLen: 200, nCols: 3});
+  ok(/(^|&)nc=3(&|$)/.test(qs), `fixture must actually send nc=3, got: ${qs}`);
+  const parsed = parseTrayLink('?' + qs);
+  eq(parsed.params.nCols, 3, 'nCols survives import:');
+  const proj = newProject();
+  proj.interlayer = 'tray';
+  proj.tray.nCells = parsed.nCells;
+  proj.tray.params = {...parsed.params};
+  const row = resolveActiveRow(proj, '1mm');
+  const link = buildTrayLink(proj, row.tray);
+  const reparsed = parseTrayLink(link);
+  eq(reparsed.params.nCols, 3, 'nCols survives the FULL round trip (import -> export -> import):');
+});
+t('fixture hygiene: nCols AT its default (1) is omitted by the real encoder', () => {
+  // proves the round-trip pin above actually needs nc=3 to exhibit the
+  // condition -- a fixture with nc=1 present would never exercise the
+  // omission/default-fallback path at all.
+  const qs = encodeTrayLikeCookieTray({nCells: 2, cellLen: 200, nCols: 1});
+  ok(!/(^|&)nc=/.test(qs), `expected nc to be omitted at its default, got: ${qs}`);
+  const parsed = parseTrayLink('?' + qs);
+  eq(parsed.params.nCols, 1, 'absent nc falls back to TRAY_DEFAULTS.nCols:');
+});
+
+/* ---- unknown-key warning: the CLASS fix. Any querystring key matching
+   neither TRAY_KEYS nor PRODUCT_KEYS (nor our own `v`) must be surfaced,
+   never silently dropped -- the same failure mode nCols itself was. ---- */
+t('LINK: an unrecognized key is surfaced in unknownKeys, and the rest of the import still succeeds', () => {
+  const r = parseTrayLink('?n=2&cl=200&zzq=999');
+  eq(r.unknownKeys, ['zzq'], 'exactly the one fabricated key, named:');
+  eq(r.params.cellLen, 200, 'the rest of the import still worked:');
+  eq(r.nCells, 2);
+});
+t('LINK: a link with only recognized keys reports an empty unknownKeys', () => {
+  const r = parseTrayLink('?n=2&cl=200');
+  eq(r.unknownKeys, []);
+});
+t('LINK: multiple unrecognized keys are all named, deduped', () => {
+  const r = parseTrayLink('?n=2&zzq=1&zzq=2&zzr=3');
+  eq(r.unknownKeys.slice().sort(), ['zzq', 'zzr']);
+});
 
 /* ---- the product-half omission bug: Cookie-Tray's encoder applies its
    omit-if-default rule to EVERY field, product included — a product sitting

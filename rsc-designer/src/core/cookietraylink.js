@@ -27,7 +27,7 @@ import {TRAY_DEFAULTS, packPitchOf} from './cookietray.js';
 
 /** Long name -> Cookie-Tray's compact querystring key (their TRAY_KEY_MAP). */
 export const TRAY_KEYS = Object.freeze({
-  nCells: 'n', longAxis: 'la', cellLen: 'cl', cellWid: 'cw', cellH: 'ch',
+  nCells: 'n', nCols: 'nc', longAxis: 'la', cellLen: 'cl', cellWid: 'cw', cellH: 'ch',
   cradleR: 'cr', wall: 'w', divider: 'dv', floor: 'fl', cornerR: 'cnr',
   draftDeg: 'dr', stripL: 'sl', stripW: 'sw', lipH: 'lh', flangeT: 'ft',
   cellFillet: 'cf', nozzle: 'nz'
@@ -105,8 +105,14 @@ function toParams(input){
  *   thickness product importing as some unrelated caller-side magic number).
  *
  * @param {string} input a share URL or querystring
- * @returns {{nCells: number, params: Object, product: Object, keysFound: string[]}|null}
- *   null when the string carries no Cookie-Tray keys at all.
+ * @returns {{nCells: number, params: Object, product: Object, keysFound: string[], unknownKeys: string[]}|null}
+ *   null when the string carries no Cookie-Tray keys at all. `unknownKeys`
+ *   names every querystring key that matched neither TRAY_KEYS nor
+ *   PRODUCT_KEYS (nor our own `v` stamp) — Cookie-Tray may have added a
+ *   field since this module was last updated. Surfaced, never silently
+ *   dropped: a link this app only partly understands is still useful, and
+ *   the caller (app.js's applyTrayLink) shows this list through the same
+ *   note the import status already uses, rather than failing the import.
  * @throws {Error} if the link's own `v` (our schema version, absent = v1)
  *   is newer than this app understands — fail loudly rather than silently
  *   misparse a key whose meaning moved in a schema we don't know yet.
@@ -141,6 +147,15 @@ export function parseTrayLink(input){
   }
   if(keysFound.length === 0) return null;          // not a Cookie-Tray link
 
+  // UNKNOWN KEYS: every querystring key that matched NEITHER map above, and
+  // isn't our own `v` stamp. THE CLASS FIX, not just this one dropped field:
+  // any key Cookie-Tray adds after this module is last updated would
+  // otherwise be silently dropped and silently never re-emitted on export,
+  // exactly the nCols defect this same fix landed alongside. Deduped (a
+  // querystring can repeat a key).
+  const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS), 'v']);
+  const unknownKeys = [...new Set(sp.keys())].filter(k => !known.has(k));
+
   // OUR OWN version stamp (see CURRENT_LINK_VERSION) — absent means v1, the
   // version this schema has always been, since Cookie-Tray's real links
   // never send it. Only a link claiming a version NEWER than we understand
@@ -154,12 +169,16 @@ export function parseTrayLink(input){
 
   const nCells = Math.max(1, Math.round(params.nCells || TRAY_DEFAULTS.nCells));
   delete params.nCells;                             // the cell count is its own field
+  // nCols stays IN params, unlike nCells: it drives nothing in this port's
+  // 1xN geometry (see cookietray.js's TRAY_DEFAULTS comment), so there is no
+  // second top-level field for it to become — it just rides through
+  // trayParams() untouched, present so the round trip is lossless.
   // null overrides mean "let the tray stage derive it" — drop them so the
   // auto-with-override contract (absent key = auto) is preserved. Product
   // fields never carry this shape (every PRODUCT_DEFAULTS entry is a real
   // value or a defaulted string), so no equivalent pass runs over `product`.
   for(const k of Object.keys(params)) if(params[k] == null) delete params[k];
-  return {nCells, params, product, keysFound};
+  return {nCells, params, product, keysFound, unknownKeys};
 }
 
 /**
@@ -218,7 +237,7 @@ export function buildTrayLink(project, trayResult, base = 'https://trtle4.github
   // the tray half — the RESOLVED values (what this project actually built),
   // so the link describes the tray on screen, not a partial override set
   put('nCells', TRAY_KEYS, trayResult.nCells);
-  for(const long of ['longAxis', 'cellLen', 'cellWid', 'cellH', 'cradleR', 'wall', 'divider',
+  for(const long of ['nCols', 'longAxis', 'cellLen', 'cellWid', 'cellH', 'cradleR', 'wall', 'divider',
                      'floor', 'cornerR', 'draftDeg', 'stripL', 'stripW', 'lipH', 'flangeT',
                      'cellFillet', 'nozzle'])
     put(long, TRAY_KEYS, p[long]);
