@@ -11,8 +11,11 @@
    whatever newProject()'s own defaults happen to be today. */
 import {resolveStack, boxesAboveBottom, baseHeightMM, baseWeightLb, baseFootprintMM,
         BASE_KINDS, STACK_DEFAULTS, PALLET_TARE_LB_DEFAULT, SLIPSHEET_DEFAULTS,
-        slipsheetFootprintMM, slipsheetWeightLb} from '../src/core/stack.js';
-import {stackAnalysis} from '../src/core/bct.js';
+        slipsheetFootprintMM, slipsheetWeightLb,
+        CORNER_POST_DEFAULTS, cornerPostConfig, cornerPostHeightMM, cornerPostReachesCaseStack,
+        cornerPostSectionAreaMM2, cornerPostWeightLb, cornerPostFootprintGrowthMM,
+        cornerPostCostQuantities} from '../src/core/stack.js';
+import {stackAnalysis, DERATINGS} from '../src/core/bct.js';
 
 const results = [];
 function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); }catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
@@ -23,16 +26,17 @@ function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw n
 // out, so a pin never inherits a value from newProject()'s own defaults.
 function proj({baseH = 127, tareLb = 45, positions = STACK_DEFAULTS.positions,
                 ssCaliper = 3, ssDensity = 950, ssWeightLb = null, ssL = null, ssW = null,
-                palL = 48*25.4, palW = 40*25.4, unitWeightLb = 20} = {}){
+                palL = 48*25.4, palW = 40*25.4, unitWeightLb = 20, cornerPost = null} = {}){
   return {
     pallet: {
       L: palL, W: palW, baseH, tareLb,
-      stack: {positions},
+      stack: {positions, cornerPost},
       slipsheet: {caliper: ssCaliper, density: ssDensity, weightLb: ssWeightLb, L: ssL, W: ssW},
       stacking: {ect: 32, unitWeightLb, target: 3.0}
     }
   };
 }
+const MM_PER_IN = 25.4, KG_PER_LB = 0.45359237;
 
 /* ---- exhaustiveness on BASE_KINDS (same instrument as cookietray.test.html's
    interlayer pins: a default case that refuses to guess, on the ONE set of
@@ -187,6 +191,119 @@ t('baseWeightLb/baseHeightMM fall back to PALLET_TARE_LB_DEFAULT/127 when pallet
   delete p.pallet.tareLb; delete p.pallet.baseH;
   approx(baseWeightLb({base: 'pallet'}, p), PALLET_TARE_LB_DEFAULT);
   approx(baseHeightMM({base: 'pallet'}, p), 127);
+});
+
+/* ================================================================
+   CORNER POSTS (task: "Corner posts") -- geometry, weight, and the
+   compression path. ONE config for the whole stack (see cornerPostConfig's
+   own doc in stack.js): the cost formula itself is `4 x positions x rate`,
+   never a sum of N independently configured posts, so there is nothing to
+   diverge between positions to begin with.
+   ================================================================ */
+
+t('cornerPostHeightMM defaults to that load\'s case-stack height (loadH) minus 1in, hand-computed', () => {
+  const p = proj({cornerPost: {enabled: true}});
+  const loadH = 900;
+  approx(cornerPostHeightMM(p, loadH), loadH - MM_PER_IN, 'loadH - 25.4mm exactly');
+});
+t('cornerPostHeightMM height override wins over the auto (loadH - 1in) default', () => {
+  const p = proj({cornerPost: {enabled: true, height: 500}});
+  approx(cornerPostHeightMM(p, 900), 500);
+});
+t('cornerPostReachesCaseStack: false at the default height (1in short, by design), true once raised to meet it', () => {
+  const p = proj({cornerPost: {enabled: true}});
+  const loadH = 900;
+  if(cornerPostReachesCaseStack(p, loadH)) throw new Error('default height (loadH - 1in) must NOT reach the case stack');
+  const pTall = proj({cornerPost: {enabled: true, height: loadH}});
+  if(!cornerPostReachesCaseStack(pTall, loadH)) throw new Error('height == loadH must reach the case stack');
+});
+t('cornerPostConfig legL/legW default to 3in each, independently overridable', () => {
+  const p = proj({cornerPost: {enabled: true}});
+  const cfg = cornerPostConfig(p);
+  approx(cfg.legL, 3*MM_PER_IN); approx(cfg.legW, 3*MM_PER_IN);
+  const p2 = proj({cornerPost: {enabled: true, legL: 40}});
+  const cfg2 = cornerPostConfig(p2);
+  approx(cfg2.legL, 40, 'legL overridden'); approx(cfg2.legW, 3*MM_PER_IN, 'legW still auto -- independent');
+});
+
+t('cornerPostFootprintGrowthMM is exactly 2 x caliper, at several calipers, zero when off', () => {
+  for(const caliper of [1, 3, 5.5, 10]){
+    const p = proj({cornerPost: {enabled: true, caliper}});
+    approx(cornerPostFootprintGrowthMM(p), 2*caliper, `caliper=${caliper}`);
+  }
+  approx(cornerPostFootprintGrowthMM(proj({cornerPost: {enabled: false}})), 0, 'disabled -> zero');
+  approx(cornerPostFootprintGrowthMM(proj({cornerPost: null})), 0, 'absent -> zero');
+});
+
+t('cornerPostWeightLb: hand-computed section-area x height x density / KG_PER_LB, zero when off', () => {
+  const legL = 76.2, legW = 76.2, caliper = 3, density = 700, loadH = 900;
+  const p = proj({cornerPost: {enabled: true, legL, legW, caliper, density}});
+  const h = loadH - MM_PER_IN;
+  const areaMM2 = legL*caliper + legW*caliper - caliper*caliper;   // hand-computed, not cornerPostSectionAreaMM2 itself
+  const volM3 = (areaMM2/1e6)*(h/1000);
+  const expectedLb = (volM3*density)/KG_PER_LB;
+  approx(cornerPostWeightLb(p, loadH), expectedLb, '', 1e-9);
+  approx(cornerPostWeightLb(proj({cornerPost: {enabled: false}}), loadH), 0, 'disabled -> zero');
+});
+
+t('tareAboveLb: corner-post weight joins positions 2..N ONLY -- a single position (N=1) gets ZERO post contribution', () => {
+  const p = proj({positions: [{base: 'pallet'}], cornerPost: {enabled: true, height: 900, caliper: 3, density: 700}});
+  const off = proj({positions: [{base: 'pallet'}], cornerPost: {enabled: false}});
+  const fit = {layers: 4, casesPerLayer: 5, loadH: 900};
+  approx(resolveStack(p, fit).tareAboveLb, resolveStack(off, fit).tareAboveLb, 'N=1: tareAboveLb identical posts on/off');
+  approx(resolveStack(p, fit).tareAboveLb, 0, 'N=1 all-pallet: tareAboveLb is zero either way (no position above the bottom)');
+});
+t('tareAboveLb at N=3: hand-computed as (position[1]+position[2] base weight) + 2 x (4 x post weight), position[0] excluded', () => {
+  const positions = [{base: 'pallet'}, {base: 'pallet'}, {base: 'pallet'}];
+  const cornerPost = {enabled: true, height: 900, legL: 76.2, legW: 76.2, caliper: 3, density: 700};
+  const p = proj({positions, tareLb: 45, cornerPost});
+  const fit = {layers: 4, casesPerLayer: 5, loadH: 900};
+  const s = resolveStack(p, fit);
+  const onePostLb = cornerPostWeightLb(p, fit.loadH);
+  const expected = 45 + 45 + 2*(4*onePostLb);   // positions[1],[2] base tare + their own 4 posts each
+  approx(s.tareAboveLb, expected, '', 1e-9);
+  approx(s.cornerPostWeightLb, 4*onePostLb, 'resolveStack exposes the per-position 4-post weight directly');
+});
+t('totalWeightLb: corner-post weight joins EVERY position, including the bottom (unlike tareAboveLb)', () => {
+  const positions = [{base: 'pallet'}, {base: 'pallet'}];
+  const cornerPost = {enabled: true, height: 900, legL: 76.2, legW: 76.2, caliper: 3, density: 700};
+  const withPosts = proj({positions, tareLb: 45, cornerPost, unitWeightLb: 20});
+  const without   = proj({positions, tareLb: 45, cornerPost: {enabled: false}, unitWeightLb: 20});
+  const fit = {layers: 4, casesPerLayer: 5, loadH: 900};
+  const onePostLb = cornerPostWeightLb(withPosts, fit.loadH);
+  const diff = resolveStack(withPosts, fit).totalWeightLb - resolveStack(without, fit).totalWeightLb;
+  approx(diff, 2*(4*onePostLb), 'rise = 4 x post weight x positions (N=2)', 1e-9);
+});
+
+/* ---- BCT non-contribution, two complementary assertions ----------------
+   (a) At a fixed N=1 stack (no position above the bottom, so tareAboveLb is
+       zero either way -- pinned above as an absolute value, not just an
+       on/off comparison), the full analysis is identical posts on vs off.
+   (b) bctLb -- the STRENGTH estimate -- must be a pure function of
+       {ectLbPerIn, caliperMm, L_mm, W_mm}, with ZERO dependency on
+       tareAboveLb at ANY magnitude, corner-post-driven or not. A "bogus
+       strength term" would show up as bctLb moving when only tareAboveLb
+       does; this sweeps tareAboveLb from 0 to a large corner-post-scale
+       value and requires bctLb to not move at all, so it fails even a
+       small strength credit slipped in anywhere tareAboveLb is threaded. */
+t('BCT non-contribution (a): N=1 stack, ratio/loadLb/bctLb IDENTICAL with corner posts on vs off', () => {
+  const fit = {layers: 6, casesPerLayer: 5, loadH: 900};
+  const on  = resolveStack(proj({positions: [{base: 'pallet'}], cornerPost: {enabled: true, height: 900, caliper: 5, density: 900}}), fit);
+  const off = resolveStack(proj({positions: [{base: 'pallet'}], cornerPost: {enabled: false}}), fit);
+  const analyze = s => stackAnalysis({ectLbPerIn: 32, caliperMm: 4, L_mm: 300, W_mm: 200,
+    boxesAbove: s.boxesAboveBottom, tareAboveLb: s.tareAboveLb, casesPerLayer: fit.casesPerLayer,
+    unitWeightLb: 20, targetRatio: 3.0, isRSC: true});
+  const aOn = analyze(on), aOff = analyze(off);
+  approx(aOn.ratio, aOff.ratio, 'ratio');
+  approx(aOn.loadLb, aOff.loadLb, 'loadLb');
+  approx(aOn.bctLb, aOff.bctLb, 'bctLb');
+  eq(DERATINGS.includes('Pallet overhang & misalignment'), true, 'sanity: the static derating list is untouched by this module');
+});
+t('BCT non-contribution (b): bctLb has ZERO dependency on tareAboveLb, at any magnitude (mutation-resistant)', () => {
+  const base = {ectLbPerIn: 32, caliperMm: 4, L_mm: 300, W_mm: 200, boxesAbove: 20, casesPerLayer: 5, unitWeightLb: 20, targetRatio: 3.0, isRSC: true};
+  const bctNoTare = stackAnalysis({...base, tareAboveLb: 0}).bctLb;
+  const bctBigTare = stackAnalysis({...base, tareAboveLb: 400}).bctLb;   // a corner-post-scale tare
+  approx(bctNoTare, bctBigTare, 'bctLb must not move when only tareAboveLb changes');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

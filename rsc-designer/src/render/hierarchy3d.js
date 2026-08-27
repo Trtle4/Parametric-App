@@ -19,7 +19,7 @@ import {explodeTier, axisOffsets} from './explode.js';
 import {buildTray3d} from './tray3d.js';
 import {buildUboard3d} from './uboard3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
-import {buildGmaPallet, buildSlipsheet, PALLET_MATERIAL, SLIPSHEET_MATERIAL} from './palletmesh.js';
+import {buildGmaPallet, buildSlipsheet, PALLET_MATERIAL, SLIPSHEET_MATERIAL, buildCornerPostSet, CORNER_POST_MATERIAL} from './palletmesh.js';
 import {buildTrailerShell} from './trailermesh.js';
 import {orientBasis} from './orient.js';
 
@@ -1684,6 +1684,17 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     timber.position.y = yOff;
     group.add(timber);
 
+    // Corner posts: 4 per position, standing on THIS position's own base top
+    // (yOff + baseH), outboard of the deck footprint. bundle.cornerPost is
+    // null when posts are off — resolved once in app.js's hierarchyBundle,
+    // never re-derived here (see core/stack.js cornerPostHeightMM/Config).
+    if(bundle.cornerPost){
+      const cp = bundle.cornerPost;
+      const posts = buildCornerPostSet(cases.deck, cp.height, cp.legL, cp.legW, cp.caliper);
+      posts.position.y = yOff + baseH;
+      group.add(posts);
+    }
+
     // closed units — textured when the pallet's pack (the outer tier: case, or
     // carton once the case is off) has artwork, so a printed pallet shows the art
     // on every case; else bare board, instanced per orientation.
@@ -1883,6 +1894,49 @@ function buildTrailer(bundle, outerTier, S){
     group.add(loadInst);
   }
 
+  // Corner posts: 4 per (floor position, level), INSTANCED (two arm shapes,
+  // each geometry pre-translated so its local origin is the OUTER corner —
+  // see palletmesh.js's buildCornerPostSet for the non-instanced twin of
+  // this same shape) rather than one Group per post, since a full trailer
+  // floor can carry hundreds of positions x levels. bundle.cornerPost is
+  // null when posts are off.
+  if(bundle.cornerPost){
+    const cp = bundle.cornerPost;
+    if(cp.height > 0 && cp.caliper > 0){
+      const armXGeo = new THREE.BoxGeometry(Math.max(cp.legL, 0.1), Math.max(cp.height, 0.1), Math.max(cp.caliper, 0.1));
+      armXGeo.translate(cp.legL/2, cp.height/2, cp.caliper/2);
+      const armZGeo = new THREE.BoxGeometry(Math.max(cp.caliper, 0.1), Math.max(cp.height, 0.1), Math.max(cp.legW, 0.1));
+      armZGeo.translate(cp.caliper/2, cp.height/2, cp.legW/2);
+      const postSlots = [];
+      for(let fi = 0; fi < placements.length; fi++) for(let u = 0; u < N; u++){
+        if(fi === detailFloorIdx && u === detailVertIdx) continue;
+        postSlots.push({fi, u});
+      }
+      if(postSlots.length){
+        const hx = cellFP.L/2 + cp.caliper, hz = cellFP.W/2 + cp.caliper;
+        const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
+        const armXInst = new THREE.InstancedMesh(armXGeo, CORNER_POST_MATERIAL, postSlots.length*4);
+        const armZInst = new THREE.InstancedMesh(armZGeo, CORNER_POST_MATERIAL, postSlots.length*4);
+        armXInst.name = 'trailerCornerPost'; armZInst.name = 'trailerCornerPost';
+        const MP = new THREE.Matrix4(), Q = new THREE.Quaternion();
+        let k = 0;
+        for(const {fi, u} of postSlots){
+          const pl = placements[fi];
+          const y0 = posOffsets[u] + heights[u];   // this position's own base TOP
+          for(const c of corners){
+            // mirror the +x/+z-quadrant arm shapes into whichever quadrant
+            // this corner needs, so legs point INWARD (see palletmesh.js).
+            MP.compose(new THREE.Vector3(pl.x + c.x, y0, pl.y + c.z), Q, new THREE.Vector3(-Math.sign(c.x), 1, -Math.sign(c.z)));
+            armXInst.setMatrixAt(k, MP);
+            armZInst.setMatrixAt(k, MP);
+            k++;
+          }
+        }
+        group.add(armXInst); group.add(armZInst);
+      }
+    }
+  }
+
   // ONE FULL-DETAIL LOAD: real base mesh + real per-case geometry, at the
   // selected floor/vertical slot's own world position.
   const dpl = placements[detailFloorIdx];
@@ -1894,6 +1948,15 @@ function buildTrailer(bundle, outerTier, S){
   group.add(dTimber);
   buildClosedLoadCases(group, outerTier, bundle, bundle.cases.placements,
     posOffsets[detailVertIdx] + dH, dpl.x, dpl.y);
+  // The one full-detail load gets its own real corner posts too (the
+  // non-instanced Group builder, same one buildPallet uses) — the detailed
+  // slot should show everything in full detail, posts included.
+  if(bundle.cornerPost){
+    const cp = bundle.cornerPost;
+    const posts = buildCornerPostSet(cellFP, cp.height, cp.legL, cp.legW, cp.caliper);
+    posts.position.set(dpl.x, posOffsets[detailVertIdx] + dH, dpl.y);
+    group.add(posts);
+  }
 
   // deck at y=0 (matching the shell's own floor plane); the load column
   // rides straight up from it, no re-centring needed the way a lone pallet

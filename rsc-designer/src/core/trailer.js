@@ -31,10 +31,22 @@
  * handling clearance only; widening it must change no trailer-fit number.
  * See the `child` construction below for the one place this is enforced.
  *
+ * CORNER POSTS DO widen this footprint, deliberately unlike the slipsheet
+ * lip: a post stands OUTBOARD of the case corner (see core/stack.js's
+ * cornerPostFootprintGrowthMM), so it is what actually touches the next
+ * pallet over on the trailer floor — the lip is handling clearance that
+ * never reaches another load, a post is the opposite. `loadFootprintMM`
+ * below is the ONE inflated {L,W} every floor-space computation in this
+ * module reads (floor packing, cube volume, remaining floor area); the door
+ * WIDTH check is deliberately left on the pallet's own bare footprint — a
+ * physical passage question the corner-post task did not ask this module to
+ * revisit.
+ *
  * DOM-free, mm-native (weight in lb, matching the app's existing BCT
  * convention throughout core/bct.js and core/stack.js).
  */
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
+import {cornerPostFootprintGrowthMM} from './stack.js';
 
 /** 53' dry van, CPG default — a proposal confirmed with the user, not pulled
  *  from a spec sheet. All lengths in mm (the app's internal unit); the
@@ -125,9 +137,17 @@ export function resolveTrailer(project, stack, casesPerLoad = 0){
   const t = trailerParams(project.trailer);
   const pallet = project.pallet;
 
-  // FLOOR: the pallet's own footprint only -- see the module doc for why a
-  // slipsheet position's lipped footprint never reaches this call.
-  const floor = trailerFloorPattern({L: pallet.L, W: pallet.W}, {L: t.L, W: t.W}, t.floorPattern);
+  // LOAD FOOTPRINT: the pallet's own footprint, widened by 2x corner-post
+  // caliper in each of L and W when posts are on (zero otherwise -- bit-
+  // identical to before posts existed). See the module doc for why this is
+  // the OPPOSITE of the slipsheet lip exclusion just below.
+  const postGrowthMM = cornerPostFootprintGrowthMM(project);
+  const loadFootprintMM = {L: pallet.L + postGrowthMM, W: pallet.W + postGrowthMM};
+
+  // FLOOR: the load's own footprint -- see the module doc for why a
+  // slipsheet position's lipped footprint never reaches this call, and why
+  // a corner post's DOES.
+  const floor = trailerFloorPattern(loadFootprintMM, {L: t.L, W: t.W}, t.floorPattern);
   const stacksPerTrailer = floor.total;
   const floorOrientation = floor.orientation || null;       // e.g. 'LWH'/'WLH', null when nothing fits
 
@@ -137,16 +157,16 @@ export function resolveTrailer(project, stack, casesPerLoad = 0){
 
   // WEIGHT: total payload = one stack's own weight (core/stack.js
   // resolveStack().totalWeightLb, already the whole N-position column,
-  // bases included) x how many stacks fit the floor -- never a second,
-  // independently-derived per-case weight sum.
+  // bases AND corner posts included) x how many stacks fit the floor --
+  // never a second, independently-derived per-case weight sum.
   const totalWeightLb = stack.totalWeightLb*stacksPerTrailer;
   const weightUtilPct = t.maxPayloadLb > 0 ? (totalWeightLb/t.maxPayloadLb)*100 : 0;
 
-  // CUBE: load volume from the pallet's own footprint x the stack's own
+  // CUBE: load volume from the load's own footprint x the stack's own
   // total height (again, never the lipped footprint) x how many stacks fit,
   // over the trailer's own interior volume (its usable cube, not the door
   // opening -- the door is a clearance gate, not a capacity number).
-  const loadVolumeMM3 = stacksPerTrailer*pallet.L*pallet.W*stack.totalHeightMM;
+  const loadVolumeMM3 = stacksPerTrailer*loadFootprintMM.L*loadFootprintMM.W*stack.totalHeightMM;
   const trailerVolumeMM3 = t.L*t.W*t.H;
   const cubeUtilPct = trailerVolumeMM3 > 0 ? (loadVolumeMM3/trailerVolumeMM3)*100 : 0;
 
@@ -162,11 +182,12 @@ export function resolveTrailer(project, stack, casesPerLoad = 0){
   // presented to the door in its NARROWER orientation while being loaded
   // (independent of which orientation the floor plan uses once inside) --
   // so the real gate is the pallet's own shorter side against the door
-  // opening, not the floor pattern's chosen orientation.
+  // opening, not the floor pattern's chosen orientation. Deliberately the
+  // BARE pallet footprint, not loadFootprintMM -- see the module doc.
   const doorWidthOk = Math.min(pallet.L, pallet.W) <= t.doorW;
   const doorOk = doorHeightOk && doorWidthOk;
 
-  const remainingFloorAreaMM2 = Math.max(0, t.L*t.W - stacksPerTrailer*pallet.L*pallet.W);
+  const remainingFloorAreaMM2 = Math.max(0, t.L*t.W - stacksPerTrailer*loadFootprintMM.L*loadFootprintMM.W);
   const remainingHeightMM = t.H - stack.totalHeightMM;   // signed: negative means it doesn't fit (see interiorHeightOk)
 
   return {
@@ -175,6 +196,6 @@ export function resolveTrailer(project, stack, casesPerLoad = 0){
     totalWeightLb, weightUtilPct, cubeUtilPct, bindingConstraint,
     interiorHeightOk, doorHeightOk, doorWidthOk, doorOk,
     remainingFloorAreaMM2, remainingHeightMM,
-    provenance: {palletL: pallet.L, palletW: pallet.W, casesPerLoad, trailer: t}
+    provenance: {palletL: pallet.L, palletW: pallet.W, loadFootprintMM, casesPerLoad, trailer: t}
   };
 }

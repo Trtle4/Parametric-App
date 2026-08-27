@@ -25,22 +25,36 @@
  * board grades are separate rates rather than one.
  *
  * DOM-free, side-effect-free, no dependency.
+ *
+ * FOUR of these rates (cartonBoardPerM2, uboardBoardPerM2, plus corner
+ * post's two below) are now sourced from core/materials.js's MATERIAL_
+ * REGISTRY rather than declared twice — the registry is the single place a
+ * fifth material stream gets added. caseBoardPerM2/filmPerKg/trayEach/
+ * palletPerTrip stay bespoke: they were never named as one of the three
+ * streams this phase migrates, and folding them in unasked would be scope
+ * creep on an already large change (see materials.js's own doc).
  */
+
+import {MATERIAL_REGISTRY, costForBasis, cornerPostRateOf} from './materials.js';
 
 /** $ per canonical unit. See the note above: placeholders, not quotes. */
 export const COST_DEFAULTS = Object.freeze({
-  cartonBoardPerM2: 0.62,     // folding carton board, converted + printed
+  cartonBoardPerM2: MATERIAL_REGISTRY.cartonBoard.defaultRate,   // folding carton board, converted + printed
   caseBoardPerM2:   0.45,     // corrugated case board
   filmPerKg:        3.20,     // BOPP / PE wrap film
   trayEach:         0.18,     // thermoformed tray, per part
-  uboardBoardPerM2: 0.50,     // U-board paperboard — its own rate, never the carton/case board rate
-  palletPerTrip:   12.00      // one pallet, one trip
+  uboardBoardPerM2: MATERIAL_REGISTRY.uboardBoard.defaultRate,   // U-board paperboard — its own rate, never the carton/case board rate
+  palletPerTrip:   12.00,     // one pallet, one trip
+  cornerPostPerLengthM: MATERIAL_REGISTRY.cornerPost.defaultRates.perLength,   // $ per metre of angle-board post, all 4 posts x every position
+  cornerPostPerPiece:   MATERIAL_REGISTRY.cornerPost.defaultRates.perPiece    // $ per post, fixed cut-to-size piece
 });
 
 /** The rate vocabulary, in display order. `unit` is the DISPLAY kind, which
  *  is all that varies with the project's unit system; `key` is the canonical
  *  stored field. `needs` names the chain level a rate applies to, so a rail
- *  can omit rows for levels that are not in the chain. */
+ *  can omit rows for levels that are not in the chain. Corner post is NOT
+ *  listed here — its basis-selectable pair of rates needs a selector this
+ *  generic auto/override row can't express; see mountCornerPost in inputs.js. */
 export const RATE_ROWS = Object.freeze([
   {key: 'cartonBoardPerM2', label: 'Carton board', unit: 'area', needs: 'carton'},
   {key: 'caseBoardPerM2',   label: 'Case board',   unit: 'area', needs: 'case'},
@@ -52,6 +66,9 @@ export const RATE_ROWS = Object.freeze([
 
 /** ft² in one m² — the ONE conversion factor the rate display uses. */
 export const FT2_PER_M2 = 10.7639104167097;
+/** ft in one metre — the length-basis analogue of FT2_PER_M2, for corner
+ *  post's $/m stored rate shown as $/ft in an inch project. */
+export const FT_PER_M = 3.280839895013123;
 
 /** The rate actually in force: the override if there is one, else the
  *  default. The single reader — the panel, the readouts and the Build column
@@ -62,13 +79,16 @@ export function rateOf(cost, key){
 }
 
 /** A canonical rate in its DISPLAY unit. Board rates are per m² stored and
- *  per ft² shown in an inch project; mass and per-each rates have no unit
- *  system to follow. */
+ *  per ft² shown in an inch project; corner post's perLength rate is per m
+ *  stored and per ft shown; mass and per-each rates have no unit system to
+ *  follow. */
 export const rateToDisplay = (v, kind, unit) =>
-  (kind === 'area' && unit === 'in') ? v/FT2_PER_M2 : v;
+  (kind === 'area' && unit === 'in') ? v/FT2_PER_M2 :
+  (kind === 'length' && unit === 'in') ? v/FT_PER_M : v;
 /** The inverse, for reading a typed rate back into storage. */
 export const rateFromDisplay = (v, kind, unit) =>
-  (kind === 'area' && unit === 'in') ? v*FT2_PER_M2 : v;
+  (kind === 'area' && unit === 'in') ? v*FT2_PER_M2 :
+  (kind === 'length' && unit === 'in') ? v*FT_PER_M : v;
 
 /**
  * Material cost per sellable pack, and the roll-ups.
@@ -85,7 +105,8 @@ export const rateFromDisplay = (v, kind, unit) =>
  *
  * @param {Object} q  quantities, all already solved by the chain:
  *   {cartonBoardM2, caseBoardM2, filmKgPerPack, traysPerPack, uboardAreaM2,
- *    packsPerCarton, cartonsPerCase, packsPerPallet}
+ *    packsPerCarton, cartonsPerCase, packsPerPallet,
+ *    cornerPostBasis, cornerPostLengthM, cornerPostCount}
  * @param {Object} [cost]  project.cost — the overrides, absent = default
  * @returns {{perPack: Object, terms: Array, packCost: number|null,
  *            perCase: number|null, perPallet: number|null,
@@ -135,6 +156,21 @@ export function materialCost(q, cost){
 
   if(num(q.packsPerPallet)) perPack.pallet = R('palletPerTrip')/q.packsPerPallet;
   else missing.push('pallet');
+
+  // Corner post: a PER-PALLET quantity like the pallet trip fee above, not a
+  // per-pack one like film/tray/uboard — 4 posts x every stack position,
+  // spread across the packs that pallet carries. Priced by LENGTH or by
+  // PIECE, never by area; `q.cornerPostBasis` names which (resolved once by
+  // the caller via core/materials.js's cornerPostBasisOf, never re-derived
+  // here), and costForBasis is exhaustive over PRICING_BASES so an
+  // unrecognized basis throws instead of silently pricing as zero.
+  if(q.cornerPostBasis && num(q.packsPerPallet)){
+    const rate = cornerPostRateOf(cost, q.cornerPostBasis);
+    const total = costForBasis(q.cornerPostBasis, rate, {lengthM: q.cornerPostLengthM, count: q.cornerPostCount});
+    if(total != null) perUnit.cornerPost = total;
+  }
+  if(perUnit.cornerPost != null && num(q.packsPerPallet)) perPack.cornerPost = perUnit.cornerPost/q.packsPerPallet;
+  else missing.push('cornerPost');
 
   const terms = Object.keys(perPack);
   const packCost = terms.length ? terms.reduce((s, k) => s + perPack[k], 0) : null;

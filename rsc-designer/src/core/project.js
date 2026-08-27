@@ -12,6 +12,7 @@ import {fitInto, parentCandidates, solveParent, orientDims} from './containment.
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
 import {materialCost} from './cost.js';
+import {cornerPostCostQuantities, cornerPostConfig} from './stack.js';
 import {styleById} from './styles/index.js';
 import {withPerforation} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
@@ -229,7 +230,16 @@ export function newProject(){
       // bit-identical to the old doubleStack:false; two positions each on
       // 'pallet' reproduces the old doubleStack:true's stacking geometry
       // exactly (see the v4->v5 migration).
-      stack: {positions: [{base: 'pallet'}]},
+      stack: {positions: [{base: 'pallet'}],
+        // Corner posts: ONE config for the whole stack (see core/stack.js
+        // cornerPostConfig's own doc for why this is not per-position).
+        // enabled:false is a real off switch, not an absence-is-auto field
+        // — posts are opt-in edge protection, not a value with a sensible
+        // nonzero default. height/legL/legW null = auto (that load's case-
+        // stack height - 1in; 3in each); caliper has no auto concept (its
+        // own plain input, like baseH above).
+        cornerPost: {enabled: false, height: null, legL: null, legW: null,
+          caliper: 3, density: 700, costBasis: 'perLength'}},
       // the slipsheet's own material — NEVER carton/case board or the
       // U-board's paperboard (uboard.params.caliper is a distinct number).
       // weightLb/L/W null = auto (derived from footprint x caliper x
@@ -1136,12 +1146,19 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   // cardinality as film/tray), so its area is a per-pack quantity, added
   // directly rather than divided by a carton/case count — see cost.js.
   row.uboardAreaM2 = row.uboard ? blankAreaM2(row.uboard.geo) : null;
+  // Corner-post cost quantities: 4 posts x every stack position, in the ONE
+  // unit whichever basis (perLength/perPiece) actually prices against —
+  // resolved once in stack.js from the chain's own row.loadH and the
+  // project's stack position count, never re-derived here.
+  const positionsCount = (project.pallet.stack && Array.isArray(project.pallet.stack.positions) && project.pallet.stack.positions.length) || 1;
+  const cpQ = cornerPostCostQuantities(project, row.loadH, positionsCount);
   row.cost = materialCost({
     cartonBoardM2: row.cartonBoardM2, caseBoardM2: row.caseBoardM2,
     filmKgPerPack: row.filmKgPerPack, traysPerPack: row.traysPerPack,
     uboardAreaM2: row.uboardAreaM2,
     packsPerCarton: row.packsPerCarton, cartonsPerCase: row.cartonsPerCase,
-    packsPerPallet: row.packsPerPallet
+    packsPerPallet: row.packsPerPallet,
+    cornerPostBasis: cpQ.basis, cornerPostLengthM: cpQ.lengthM, cornerPostCount: cpQ.count
   }, project.cost);
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
@@ -1230,13 +1247,20 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
   // headline numbers bake in (the Build table ranks candidates by their
   // best pallet); the list rides on the row so applyPatternSelection can
   // re-read list[patternIndex] for the committed chain without re-packing.
+  const cpCfg = cornerPostConfig(project);
   const patternList = palletPatternList(
     {outer: {...outerGeo.outer, H: stackH}, allowedOrientations: outerLevel.allowedOrientations},
     {L: p.L, W: p.W, H: p.maxH - p.baseH},
     outerLevel.clearance,
-    p.pattern
+    p.pattern,
+    {postCaliperMM: cpCfg.enabled ? cpCfg.caliper : 0}
   );
   const fit = patternList.length ? patternList[0].build() : emptyArrangement();
+  // Post overhang is a WARNING attached to the chosen candidate, never a
+  // rejection (case overhang above already ran and is untouched) — read off
+  // the SAME candidate list() and row.js/app.js surface it through the
+  // existing warning channel. null when posts are off or nothing is proud.
+  const postOverhang = patternList.length ? patternList[0].postOverhang : null;
   const loadH = palletLoadH(fit, stackH);
   // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
   // AND its proud contents, so its area needs the loaded (proud) height stackH —
@@ -1284,6 +1308,10 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // Exposed so the RENDER stacks at the same pitch the fit used, instead of
     // re-deriving from outer.H (which would let proud-content layers overlap).
     loadH, unitStackH: stackH,
+    // corner-post overhang: {L,W} mm proud of the deck in each dimension, or
+    // null — a WARNING (surfaced through app.js's existing notice channel),
+    // never a rejection and never a BCT derating. See palletpatterns.js.
+    postOverhang,
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
@@ -1324,6 +1352,7 @@ export function applyPatternSelection(row, project){
     cartonsPerPallet,
     coveragePct: deckCoveragePct(fit, row.outer, p),
     loadH,
+    postOverhang: list[i].postOverhang,
     cubeUtilPct: palletCubeUtilPct(row.palletUnitVol, cartonsPerPallet, p, loadH),
     piecesPerPallet: row.piecesPerCarton != null ? row.piecesPerCarton*cartonsPerPallet : row.piecesPerPallet,
     filmKgPerPallet: row.filmKgPerCarton != null ? row.filmKgPerCarton*cartonsPerPallet : row.filmKgPerPallet,
