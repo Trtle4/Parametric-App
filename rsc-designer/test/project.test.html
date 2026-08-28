@@ -686,18 +686,56 @@ t('pallet height split: Load is the stack above the deck (Total - deck)', () => 
   approx(s.load, 1382, 'load = total - pallet deck');
 });
 
-/* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ---- */
-t('on-edge sleeve makes round girth eligible; flat / multi-stack do not', () => {
+/* ---- on-edge cookie sleeve: round girth eligibility + resolved diameter ----
+   nx is UNRESTRICTED (a sleeve of N on-edge cylinders in line along the tube
+   axis is one continuous tube, longer — not N separate tubes), so nx=1 was
+   never the realistic case: nx=3/10 (a real sleeve of cookies/crackers) is.
+   ny is what actually breaks the circle (a second row beside the first is a
+   second tube, not the same one), and stays restricted. */
+t('on-edge sleeve: nx is unrestricted (1, 3, 10 all round-eligible); ny/orientation/axis still gate it', () => {
   const cyl = {kind: 'cylinder', diameter: 50, thickness: 6};
   // machine direction is always L, so the tube axis must run along L = stackAxis X
-  const sleeve = {piece: cyl, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
-  if(roundGirthEligible(sleeve) !== true) throw new Error('an on-edge sleeve (stackAxis X) should be round-eligible');
+  const base = {piece: cyl, perStack: 1, stackAxis: 'X', ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+  for(const nx of [1, 3, 10])
+    if(roundGirthEligible({...base, nx}) !== true) throw new Error(`nx=${nx} on-edge sleeve along X should be round-eligible`);
+  // a second row across W is a second tube beside the first, not one circle
+  if(roundGirthEligible({...base, nx: 3, ny: 2}) !== false) throw new Error('ny=2 must not be round-eligible (side-by-side tubes)');
   // a flat stack presents a rectangular d×t profile to the wrap, not a circle
-  if(roundGirthEligible({...sleeve, pieceOrientation: 'flat'}) !== false) throw new Error('flat must not be round-eligible');
-  // more than one stack is not a single tube
-  if(roundGirthEligible({...sleeve, nx: 2}) !== false) throw new Error('multi-stack must not be round-eligible');
-  // an on-edge sleeve running along W (stackAxis Y) is NOT along the fixed L machine direction
-  if(roundGirthEligible({...sleeve, stackAxis: 'Y'}) !== false) throw new Error('a sleeve not along L must not be round-eligible');
+  // -- read via resolvePieceOrientation (not a hardcoded field here), so the
+  // planned lay-flat work extends ONE function/rule rather than adding a
+  // second orientation notion.
+  if(roundGirthEligible({...base, nx: 3, pieceOrientation: 'flat'}) !== false) throw new Error('flat must not be round-eligible, even a multi-piece run');
+  // an on-edge sleeve running along W (stackAxis Y) is NOT along the fixed L
+  // machine direction, however long the run
+  if(roundGirthEligible({...base, nx: 3, stackAxis: 'Y'}) !== false) throw new Error('a sleeve not along L must not be round-eligible, even multi-piece');
+});
+t('round girth: girth stays πd and is INDEPENDENT of nx; film length/area DO scale with nx', () => {
+  // Hand-computed against the REAL chain (candidateCases), not re-derived
+  // from the code under test -- this is the pin that would catch a
+  // consumer still assuming a single piece: envelope.L = nx·thickness (no
+  // gaps, perStack 1), so cutLength/filmArea must track nx while girth
+  // (πd, independent of L by construction) must not move at all.
+  const d = 50, thick = 6;
+  const filmAreas = [];
+  for(const nx of [1, 3, 10]){
+    const p = newProject();
+    p.primary.collation = {piece: {kind: 'cylinder', diameter: d, thickness: thick}, perStack: 1, stackAxis: 'X', nx, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+    p.primary.allowedOrientations = ['LWH'];
+    p.primary.wrap.params = {...p.primary.wrap.params, sealType: 'fin', finTreatment: 'standing', finHeight: 8, finSealBand: 5, endSealWidth: 10, endSealBleed: 3, girthBasis: 'round', roundDiameter: 0, internalAngle: 45, externalAngle: 0};
+    p.links[1].count = 1; p.links[1].arrangement = 'auto';
+    p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+    const row = candidateCases(p, '1mm')[0];
+
+    const L = nx*thick;                                   // envelope.L: nx single-piece stacks, no gaps
+    const rampSlant = (d/2)/Math.sin(45*Math.PI/180);      // H = d (the sleeve diameter is the pack height)
+    const webWidth = Math.PI*d + (2*8 + 5);                // girth (πd) + fin allowance — no L, no nx
+    const cutLength = L + 2*(rampSlant + 10 + 3);
+    const expected = webWidth*cutLength/1e6;
+    approx(row.filmAreaM2, expected, `nx=${nx} film area (hand-computed, L=${L}):`);
+    filmAreas.push(row.filmAreaM2);
+  }
+  if(!(filmAreas[0] < filmAreas[1] && filmAreas[1] < filmAreas[2]))
+    throw new Error(`film area should strictly increase with nx (longer tube, same girth): ${JSON.stringify(filmAreas)}`);
 });
 t('the chain resolves round girth with diameter d for an on-edge sleeve (not a rectangular fallback)', () => {
   const p = newProject();
@@ -717,6 +755,24 @@ t('the chain resolves round girth with diameter d for an on-edge sleeve (not a r
   p.primary.wrap.params.girthBasis = 'rectangular';
   const rRect = candidateCases(p, '1mm')[0];
   if(!(rRect.filmAreaM2 > rRound.filmAreaM2)) throw new Error('rectangular girth should use more film than round — round did not resolve');
+});
+t('round girth stays unreachable once U-board is enabled, even for an eligible nx>1 on-edge sleeve (Phase B guarantee)', () => {
+  const p = newProject();
+  p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6}, perStack: 1, stackAxis: 'X', nx: 3, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+  if(roundGirthEligible(p.primary.collation) !== true) throw new Error('vacuous fixture: this collation must be round-eligible on its own for the U-board guarantee to mean anything');
+  p.primary.allowedOrientations = ['LWH'];
+  p.primary.wrap.params = {...p.primary.wrap.params, sealType: 'fin', finTreatment: 'standing', finHeight: 8, finSealBand: 5, endSealWidth: 10, endSealBleed: 3, girthBasis: 'round', roundDiameter: 0, internalAngle: 45, externalAngle: 0};
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  const rowNoInterlayer = candidateCases(p, '1mm')[0];
+  const rampSlant = (50/2)/Math.sin(45*Math.PI/180);
+  const expectedRound = (Math.PI*50 + 2*8 + 5)*(3*6 + 2*(rampSlant + 10 + 3))/1e6;
+  approx(rowNoInterlayer.filmAreaM2, expectedRound, 'no interlayer: round girth resolved (sanity check before enabling U-board):');
+
+  p.interlayer = 'uboard';
+  const rowUboard = candidateCases(p, '1mm')[0];
+  if(Math.abs(rowUboard.filmAreaM2 - expectedRound) < 1e-9)
+    throw new Error('U-board enabled but film area still matches the round-girth number — round girth leaked through the interlayer');
 });
 
 /* ================= STYLE SIGNATURE — geometry(params, options) ===========

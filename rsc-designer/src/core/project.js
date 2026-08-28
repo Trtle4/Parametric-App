@@ -346,17 +346,41 @@ export const TIER_NOUN = {primary: 'wrap', secondary: 'carton', tertiary: 'case'
  * orientation (flat / on-edge + stack axis), which decides what envelope L
  * actually is (e.g. an on-edge sleeve's N·t run), not by moving the seals.
  *
- * Round girth (π·d) is therefore meaningful only when the collation forms a
- * single circular tube running along L: one stack (nx=ny=1) of cylinders
- * lying ON EDGE with the cylinder axis along L, i.e. stackAxis X. A lone slug
- * and an on-edge sleeve of N are the same tube, longer. A flat stack presents
- * a rectangular d×t profile, and any multi-stack arrangement (nx or ny > 1)
- * is not one tube — both stay rectangular. The Build UI uses this same
- * predicate, so the two can never silently disagree.
+ * Round girth (π·d) is therefore meaningful whenever the collation forms a
+ * SINGLE circular tube running along L: any number of cylinders lying ON
+ * EDGE, stacked ALONG the tube axis (stackAxis X), with nothing beside them
+ * (ny 1) — a lone slug and an on-edge sleeve of N are the same tube, just
+ * longer, so nx is NOT restricted here. collate() already folds nx into
+ * envelope.L (nx stacks of `perStack` pieces each, all in line along X), and
+ * the flowwrap consumer (core/styles/flowwrap.js) derives cutLength/filmArea
+ * from that envelope L alone — never from a piece count — so the tube's
+ * length scales correctly with nx for free; only girth (independent of L by
+ * construction: `Math.PI*p.roundDiameter`) needs to stay nx-invariant, which
+ * it already is. Verified by hand: envelope.L and film area both scale with
+ * nx while girth does not, at nx = 1/3/10 (see the golden fixtures + pins).
+ *
+ * ny is what actually breaks the circle: a second row across W puts a SECOND
+ * circle beside the first (two side-by-side tubes), not inside it — a flat
+ * stack (cylinder axis vertical) is the other structurally-rectangular case.
+ * Both stay rectangular.
+ *
+ * No separate "layers" (nz) guard: `Collation` (this file's own typedef, see
+ * collation.js) carries no such field — layers/nz is a CONTAINMENT concept
+ * (candidate grids for cartons-in-case; see `irreducible()`/
+ * `parentCandidates` below), never a property of a product collation.
+ * collate()'s own math makes the physical scenario impossible here anyway:
+ * envelope.H is always exactly `stack.z`, and `stack.z` is only inflated
+ * along whichever axis IS `stackAxis` — with stackAxis pinned to 'X' below,
+ * H can never hold more than one piece's own cross-section, so there is no
+ * axis left for "layers" (tubes stacked vertically) to occupy even in
+ * principle.
+ *
+ * The Build UI uses this same predicate, so the two can never silently
+ * disagree.
  */
 export function roundGirthEligible(collation){
   if(collation.piece.kind !== 'cylinder') return false;
-  if(collation.nx !== 1 || collation.ny !== 1) return false;
+  if(collation.ny !== 1) return false;   // nx is unrestricted -- see the doc above
   if(resolvePieceOrientation(collation) !== 'on-edge') return false;
   return collation.stackAxis === 'X';   // the on-edge tube axis must run along L (the machine direction)
 }
