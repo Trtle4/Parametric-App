@@ -669,6 +669,20 @@
       position:static;left:auto;top:auto;bottom:auto;right:auto;transform:none;
       max-width:none;width:100%;margin:8px 0 0;justify-content:center;
     }
+    /* .mode3d itself wraps its `.seg` GROUPS onto new lines at this width (its
+       own flex-wrap, unchanged) — but one group, the depth-level tabs
+       (Product/Tray/U-board/.../Trailer), is a single un-splittable ~530px
+       row that cannot wrap internally and is wider than the viewport on its
+       own. Centred by .mode3d's justify-content and unclipped/unscrolled, it
+       overflowed the page SYMMETRICALLY (~70px past each edge at 393px) —
+       "Product" wasn't just scrolled out of reach, it was cut down to a bare
+       few-px sliver on the left, and that same overflow inflated body's
+       scrollWidth past the viewport, exposing body's own --paper background
+       as a grey strip past the right edge (page-level horizontal overflow,
+       not a second bug). Same fix as .chainStrip got above: bound the row to
+       its own box and let IT scroll, instead of the page. */
+    .mode3d .seg{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .mode3d .seg button{flex:0 0 auto}
     .rail.left{order:2;border-right:0;border-bottom:1px solid var(--line)}
     .rail.right{order:3;border-left:0;border-bottom:1px solid var(--line)}
     .rail{max-height:none;overflow:visible;flex:none}
