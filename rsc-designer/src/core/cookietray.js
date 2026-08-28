@@ -66,7 +66,20 @@ export const TRAY_DEFAULTS = Object.freeze({
   lipH: 3,
   flangeT: 2.5,
   cellFillet: 2,
-  nozzle: 0.42
+  nozzle: 0.42,
+  // The 2D GRID. null = the legacy 1×N layout (one row, built from nCells/
+  // cellLen/cellWid/cellH/cradleR above) — every existing caller stays on
+  // this path, bit-identical, until it opts in. A non-empty array puts N
+  // independent ROWS side by side across the tray's width, each its own
+  // channel of cells running the long axis; a row may set its own nCells/
+  // cellLen/cellWid/cellH/cradleR (all optional — a key a row omits falls
+  // back to the top-level field above, the same auto-with-override idiom
+  // the rest of this module already uses). This is what makes the grid
+  // ASYMMETRIC: rows can differ in cell count AND cell size, not just count.
+  // Rows stack along W, separated by the SAME `divider` value used between
+  // cells within a row — one "wall between two cells" constant either way,
+  // not a second, independently-driftable one for the row direction.
+  rows: null
 });
 
 /**
@@ -86,41 +99,77 @@ export function trayParams(inputs = {}){
   const warnings = [];
 
   // ---- defaults derived from other inputs ----
-  if(p.cradleR == null) p.cradleR = p.cellWid/2;
   if(p.divider == null) p.divider = p.wall;
 
   // ---- guards, in the upstream's own order (later guards read values the
   //      earlier clamps may have changed, so the order is load-bearing) ----
-  if(!(p.nCells >= 1)) throw new Error(`nCells must be >= 1, got ${p.nCells}`);
   if(p.longAxis !== 'X' && p.longAxis !== 'Y')
     throw new Error(`longAxis must be "X" or "Y", got ${JSON.stringify(p.longAxis)}`);
-
-  // 1: cradle radius can never exceed the half-width it has to sit in
-  const maxCradleR = p.cellWid/2;
-  if(p.cradleR > maxCradleR){
-    warnings.push(`cradleR=${p.cradleR} exceeds cellWid/2=${maxCradleR}; clamping.`);
-    p.cradleR = maxCradleR;
-  }
-  if(!(p.cradleR > 0)) throw new Error(`cradleR must be > 0, got ${p.cradleR}`);
-
-  // 2: the rounded bottom cannot complete in a trough shallower than its radius
-  if(p.cellH < p.cradleR)
-    throw new Error(`cellH (${p.cellH}) must be >= cradleR (${p.cradleR}); the rounded bottom ` +
-                    `cannot complete otherwise. Increase cellH or decrease cradleR.`);
-
   if(p.wall < MIN_WALL) throw new Error(`wall (${p.wall}) must be >= ${MIN_WALL}mm`);
   if(!(p.floor > 0)) throw new Error('floor must be > 0');
-
   // negative draft has no physical meaning; "no draft" is always valid
   if(p.draftDeg < 0){ warnings.push('draftDeg is negative; clamped to 0 (no draft).'); p.draftDeg = 0; }
+  if(p.divider < MIN_DIVIDER) throw new Error(`divider (${p.divider}) must be >= ${MIN_DIVIDER}mm`);
+
+  // ---- ROWS: the 2D grid. An absent/empty `rows` input reproduces the
+  // legacy 1×N tray as ONE row built from the top-level fields — there is
+  // no separate single-row code path to drift from this one; every tray
+  // this module has ever produced is the nRows===1 case of the same walk.
+  // Each row may override nCells/cellLen/cellWid/cellH/cradleR; an absent
+  // key falls back to the top-level field (the auto-with-override idiom
+  // this module already uses for cradleR/divider above).
+  const rawRows = Array.isArray(p.rows) && p.rows.length
+    ? p.rows
+    : [{nCells: p.nCells, cellLen: p.cellLen, cellWid: p.cellWid, cellH: p.cellH, cradleR: p.cradleR}];
+
+  const rows = rawRows.map((r, i) => {
+    const row = {
+      nCells: r.nCells != null ? r.nCells : p.nCells,
+      cellLen: r.cellLen != null ? r.cellLen : p.cellLen,
+      cellWid: r.cellWid != null ? r.cellWid : p.cellWid,
+      cellH: r.cellH != null ? r.cellH : p.cellH,
+      cradleR: r.cradleR != null ? r.cradleR : p.cradleR
+    };
+    if(!(row.nCells >= 1)) throw new Error(`row ${i}: nCells must be >= 1, got ${row.nCells}`);
+    if(row.cradleR == null) row.cradleR = row.cellWid/2;
+
+    // 1: cradle radius can never exceed the half-width it has to sit in
+    const maxCradleR = row.cellWid/2;
+    if(row.cradleR > maxCradleR){
+      warnings.push(`row ${i}: cradleR=${row.cradleR} exceeds cellWid/2=${maxCradleR}; clamping.`);
+      row.cradleR = maxCradleR;
+    }
+    if(!(row.cradleR > 0)) throw new Error(`row ${i}: cradleR must be > 0, got ${row.cradleR}`);
+
+    // 2: the rounded bottom cannot complete in a trough shallower than its radius
+    if(row.cellH < row.cradleR)
+      throw new Error(`row ${i}: cellH (${row.cellH}) must be >= cradleR (${row.cradleR}); the ` +
+                      `rounded bottom cannot complete otherwise. Increase cellH or decrease cradleR.`);
+
+    row.pitch = row.cellWid + p.divider;   // centre-to-centre WITHIN this row
+    // this row's OWN total Z-extent: its nCells channels plus the
+    // (nCells-1) dividers BETWEEN them — the single-row topW formula,
+    // generalized to one row instead of the whole tray. tray3d.js/tray2d.js
+    // place rows back to back using exactly this span, so the geometry and
+    // this derivation can never disagree about how wide a row is.
+    row.span = row.nCells*row.cellWid + (row.nCells - 1)*p.divider;
+    return Object.freeze(row);
+  });
+  const nRows = rows.length;
 
   // ---- derived (upstream spec §3 "Derived") ----
   const lipT  = 3*p.nozzle;
-  const topL  = p.cellLen + 2*p.wall;
-  // outer walls both sides are `wall`; the nCells-1 internal dividers are `divider`
-  const topW  = p.nCells*p.cellWid + 2*p.wall + (p.nCells - 1)*p.divider;
-  const pitch = p.cellWid + p.divider;          // centre-to-centre; a view of `divider`
-  const H     = p.floor + p.cellH;
+  // the tray's own length must hold the LONGEST row's run; shorter rows sit
+  // centred in that same length (see tray2d.js/tray3d.js row placement)
+  const topL  = Math.max(...rows.map(r => r.cellLen)) + 2*p.wall;
+  // outer walls both sides are `wall`; a row-to-row wall is `divider` too —
+  // each row already counts its OWN internal channel dividers in `span`, so
+  // only the (nRows-1) dividers BETWEEN rows are added here.
+  const topW  = rows.reduce((s, r) => s + r.span, 0) + 2*p.wall + (nRows - 1)*p.divider;
+  // the tray's own depth follows the DEEPEST row's trough — a shallower row
+  // just leaves headroom under its own rim, the same "footprint constrains,
+  // height does not" rule the tray already applies to its contents
+  const H     = p.floor + Math.max(...rows.map(r => r.cellH));
 
   // The base inset from ONE continuous draft over the full height, limited so
   // the base never insets past `wall - MIN_WALL`. When the wall is thin the
@@ -144,12 +193,12 @@ export function trayParams(inputs = {}){
     throw new Error(`stripW (${p.stripW}) must exceed lipT (${lipT.toFixed(4)}); ` +
                     `otherwise the lip consumes the whole flange strip.`);
 
-  // 5: purely geometric validity — clamped silently upstream, so silent here
-  const maxSafeFillet = Math.max(0, Math.min(p.cellWid, p.cellLen)/2 - 0.01);
+  // 5: purely geometric validity — clamped silently upstream, so silent here.
+  // Bounded by the SMALLEST cell in play, so the fillet stays valid on every row.
+  const maxSafeFillet = Math.max(0, Math.min(...rows.map(r => Math.min(r.cellWid, r.cellLen)))/2 - 0.01);
   if(p.cellFillet > maxSafeFillet) p.cellFillet = maxSafeFillet;
 
   // 6-8: remaining hard guards
-  if(p.divider < MIN_DIVIDER) throw new Error(`divider (${p.divider}) must be >= ${MIN_DIVIDER}mm`);
   if(!(p.lipH > 0))    throw new Error(`lipH (${p.lipH}) must be > 0`);
   if(!(p.flangeT > 0)) throw new Error(`flangeT (${p.flangeT}) must be > 0`);
   if(p.nozzle < 0)     throw new Error(`nozzle (${p.nozzle}) must be >= 0`);
@@ -160,7 +209,17 @@ export function trayParams(inputs = {}){
 
   return Object.freeze({
     ...p,
-    lipT, topL, topW, pitch, H,
+    rows, nRows,
+    // SINGLE-ROW MIRRORS: when nRows===1 these equal that one row's own
+    // resolved values, exactly as trayParams() has always returned — every
+    // pre-grid consumer (tray2d.js, the rail readout, cookietraylink) keeps
+    // reading these unchanged. Once nRows>1 they are row[0]'s values only;
+    // a row-aware consumer must read `rows` instead — never both, in the
+    // same view, for the same fact.
+    nCells: rows.reduce((s, r) => s + r.nCells, 0),
+    cellLen: rows[0].cellLen, cellWid: rows[0].cellWid, cellH: rows[0].cellH,
+    cradleR: rows[0].cradleR, pitch: rows[0].pitch,
+    lipT, topL, topW, H,
     draftOffset,
     bottomL: topL - 2*draftOffset,
     bottomW: topW - 2*draftOffset,
@@ -222,9 +281,13 @@ export function isProud(p, productStandingH = 0){
 }
 
 /**
- * Inverse path: a product spec -> a fully-derived tray parameter set.
- * Layouts are 1×N (a count distributed along one axis), so there is no 2D
- * row×col factoring here — unlike the pallet solve.
+ * Inverse path: a product spec -> a fully-derived tray parameter set for ONE
+ * row (a count distributed along one axis). A multi-row grid is assembled a
+ * layer up (project.js's trayAutoCells), by calling this once per row and
+ * handing trayParams() the resulting `rows` array — this function itself
+ * stays a single-row primitive so there is exactly one place that derives
+ * "how big does a row have to be for N of this product," never a second one
+ * duplicated per row.
  *
  * The returned params are validated by trayParams(), so a spec that implies
  * an impossible tray (e.g. a cellH too shallow for the cradle it asks for)
@@ -248,13 +311,31 @@ export function isProud(p, productStandingH = 0){
  * @returns {Readonly<Object>} same shape as trayParams()
  */
 /**
- * THE pitch one product occupies along a tray channel. Products sit
- * nose-to-tail in the cradle, so the pitch is the product's own thickness:
- * a round product's `thickness`, a box's L — the axis cookietraylink exports
- * as Cookie-Tray's `productThickness`. ONE definition, so the dimension used
- * to SIZE a cell is provably the dimension the exported link carries.
+ * THE pitch one product occupies along a tray channel — the axis
+ * cookietraylink exports as Cookie-Tray's `productThickness`/`cookieThickness`.
+ * ONE definition, so the dimension used to SIZE a cell is provably the
+ * dimension the exported link carries.
+ *
+ * Orientation-dependent for a round product, and only for a round product:
+ *   - on-edge (default; matches every tray built before this parameter
+ *     existed) — the cylinder lies on its curved edge, rolled up the channel
+ *     like a stack of poker chips, so it pitches by its own `thickness`.
+ *   - flat — the cylinder stands axis-vertical (a puck on a table) and sits
+ *     side by side along the channel instead, so it pitches by its own
+ *     `diameter`. collate() already builds this envelope correctly for a
+ *     'flat' cylinder (see resolvePieceOrientation); this is the other half
+ *     of the same fact reaching the tray's own cell-length derivation, which
+ *     used to assume on-edge unconditionally.
+ * A box has no such choice: nose-to-tail is always along its own L,
+ * regardless of pieceOrientation (which only ever swaps the box's W/H — see
+ * collation.js boxDims — never its L).
+ * @param {import('./shape.js').Piece} piece
+ * @param {'flat'|'on-edge'} [orientation='on-edge']
  */
-export const packPitchOf = piece => piece.kind === 'cylinder' ? piece.thickness : piece.L;
+export const packPitchOf = (piece, orientation = 'on-edge') =>
+  piece.kind !== 'cylinder' ? piece.L
+  : orientation === 'flat' ? piece.diameter
+  : piece.thickness;
 
 /**
  * THE cell-length rule: `perCell` products nose-to-tail at their own pitch,

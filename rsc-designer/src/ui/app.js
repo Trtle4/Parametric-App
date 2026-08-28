@@ -1734,17 +1734,31 @@ function applyTrayLink(text){
   const tr = build.project.tray;
   tr.nCells = parsed.nCells;
   tr.params = {...parsed.params};
+  // ROWS: ATOMIC REPLACEMENT, same rule as the collation below — always SET
+  // (never merged with whatever grid was there before), so a link with no
+  // `rw` (every real Cookie-Tray link, and every link before rows existed)
+  // explicitly clears back to the legacy single row rather than leaving a
+  // stale grid from a previous import in place.
+  tr.rows = parsed.rows || null;
 
   const pr = parsed.product;
   const piece = pr.productType === 'round'
     ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
     : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
-  const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+  // perCell divides the TRUE grid total — the sum of every row's own cell
+  // count when the link carries a grid, or the single legacy count when it
+  // doesn't — never row 0's count alone, so a multi-row import distributes
+  // qtyTotal across the WHOLE tray, not just its first row.
+  const totalCells = parsed.rows ? parsed.rows.reduce((s, r) => s + r.nCells, 0) : parsed.nCells;
+  const perCell = Math.max(1, Math.ceil(pr.qtyTotal/totalCells));
   // the product half writes the COLLATION — the one owner of per-cell
   // content — never the tray. One assignment: piece + the grid it implies,
   // together, so there is no window where they describe two different runs.
+  // pieceOrientation reads the link's own `ori` (round only in effect —
+  // see PRODUCT_KEYS' doc; defaults to 'on-edge', every prior tray's only
+  // behaviour, for a real Cookie-Tray link and for a box either way).
   Object.assign(build.project.primary.collation, {
-    piece, pieceOrientation: 'on-edge', stackAxis: 'X', perStack: perCell, nx: 1, ny: 1
+    piece, pieceOrientation: pr.orientation, stackAxis: 'X', perStack: perCell, nx: 1, ny: 1
   });
   projectChanged();
   mountActiveLevel();
@@ -1769,9 +1783,21 @@ function applyTrayLink(text){
  *  becoming a second, silently-divergable copy of resolveWrapContents'
  *  tray-branch arithmetic. Only called while interlayer is already 'tray'
  *  (both mount sites gate on that), so the resolver's tray branch is live. */
+/** Total cells across the tray — the grid's row counts summed when a 2D
+ *  grid is in use, else the single legacy count. ONE definition, read by
+ *  trayQuantities/applyTrayQuantity and the Tray rail's own "Cells"
+ *  placeholder alike, so the shared quantity trio can never disagree with
+ *  the grid about what "cells" means once rows exist. */
+function trayCellsTotal(tr){
+  const rows = tr && Array.isArray(tr.rows) && tr.rows.length ? tr.rows : null;
+  return Math.max(1, rows
+    ? rows.reduce((s, r) => s + Math.max(1, Math.round(r.nCells || 1)), 0)
+    : Math.round((tr && tr.nCells) || 1));
+}
+
 function trayQuantities(){
   const proj = build.project;
-  const cells = Math.max(1, Math.round((proj.tray && proj.tray.nCells) || 1));
+  const cells = trayCellsTotal(proj.tray);
   const perCell = Math.max(1, collate(proj.primary.collation).count);
   return {cells, perCell, total: resolvedWrapContents(proj).productCount};
 }
@@ -1795,10 +1821,15 @@ function trayQuantities(){
 function applyTrayQuantity(field, value){
   const proj = build.project, tr = proj.tray, col = proj.primary.collation;
   const v = Math.max(1, Math.round(+value || 1));
+  const rows = Array.isArray(tr.rows) && tr.rows.length ? tr.rows : null;
   if(field === 'cells'){
-    tr.nCells = v;                                    // per-cell untouched; total follows
+    // With a 2D grid in play there is no single row for an edited TOTAL to
+    // become — row 0 absorbs it (the same "legacy fields describe row 0"
+    // rule buildTrayLink already uses), and the Grid rows section is where
+    // the other rows get their own counts.
+    if(rows) rows[0].nCells = v; else tr.nCells = v;   // per-cell untouched; total follows
   }else{
-    const wantPer = field === 'total' ? v/Math.max(1, Math.round(tr.nCells || 1)) : v;
+    const wantPer = field === 'total' ? v/trayCellsTotal(tr) : v;
     const others = Math.max(1, col.nx*col.ny);
     col.perStack = Math.max(1, Math.round(wantPer/others));
   }

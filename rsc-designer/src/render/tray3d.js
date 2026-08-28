@@ -93,9 +93,9 @@ const box = (l, h, w, mat) => new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat
  */
 export function buildTray3d(p, contents){
   const group = new THREE.Group();
-  const {topL, topW, bottomL, bottomW, outerL, outerW, H, floor, cellLen, cellWid,
-         nCells, wall, divider, flangeT, lipH, lipT, overallH, cornerR, cradleR,
-         bottomCornerR, outerR} = p;
+  const {topL, topW, bottomL, bottomW, outerL, outerW, H,
+         wall, divider, flangeT, lipH, lipT, overallH, cornerR,
+         bottomCornerR, outerR, rows} = p;
   const y0 = -overallH/2;                         // the tray's own base plane
 
   /* ---- outer drafted body, with ROUNDED CORNERS ------------------------
@@ -130,26 +130,49 @@ export function buildTray3d(p, contents){
    * cradleR arc) swept along the cell length, capped at both ends. The rim
    * land between pockets is the divider, drawn as the flat strip left over —
    * so the dividers are what remains between recesses rather than bars laid
-   * on a flat pan. */
-  const rimY = y0 + H;                       // trough opening sits at the rim
-  const cellsY0 = y0 + floor;                // trough floor rides on the tray floor
-  const halfL = cellLen/2;
-  const prof = troughProfile(cellWid, Math.max(H - floor, 0.5), Math.min(cradleR, cellWid/2), TROUGH_SEG);
-  for(let j = 0; j < nCells; j++){
-    const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
-    group.add(new THREE.Mesh(sweepProfileX(prof, -halfL, halfL, cz, cellsY0), trayMat));
-    group.add(new THREE.Mesh(capProfile(prof, -halfL, cz, cellsY0, false), trayMat));
-    group.add(new THREE.Mesh(capProfile(prof,  halfL, cz, cellsY0, true),  trayMat));
+   * on a flat pan.
+   *
+   * ROWS: one Z-band per row (core/cookietray.js trayParams' `rows`), each
+   * its own channel count/length/width/depth — `row.span` (that row's own
+   * total Z-extent, channels + their internal dividers) is the SAME value
+   * trayParams derived topW from, so rows are placed back to back with
+   * exactly one `divider` between them and never drift out of sync with the
+   * envelope. A row's own cellLen may be shorter than the tray's topL — its
+   * channels are centred on X, matching trayParams' own doc. */
+  // Every row's trough OPENS at the same shared rim (one flat opening around
+  // the whole tray) and is cut DOWN from there by that row's own cellH — so
+  // a shallower row's floor sits HIGHER than a deeper row's (more material
+  // left beneath it), never at one fixed floor plane shared by every row.
+  // Only the tray's DEEPEST row actually reaches y0+floor (H = floor +
+  // max(cellH) — cookietray.js), which is why the single-row case (where
+  // that row IS the deepest) keeps its floor exactly where it always was.
+  const rimY = y0 + H;                       // trough opening — shared by every row
+  let rowZ0 = -topW/2 + wall;
+  const rowBands = [];                       // {row, z0, floorY} — reused below for product placement
+  for(const row of rows){
+    const halfL = row.cellLen/2;
+    const floorY = rimY - row.cellH;
+    const prof = troughProfile(row.cellWid, Math.max(row.cellH, 0.5),
+                               Math.min(row.cradleR, row.cellWid/2), TROUGH_SEG);
+    for(let j = 0; j < row.nCells; j++){
+      const cz = rowZ0 + row.cellWid/2 + j*(row.cellWid + divider);
+      group.add(new THREE.Mesh(sweepProfileX(prof, -halfL, halfL, cz, floorY), trayMat));
+      group.add(new THREE.Mesh(capProfile(prof, -halfL, cz, floorY, false), trayMat));
+      group.add(new THREE.Mesh(capProfile(prof,  halfL, cz, floorY, true),  trayMat));
+    }
+    rowBands.push({row, z0: rowZ0, floorY});
+    rowZ0 += row.span + divider;
   }
   // the rim land: everything inside the rim that is NOT a pocket mouth
-  group.add(new THREE.Mesh(rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider,
-                                      nCells, wall, rimY), trayMat2));
+  group.add(new THREE.Mesh(rimLandGeo(topL, topW, rowBands, divider, rimY), trayMat2));
 
   /* ---- product sitting IN the cells ------------------------------------
    * The tray owns the cells; the COLLATION owns what sits in one of them, so
-   * the piece run is replicated per cell rather than re-derived here. Pieces
-   * bear on the trough floor, which is why a tall product visibly stands
-   * proud of the rim — the same fact the envelope's max() encodes. */
+   * the piece run is replicated per cell rather than re-derived here (the
+   * SAME product fills every channel in every row — one collation feeds the
+   * whole grid). Pieces bear on the trough floor, which is why a tall
+   * product visibly stands proud of the rim — the same fact the envelope's
+   * max() encodes. */
   if(contents && contents.piece && contents.perCell > 0){
     const {geo, rot} = pieceGeo(contents.piece, contents.stackAxis);
     // Along-cell positions come from the COLLATION's own placements — the list
@@ -163,22 +186,25 @@ export function buildTray3d(p, contents){
     // list was supplied (a caller that has the count but not the layout).
     const pls = (contents.pieces && contents.pieces.length) ? contents.pieces : null;
     const per = pls ? pls.length : Math.max(1, Math.round(contents.perCell));
-    const total = per*nCells;
+    const totalCells = rows.reduce((s, r) => s + r.nCells, 0);
+    const total = per*totalCells;
     if(total > 0 && total <= 4000){
       const inst = new THREE.InstancedMesh(geo, productMat, total);
       const M = new THREE.Matrix4();
-      const pitch = cellLen/per;
       // pieces rest in the cradle, so their centre sits a radius up from the
       // arc's lowest point rather than on a flat floor
       const rise = pieceRise(contents.piece, contents.stackAxis);
       let k = 0;
-      for(let j = 0; j < nCells; j++){
-        const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
-        for(let i = 0; i < per; i++){
-          const cx = pls ? pls[i].x : (i + 0.5)*pitch - cellLen/2;
-          if(rot) M.copy(rot); else M.identity();
-          M.setPosition(cx, cellsY0 + rise, cz);
-          inst.setMatrixAt(k++, M);
+      for(const {row, z0, floorY} of rowBands){
+        const pitch = row.cellLen/per;
+        for(let j = 0; j < row.nCells; j++){
+          const cz = z0 + row.cellWid/2 + j*(row.cellWid + divider);
+          for(let i = 0; i < per; i++){
+            const cx = pls ? pls[i].x : (i + 0.5)*pitch - row.cellLen/2;
+            if(rot) M.copy(rot); else M.identity();
+            M.setPosition(cx, floorY + rise, cz);
+            inst.setMatrixAt(k++, M);
+          }
         }
       }
       inst.instanceMatrix.needsUpdate = true;
@@ -321,8 +347,17 @@ function capProfile(prof, x, cz, y, flip){
  * outline and the pocket mouths. Drawn as strips around each pocket, so the
  * dividers appear as the material left between recesses rather than as bars
  * sitting on a flat pan.
+ *
+ * ROWS: `rowBands` is buildTray3d's own `{row, z0}` list, one entry per Z
+ * band — reused rather than re-walked, so the land can never place a strip
+ * at a Z the troughs themselves were not swept at. Within a row the land
+ * follows THAT row's own cellLen (its channels may be shorter than the
+ * tray's overall topL, in which case the row's own end-lands widen to fill
+ * the difference); the bands BETWEEN two rows, and above/below the first
+ * and last row, span the full topL — a row-to-row divider is not bounded by
+ * either neighbour's cellLen.
  */
-function rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider, nCells, wall, y){
+function rimLandGeo(topL, topW, rowBands, divider, y){
   const parts = [];
   const hx = topL/2, hz = topW/2;
   const add = (x0, x1, z0, z1) => {
@@ -332,15 +367,23 @@ function rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider, nCells, wall
     g.translate((x0 + x1)/2, y, (z0 + z1)/2);
     parts.push(g);
   };
-  const cellZ = j => -hz + wall + j*(cellWid + divider);
-  // end lands (beyond the pockets along the cell run)
-  add(-hx, -cellLen/2, -hz, hz);
-  add(cellLen/2, hx, -hz, hz);
-  // the outer wall lands and the dividers between pockets
-  add(-cellLen/2, cellLen/2, -hz, cellZ(0));
-  for(let j = 0; j < nCells - 1; j++)
-    add(-cellLen/2, cellLen/2, cellZ(j) + cellWid, cellZ(j + 1));
-  add(-cellLen/2, cellLen/2, cellZ(nCells - 1) + cellWid, hz);
+  let prevEdge = -hz;                        // z of the land/pocket boundary walked so far
+  for(const {row, z0} of rowBands){
+    const halfL = row.cellLen/2;
+    const cellZ = j => z0 + j*(row.cellWid + divider);
+    // the band above this row (outer wall, or the divider since the last row)
+    add(-hx, hx, prevEdge, z0);
+    // this row's own end lands (beyond its channels along the run) + its
+    // internal channel-to-channel dividers
+    add(-hx, -halfL, z0, z0 + row.span);
+    add(halfL, hx, z0, z0 + row.span);
+    add(-halfL, halfL, z0, cellZ(0));
+    for(let j = 0; j < row.nCells - 1; j++)
+      add(-halfL, halfL, cellZ(j) + row.cellWid, cellZ(j + 1));
+    add(-halfL, halfL, cellZ(row.nCells - 1) + row.cellWid, z0 + row.span);
+    prevEdge = z0 + row.span;
+  }
+  add(-hx, hx, prevEdge, hz);                // the band below the last row
   return parts.length ? mergeGeos(parts) : new THREE.BufferGeometry();
 }
 

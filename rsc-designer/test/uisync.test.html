@@ -318,6 +318,7 @@ import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT, getCamera, NEAR_FAR_RATIO} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
+import {trayParams} from '../src/core/cookietray.js';
 import {PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
 import {shelfBay} from '../src/render/shelf3d.js';
 import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
@@ -1902,6 +1903,33 @@ await (async () => {
     // guard the fixture: with no end clearance the even spread would coincide
     if(Math.abs(row.tray.params.cellLen/want.length - (want[1] - want[0])) < 1e-9)
       throw new Error('vacuous fixture: the even spread equals the real pitch (endClearance 0?)');
+  });
+
+  t('tray render GRID: each row\'s trough floor sits at the SHARED rim minus its OWN cellH, not one floor for the whole tray', () => {
+    // The 2D grid (rows) puts channels of different depth side by side. Every
+    // row opens at the same flat rim, so a shallow row's floor sits HIGHER
+    // than a deep row's -- never at one shared floor plane. Isolated by mesh
+    // INSERTION ORDER (buildTray3d's own loop: 8 fixed outer-body/flange/lip
+    // meshes, then 3 per cell -- sweep + 2 end caps -- per row in row order),
+    // not by scanning the whole group, because the outer body's own base cap
+    // sits at y0 (below every trough floor) and would otherwise contaminate
+    // a naive global minimum.
+    const p = trayParams({rows: [
+      {nCells: 1, cellLen: 100, cellWid: 40, cellH: 10, cradleR: 5},
+      {nCells: 1, cellLen: 100, cellWid: 40, cellH: 30, cradleR: 5}
+    ]});
+    const {group} = buildTray3d(p, null);
+    if(group.children.length < 14) throw new Error(`expected >= 14 children, got ${group.children.length}`);
+    const meshMinY = mesh => {
+      const pos = mesh.geometry.attributes.position, m = mesh.matrixWorld, v = new THREE.Vector3();
+      let min = Infinity;
+      for(let i = 0; i < pos.count; i++){ v.fromBufferAttribute(pos, i).applyMatrix4(m); if(v.y < min) min = v.y; }
+      return min;
+    };
+    const y0 = -p.overallH/2, rimY = y0 + p.H;
+    approx(meshMinY(group.children[8]), rimY - p.rows[0].cellH, 'row 0 (shallow) trough floor:');
+    approx(meshMinY(group.children[11]), rimY - p.rows[1].cellH, 'row 1 (deep) trough floor:');
+    if(Math.abs(p.rows[0].cellH - p.rows[1].cellH) < 1) throw new Error('vacuous fixture: rows must differ in depth');
   });
 
   t('tray STL: well-formed triangles whose bbox is the tray box', () => {

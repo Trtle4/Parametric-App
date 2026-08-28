@@ -752,3 +752,105 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
      from the start — and diffing `cut`/`crease`/`outer`/`inner`) confirms
      the swap is a pure relabelling, never a second, disagreeing
      computation.
+- **RESOLVED (Cookie-Tray 2D-grid task): the tray is a genuine 2D grid of
+  ROWS, and round product carries a real "lay flat" choice.** `TRAY_DEFAULTS.rows`
+  (`cookietray.js`) is `null` by default — the legacy 1×N tray, built as a
+  single implicit row from the existing top-level fields, so every prior
+  tray stays bit-identical (verified: golden.json 998/998 unchanged, every
+  existing pin in `cookietray.test.html`/`project.test.html`/`collation.test.html`
+  passes unmodified). A non-empty `rows` array is N independent channel
+  GROUPS stacked along the tray's width, each its own `nCells`/`cellLen`/
+  `cellWid`/`cellH`/`cradleR` (falling back one axis at a time: row override
+  → tray-level override → per-row auto-derivation via `deriveTrayParams`,
+  called once per row rather than once per tray — the same "one derivation,
+  many callers" rule the rail's "auto" readout already leaned on).
+  `row.span` (that row's OWN channel count × width + its own internal
+  dividers) is the one quantity `topW` sums across rows — an earlier draft
+  summed one `cellWid` per row and silently undersized any row with more
+  than one channel; the regression pin for this is `GRID: a 2-row tray sums
+  each row's own span...` and mutation-testing the reversion breaks not just
+  that pin but half the pre-existing single-row differential fixtures too.
+  EVERY ROW OPENS AT THE SAME SHARED RIM (one flat opening around the whole
+  tray) and is cut down by that row's OWN `cellH` — a shallower row's floor
+  therefore sits HIGHER than a deeper row's, never at one floor plane shared
+  by the whole tray (`H = floor + max(row.cellH)` — cookietray.js). Both
+  renderers apply this identically: `tray3d.js` computes `floorY = rimY -
+  row.cellH` per row before sweeping that row's trough profile, and
+  `tray2d.js`'s elevations compute `yFloor` the same way per row for the
+  cradle arcs. This was NOT what the first draft did (a single tray-wide
+  floor reused for every row, floating shallow troughs mid-wall with no
+  opening at the rim) — caught by a browser-loaded pin driving the REAL
+  THREE.js geometry (`tray render GRID:...`, uisync.test.html) that reads
+  mesh vertex Y by KNOWN insertion order (buildTray3d's own loop: 8 fixed
+  outer-body/flange/lip meshes, then 3 per cell — sweep + 2 end caps — per
+  row), never a naive scan of the whole group (the outer body's own base
+  cap sits at `y0`, below every trough floor, and contaminates a global
+  minimum — measured directly: a first attempt at this pin silently passed
+  against the wrong target because of exactly that). Footprint fit is
+  checked against EVERY row (one product/collation feeds the whole grid —
+  no multi-SKU support here, a deliberately larger feature this does not
+  attempt), and a misfit names WHICH row, the same "says why" idiom the
+  single-row misfit message already used. ROUND LAY-FLAT extends the
+  EXISTING mechanism rather than adding a parallel one, per the round-girth
+  task's own forward note: `packPitchOf(piece, orientation)` now branches on
+  the ALREADY-ESTABLISHED `resolvePieceOrientation` result — on-edge (the
+  roll, every tray built before this parameter existed) paces by the
+  cylinder's `thickness`; flat (axis vertical, side by side along the
+  channel) paces by its `diameter` instead — while `cellWid` (across) stays
+  diameter-based either way, since a round cross-section's other two
+  dimensions are both the diameter regardless of which way the axis points.
+  BOX LAY-FLAT WAS INVESTIGATED AND DELIBERATELY NOT BUILT: rotating a box's
+  W/H for "on-edge" would require every renderer that draws a bare piece
+  (`product2d.js`, `hierarchy3d.js`, `nest3d.js`) to become orientation-aware
+  too, or risk exactly the historical "standing coin" mesh/envelope mismatch
+  — and `pieceOrientation:'on-edge'` on a box is ALREADY reachable today
+  (the product rail's On Edge toggle, and the `onedge` collation preset)
+  with a real, different, correct meaning (stack-as-sleeve along L, no
+  rotation — collation.js's own doc: "boxes have no round axis"); overloading
+  it would silently change that existing, working behaviour. A box's L/W/H
+  are already three independent user-entered numbers, so there is no missing
+  information the way there is for a cylinder's diameter/thickness — a user
+  gets an on-edge box in a tray today by entering its dimensions in the
+  orientation they want. THE COOKIE-TRAY LINK gained two of its own
+  extensions, both explicitly marked unverified against the real upstream
+  (repo access was requested twice and refused both times, so nothing here
+  guesses at a real Cookie-Tray key that could exist and be misread): `rw`
+  (the grid, JSON-encoded, sent only when `nRows > 1`, read by
+  `buildTrayLink` from `trayParams()`'s own RESOLVED `p.rows` and never from
+  `solveTrayStage`'s pre-resolve list, whose `cradleR` can still be `null`
+  meaning "let trayParams derive it" — `fmtNum(null)` throws, so a naive
+  read never even produces a link, caught by its own regression pin) and
+  `ori` (round product orientation, defaulting to `on-edge` so a real
+  Cookie-Tray link, and every link from before this field existed, imports
+  exactly as it always has). A real Cookie-Tray link never sends either key
+  and is completely unaffected; opening a multi-row export on the real site
+  degrades to a real, correct row-0-only tray via the legacy keys, which
+  still state row 0's own resolved values (never the grid aggregate). The
+  RAIL exposes the grid as a Single row/Multiple rows toggle plus a plain
+  per-row cell-count list (`inputs.js` `mountTray`) — deliberately NOT a
+  full per-row size-override UI in this pass, even though the core model
+  supports one end to end (a saved project or a Cookie-Tray import can carry
+  per-row overrides today): rows sharing one auto-derived cell size and
+  differing only in count is already a useful asymmetric grid (uneven
+  channel counts per row), and it needed no new UI complexity beyond what
+  already existed for the single-row case. The shared cells/perCell/total
+  quantity trio (`trayQuantities`/`applyTrayQuantity`, app.js) reads the
+  GRID TOTAL once one exists (`trayCellsTotal`, the one definition both read)
+  and writes an edited "Cells" total into row 0 — the same "legacy fields
+  describe row 0" rule the Cookie-Tray link export already uses — with the
+  Tray rail's own Cells field disabled in grid mode to say so, pointing the
+  user at the Grid rows section instead. UNVERIFIED: this session's copy of
+  `uisync.test.html` could not be driven to completion in the sandboxed
+  environment it ran in (a pre-existing limitation — confirmed via `git
+  stash` that the SAME file hangs identically on the unmodified baseline,
+  not something this task introduced — apparently related to the file's own
+  CDN-hosted THREE.js script tag and its two real `<iframe src="../index.html">`
+  fixtures under proxied/sandboxed network conditions, the same class of gap
+  `dxf.test.html`'s own CDN dependency already documents). Its new pin in
+  this task was instead verified by an equivalent standalone harness (real
+  Chromium, the real vendored THREE.js, the real `buildTray3d`) that ran to
+  completion outside that file, including a mutation test that reintroduces
+  the shared-floor bug and confirms the check catches it — but the pin as
+  committed, inside `uisync.test.html` itself, has not been executed end to
+  end by this session. Confirm it passes (and stays passing) the next time
+  that file runs somewhere the CDN is reachable.

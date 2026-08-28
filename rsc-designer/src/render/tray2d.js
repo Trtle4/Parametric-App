@@ -88,16 +88,26 @@ function placed(tray){
 }
 
 /** The cell mouths in placed plan coordinates, centred on (0, 0), y down.
- *  The run extent is `cellLen`; across the run the cells start one outer
- *  `wall` in from the rim and repeat at `cellWid + divider` — the same walk
- *  tray3d.js sweeps its troughs along, so plan and part agree by shape. */
+ *  Walks EVERY row (p.rows — a single legacy row when there is only one),
+ *  the same Z-band walk tray3d.js sweeps its troughs along (row.span +
+ *  divider per row), so plan and part agree by shape. Each cell carries its
+ *  own `row` index so a multi-row sheet can dimension each row separately —
+ *  for a single row this returns exactly the prior single-row list (each
+ *  entry additionally tagged row:0, which no prior caller reads). */
 function planCells(g){
   const {p} = g, out = [];
-  for(let j = 0; j < p.nCells; j++){
-    const a0 = -p.topW/2 + p.wall + j*(p.cellWid + p.divider), a1 = a0 + p.cellWid;
-    out.push(g.runAlongL
-      ? {x0: -p.cellLen/2, x1: p.cellLen/2, y0: a0, y1: a1}
-      : {x0: a0, x1: a1, y0: -p.cellLen/2, y1: p.cellLen/2});
+  let along0 = -p.topW/2 + p.wall;
+  for(let ri = 0; ri < p.rows.length; ri++){
+    const row = p.rows[ri], halfRun = row.cellLen/2;
+    for(let j = 0; j < row.nCells; j++){
+      const a0 = along0 + j*(row.cellWid + p.divider), a1 = a0 + row.cellWid;
+      out.push({
+        ...(g.runAlongL ? {x0: -halfRun, x1: halfRun, y0: a0, y1: a1}
+                        : {x0: a0, x1: a1, y0: -halfRun, y1: halfRun}),
+        row: ri
+      });
+    }
+    along0 += row.span + p.divider;
   }
   return out;
 }
@@ -132,26 +142,41 @@ function topTile(g, x, y){
     ? {orient: 'h', x1: cx + a, x2: cx + b, side: 'above', rank, value, key, label}
     : {orient: 'v', y1: cy + a, y2: cy + b, side: 'right', rank, value, key, label};
 
-  const c0 = cells[0];
-  const runA = g.runAlongL ? c0.x0 : c0.y0, runB = g.runAlongL ? c0.x1 : c0.y1;
-  const acrA = g.runAlongL ? c0.y0 : c0.x0, acrB = g.runAlongL ? c0.y1 : c0.x1;
-  const dims = [span(runSide, runA, runB, 0, p.cellLen, 'cellLen', 'CELL L'),
-                span(acrossSide, acrA, acrB, 0, p.cellWid, 'cellWid', 'CELL W')];
-
-  // PITCH, centre to centre — the view of `divider` the rail also shows
-  let acrossTop = 1;
-  if(cells.length > 1){
-    const mid = c => g.runAlongL ? (c.y0 + c.y1)/2 : (c.x0 + c.x1)/2;
-    dims.push(span(acrossSide, mid(cells[0]), mid(cells[1]), 1, p.pitch, 'pitch', 'PITCH'));
-    acrossTop = 2;
+  // Per row: CELL L on the run side, CELL W + PITCH (when it has more than
+  // one channel) on the across side, one tier further out per row — so a
+  // single row (the common case) is bit-identical to before this generalised
+  // (runRank/acrossRank both land at exactly 1 or 2, matching the old
+  // hardcoded ranks), and a second row simply adds its own tier outside the
+  // first's. Multi-row callouts are tagged "(ROW n)" and keyed cellLenN/
+  // cellWidN/pitchN — single-row keeps the bare cellLen/cellWid/pitch keys
+  // every existing pin already reads.
+  const multiRow = p.rows.length > 1;
+  const dims = [];
+  let runRank = 0, acrossRank = 0;
+  for(let ri = 0; ri < p.rows.length; ri++){
+    const rowCells = cells.filter(c => c.row === ri);
+    const c0 = rowCells[0], row = p.rows[ri];
+    const runA = g.runAlongL ? c0.x0 : c0.y0, runB = g.runAlongL ? c0.x1 : c0.y1;
+    const acrA = g.runAlongL ? c0.y0 : c0.x0, acrB = g.runAlongL ? c0.y1 : c0.x1;
+    const tag = multiRow ? ` (ROW ${ri + 1})` : '';
+    const k = multiRow ? String(ri) : '';
+    dims.push(span(runSide, runA, runB, runRank++, row.cellLen, `cellLen${k}`, `CELL L${tag}`));
+    dims.push(span(acrossSide, acrA, acrB, acrossRank, row.cellWid, `cellWid${k}`, `CELL W${tag}`));
+    // PITCH, centre to centre — the view of `divider` the rail also shows
+    if(rowCells.length > 1){
+      acrossRank++;
+      const mid = c => g.runAlongL ? (c.y0 + c.y1)/2 : (c.x0 + c.x1)/2;
+      dims.push(span(acrossSide, mid(rowCells[0]), mid(rowCells[1]), acrossRank, row.pitch, `pitch${k}`, `PITCH${tag}`));
+    }
+    acrossRank++;
   }
   // the envelope, outermost on both sides and the only callouts left bare
   dims.push(g.runAlongL
-    ? {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: 1, value: g.L, key: 'overallL'}
-    : {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: acrossTop, value: g.L, key: 'overallL'});
+    ? {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: runRank, value: g.L, key: 'overallL'}
+    : {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: acrossRank, value: g.L, key: 'overallL'});
   dims.push(g.runAlongL
-    ? {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: acrossTop, value: g.W, key: 'overallW'}
-    : {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: 1, value: g.W, key: 'overallW'});
+    ? {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: acrossRank, value: g.W, key: 'overallW'}
+    : {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: runRank, value: g.W, key: 'overallW'});
 
   // FLANGE WIDTH — a 5mm land on a 139mm sheet: a leader, not a dimension
   // line whose two ticks would be further apart than the span they bound.
@@ -191,9 +216,18 @@ function elevation(g, name, x, y, across, wantRun){
   ]}];
 
   // The troughs, seen through the wall. Along the run a trough reads as ONE
-  // rectangular recess (its bottom is the cradle's lowest line, seen end-on);
-  // ACROSS the run each cell shows its real U cross-section — straight sides
-  // down to the cradle arc — and the dividers as the land between them.
+  // rectangular recess per row (its bottom is that row's own cradle's lowest
+  // line, seen end-on — rows can differ in depth, so this is per row rather
+  // than one rectangle for the whole tray); ACROSS the run each cell shows
+  // its real U cross-section — straight sides down to the cradle arc — and
+  // the dividers as the land between them.
+  //
+  // Every row's trough opens at the SAME shared rim and is cut down by that
+  // row's OWN cellH (see tray3d.js buildTray3d for the identical rule) — so
+  // yFloor is computed PER ROW, never from one tray-wide p.floor: only the
+  // tray's deepest row actually reaches y0+floor (H = floor + max(cellH)),
+  // which is why the single-row case (where that row IS the deepest) keeps
+  // its floor exactly where it always was.
   //
   // The cradle is drawn as a true SVG arc from cellWid/cradleR/depth — the
   // same parameters tray3d.js tessellates its swept profile from, in this
@@ -201,23 +235,26 @@ function elevation(g, name, x, y, across, wantRun){
   // is taken from it, and an arc of radius r is exactly the shape those
   // parameters describe (more exactly than the 10-segment polyline, in fact).
   const cells = planCells(g);
-  const spans = wantRun
-    ? [{a: -p.cellLen/2, b: p.cellLen/2}]
-    : cells.map(c => (across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1}));
-  const yRim = oH - p.H, yFloor = oH - p.floor;
-  for(const s of spans){
-    if(wantRun){
-      shapes.push({kind: 'rect', line: 'cell', x: cx + s.a, y: yRim,
-                   w: s.b - s.a, h: p.H - p.floor});
-      continue;
+  const yRim = oH - p.H;
+  if(wantRun){
+    // one rectangle per row — for a single row this is exactly the old lone
+    // rectangle (p.rows[0].cellLen === p.cellLen, p.rows[0].cellH === p.cellH)
+    for(const row of p.rows)
+      shapes.push({kind: 'rect', line: 'cell', x: cx - row.cellLen/2, y: yRim,
+                   w: row.cellLen, h: row.cellH});
+  }else{
+    for(const c of cells){
+      const row = p.rows[c.row];
+      const s = across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1};
+      const yFloor = yRim + row.cellH;
+      const half = (s.b - s.a)/2, c0 = cx + (s.a + s.b)/2;
+      const r = Math.max(0.01, Math.min(row.cradleR, half, yFloor - yRim));
+      const flat = half - r;
+      shapes.push({kind: 'path', line: 'cell', d:
+        `M ${c0 - half} ${yRim} L ${c0 - half} ${yFloor - r} ` +
+        `A ${r} ${r} 0 0 0 ${c0 - flat} ${yFloor} L ${c0 + flat} ${yFloor} ` +
+        `A ${r} ${r} 0 0 0 ${c0 + half} ${yFloor - r} L ${c0 + half} ${yRim}`});
     }
-    const half = (s.b - s.a)/2, c0 = cx + (s.a + s.b)/2;
-    const r = Math.max(0.01, Math.min(p.cradleR, half, yFloor - yRim));
-    const flat = half - r;
-    shapes.push({kind: 'path', line: 'cell', d:
-      `M ${c0 - half} ${yRim} L ${c0 - half} ${yFloor - r} ` +
-      `A ${r} ${r} 0 0 0 ${c0 - flat} ${yFloor} L ${c0 + flat} ${yFloor} ` +
-      `A ${r} ${r} 0 0 0 ${c0 + half} ${yFloor - r} L ${c0 + half} ${yRim}`});
   }
 
   const isFront = across === 'L';
@@ -228,10 +265,18 @@ function elevation(g, name, x, y, across, wantRun){
                  value: bot, exactVal: true, key: isFront ? 'baseL' : 'baseW', label: 'BASE'}];
   const leaders = [];
   if(isFront){
+    // CELL DEPTH dimensions ROW 0 specifically (tagged when there is more
+    // than one row) — the other rows' own rectangles are drawn above but
+    // undimensioned in this secondary view; the TOP view carries every
+    // row's own numbers, this one just needs to show ONE feature depth to
+    // stay legible rather than a tier per row on a view this narrow.
+    const row0 = p.rows[0], yFloor0 = yRim + row0.cellH;
+    const multiRow = p.rows.length > 1;
     // heights, stacked on the ONE free side: the feature inboard, the
     // envelope outboard
-    dims.push({orient: 'v', y1: yRim, y2: yFloor, side: 'left', rank: 0,
-               value: p.cellH, key: 'cellH', label: 'CELL DEPTH'});
+    dims.push({orient: 'v', y1: yRim, y2: yFloor0, side: 'left', rank: 0,
+               value: row0.cellH, key: multiRow ? 'cellH0' : 'cellH',
+               label: multiRow ? 'CELL DEPTH (ROW 1)' : 'CELL DEPTH'});
     dims.push({orient: 'v', y1: 0, y2: oH, side: 'left', rank: 1,
                value: oH, key: 'overallH', label: 'OVERALL H'});
     // the DRAFT: an angle has no two ends to tick, so it can only be a leader
@@ -246,9 +291,13 @@ function elevation(g, name, x, y, across, wantRun){
   }else{
     dims.push({orient: 'v', y1: 0, y2: oH, side: 'right', rank: 0,
                value: oH, key: 'overallH2', label: 'OVERALL H'});
-    // the DIVIDER land between two troughs, in the view that shows it
-    if(spans.length > 1)
-      leaders.push({px: cx + (spans[0].b + spans[1].a)/2, py: yRim,
+    // the DIVIDER land between the first two across-positions, in the view
+    // that shows it (a same-row channel divider with one row present; still
+    // a real divider — same value, same land — when the first two entries
+    // straddle a row boundary instead)
+    const acrEdge = c => across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1};
+    if(cells.length > 1)
+      leaders.push({px: cx + (acrEdge(cells[0]).b + acrEdge(cells[1]).a)/2, py: yRim,
                     dx: 0, dy: -oH*0.75, key: 'divider', divider: true});
   }
   return {name, x, y, w: outer, h: oH, shapes, dims, leaders};
@@ -293,11 +342,23 @@ function titleRows(tray, g, p, fmt, exact, unit, dateStr){
   if(tray.proud)
     rows.push(['Envelope (proud product)',
                `${fmt(tray.outer.L)} × ${fmt(tray.outer.W)} × ${fmt(tray.outer.H)} ${unit}`]);
+  const multiRow = p.rows.length > 1;
   rows.push(
     ['Base (drafted)', `${exact(g.bottomL)} × ${exact(g.bottomW)} ${unit}`],
-    ['Cells', `${p.nCells} × ${tray.perCell} = ${tray.total} products`],
-    ['Cell L × W × D', `${fmt(p.cellLen)} × ${fmt(p.cellWid)} × ${fmt(p.cellH)} ${unit}` +
-                           ` · pitch ${fmt(p.pitch)} · cradle R ${exact(p.cradleR)}`],
+    ['Cells', `${p.nCells} × ${tray.perCell} = ${tray.total} products` +
+              (multiRow ? ` across ${p.rows.length} rows` : '')]
+  );
+  // ONE "Cell L x W x D" row per grid row — for a single row this is exactly
+  // the prior single row (p.rows[0] IS trayParams()'s own cellLen/cellWid/
+  // cellH/cradleR/pitch mirror), so the block is unchanged until a grid is
+  // actually in use.
+  p.rows.forEach((row, i) => rows.push([
+    multiRow ? `Cell L × W × D (row ${i + 1})` : 'Cell L × W × D',
+    `${fmt(row.cellLen)} × ${fmt(row.cellWid)} × ${fmt(row.cellH)} ${unit}` +
+      ` · pitch ${fmt(row.pitch)} · cradle R ${exact(row.cradleR)}` +
+      (multiRow ? ` · ${row.nCells} cell${row.nCells === 1 ? '' : 's'}` : '')
+  ]));
+  rows.push(
     ['Material', `wall ${exact(p.wall)} · divider ${exact(p.divider)} · floor ${exact(p.floor)} ${unit}`],
     ['Rim', `flange ${exact(p.stripL)} × ${exact(p.stripW)}, ${exact(p.flangeT)} thick` +
             ` · lip ${exact(p.lipH)} ${unit}`],

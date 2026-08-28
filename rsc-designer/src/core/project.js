@@ -183,6 +183,10 @@ export function newProject(){
     // from the product" (auto-with-override), any number overrides it.
     tray: {
       nCells: 2,                       // default when enabled: 2 cells x 10 on edge
+      // The 2D GRID (see cookietray.js's TRAY_DEFAULTS.rows doc). null = the
+      // legacy single row built from nCells/params above — every project
+      // saved before the grid existed loads with this null, bit-identical.
+      rows: null,
       // NOTE there is deliberately no `perCell` here. Products-per-cell is
       // owned by the COLLATION (perStack x nx x ny) and nothing else; storing
       // it again would be a second writer for one quantity, free to disagree.
@@ -553,21 +557,36 @@ export function uboardAutoF(project){
   return contentEnvelope(project.primary).outer.H;
 }
 
-export function trayAutoCells(project, content = contentEnvelope(project.primary)){
+/**
+ * @param {Object} project
+ * @param {Object} [content]  contentEnvelope(project.primary)
+ * @param {number} [rowCells]  cells in the ONE ROW being probed — defaults to
+ *   project.tray.nCells (the legacy single-row reading). solveTrayStage calls
+ *   this once per row of a 2D grid, each with its own row's cell count, so a
+ *   row's auto cell size still comes from this ONE derivation regardless of
+ *   how many rows the tray has.
+ */
+export function trayAutoCells(project, content = contentEnvelope(project.primary), rowCells){
   const tray = project.tray || {};
   const ov = tray.params || {};
   const num = v => typeof v === 'number' && isFinite(v);
   const piece = content.config.piece;
   const perCell = content.count;
-  const nCells = Math.max(1, Math.round(tray.nCells || 1));
+  const nCells = Math.max(1, Math.round(rowCells != null ? rowCells : (tray.nCells || 1)));
+  // ROUND lay-flat: a flat cylinder (axis vertical, side by side along the
+  // channel) pitches by its own diameter, not its thickness — packPitchOf
+  // needs to know which, and this is the one place that already resolves
+  // the collation's own orientation for the tray. A box has no such choice
+  // (packPitchOf ignores orientation for a box; see cookietray.js's doc).
+  const orient = resolvePieceOrientation(content.config);
   const probe = deriveTrayParams({
     ...ov,                                        // pass-through §3 inputs (wall, floor, ...)
     qtyTotal: perCell*nCells, nCells,
     sideClearance: num(tray.sideClearance) ? tray.sideClearance : 1.5,
     endClearance:  num(tray.endClearance)  ? tray.endClearance  : 3,
     ...(piece.kind === 'cylinder'
-      ? {productType: 'round', cookieDiameter: piece.diameter, cookieThickness: packPitchOf(piece)}
-      : {productType: 'rectangle', productThickness: packPitchOf(piece),
+      ? {productType: 'round', cookieDiameter: piece.diameter, cookieThickness: packPitchOf(piece, orient)}
+      : {productType: 'rectangle', productThickness: packPitchOf(piece, orient),
          productWidth: piece.W, productHeight: piece.H}),
     cellH: 1, cradleClearance: Number.MAX_SAFE_INTEGER   // probe-only; see above
   });
@@ -585,57 +604,97 @@ function solveTrayStage(project, content){
   const env = content.outer;                            // ONE cell's product envelope
   const ov = tray.params || {};
   const num = v => typeof v === 'number' && isFinite(v);
-  const endC = num(tray.endClearance) ? tray.endClearance : 3;
-  const sideC = num(tray.sideClearance) ? tray.sideClearance : 1.5;
 
-  const nCells = Math.max(1, Math.round(tray.nCells || 1));
-  const auto = trayAutoCells(project, content);          // THE derivation (see below)
+  // The 2D GRID: tray.rows overrides the legacy single row of tray.nCells.
+  // Absent/empty reproduces today's ONE row exactly — built from the SAME
+  // top-level override fields (ov.cellLen/cellWid/cellH/cradleR) the
+  // single-row tray has always read, so there is no second code path for
+  // the common case. Each row resolves its own cell dims with the SAME
+  // auto-with-override idiom (one axis at a time), just looped per row —
+  // an override on one row never touches another row's auto derivation.
+  //
+  // THREE-TIER FALLBACK per axis: this row's own override, else the
+  // TRAY-LEVEL override (ov.*, the same top-level "Cell length/width/depth"
+  // fields the single-row tray has always read), else auto. A row object
+  // that carries only {nCells} (every row this rail's own UI creates) still
+  // honours a tray-wide override rather than silently dropping it the
+  // moment a grid is in use — a row-specific override, when one exists
+  // (a saved project or a Cookie-Tray import may set one), still wins.
+  const rawRows = Array.isArray(tray.rows) && tray.rows.length
+    ? tray.rows.map(r => ({
+        nCells: r.nCells,
+        cellLen: r.cellLen != null ? r.cellLen : ov.cellLen,
+        cellWid: r.cellWid != null ? r.cellWid : ov.cellWid,
+        cellH: r.cellH != null ? r.cellH : ov.cellH,
+        cradleR: r.cradleR != null ? r.cradleR : ov.cradleR
+      }))
+    : [{nCells: tray.nCells, cellLen: ov.cellLen, cellWid: ov.cellWid, cellH: ov.cellH, cradleR: ov.cradleR}];
 
-  // auto-with-override, one axis at a time — the AUTO half now comes entirely
-  // from the ported, validated inverse path; only the user's own overrides are
-  // applied here.
-  const cellLen = num(ov.cellLen) ? ov.cellLen : auto.cellLen;
-  const cellWid = num(ov.cellWid) ? ov.cellWid : auto.cellWid;
-  // trough DEPTH is ours, not theirs: their derive defaults cellH to a flat
-  // 28mm, we use the shallowest trough that still completes the cradle. It
-  // follows the EFFECTIVE width, so a cellWid override deepens the trough too.
-  const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
-  // M4, a DELIBERATE override of the validated path. trayParams derives
-  // cradleR = cellWid/2 when it is null, and guards cellH >= cradleR — so a
-  // user who shallows the trough below the half-width would get a THROW rather
-  // than simply a shallower cradle. Null on the normal path (their rule owns
-  // it); clamped to the trough only when that guard would otherwise fire.
-  const cradleR = num(ov.cradleR) ? ov.cradleR : (cellH < cellWid/2 ? cellH : null);
+  const rows = rawRows.map(r => {
+    const rCells = Math.max(1, Math.round(r.nCells || 1));
+    const auto = trayAutoCells(project, content, rCells);     // THE derivation, per row
+    const cellLen = num(r.cellLen) ? r.cellLen : auto.cellLen;
+    const cellWid = num(r.cellWid) ? r.cellWid : auto.cellWid;
+    // trough DEPTH is ours, not theirs: their derive defaults cellH to a flat
+    // 28mm, we use the shallowest trough that still completes the cradle. It
+    // follows this ROW's own effective width, so a per-row cellWid override
+    // deepens that row's own trough only.
+    const cellH   = num(r.cellH)   ? r.cellH   : cellWid/2;
+    // M4, a DELIBERATE override of the validated path. trayParams derives
+    // cradleR = cellWid/2 when it is null, and guards cellH >= cradleR — so a
+    // user who shallows the trough below the half-width would get a THROW
+    // rather than simply a shallower cradle. Null on the normal path (their
+    // rule owns it); clamped to the trough only when that guard would fire.
+    const cradleR = num(r.cradleR) ? r.cradleR : (cellH < cellWid/2 ? cellH : null);
+    return {
+      nCells: rCells, cellLen, cellWid, cellH, cradleR,
+      auto: {cellLen: !num(r.cellLen), cellWid: !num(r.cellWid), cellH: !num(r.cellH)}
+    };
+  });
 
-  const p = trayParams({...ov, nCells, cellLen, cellWid, cellH, cradleR});
+  const p = trayParams({...ov, rows: rows.map(({nCells, cellLen, cellWid, cellH, cradleR}) =>
+    ({nCells, cellLen, cellWid, cellH, cradleR}))});
 
   // the product bottoms out on the trough floor, which sits at the tray's own
   // floor thickness — so its top is floor + the collation's standing height
   const standingH = env.H;
   const outer = trayOuter(p, standingH);
 
-  // FOOTPRINT-ONLY fit. Height is deliberately absent from this test: a
-  // product standing above the cells is the normal case for an open tray,
-  // not a failure. Only an override that makes a cell too small in plan is.
+  // FOOTPRINT-ONLY fit, checked against EVERY row: a product standing above
+  // the cells is the normal case for an open tray, not a failure (height is
+  // deliberately absent from this test) — only a row whose plan is too small
+  // for the collation is. The SAME product sits in every row (one collation
+  // feeds the whole tray), so it is env against each row's own cell in turn.
   const EPS = 1e-9;
-  const widthFits = cellWid + EPS >= env.W;
-  const lengthFits = cellLen + EPS >= env.L;
-  const fits = widthFits && lengthFits;
-  // A misfit here is nearly always a collation the tray MODEL cannot express
-  // (more than one stack across a cell, or the run laid along the wrong axis),
-  // not a mis-typed dimension — so it says which, rather than a bare "does not
-  // fit" that reads like an arithmetic failure.
-  const why = [];
-  if(!widthFits)  why.push('collation width exceeds the tray cell; the tray models one stack per cell');
-  if(!lengthFits) why.push('collation run exceeds the tray cell length');
-  const misfitReason = why.length ? why.join('; ') : null;
+  let misfitReason = null;
+  for(let i = 0; i < rows.length; i++){
+    const r = rows[i];
+    const widthFits = r.cellWid + EPS >= env.W;
+    const lengthFits = r.cellLen + EPS >= env.L;
+    if(widthFits && lengthFits) continue;
+    // A misfit here is nearly always a collation the tray MODEL cannot
+    // express (more than one stack across a cell, or the run laid along the
+    // wrong axis), not a mis-typed dimension — so it says which, rather than
+    // a bare "does not fit" that reads like an arithmetic failure.
+    const why = [];
+    if(!widthFits)  why.push('collation width exceeds the tray cell; the tray models one stack per cell');
+    if(!lengthFits) why.push('collation run exceeds the tray cell length');
+    misfitReason = (rows.length > 1 ? `row ${i}: ` : '') + why.join('; ');
+    break;
+  }
+  const fits = misfitReason === null;
+  const nCells = rows.reduce((s, r) => s + r.nCells, 0);
 
   return {
     params: p, outer, nCells, fits, misfitReason, standingH,
     proud: isProud(p, standingH),
     perCell: content.count,
     total: nCells*content.count,
-    cellAuto: {cellLen: !num(ov.cellLen), cellWid: !num(ov.cellWid), cellH: !num(ov.cellH)}
+    rows,                                          // per-row resolved dims + auto flags
+    nRows: rows.length,
+    // SINGLE-ROW MIRROR, exactly as trayParams() itself mirrors row[0] — the
+    // pre-grid rail readout keeps reading this unchanged when there is one row.
+    cellAuto: rows[0].auto
   };
 }
 

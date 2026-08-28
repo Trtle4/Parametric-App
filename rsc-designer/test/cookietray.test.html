@@ -1008,6 +1008,168 @@ for(const [name, setup] of Object.entries(SWEEP)){
   });
 }
 
+/* ==================================================================
+   THE 2D GRID (task: "there can be a grid even asymmetrical") + ROUND
+   LAY-FLAT ("products lay flat"). rows is null by default (the legacy 1xN
+   tray, bit-identical to every pin above this block); a non-empty array is
+   N independent rows, each its own channel count/length/width/depth. Round
+   lay-flat extends resolvePieceOrientation/packPitchOf, the mechanism the
+   round-girth work already established, rather than a parallel concept —
+   see collation.js and cookietray.js's packPitchOf doc. Box orientation was
+   investigated and deliberately left unchanged: on-edge already has a real,
+   reachable, DIFFERENT meaning for a box (stack-as-sleeve, no rotation --
+   see collation.js), so overloading it with rotation would silently change
+   existing behaviour and require auditing every renderer that draws a bare
+   piece (product2d/hierarchy3d/nest3d), none of which this task touches.
+   ================================================================== */
+
+t('GRID: a 2-row tray sums each row\'s own span (channels + its own dividers), not one cellWid per row', () => {
+  const p = trayParams({wall: 3, divider: 3, rows: [
+    {nCells: 3, cellLen: 170, cellWid: 48, cellH: 28},
+    {nCells: 5, cellLen: 120, cellWid: 30, cellH: 20}
+  ]});
+  const row0Span = 3*48 + 2*3, row1Span = 5*30 + 4*3;
+  near(p.rows[0].span, row0Span, 'row0 span:');
+  near(p.rows[1].span, row1Span, 'row1 span:');
+  near(p.topW, row0Span + row1Span + 2*3 + 1*3, 'topW = both rows\' own spans + 2*wall + ONE inter-row divider:');
+  near(p.topL, Math.max(170, 120) + 2*3, 'topL follows the LONGEST row, others centre within it:');
+  eq(p.nCells, 8, 'total cells across rows:');
+  eq(p.nRows, 2, 'nRows:');
+});
+
+t('GRID: a legacy single-row tray reports nRows=1 and rows[0] mirrors the singular fields', () => {
+  const p = trayParams({nCells: 3, cellLen: 170, cellWid: 48, cellH: 28});
+  eq(p.nRows, 1, 'nRows:');
+  eq(p.rows.length, 1, 'rows.length:');
+  near(p.rows[0].cellLen, p.cellLen, 'row0.cellLen mirrors p.cellLen:');
+  near(p.rows[0].cellWid, p.cellWid, 'row0.cellWid mirrors p.cellWid:');
+  near(p.rows[0].cradleR, p.cradleR, 'row0.cradleR mirrors p.cradleR:');
+  near(p.rows[0].pitch, p.pitch, 'row0.pitch mirrors p.pitch:');
+});
+
+t('GRID: tray depth follows the DEEPEST row, never row order', () => {
+  const p = trayParams({rows: [
+    {nCells: 2, cellLen: 100, cellWid: 40, cellH: 15, cradleR: 5},
+    {nCells: 2, cellLen: 100, cellWid: 40, cellH: 25, cradleR: 5},
+    {nCells: 2, cellLen: 100, cellWid: 40, cellH: 10, cradleR: 5}
+  ]});
+  near(p.H, p.floor + 25, 'H follows the deepest row (25), not row 0 (15) or the last row (10):');
+});
+
+t('GRID: a per-row cradleR clamps against that row\'s OWN half-width, independent of other rows', () => {
+  const p = trayParams({rows: [
+    {nCells: 1, cellLen: 100, cellWid: 40, cellH: 30, cradleR: 100},   // row 0: absurdly oversized
+    {nCells: 1, cellLen: 100, cellWid: 60, cellH: 30, cradleR: 20}     // row 1: already valid
+  ]});
+  near(p.rows[0].cradleR, 20, 'row0 cradleR clamped to its own cellWid/2 (40/2):');
+  near(p.rows[1].cradleR, 20, 'row1 cradleR untouched:');
+  ok(p.warnings.some(w => /row 0/.test(w)), `the clamp warning should name row 0, got: ${JSON.stringify(p.warnings)}`);
+});
+
+t('GRID: a too-shallow cellH throws and names WHICH row', () => {
+  let threw = null;
+  try{
+    trayParams({rows: [{nCells: 1, cellLen: 100, cellWid: 40, cellH: 30, cradleR: 20},
+                        {nCells: 1, cellLen: 100, cellWid: 40, cellH: 5, cradleR: 20}]});
+  }catch(e){ threw = e; }
+  ok(threw, 'a cellH shallower than its own row\'s cradleR must throw:');
+  ok(/row 1/.test(threw.message), `error should name row 1, got: "${threw.message}"`);
+});
+
+t('LINK: a multi-row grid round-trips through rw; the legacy keys still describe row 0 alone', () => {
+  const p = trayProject();
+  p.tray.rows = [{nCells: 3}, {nCells: 5}];
+  Object.assign(p.primary.collation, {piece: {kind: 'cylinder', diameter: 44, thickness: 11},
+    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 8, nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  const mine = resolveActiveRow(p, '1mm').tray;
+  const link = buildTrayLink(p, mine);
+  ok(link.includes('rw='), 'a multi-row link must carry rw:');
+  const parsed = parseTrayLink(link);
+  eq(parsed.rows.length, 2, 'parsed row count:');
+  eq(parsed.rows[0].nCells, 3, 'row0 count round-trips:');
+  eq(parsed.rows[1].nCells, 5, 'row1 count round-trips:');
+  // this is the real regression this pin exists for: buildTrayLink must read
+  // trayParams()'s own RESOLVED rows, not solveTrayStage's pre-resolve list
+  // (whose cradleR can still be null, meaning "let trayParams derive it") --
+  // fmtNum(null) throws, so a naive `trayResult.rows` read never even
+  // produces a link to parse.
+  ok(parsed.rows.every(r => Number.isFinite(r.cradleR) && r.cradleR > 0),
+     `every parsed row must carry a REAL cradleR, got: ${JSON.stringify(parsed.rows)}`);
+  eq(parsed.unknownKeys.length, 0, `no unknown keys expected, got: ${parsed.unknownKeys.join(',')}`);
+});
+
+t('LINK: a single-row tray never sends rw, and a real Cookie-Tray link (no rw/ori) still imports exactly as before', () => {
+  const p = trayProject();
+  const mine = resolveActiveRow(p, '1mm').tray;
+  const link = buildTrayLink(p, mine);
+  ok(!link.includes('rw='), 'single-row link must not carry rw:');
+  const bareLink = 'https://trtle4.github.io/Cookie-Tray/?n=4&cl=219&ch=30&cr=24&qty=72&ncp=4';
+  const parsed = parseTrayLink(bareLink);
+  eq(parsed.rows, null, 'a real link with no rw parses to null rows:');
+  eq(parsed.product.orientation, 'on-edge', 'orientation defaults to on-edge -- every tray built before this field existed:');
+  eq(parsed.unknownKeys.length, 0, `a real link must carry no unknown keys, got: ${parsed.unknownKeys.join(',')}`);
+});
+
+t('LINK: a round product\'s lay-flat orientation round-trips via ori, and shifts the exported pitch', () => {
+  const p = trayProject();
+  Object.assign(p.primary.collation, {piece: {kind: 'cylinder', diameter: 44, thickness: 11},
+    pieceOrientation: 'flat', stackAxis: 'X', perStack: 8, nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  const mine = resolveActiveRow(p, '1mm').tray;
+  const link = buildTrayLink(p, mine);
+  ok(link.includes('ori=flat'), `flat orientation should be sent, got: ${link}`);
+  ok(link.includes('pthk=44'), `flat pitch (diameter) should export as pthk=44, got: ${link}`);
+  const parsed = parseTrayLink(link);
+  eq(parsed.product.orientation, 'flat', 'orientation round-trips:');
+});
+
+t('LINK: malformed rw degrades to no grid rather than throwing', () => {
+  const bad = 'https://trtle4.github.io/Cookie-Tray/?n=3&cl=100&cw=40&ch=20&qty=24&rw=not-json';
+  let threw = null, parsed = null;
+  try{ parsed = parseTrayLink(bad); }catch(e){ threw = e; }
+  ok(!threw, `malformed rw must not throw, threw: ${threw && threw.message}`);
+  eq(parsed.rows, null, 'malformed rw degrades to null rows:');
+});
+
+t('ROUND LAY-FLAT: pitch is diameter when flat, thickness when on-edge -- cellWid is unaffected either way', () => {
+  const mk = orient => {
+    const p = trayProject();
+    Object.assign(p.primary.collation, {piece: {kind: 'cylinder', diameter: 44, thickness: 11},
+      pieceOrientation: orient, stackAxis: 'X', perStack: 8, nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+    return resolveActiveRow(p, '1mm').tray;
+  };
+  const flat = mk('flat'), onEdge = mk('on-edge');
+  near(flat.params.cellWid, onEdge.params.cellWid, 'cellWid (across) is diameter-based regardless of orientation:', 1e-6);
+  ok(flat.params.cellLen > onEdge.params.cellLen,
+     `flat cellLen (${flat.params.cellLen}) should exceed on-edge cellLen (${onEdge.params.cellLen})`);
+  near(flat.params.cellLen, 8*44 + 3, 'flat cellLen = perCell*diameter + endClearance:', 1e-6);
+  near(onEdge.params.cellLen, 8*11 + 3, 'on-edge cellLen = perCell*thickness + endClearance:', 1e-6);
+});
+
+t('GRID: a collation that fits every row still fits; a misfit on ONE row is reported by that row', () => {
+  const p = trayProject();
+  p.tray.rows = [{nCells: 2}, {nCells: 2}];
+  Object.assign(p.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+  const okTray = resolveActiveRow(p, '1mm').tray;
+  eq(okTray.fits, true, 'auto-derived rows always fit their own auto-derived product:');
+
+  const p2 = trayProject();
+  p2.tray.rows = [{nCells: 2}, {nCells: 2, cellWid: 5}];    // row 1: forced too narrow
+  Object.assign(p2.primary.collation, {pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 10, nx: 1, ny: 1});
+  const badTray = resolveActiveRow(p2, '1mm').tray;
+  eq(badTray.fits, false, 'a too-narrow override on row 1 must fail:');
+  ok(/row 1/.test(badTray.misfitReason), `misfit reason should name row 1, got: "${badTray.misfitReason}"`);
+});
+
+t('GRID: a product taller than every row still fits (footprint constrains, height does not) and reports proud', () => {
+  const p = trayProject();
+  p.tray.rows = [{nCells: 2, cellH: 5}, {nCells: 2, cellH: 5}];   // shallow rows
+  Object.assign(p.primary.collation, {piece: {kind: 'cylinder', diameter: 44, thickness: 60},
+    pieceOrientation: 'on-edge', stackAxis: 'X', perStack: 1, nx: 1, ny: 1, stackGap: 0, pieceGap: 0});
+  const tray = resolveActiveRow(p, '1mm').tray;
+  eq(tray.fits, true, 'a tall product must still fit -- height is never a fit criterion at tray level:');
+  eq(tray.proud, true, 'and must be reported proud:');
+});
+
 /* ---- enum exhaustiveness: resolveWrapContents' switch is the ONE site
    allowed to branch on project.interlayer. Every declared enum member
    must resolve without throwing; anything NOT in the enum (Phase B's

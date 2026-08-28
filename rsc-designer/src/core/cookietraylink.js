@@ -24,6 +24,7 @@
  * DOM-free, mm-only, pure.
  */
 import {TRAY_DEFAULTS, packPitchOf} from './cookietray.js';
+import {resolvePieceOrientation} from './collation.js';
 
 /** Long name -> Cookie-Tray's compact querystring key (their TRAY_KEY_MAP). */
 export const TRAY_KEYS = Object.freeze({
@@ -33,15 +34,49 @@ export const TRAY_KEYS = Object.freeze({
   cellFillet: 'cf', nozzle: 'nz'
 });
 
-/** Their PRODUCT_KEY_MAP, for the product half of the link. */
+/**
+ * The 2D GRID key, held OUTSIDE both maps above (unlike every other field it
+ * is not one scalar — see parseTrayLink/buildTrayLink for its shape). THIS
+ * KEY IS THIS APP'S OWN EXTENSION, not a confirmed Cookie-Tray field: the
+ * real Cookie-Tray source was not reachable while this was built (repo
+ * access was requested and refused twice), so its actual grid/row encoding,
+ * if any, is unverified. Consequences of that, by design:
+ *   - A real Cookie-Tray link never sends this key, so importing one is
+ *     completely unaffected — it always resolves to the legacy single row
+ *     via the ordinary TRAY_KEYS, exactly as before this field existed.
+ *   - Opening a link THIS APP exported with more than one row, on the real
+ *     Cookie-Tray site, degrades to that site's own reading of the legacy
+ *     keys — row 0's own cell geometry is real and correct on its own. The
+ *     quantity fields (`qty`/`ncp`) still state the FULL grid's totals (the
+ *     count is genuinely useful information even where the geometry is
+ *     partial), so a per-cell count THEIR site derives from qty/ncp will not
+ *     match a row-0-only rebuild — an opened multi-row link there is a shape
+ *     reference for row 0, not an exact single-row equivalent.
+ *   - This app's own round trip (export, then re-import here) IS lossless,
+ *     because both sides agree on this key's shape by construction, and this
+ *     app reads perCell from the true grid total (see applyTrayLink), never
+ *     from qty/ncp divided by row 0's count alone.
+ * A genuine confirmed Cookie-Tray grid key, once seen, replaces this rather
+ * than living alongside it as a second, competing encoding.
+ */
+const ROWS_KEY = 'rw';
+
+/** Their PRODUCT_KEY_MAP, for the product half of the link, plus ONE field
+ *  this app adds: `orientation` ('ori'). Also UNVERIFIED against the real
+ *  Cookie-Tray source for the same reason as ROWS_KEY above — round-only in
+ *  effect (see buildTrayLink/applyTrayLink; a box has no analogous choice,
+ *  see collation.js's resolvePieceOrientation doc), and absent on any real
+ *  Cookie-Tray link, so a real link still imports exactly as before this
+ *  field existed (defaulting to 'on-edge', today's only prior behaviour). */
 export const PRODUCT_KEYS = Object.freeze({
   productType: 'pty', cookieDiameter: 'pdia', cookieThickness: 'pthk',
   productWidth: 'pw', productHeight: 'ph', productThickness: 'ptk',
   edgeRTop: 'ert', edgeRBot: 'erb', qtyTotal: 'qty',
-  distributeBy: 'dby', nCellsProduct: 'ncp', cookiesPerCell: 'cpc'
+  distributeBy: 'dby', nCellsProduct: 'ncp', cookiesPerCell: 'cpc',
+  orientation: 'ori'
 });
 
-const STRING_FIELDS = new Set(['longAxis', 'productType', 'distributeBy']);
+const STRING_FIELDS = new Set(['longAxis', 'productType', 'distributeBy', 'orientation']);
 
 /** Their PRODUCT_DEFAULTS, verbatim. LIVE on import (parseTrayLink fills every
  *  absent product key from this table, mirroring exactly what Cookie-Tray's
@@ -55,7 +90,12 @@ export const PRODUCT_DEFAULTS = Object.freeze({
   productType: 'round', cookieDiameter: 45, cookieThickness: 12,
   productWidth: 45, productHeight: 20, productThickness: 12,
   edgeRTop: 2, edgeRBot: 2, qtyTotal: 24,
-  distributeBy: 'nCells', nCellsProduct: 3, cookiesPerCell: 8
+  distributeBy: 'nCells', nCellsProduct: 3, cookiesPerCell: 8,
+  // 'on-edge' (roll, rolled up the channel) is every tray this app built
+  // before this field existed — see ROWS_KEY's doc on this being an
+  // unverified extension, and cookietray.js packPitchOf's doc on what the
+  // two values physically mean.
+  orientation: 'on-edge'
 });
 
 /** Our OWN link-schema version, stamped on export (see buildTrayLink) and
@@ -105,10 +145,14 @@ function toParams(input){
  *   thickness product importing as some unrelated caller-side magic number).
  *
  * @param {string} input a share URL or querystring
- * @returns {{nCells: number, params: Object, product: Object, keysFound: string[], unknownKeys: string[]}|null}
- *   null when the string carries no Cookie-Tray keys at all. `unknownKeys`
+ * @returns {{nCells: number, params: Object, product: Object, rows: Object[]|null,
+ *   keysFound: string[], unknownKeys: string[]}|null}
+ *   null when the string carries no Cookie-Tray keys at all. `rows` is this
+ *   app's own 2D-grid extension (see ROWS_KEY) — null unless the link carries
+ *   a valid `rw`, which no real Cookie-Tray link does, so this is null for
+ *   every real link and every link from before the grid existed. `unknownKeys`
  *   names every querystring key that matched neither TRAY_KEYS nor
- *   PRODUCT_KEYS (nor our own `v` stamp) — Cookie-Tray may have added a
+ *   PRODUCT_KEYS (nor our own `v`/`rw` stamps) — Cookie-Tray may have added a
  *   field since this module was last updated. Surfaced, never silently
  *   dropped: a link this app only partly understands is still useful, and
  *   the caller (app.js's applyTrayLink) shows this list through the same
@@ -145,15 +189,36 @@ export function parseTrayLink(input){
       product[long] = Number.isFinite(v) ? v : PRODUCT_DEFAULTS[long];
     }
   }
+
+  // ROWS (ROWS_KEY) — this app's own 2D-grid extension, so it gets its own
+  // lenient parse rather than the throw-on-malformed the `v` stamp uses:
+  // a real Cookie-Tray link never sends this key at all, and a corrupted or
+  // hand-edited one should degrade to "no grid" (the legacy single row from
+  // the fields above), not fail the whole import.
+  let rows = null;
+  if(sp.has(ROWS_KEY)){
+    keysFound.push(ROWS_KEY);
+    try{
+      const raw = JSON.parse(sp.get(ROWS_KEY));
+      if(Array.isArray(raw) && raw.length){
+        const parsed = raw.map(r => ({
+          nCells: Math.max(1, Math.round(Number(r.n))),
+          cellLen: Number(r.cl), cellWid: Number(r.cw), cellH: Number(r.ch), cradleR: Number(r.cr)
+        }));
+        if(parsed.every(r => Object.values(r).every(Number.isFinite))) rows = parsed;
+      }
+    }catch{ /* malformed rw -> no grid, not a failed import */ }
+  }
+
   if(keysFound.length === 0) return null;          // not a Cookie-Tray link
 
   // UNKNOWN KEYS: every querystring key that matched NEITHER map above, and
-  // isn't our own `v` stamp. THE CLASS FIX, not just this one dropped field:
-  // any key Cookie-Tray adds after this module is last updated would
-  // otherwise be silently dropped and silently never re-emitted on export,
-  // exactly the nCols defect this same fix landed alongside. Deduped (a
-  // querystring can repeat a key).
-  const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS), 'v']);
+  // isn't one of our own `v`/`rw` stamps. THE CLASS FIX, not just this one
+  // dropped field: any key Cookie-Tray adds after this module is last
+  // updated would otherwise be silently dropped and silently never
+  // re-emitted on export, exactly the nCols defect this same fix landed
+  // alongside. Deduped (a querystring can repeat a key).
+  const known = new Set([...Object.values(TRAY_KEYS), ...Object.values(PRODUCT_KEYS), 'v', ROWS_KEY]);
   const unknownKeys = [...new Set(sp.keys())].filter(k => !known.has(k));
 
   // OUR OWN version stamp (see CURRENT_LINK_VERSION) — absent means v1, the
@@ -178,7 +243,7 @@ export function parseTrayLink(input){
   // fields never carry this shape (every PRODUCT_DEFAULTS entry is a real
   // value or a defaulted string), so no equivalent pass runs over `product`.
   for(const k of Object.keys(params)) if(params[k] == null) delete params[k];
-  return {nCells, params, product, keysFound, unknownKeys};
+  return {nCells, params, product, rows, keysFound, unknownKeys};
 }
 
 /**
@@ -235,12 +300,31 @@ export function buildTrayLink(project, trayResult, base = 'https://trtle4.github
   };
 
   // the tray half — the RESOLVED values (what this project actually built),
-  // so the link describes the tray on screen, not a partial override set
-  put('nCells', TRAY_KEYS, trayResult.nCells);
+  // so the link describes the tray on screen, not a partial override set.
+  // These legacy scalar keys always describe ROW 0 (trayParams()'s own
+  // single-row mirrors) — the ONLY row when there is one, and still a real,
+  // valid single-row tray when there are more (see ROWS_KEY's doc: a tool
+  // reading only these keys degrades to row 0, not to something wrong).
+  put('nCells', TRAY_KEYS, p.rows[0].nCells);
   for(const long of ['nCols', 'longAxis', 'cellLen', 'cellWid', 'cellH', 'cradleR', 'wall', 'divider',
                      'floor', 'cornerR', 'draftDeg', 'stripL', 'stripW', 'lipH', 'flangeT',
                      'cellFillet', 'nozzle'])
     put(long, TRAY_KEYS, p[long]);
+
+  // THE FULL GRID (our own extension — see ROWS_KEY's doc). Only sent when
+  // there is more than one row: a single-row tray already round-trips
+  // completely through the legacy keys above, so this stays absent for
+  // every tray built before rows existed, and the link is no longer than
+  // it needs to be.
+  // Reads p.rows (trayParams()'s own FULLY RESOLVED rows), never
+  // trayResult.rows directly — solveTrayStage's own row list can still
+  // carry a null cradleR (meaning "let trayParams derive cellWid/2", the
+  // same convention the single-row path uses), and this link must state
+  // real numbers throughout, same as every other tray value here.
+  if(p.rows && p.rows.length > 1){
+    out.set(ROWS_KEY, JSON.stringify(p.rows.map(r =>
+      ({n: r.nCells, cl: fmtNum(r.cellLen), cw: fmtNum(r.cellWid), ch: fmtNum(r.cellH), cr: fmtNum(r.cradleR)}))));
+  }
 
   // the product half, from the collation (the one owner of per-cell content)
   const col = project.primary && project.primary.collation;
@@ -255,9 +339,15 @@ export function buildTrayLink(project, trayResult, base = 'https://trtle4.github
     // over there is the tray we built here rather than a second reading of the
     // product's dimensions.
     if(col.piece.kind === 'cylinder'){
+      const orient = resolvePieceOrientation(col);
       put('productType', PRODUCT_KEYS, 'round');
       put('cookieDiameter', PRODUCT_KEYS, col.piece.diameter);
-      put('cookieThickness', PRODUCT_KEYS, packPitchOf(col.piece));
+      put('cookieThickness', PRODUCT_KEYS, packPitchOf(col.piece, orient));
+      // ORIENTATION (our own extension — see PRODUCT_KEYS' doc). Round only:
+      // a box has no analogous choice, so nothing is sent for one and a
+      // re-import defaults it to 'on-edge', matching the unrotated box every
+      // link has always described.
+      put('orientation', PRODUCT_KEYS, orient);
     }else{
       // their rectangle axes: thickness runs along the channel, width across
       // the cell, height vertical — the same convention our on-edge collation
