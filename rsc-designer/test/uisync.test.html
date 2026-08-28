@@ -6960,6 +6960,40 @@ await (async () => {
     } finally { mframe.contentWindow.scrollTo(0, 0); }
   });
 
+  t('mobile (390px): .stagecanvas sizes against the DYNAMIC viewport (dvh), not just the large one (vh)', () => {
+    // Plain `vh` is the LARGE viewport on mobile Safari/Chrome (address bar
+    // collapsed) -- taller than what's actually visible right after load,
+    // while that chrome is still on screen. The box sizes and centres its
+    // content correctly against whatever CSS height it's given (confirmed by
+    // the pin above), so a `vh`-only height silently extends its BOTTOM edge
+    // under the browser chrome: correctly sized against the wrong (larger)
+    // reference. `dvh` tracks the viewport that is actually visible and
+    // needs no companion resize handler -- the browser itself recomputes it
+    // as chrome shows/hides. Headless Chromium has no address-bar chrome to
+    // collapse, so `dvh` and `vh` resolve to the same pixel value here; this
+    // pin instead reads the STYLESHEET rule text itself (a real regression
+    // catch: removing the dvh declaration fails it immediately, independent
+    // of whether this environment can reproduce the chrome-collapse itself).
+    // the dvh override lives INSIDE the @media(max-width:860px) block, which
+    // enumerates in cssRules as one CSSMediaRule, not flattened -- has to
+    // recurse into .cssRules to actually reach it, same as any nested rule.
+    const findDvh = rules => {
+      for(const r of rules){
+        if(r.selectorText === '.stagecanvas' && /dvh/.test((r.style && r.style.height) || '')) return r;
+        if(r.cssRules){ const hit = findDvh([...r.cssRules]); if(hit) return hit; }
+      }
+      return null;
+    };
+    let dvhRule = null;
+    for(const sheet of [...mframe.contentDocument.styleSheets]){
+      let rules;
+      try{ rules = [...sheet.cssRules]; }catch(e){ continue; }   // cross-origin sheets throw; none here, but be safe
+      dvhRule = findDvh(rules);
+      if(dvhRule) break;
+    }
+    if(!dvhRule) throw new Error('.stagecanvas has no dvh-based height rule -- back to a vh-only box that can extend under mobile browser chrome');
+  });
+
   t('mobile (390px): .toolbar and .mode3d sit BELOW the canvas in flow, not on top of it', () => {
     const scBottom = m.el('cvWrap').parentElement.getBoundingClientRect().bottom;
     const toolbarTop = m.el('viewToolbar').getBoundingClientRect().top;
@@ -6989,6 +7023,38 @@ await (async () => {
     const canvas = m.el('cvWrap').querySelector('canvas');
     if(!canvas) throw new Error('vacuous fixture: no canvas built at case depth');
     eq(canvas.style.touchAction, 'none', 'touchAction:');
+  });
+
+  t('mobile (390px): a DISABLED optional tier\'s enable control (the interlayer None/Tray/U-board select, or an "enable" button) is reachable, not hidden by the chain-strip collapse rule', () => {
+    // Regression: the mobile collapse rule originally hid .cs-tog on every
+    // non-active node, including disabled ones. A disabled tier can only
+    // ever become active by first being enabled THROUGH .cs-tog (the node
+    // body's own click is a deliberate no-op while disabled -- app.js's
+    // renderChainString `activate`), so hiding it was a chicken-and-egg trap
+    // that made every skipped optional tier permanently unreachable on
+    // mobile -- interlayer (Tray/U-board) is the one a user hits first,
+    // since it starts 'none' by default.
+    const nodes = [...m.el('chainString').querySelectorAll('.cs-node')];
+    const interlayerNode = nodes.find(n => n.querySelector('.cs-lvl') && n.querySelector('.cs-lvl').textContent === 'Interlayer');
+    if(!interlayerNode) throw new Error('interlayer chain node not found');
+    if(!interlayerNode.classList.contains('disabled'))
+      throw new Error('vacuous fixture: interlayer must start disabled (project.interlayer === "none") for this pin to mean anything');
+    const sel = interlayerNode.querySelector('select.cs-tog');
+    if(!sel) throw new Error('the None/Tray/U-board select must exist in the DOM');
+    if(m.cs(sel).display === 'none')
+      throw new Error('the interlayer select is display:none at 390px -- the ONLY control that can turn a skipped tier on is unreachable');
+    const rect = sel.getBoundingClientRect();
+    if(!(rect.width > 0 && rect.height > 0))
+      throw new Error(`interlayer select has no reachable size: ${rect.width}x${rect.height}`);
+  });
+
+  t('mobile (390px): an ALREADY-enabled, non-active tier still collapses its toggle -- the compactness the collapse rule exists for is untouched', () => {
+    const nodes = [...m.el('chainString').querySelectorAll('.cs-node')];
+    const nonActiveEnabled = nodes.find(n => !n.classList.contains('active') && !n.classList.contains('disabled') && n.querySelector('.cs-tog'));
+    if(!nonActiveEnabled) throw new Error('vacuous fixture: no already-enabled, non-active optional tier to check -- cannot prove compactness held');
+    const tog = nonActiveEnabled.querySelector('.cs-tog');
+    if(m.cs(tog).display !== 'none')
+      throw new Error(`an already-enabled, non-active tier's toggle should stay collapsed for space, got display:${m.cs(tog).display}`);
   });
 
   /* ---- desktop (>860px): the mobile-only rules must not leak upward.
