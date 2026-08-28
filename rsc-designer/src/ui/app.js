@@ -1734,31 +1734,33 @@ function applyTrayLink(text){
   const tr = build.project.tray;
   tr.nCells = parsed.nCells;
   tr.params = {...parsed.params};
-  // ROWS: ATOMIC REPLACEMENT, same rule as the collation below — always SET
-  // (never merged with whatever grid was there before), so a link with no
-  // `rw` (every real Cookie-Tray link, and every link before rows existed)
-  // explicitly clears back to the legacy single row rather than leaving a
-  // stale grid from a previous import in place.
-  tr.rows = parsed.rows || null;
+  // THE 2D GRID's per-row override: ATOMIC REPLACEMENT, same rule as the
+  // collation below — always SET (never merged with whatever grid was there
+  // before), so a link with no `ncr` (every real single-uniform-nCols link,
+  // and every link before this existed) explicitly clears back to the
+  // uniform grid rather than leaving a stale per-row array from a previous
+  // import in place.
+  tr.nColsPerRow = parsed.nColsPerRow || null;
 
   const pr = parsed.product;
   const piece = pr.productType === 'round'
     ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
     : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
-  // perCell divides the TRUE grid total — the sum of every row's own cell
-  // count when the link carries a grid, or the single legacy count when it
-  // doesn't — never row 0's count alone, so a multi-row import distributes
-  // qtyTotal across the WHOLE tray, not just its first row.
-  const totalCells = parsed.rows ? parsed.rows.reduce((s, r) => s + r.nCells, 0) : parsed.nCells;
-  const perCell = Math.max(1, Math.ceil(pr.qtyTotal/totalCells));
-  // the product half writes the COLLATION — the one owner of per-cell
-  // content — never the tray. One assignment: piece + the grid it implies,
-  // together, so there is no window where they describe two different runs.
-  // pieceOrientation reads the link's own `ori` (round only in effect —
-  // see PRODUCT_KEYS' doc; defaults to 'on-edge', every prior tray's only
-  // behaviour, for a real Cookie-Tray link and for a box either way).
+  const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+  // PACKMODE maps onto the collation's own stackAxis — 'stack' (flat,
+  // stacked) is Z, matching Pile Pack; 'standing' (their default: a roll or
+  // an end-to-end run) is X, the tray's existing default. pieceOrientation
+  // is set explicitly alongside it so a round product's axis follows
+  // unambiguously (see collation.js resolvePieceOrientation); a box ignores
+  // the field regardless (see cookietray.js packPitchOf's doc), so setting
+  // it here is harmless for that shape. The product half writes the
+  // COLLATION — the one owner of per-cell content — never the tray. One
+  // assignment: piece + the grid it implies, together, so there is no
+  // window where they describe two different runs.
+  const stack = pr.packMode === 'stack';
   Object.assign(build.project.primary.collation, {
-    piece, pieceOrientation: pr.orientation, stackAxis: 'X', perStack: perCell, nx: 1, ny: 1
+    piece, pieceOrientation: stack ? 'flat' : 'on-edge', stackAxis: stack ? 'Z' : 'X',
+    perStack: perCell, nx: 1, ny: 1
   });
   projectChanged();
   mountActiveLevel();
@@ -1783,21 +1785,9 @@ function applyTrayLink(text){
  *  becoming a second, silently-divergable copy of resolveWrapContents'
  *  tray-branch arithmetic. Only called while interlayer is already 'tray'
  *  (both mount sites gate on that), so the resolver's tray branch is live. */
-/** Total cells across the tray — the grid's row counts summed when a 2D
- *  grid is in use, else the single legacy count. ONE definition, read by
- *  trayQuantities/applyTrayQuantity and the Tray rail's own "Cells"
- *  placeholder alike, so the shared quantity trio can never disagree with
- *  the grid about what "cells" means once rows exist. */
-function trayCellsTotal(tr){
-  const rows = tr && Array.isArray(tr.rows) && tr.rows.length ? tr.rows : null;
-  return Math.max(1, rows
-    ? rows.reduce((s, r) => s + Math.max(1, Math.round(r.nCells || 1)), 0)
-    : Math.round((tr && tr.nCells) || 1));
-}
-
 function trayQuantities(){
   const proj = build.project;
-  const cells = trayCellsTotal(proj.tray);
+  const cells = Math.max(1, Math.round((proj.tray && proj.tray.nCells) || 1));
   const perCell = Math.max(1, collate(proj.primary.collation).count);
   return {cells, perCell, total: resolvedWrapContents(proj).productCount};
 }
@@ -1821,15 +1811,10 @@ function trayQuantities(){
 function applyTrayQuantity(field, value){
   const proj = build.project, tr = proj.tray, col = proj.primary.collation;
   const v = Math.max(1, Math.round(+value || 1));
-  const rows = Array.isArray(tr.rows) && tr.rows.length ? tr.rows : null;
   if(field === 'cells'){
-    // With a 2D grid in play there is no single row for an edited TOTAL to
-    // become — row 0 absorbs it (the same "legacy fields describe row 0"
-    // rule buildTrayLink already uses), and the Grid rows section is where
-    // the other rows get their own counts.
-    if(rows) rows[0].nCells = v; else tr.nCells = v;   // per-cell untouched; total follows
+    tr.nCells = v;                                    // per-cell untouched; total follows
   }else{
-    const wantPer = field === 'total' ? v/trayCellsTotal(tr) : v;
+    const wantPer = field === 'total' ? v/Math.max(1, Math.round(tr.nCells || 1)) : v;
     const others = Math.max(1, col.nx*col.ny);
     col.perStack = Math.max(1, Math.round(wantPer/others));
   }
@@ -1851,11 +1836,10 @@ function trayAutoDims(){
     // here would let the displayed auto disagree with the tray actually built.
     // (It did: this held `env.W + 2*side` for the width, which a multi-stack
     // collation inflated by a whole product.)
-    const {cellLen, cellWid} = trayAutoCells(build.project);
-    const cellH = cellWid/2;                     // depth follows the auto width
+    const {cellLen, cellWid, cellH, cradleR} = trayAutoCells(build.project);
     const ov = tr.params || {};
     const eff = k => (typeof ov[k] === 'number' ? ov[k] : ({cellLen, cellWid, cellH})[k]);
-    return {cellLen, cellWid, cellH,
+    return {cellLen, cellWid, cellH, cradleR,
             pitch: eff('cellWid') + (typeof ov.divider === 'number' ? ov.divider
                                      : (typeof ov.wall === 'number' ? ov.wall : 3))};
   }catch(e){ return {}; }

@@ -319,7 +319,7 @@ import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT, getCamera, NEAR_FAR_RATIO} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
 import {trayParams} from '../src/core/cookietray.js';
-import {PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
+import {PRODUCT_KEYS, PRODUCT_DEFAULTS, parseTrayLink} from '../src/core/cookietraylink.js';
 import {shelfBay} from '../src/render/shelf3d.js';
 import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
 import {COST_DEFAULTS, rateToDisplay, rateFromDisplay, FT2_PER_M2} from '../src/core/cost.js';
@@ -1905,31 +1905,118 @@ await (async () => {
       throw new Error('vacuous fixture: the even spread equals the real pitch (endClearance 0?)');
   });
 
-  t('tray render GRID: each row\'s trough floor sits at the SHARED rim minus its OWN cellH, not one floor for the whole tray', () => {
-    // The 2D grid (rows) puts channels of different depth side by side. Every
-    // row opens at the same flat rim, so a shallow row's floor sits HIGHER
-    // than a deep row's -- never at one shared floor plane. Isolated by mesh
-    // INSERTION ORDER (buildTray3d's own loop: 8 fixed outer-body/flange/lip
-    // meshes, then 3 per cell -- sweep + 2 end caps -- per row in row order),
-    // not by scanning the whole group, because the outer body's own base cap
-    // sits at y0 (below every trough floor) and would otherwise contaminate
-    // a naive global minimum.
-    const p = trayParams({rows: [
-      {nCells: 1, cellLen: 100, cellWid: 40, cellH: 10, cradleR: 5},
-      {nCells: 1, cellLen: 100, cellWid: 40, cellH: 30, cradleR: 5}
-    ]});
+  t('tray render GRID: every pocket\'s trough floor sits at the SAME rim-minus-cellH plane, and a shorter row\'s pocket is CENTERED under the widest row\'s span', () => {
+    // GROUND-TRUTH CORRECTION: the real Cookie-Tray grid keeps cell SIZE
+    // (cellH included) uniform across the whole tray -- only pocket COUNT
+    // varies row to row, via nColsPerRow (cookietray.js's header). This
+    // replaces an earlier version of this pin that tested per-ROW cellH
+    // variation, which is not how the real app's grid works. Isolated by
+    // mesh INSERTION ORDER (buildTray3d's own loop: 8 fixed outer-body/
+    // flange/lip meshes, then row-major pockets, 3 meshes each -- sweep +
+    // 2 end caps -- then ONE shared rim-land mesh last), not by scanning
+    // the whole group, because the outer body's own base cap sits at y0
+    // (below every trough floor) and would otherwise contaminate a naive
+    // global minimum.
+    const p = trayParams({wall: 3, colDivider: 3, cellLen: 100, cellWid: 40, cellH: 22, cradleR: 5,
+      nCells: 2, nColsPerRow: [1, 2]});                  // row 0: 1 pocket; row 1 (widest): 2
+    eq(p.cols, [1, 2], 'fixture must actually have differing pocket counts per row:');
     const {group} = buildTray3d(p, null);
-    if(group.children.length < 14) throw new Error(`expected >= 14 children, got ${group.children.length}`);
+    const wantChildren = 8 + 3*(1 + 2) + 1;              // fixed + 3*pockets + rim land
+    eq(group.children.length, wantChildren, `expected ${wantChildren} children:`);
     const meshMinY = mesh => {
       const pos = mesh.geometry.attributes.position, m = mesh.matrixWorld, v = new THREE.Vector3();
       let min = Infinity;
       for(let i = 0; i < pos.count; i++){ v.fromBufferAttribute(pos, i).applyMatrix4(m); if(v.y < min) min = v.y; }
       return min;
     };
+    const meshCenterX = mesh => {
+      const pos = mesh.geometry.attributes.position, m = mesh.matrixWorld, v = new THREE.Vector3();
+      let min = Infinity, max = -Infinity;
+      for(let i = 0; i < pos.count; i++){ v.fromBufferAttribute(pos, i).applyMatrix4(m); min = Math.min(min, v.x); max = Math.max(max, v.x); }
+      return (min + max)/2;
+    };
     const y0 = -p.overallH/2, rimY = y0 + p.H;
-    approx(meshMinY(group.children[8]), rimY - p.rows[0].cellH, 'row 0 (shallow) trough floor:');
-    approx(meshMinY(group.children[11]), rimY - p.rows[1].cellH, 'row 1 (deep) trough floor:');
-    if(Math.abs(p.rows[0].cellH - p.rows[1].cellH) < 1) throw new Error('vacuous fixture: rows must differ in depth');
+    // row 0's single pocket (children[8..10]), row 1's two pockets ([11..13], [14..16])
+    approx(meshMinY(group.children[8]),  rimY - p.cellH, 'row 0 pocket 0 trough floor:');
+    approx(meshMinY(group.children[11]), rimY - p.cellH, 'row 1 pocket 0 trough floor:');
+    approx(meshMinY(group.children[14]), rimY - p.cellH, 'row 1 pocket 1 trough floor -- SAME depth as every other pocket:');
+    // row 1 (2 pockets) spans symmetrically about the tray's own centre line;
+    // row 0's lone pocket must sit centered on that same line, not flush to
+    // one edge (trayParams/tray3d's own centering rule -- see cookietray.js)
+    const row1Center = (meshCenterX(group.children[11]) + meshCenterX(group.children[14]))/2;
+    approx(row1Center, 0, 'row 1 (widest) is itself centred on the tray:');
+    approx(meshCenterX(group.children[8]), row1Center, 'row 0\'s single pocket centres under row 1\'s span:');
+  });
+
+  t('tray render: a REAL Cookie-Tray share link imports, fits, and renders with every product inside its own pocket -- no ghost instances', () => {
+    // A user supplied a real link (?cl=48&cr=2.5&nc=2&pkm=stack&qty=7&cpc=2)
+    // as the ground-truth-correction task's own acceptance test: "ensure no
+    // product is glitching through the tray and renders correctly". Runs the
+    // exact import path applyTrayLink uses (parseTrayLink -> project.tray/
+    // collation -> resolveActiveRow -> collate() -> buildTray3d), end to end.
+    const LINK = 'https://trtle4.github.io/Cookie-Tray/?cl=48&cr=2.5&nc=2&pkm=stack&qty=7&cpc=2';
+    const parsed = parseTrayLink(LINK);
+    ok(parsed, 'link must parse');
+    const p = newProject();
+    p.interlayer = 'tray';
+    const tr = p.tray;
+    tr.nCells = parsed.nCells;
+    tr.params = {...parsed.params};
+    tr.nColsPerRow = parsed.nColsPerRow || null;
+    const pr = parsed.product;
+    const piece = pr.productType === 'round'
+      ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
+      : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
+    const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+    const stack = pr.packMode === 'stack';
+    Object.assign(p.primary.collation, {
+      piece, pieceOrientation: stack ? 'flat' : 'on-edge', stackAxis: stack ? 'Z' : 'X',
+      perStack: perCell, nx: 1, ny: 1
+    });
+
+    const row = resolveActiveRow(p, '1mm');
+    ok(row.tray.fits, `tray must fit, misfitReason=${row.tray.misfitReason}`);
+
+    const col = collate(p.primary.collation);
+    const contents = {piece, stackAxis: p.primary.collation.stackAxis, perCell, pieces: col.pieces};
+    const {group} = buildTray3d(row.tray.params, contents);
+    let inst = null;
+    group.traverse(o => { if(o.isInstancedMesh) inst = o; });
+    ok(inst, 'product instances must be drawn');
+    // GHOST-INSTANCE regression: buildTray3d used to size the InstancedMesh
+    // as per*pockets.length (every pocket across every row), not per*nCells
+    // (each row gets exactly ONE row's worth) -- with nCols=2 that allocated
+    // double the real count, leaving the surplus half with an uninitialized
+    // identity matrix (a product rendered at the tray's local origin).
+    eq(inst.count, perCell*row.tray.params.nCells,
+       `expected exactly ${perCell*row.tray.params.nCells} instances (no ghosts), got ${inst.count}`);
+
+    const P = row.tray.params;
+    const rimY = -P.overallH/2 + P.H, floorY = rimY - P.cellH;
+    const rowSpanMax = P.topL - 2*P.wall;
+    const pockets = [];
+    for(let r = 0; r < P.nCells; r++){
+      const cz = -P.topW/2 + P.wall + P.cellWid/2 + r*(P.cellWid + P.divider);
+      const colsInRow = P.cols[r];
+      const rowSpan = colsInRow*P.cellLen + (colsInRow - 1)*P.colDivider;
+      const rowX0 = -rowSpanMax/2 + (rowSpanMax - rowSpan)/2;
+      for(let c = 0; c < colsInRow; c++)
+        pockets.push({cx: rowX0 + P.cellLen/2 + c*(P.cellLen + P.colDivider), cz});
+    }
+    const M = new THREE.Matrix4(), v = new THREE.Vector3();
+    let outOfBounds = 0, belowFloor = 0, beyondRim = 0;
+    for(let i = 0; i < inst.count; i++){
+      inst.getMatrixAt(i, M);
+      v.setFromMatrixPosition(M);
+      const inAnyPocket = pockets.some(pk =>
+        Math.abs(v.x - pk.cx) <= P.cellLen/2 + 1e-6 && Math.abs(v.z - pk.cz) <= P.cellWid/2 + 1e-6);
+      if(!inAnyPocket) outOfBounds++;
+      if(v.y < floorY - 1e-6) belowFloor++;
+      if(Math.abs(v.x) > P.topL/2 + 1e-6 || Math.abs(v.z) > P.topW/2 + 1e-6) beyondRim++;
+    }
+    ok(outOfBounds === 0, `${outOfBounds}/${inst.count} instances centred outside every pocket's own footprint`);
+    ok(belowFloor === 0, `${belowFloor}/${inst.count} instances below the trough floor`);
+    ok(beyondRim === 0, `${beyondRim}/${inst.count} instances beyond the tray's own rim`);
   });
 
   t('tray STL: well-formed triangles whose bbox is the tray box', () => {

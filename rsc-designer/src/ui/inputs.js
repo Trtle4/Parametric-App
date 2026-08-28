@@ -779,32 +779,33 @@ export function mountTray(project, m){
   const auto = m.autoDims || {};
   const q = m.quantities ? m.quantities() : {cells: tr.nCells, perCell: 0, total: 0};
 
-  // THE 2D GRID. tr.rows null = the legacy single row (this whole section's
-  // default, bit-identical to before it existed); a non-empty array is N
-  // independent rows, each its own cell count — cell SIZE stays auto-derived
-  // per row from the same product (see cookietray.js packPitchOf's doc: a
-  // row's own count does not change what its auto cell length/width comes
-  // out to, since perCell is the same product spread over that row's own
-  // cells), which is why rows/size overrides beyond count are a save-file/
-  // Cookie-Tray-link-level capability the core already carries even though
-  // this rail's row list only edits counts — the common, useful case (an
-  // uneven number of channels per row) needs nothing more.
-  const rows = Array.isArray(tr.rows) && tr.rows.length ? tr.rows : null;
-  const gridOn = !!rows;
+  // THE 2D GRID. Cell SIZE (length/width/depth/cradle) is uniform across
+  // the whole tray — the real Cookie-Tray app never varies it row to row —
+  // so the only thing that varies is pocket COUNT: `nCols` splits every
+  // row's own length into that many pockets side by side (uniform, the
+  // common case); `nColsPerRow`, one entry per row, overrides it row by
+  // row for an asymmetric grid (a shorter row is centered — trayParams/
+  // tray3d/tray2d all do this from `p.cols` already). A stored array whose
+  // length no longer matches `nCells` (the tray's row count just changed)
+  // is treated as absent here — solveTrayStage does the same — rather than
+  // edited half-stale; re-enabling Custom reseeds it from the current count.
+  const nRows = Math.max(1, Math.round(tr.nCells || 1));
+  const perRow = Array.isArray(tr.nColsPerRow) && tr.nColsPerRow.length === nRows ? tr.nColsPerRow : null;
+  const gridOn = !!perRow;
+  const nCols = Math.max(1, Math.round(D('nCols', 1)));
 
   host.innerHTML =
     `<h2 style="margin-top:6px">Tray</h2>` +
     // THE shared cell count — this control and the collation panel's are two
-    // controls onto project.tray.nCells, never two stored values. With a
-    // grid in play it shows the GRID TOTAL and is read-only: there is no
-    // single row for an edited total to become (see applyTrayQuantity) —
-    // the Grid rows section below is where each row gets its own count.
+    // controls onto project.tray.nCells, never two stored values. This is
+    // ROW count (across the tray's width); it's independent of the Grid
+    // section below, which only splits each row's own length into pockets.
     // The three linked quantities, all editable here and on the Product rail.
     // CELLS IS THE ANCHOR: it moves only when the user edits cells. Still just
     // two stored values (tray.nCells + the collation's grid) — total is derived
     // and writable, resolving to a per-cell rather than becoming a third number.
-    `<div class="field"><label>Cells <span class="hint">${gridOn ? 'across the grid — edit rows below' : 'across the tray'}</span></label>
-      <div class="inp"><input id="tr_nCells" type="number" min="1" step="1" value="${q.cells}"${gridOn ? ' disabled' : ''}></div></div>` +
+    `<div class="field"><label>Cells <span class="hint">rows, across the tray</span></label>
+      <div class="inp"><input id="tr_nCells" type="number" min="1" step="1" value="${q.cells}"></div></div>` +
     `<div class="field"><label>Products per cell <span class="hint">total follows</span></label>
       <div class="inp"><input id="tr_perCell" type="number" min="1" step="1" value="${q.perCell}"></div></div>` +
     `<div class="field"><label>Total quantity <span class="hint">per-cell absorbs</span></label>
@@ -814,23 +815,21 @@ export function mountTray(project, m){
     autoF('cellH', 'Cell depth', 'trough', auto.cellH) +
     `<div class="field"><label>Cell pitch <span class="hint">centre to centre — derived</span></label>
       <div class="inp"><input id="tr_pitch" type="number" value="${auto.pitch != null ? L(auto.pitch) : ''}" disabled><span class="unit">${unit}</span></div></div>` +
-    `<h2 style="margin-top:6px">Grid rows <span class="hint">an asymmetric grid — different channel counts per row</span></h2>` +
+    `<h2 style="margin-top:6px">Grid <span class="hint">split each row's own length into pockets, side by side</span></h2>` +
     `<div class="field"><label>Layout</label>
       <div class="seg" id="tr_gridMode" role="group">
-        <button type="button" data-v="single"${gridOn ? '' : ' class="on"'}>Single row</button>
-        <button type="button" data-v="multi"${gridOn ? ' class="on"' : ''}>Multiple rows</button>
+        <button type="button" data-v="uniform"${gridOn ? '' : ' class="on"'}>Uniform</button>
+        <button type="button" data-v="custom"${gridOn ? ' class="on"' : ''}>Custom</button>
       </div></div>` +
-    (gridOn ? rows.map((r, i) =>
-      `<div class="field" style="display:flex;align-items:flex-end;gap:8px">
-        <div style="flex:1"><label>Row ${i + 1} <span class="hint">cells</span></label>
-          <div class="inp"><input id="tr_row_${i}" type="number" min="1" step="1" value="${Math.max(1, Math.round(r.nCells || 1))}"></div></div>
-        <button type="button" class="btn btnlink" id="tr_rowRm_${i}"${rows.length <= 1 ? ' disabled' : ''} style="margin-bottom:2px">remove</button>
-      </div>`).join('') +
-      `<div class="field"><button type="button" class="btn btnlink" id="tr_rowAdd">+ add row</button></div>`
-      : '') +
+    (gridOn
+      ? perRow.map((c, i) =>
+        `<div class="field"><label>Row ${i + 1} <span class="hint">pockets</span></label>
+          <div class="inp"><input id="tr_col_${i}" type="number" min="1" step="1" value="${Math.max(1, Math.round(c || 1))}"></div></div>`).join('')
+      : plainF('nCols', 'Columns', 'pockets per row, side by side', nCols, 1, 1)) +
+    (nCols > 1 || gridOn ? autoF('colDivider', 'Pocket divider', 'between pockets in a row', D('divider', D('wall', 3))) : '') +
     `<h2 style="margin-top:6px">Tray shell</h2>` +
     numF('wall', 'Outer wall', 'thickness', D('wall', 3)) +
-    numF('divider', 'Divider', 'between cells', D('divider', D('wall', 3))) +
+    numF('divider', 'Divider', 'between rows', D('divider', D('wall', 3))) +
     numF('floor', 'Floor', 'thickness', D('floor', 2.5)) +
     plainF('draftDeg', 'Draft', 'degrees', D('draftDeg', 5), 0.5) +
     numF('stripL', 'Flange — length sides', 'strip', D('stripL', 5)) +
@@ -862,7 +861,7 @@ export function mountTray(project, m){
     const rst = el(`tr_${key}_auto`);
     if(rst) rst.addEventListener('click', () => { delete ov[key]; m.onInput(); m.remount && m.remount(); });
   };
-  ['cellLen', 'cellWid', 'cellH'].forEach(bindAuto);
+  ['cellLen', 'cellWid', 'cellH', 'colDivider'].forEach(bindAuto);
   for(const k of ['wall', 'divider', 'floor', 'stripL', 'stripW', 'lipH', 'flangeT'])
     el('tr_' + k).addEventListener('input', () => { ov[k] = mmv('tr_' + k); m.onInput(); });
   el('tr_draftDeg').addEventListener('input', () => { ov.draftDeg = Math.max(0, +el('tr_draftDeg').value || 0); m.onInput(); });
@@ -871,35 +870,29 @@ export function mountTray(project, m){
     ov.longAxis = b.dataset.v; m.onInput(); m.remount && m.remount();
   }));
 
-  // ---- the 2D grid: single row <-> multiple rows, and each row's own count.
-  // ATOMIC: switching modes writes tr.rows in ONE assignment (null, or a
-  // fresh array) — never a partial edit that could leave nCells and rows
-  // disagreeing about which one the tray stage should read. ----
+  // ---- the grid: uniform Columns <-> a per-row Custom override.
+  // ATOMIC: switching modes writes tr.nColsPerRow in ONE assignment (null,
+  // or a fresh nCells-length array) — never a partial edit that could leave
+  // it disagreeing in length with nCells (solveTrayStage's own guard). ----
+  if(!gridOn) el('tr_nCols').addEventListener('input', () => {
+    ov.nCols = Math.max(1, Math.round(+el('tr_nCols').value || 1)); m.onInput(); m.remount && m.remount();
+  });
   el('tr_gridMode').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-    if(b.dataset.v === 'single'){
-      tr.rows = null;
+    if(b.dataset.v === 'uniform'){
+      tr.nColsPerRow = null;
     }else if(!gridOn){
-      // seed two rows from the current single count, so turning the mode on
-      // shows something to edit rather than an empty list
-      tr.rows = [{nCells: tr.nCells}, {nCells: tr.nCells}];
-    }else return;                                     // already multi; no-op
+      // seed from the current uniform count, so Custom shows something to
+      // edit rather than an empty grid
+      tr.nColsPerRow = new Array(nRows).fill(nCols);
+    }else return;                                     // already custom; no-op
     m.onInput(); m.remount && m.remount();
   }));
-  if(gridOn){
-    rows.forEach((r, i) => {
-      el(`tr_row_${i}`).addEventListener('input', () => {
-        r.nCells = Math.max(1, Math.round(+el(`tr_row_${i}`).value || 1));
-        m.onInput();
-      });
-      const rm = el(`tr_rowRm_${i}`);
-      if(rm && rows.length > 1) rm.addEventListener('click', () => {
-        rows.splice(i, 1); m.onInput(); m.remount && m.remount();
-      });
+  if(gridOn) perRow.forEach((c, i) => {
+    el(`tr_col_${i}`).addEventListener('input', () => {
+      perRow[i] = Math.max(1, Math.round(+el(`tr_col_${i}`).value || 1));
+      m.onInput();
     });
-    el('tr_rowAdd').addEventListener('click', () => {
-      rows.push({nCells: 1}); m.onInput(); m.remount && m.remount();
-    });
-  }
+  });
 
   // ---- the three linked quantities: one rule in, one derivation out ----
   bindQuantities({cells: 'tr_nCells', perCell: 'tr_perCell', total: 'tr_total'}, m);
