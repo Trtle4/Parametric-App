@@ -288,6 +288,14 @@
   .stage{
     position:relative;display:flex;align-items:center;justify-content:center;
     overflow:hidden;min-height:360px;
+  }
+  /* the render itself + everything anchored ON it — see the markup comment
+     next to <div class="stagecanvas"> for why this is a separate box from
+     .stage. inset:0 here is exactly what stagegrid/svgWrap/cvWrap/etc used to
+     do directly, so on desktop this is a no-op relative to before the
+     wrapper existed. */
+  .stagecanvas{
+    position:absolute;inset:0;
     background:radial-gradient(120% 90% at 50% 0%, #F4F7F8 0%, #E4E9ED 70%, #DCE2E7 100%);
   }
   .stagegrid{
@@ -574,28 +582,66 @@
     }
     .brand .sub{display:none}          /* redundant on a narrow header */
     .brand .name{white-space:normal}
+    /* The header (.actions wraps to several rows at phone width) is a real
+       contributor to how much scrolling stands between load and the sticky
+       canvas, and was tempting to fix the same way as the chain strip below
+       (one scrollable row). Deliberately NOT done: test/uisync.test.html
+       already pins #btnStateSheet/#btnExplodedSheet reachable via onScreen
+       (bounding rect fully inside the viewport) once their gate is met — a
+       horizontally-scrolling header trades "every button visible, taller
+       header" for "shorter header, most buttons need a horizontal scroll
+       first", which broke that pin immediately (confirmed, then reverted).
+       That pin encodes a real requirement (these exports must not need a
+       second gesture to discover), so out of scope here — the render/
+       controls-over-canvas fix below does not depend on the header's
+       height, only on .toolbar/.mode3d no longer floating over .stagecanvas.
+       Left as a follow-up: shrinking the header needs a different technique
+       (e.g. fewer buttons visible at once with the rest under a menu) that
+       does not just relocate the reachability problem onto scrollLeft. */
+    /* Chain strip: at flex-wrap:wrap this was consuming roughly the top
+       third of the screen before the render even started (every level node
+       full-size, wrapping across several rows). One horizontally-scrolling
+       row instead; inactive nodes collapse to just their level name (the
+       style/count sub-label + enable/disable chip are still there for the
+       ACTIVE node, which is the one being edited and the one worth the
+       space) — same nodes, same order, same click targets, just narrower
+       when not the thing you're looking at. */
+    .chainStrip{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:7px 12px}
+    .cs-node, .cs-arrow{flex:0 0 auto}
+    .cs-node:not(.active) .cs-style, .cs-node:not(.active) .cs-tog{display:none}
     /* single column, RENDER PINNED on top with its own space; the control
        columns flow beneath it and the PAGE scrolls — nothing floats over the
        canvas. The rails must NOT shrink+internal-scroll (they do at flex
        default, since they're overflow:auto), or the page can't grow: pin their
        flex and let them size to content so the document scrolls as one. */
     main{min-height:0}
-    .stage{order:1;position:sticky;top:0;z-index:6;height:46vh;min-height:300px;flex:none;
+    /* .stage stops being the pinned/sized box and goes back to being a plain
+       flow container: overflow:hidden (needed on desktop to clip the grid
+       backdrop/canvas to .stage's own edges) would otherwise clip .toolbar/
+       .mode3d once they're normal in-flow children below .stagecanvas rather
+       than absolutely positioned inside it. */
+    .stage{order:1;position:static;overflow:visible;flex:none;min-height:0;display:block}
+    /* .stagecanvas takes over being "the hero viewport": pinned via sticky
+       (not .stage — .stage now also contains the in-flow toolbar/mode3d
+       stacked below it, and pinning THAT would pin them too), a guaranteed
+       height so it is reachable without first scrolling past the header/
+       chain strip, min-height as a floor on very short viewports. */
+    .stagecanvas{position:sticky;top:0;z-index:6;height:50vh;min-height:300px;
       border-bottom:1px solid var(--line);box-shadow:0 6px 14px rgba(20,30,40,.10)}
-    /* The 3D toolbar (.mode3d) floats absolutely inside .stage, which clips
-       (overflow:hidden — needed to mask the canvas/SVG at its own edges, not
-       written with this toolbar in mind). At the 46vh/min 300px stage height
-       real phones actually render at, a full depth's worth of segs (Fold,
-       depth select, cycle arrows, Solid/Cutaway, Explode, Dims, Grid/White)
-       does not fit in one screenful — its trailing rows were being clipped
-       into invisibility rather than merely inconvenient to reach. Anchoring
-       both top AND bottom (instead of leaving height implicit) makes the
-       toolbar's own box exactly as tall as the room .stage actually has, and
-       overflow-y:auto makes whatever doesn't fit reachable by scrolling the
-       toolbar itself — same fix shape as the rail's own overflow:auto on
-       desktop, applied to the one other place controls can run taller than
-       their container. */
-    .mode3d{bottom:8px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    /* .toolbar/.mode3d were floating PILLS positioned absolute/centred over
+       the canvas — at phone width, stacked and wrapped, they covered nearly
+       the whole stage and every touch meant for orbit/pan landed on a
+       button instead (confirmed: pointer-events:none on these made pinch/
+       orbit work immediately). Now normal in-flow siblings of .stagecanvas,
+       stacking BENEATH it in the scrollable page instead of on top of it —
+       reset every absolute-positioning property so nothing still tries to
+       centre/float over a box it is no longer inside. touchAction stays
+       'none' on the canvas itself (fold3d.js) regardless — this is a layout
+       move, not a change to how the canvas reads gestures. */
+    .toolbar, .mode3d{
+      position:static;left:auto;top:auto;bottom:auto;right:auto;transform:none;
+      max-width:none;width:100%;margin:8px 0 0;justify-content:center;
+    }
     .rail.left{order:2;border-right:0;border-bottom:1px solid var(--line)}
     .rail.right{order:3;border-left:0;border-bottom:1px solid var(--line)}
     .rail{max-height:none;overflow:visible;flex:none}
@@ -950,11 +996,29 @@
 
   <!-- CENTER: drawing (the hero) -->
   <section class="stage">
-    <div class="stagegrid"></div>
-    <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
-    <div id="cvWrap"></div>
-    <svg id="dimsOverlay" xmlns="http://www.w3.org/2000/svg" style="display:none"></svg>
-    <div id="buildWrap"></div>
+    <!-- The render + everything anchored directly ON it (grid backdrop, the
+         2D/3D/Build surfaces, dimension callouts). Its own wrapper — not just
+         .stage's direct children — because at the mobile breakpoint this box
+         becomes the thing that's pinned/sized (position:sticky, a guaranteed
+         height); .toolbar/.mode3d below stay OUTSIDE it and reflow into
+         normal document flow beneath it. On desktop .stagecanvas is simply
+         inset:0 inside .stage, i.e. behaviourally identical to before this
+         wrapper existed. -->
+    <div class="stagecanvas">
+      <div class="stagegrid"></div>
+      <div id="svgWrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div id="cvWrap"></div>
+      <svg id="dimsOverlay" xmlns="http://www.w3.org/2000/svg" style="display:none"></svg>
+      <div id="buildWrap"></div>
+      <div class="viewcube" id="viewCubeWrap" style="display:none">
+        <div class="vc-stage" id="viewCubeStage"></div>
+        <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
+        <button class="vc-arrow bottom" id="viewCubeBottom" title="Rotate down 15°">&#9660;</button>
+        <button class="vc-arrow left" id="viewCubeLeft" title="Rotate left 15°">&#9664;</button>
+        <button class="vc-arrow right" id="viewCubeRight" title="Rotate right 15°">&#9654;</button>
+        <button id="viewCubeHome" title="Home view (three-quarter isometric)">&#8962;</button>
+      </div>
+    </div>
 
     <div class="toolbar" id="viewToolbar">
       <div class="seg" role="tablist">
@@ -1014,14 +1078,6 @@
       <div class="seg" id="shBg"><button id="shBgGrid" class="on" title="Drafting grid — scale reference">Grid</button><button id="shBgWhite" title="Plain white — clean for screenshots and export">White</button></div>
     </div>
 
-    <div class="viewcube" id="viewCubeWrap" style="display:none">
-      <div class="vc-stage" id="viewCubeStage"></div>
-      <button class="vc-arrow top" id="viewCubeTop" title="Rotate up 15°">&#9650;</button>
-      <button class="vc-arrow bottom" id="viewCubeBottom" title="Rotate down 15°">&#9660;</button>
-      <button class="vc-arrow left" id="viewCubeLeft" title="Rotate left 15°">&#9664;</button>
-      <button class="vc-arrow right" id="viewCubeRight" title="Rotate right 15°">&#9654;</button>
-      <button id="viewCubeHome" title="Home view (three-quarter isometric)">&#8962;</button>
-    </div>
   </section>
 
   <!-- RIGHT: secondary params (from the style registry) + readout -->

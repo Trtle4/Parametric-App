@@ -752,3 +752,138 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
      from the start — and diffing `cut`/`crease`/`outer`/`inner`) confirms
      the swap is a pure relabelling, never a second, disagreeing
      computation.
+- **SUPERSEDED then RESOLVED (Cookie-Tray 2D-grid task, then the
+  ground-truth-correction task): the tray is a genuine 2D grid, and
+  round product carries a real packMode choice — but the shape of both was
+  GUESSED wrong the first time.** The original version of this entry (below,
+  now rewritten) described a grid of N independent ROWS, each its own cell
+  SIZE, plus a round-only `orientation`/`ori` field whose "flat" mode widened
+  the cell by pitching on diameter. That was built with `add_repo` for the
+  real Cookie-Tray blocked three times, so it was a plausible invention, not
+  a reading — and it was wrong on both counts. The correction task got real
+  ground truth by fetching the DEPLOYED APP's own production JS bundle
+  directly (`curl` through the proxy; `add_repo`/`WebFetch` both still
+  couldn't reach usable source — WebFetch strips `<script>` tags and never
+  executes JS, so a client-rendered SPA reads as empty to it), reading the
+  minified `trayParams`/`deriveTrayParams`/product-placement functions out of
+  it, and cross-checking the port NUMERICALLY against a real share link a
+  user supplied (`?cl=48&cr=2.5&nc=2&pkm=stack&qty=7&cpc=2`) — the three
+  derived values it predicts (cellLen, cradleR, cellH) matched the link's own
+  stated/defaulted values exactly.
+
+  THE REAL MODEL, verified: cell SIZE (`cellLen`/`cellWid`/`cellH`/`cradleR`)
+  is UNIFORM across the WHOLE tray — never varies row to row. What varies is
+  pocket COUNT: each of the `nCells` rows (channels across the tray's width)
+  is split along its OWN length into pockets — `nCols` pockets uniformly, or
+  `nColsPerRow` (one entry per row) for an asymmetric grid — separated by
+  `colDivider` (a real, distinct field from `divider`, the row-to-row wall).
+  A row with fewer pockets than the widest row is CENTERED within the tray's
+  own length, which follows the WIDEST row (`topL`); `topW` is the plain
+  single-row-equivalent formula, untouched by pockets. `packMode`
+  ('standing'|'stack') requires NO new field at all: it maps directly onto
+  the pre-existing collation `stackAxis` ('X'/'Z') — a Z-stacked collation
+  and a Cookie-Tray "stack" pocket are the same physical arrangement — and
+  `packPitchOf` is ALWAYS the piece's thickness regardless of packMode
+  (reverted from the guessed "diameter when flat" rule); what packMode
+  actually swaps is WHICH of `cellLen`/`cellH` scales with the stacked/spread
+  count and which takes the product's other fixed extent (+ a flat 4mm
+  margin) — `deriveTrayParams`'s doc comment carries the exact formulas.
+  `cookietray.js`'s own header cites the link cross-check as a live pin
+  (`GROUND TRUTH:` in cookietray.test.html), not just prose.
+
+  EVERY POCKET IN EVERY ROW SHARES THE SAME `cellH` and opens at the SAME
+  shared rim — there is no per-row depth anymore (the guessed model's `H =
+  floor + max(row.cellH)` is gone; it is simply `floor + cellH`). Both
+  renderers apply this identically: `tray3d.js`'s pocket loop is row-major
+  (row → its own `cols[row]` pockets), each pocket's floor at `rimY - cellH`
+  (uniform), with the row's own span centered under `topL` exactly as
+  `trayParams` computes it; `tray2d.js`'s `planCells()` does the same
+  centering math for its TOP-view cell mouths and its elevations' trough
+  rectangles/cradle arcs. A browser-loaded pin driving the REAL THREE.js
+  geometry (`tray render GRID:...`, uisync.test.html — plus an equivalent
+  standalone harness, since this file has the same CDN/iframe environment
+  limitation `dxf.test.html` already documents and could not be driven to
+  completion in this sandbox; confirmed via `git stash` that the identical
+  hang exists on the unmodified baseline) checks that every pocket's floor
+  lands on that ONE shared plane (not the guessed model's per-row variation)
+  and that a shorter row's lone pocket centers under the widest row's span —
+  mutation-tested by removing the centering term and confirming the pin
+  catches a ~52mm offset.
+
+  THE FIT CHECK (`solveTrayStage`, project.js) has two axes for a reason
+  that is easy to get backwards: WIDTH is always checked against the
+  collation's own ACTUAL footprint (`env.W`, sensitive to `nx`/`ny`/
+  `stackAxis`) — pockets split a row along its LENGTH only, so a
+  wider-than-one-stack collation must still fail regardless of `nCols`; an
+  early draft of the correction compared width against the AUTO-derived
+  `cellWid` instead, which is TAUTOLOGICAL whenever `cellWid` is auto (auto
+  IS the resolved value then, by construction) and silently let a
+  two-stacks-wide collation "fit" a one-stack-wide cell — caught by
+  mutation-testing the `TRAY:` and `GRID:` misfit pins, both of which
+  immediately went green on the broken comparison. LENGTH stays the same
+  `env.L` check at `nCols === 1` (the common case, bit-identical to every
+  pre-grid fixture); only once `nCols > 1` does it switch to the
+  `auto.cellLen` (pocket-aware, `perCol`-based) comparison, because `env.L`
+  by then describes a run collate() assembled for the WHOLE row, not one
+  pocket's own share.
+
+  THE COOKIE-TRAY LINK: the guessed `rw` (JSON-encoded per-row sizes) and
+  `ori` keys are gone, replaced by the real ones the bundle's own key maps
+  name — `ncr` (comma-separated `nColsPerRow`, sent only when a custom
+  per-row array is set — mirrors the real app's own Uniform/Custom split)
+  and `pkm` (packMode, `'standing'`/`'stack'`, `PRODUCT_DEFAULTS.packMode`
+  verbatim from the bundle). A real Cookie-Tray link never sends either key
+  and imports exactly as before (packMode defaults to `'standing'`). THE
+  RAIL (`inputs.js` `mountTray`) exposes the grid as a Columns field (the
+  uniform `nCols`) plus a Uniform/Custom toggle that reveals one pocket-count
+  field per row when Custom — replacing the old Grid-rows UI, which edited
+  ROW cell-counts (a concept that no longer exists; `nCells`, the row count,
+  is its own always-editable field now, independent of the grid toggle).
+
+  A FABRICATED TEST FIXTURE was found and removed during the correction: an
+  earlier version of `cookietray.test.html` claimed differential fidelity
+  against "the upstream Python" (`cookie_tray/params.py` + `calculator.py`,
+  86 vectors in a committed `cookietray.vectors.json`) — invented during the
+  guessed-model task, when no real source was reachable. The real app has no
+  Python anywhere in it (confirmed by reading its actual JS bundle); the
+  fixture and its three pins were deleted rather than reconciled, replaced by
+  the live share-link cross-check described above. Recorded here as the same
+  class of failure the "confirm the specimen" entries below warn about, one
+  level up: not an instrument pointed at nothing, but an instrument pointed
+  at something that was never real. Four `resolveWrapContents` differential
+  fixtures (frozen expected numbers from the pre-refactor chain) needed
+  RECAPTURING, not because they were fabricated but because the ground-truth
+  fix corrected a real bug in the auto cell-depth derivation (it had been
+  guessing `cellH = cellWid/2`; the real formula ties `cellH` to the
+  product's own vertical extent or its paced count depending on packMode) —
+  the two no-tray fixtures in that same sweep were untouched, confirming the
+  formula fix was scoped to exactly the path it changed.
+
+  BOX LAY-FLAT remains investigated and deliberately not built, for the
+  reason the original entry gave (below) — that reasoning never depended on
+  the row model and still holds.
+
+  ---
+
+  *Original entry, superseded above — kept for the box-lay-flat reasoning
+  and as a record of what was guessed and why it seemed plausible at the
+  time:* the tray was described as a grid of ROWS, each its own cell size
+  (`TRAY_DEFAULTS.rows`, `row.span` summed into `topW`, `H = floor +
+  max(row.cellH)`, per-row floors in both renderers), with round product
+  lay-flat as a `pieceOrientation`-branched `packPitchOf(piece, orientation)`
+  pacing by diameter when flat vs thickness on-edge, and a Cookie-Tray link
+  carrying invented `rw`/`ori` keys explicitly marked "unverified against the
+  real upstream" (repo access was requested and refused, twice). BOX LAY-FLAT
+  WAS INVESTIGATED AND DELIBERATELY NOT BUILT: rotating a box's W/H for
+  "on-edge" would require every renderer that draws a bare piece
+  (`product2d.js`, `hierarchy3d.js`, `nest3d.js`) to become orientation-aware
+  too, or risk exactly the historical "standing coin" mesh/envelope mismatch
+  — and `pieceOrientation:'on-edge'` on a box is ALREADY reachable today (the
+  product rail's On Edge toggle, and the `onedge` collation preset) with a
+  real, different, correct meaning (stack-as-sleeve along L, no rotation —
+  collation.js's own doc: "boxes have no round axis"); overloading it would
+  silently change that existing, working behaviour. A box's L/W/H are
+  already three independent user-entered numbers, so there is no missing
+  information the way there is for a cylinder's diameter/thickness — a user
+  gets an on-edge box in a tray today by entering its dimensions in the
+  orientation they want.

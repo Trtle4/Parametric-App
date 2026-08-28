@@ -1734,17 +1734,33 @@ function applyTrayLink(text){
   const tr = build.project.tray;
   tr.nCells = parsed.nCells;
   tr.params = {...parsed.params};
+  // THE 2D GRID's per-row override: ATOMIC REPLACEMENT, same rule as the
+  // collation below — always SET (never merged with whatever grid was there
+  // before), so a link with no `ncr` (every real single-uniform-nCols link,
+  // and every link before this existed) explicitly clears back to the
+  // uniform grid rather than leaving a stale per-row array from a previous
+  // import in place.
+  tr.nColsPerRow = parsed.nColsPerRow || null;
 
   const pr = parsed.product;
   const piece = pr.productType === 'round'
     ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
     : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
   const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
-  // the product half writes the COLLATION — the one owner of per-cell
-  // content — never the tray. One assignment: piece + the grid it implies,
-  // together, so there is no window where they describe two different runs.
+  // PACKMODE maps onto the collation's own stackAxis — 'stack' (flat,
+  // stacked) is Z, matching Pile Pack; 'standing' (their default: a roll or
+  // an end-to-end run) is X, the tray's existing default. pieceOrientation
+  // is set explicitly alongside it so a round product's axis follows
+  // unambiguously (see collation.js resolvePieceOrientation); a box ignores
+  // the field regardless (see cookietray.js packPitchOf's doc), so setting
+  // it here is harmless for that shape. The product half writes the
+  // COLLATION — the one owner of per-cell content — never the tray. One
+  // assignment: piece + the grid it implies, together, so there is no
+  // window where they describe two different runs.
+  const stack = pr.packMode === 'stack';
   Object.assign(build.project.primary.collation, {
-    piece, pieceOrientation: 'on-edge', stackAxis: 'X', perStack: perCell, nx: 1, ny: 1
+    piece, pieceOrientation: stack ? 'flat' : 'on-edge', stackAxis: stack ? 'Z' : 'X',
+    perStack: perCell, nx: 1, ny: 1
   });
   projectChanged();
   mountActiveLevel();
@@ -1820,11 +1836,10 @@ function trayAutoDims(){
     // here would let the displayed auto disagree with the tray actually built.
     // (It did: this held `env.W + 2*side` for the width, which a multi-stack
     // collation inflated by a whole product.)
-    const {cellLen, cellWid} = trayAutoCells(build.project);
-    const cellH = cellWid/2;                     // depth follows the auto width
+    const {cellLen, cellWid, cellH, cradleR} = trayAutoCells(build.project);
     const ov = tr.params || {};
     const eff = k => (typeof ov[k] === 'number' ? ov[k] : ({cellLen, cellWid, cellH})[k]);
-    return {cellLen, cellWid, cellH,
+    return {cellLen, cellWid, cellH, cradleR,
             pitch: eff('cellWid') + (typeof ov.divider === 'number' ? ov.divider
                                      : (typeof ov.wall === 'number' ? ov.wall : 3))};
   }catch(e){ return {}; }

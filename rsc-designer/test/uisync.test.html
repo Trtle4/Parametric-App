@@ -68,6 +68,18 @@
 -->
 <iframe id="mobileFixture" src="../index.html"
         style="position:fixed;left:-9999px;top:0;width:390px;height:600px;border:0"></iframe>
+<!--
+  DESKTOP FIXTURE. Same reasoning as the mobile one, the other direction:
+  this file's own top-level DOM never loaded index.html's layout CSS at all
+  (see the comment above), so it cannot stand in for "desktop" either —
+  there is no .stage/.stagecanvas/.toolbar geometry in this document to
+  measure. A real index.html at a width above the 860px breakpoint, for
+  pinning that the mobile-only layout change left the wide-viewport
+  positioning (.stagecanvas absolute + inset:0, .toolbar/.mode3d centred
+  over it) untouched.
+-->
+<iframe id="desktopFixture" src="../index.html"
+        style="position:fixed;left:-9999px;top:0;width:1400px;height:900px;border:0"></iframe>
 <div id="loadNotice" style="display:none"></div>
 <div id="chainString"></div>
 <div class="brand">
@@ -306,7 +318,8 @@ import * as notify from '../src/ui/notify.js';
 import * as hier from '../src/render/hierarchy3d.js';
 import {getPivot, getDomElement, getOrbit, setOrbit, orbitPose, onFrame, capturePNG, captureOrbitPNG, HOME_ORBIT, getCamera, NEAR_FAR_RATIO} from '../src/render/fold3d.js';
 import {buildTray3d, trayToSTL} from '../src/render/tray3d.js';
-import {PRODUCT_KEYS, PRODUCT_DEFAULTS} from '../src/core/cookietraylink.js';
+import {trayParams} from '../src/core/cookietray.js';
+import {PRODUCT_KEYS, PRODUCT_DEFAULTS, parseTrayLink} from '../src/core/cookietraylink.js';
 import {shelfBay} from '../src/render/shelf3d.js';
 import {newProject, linkFor, resolveActiveRow, candidateCases} from '../src/core/project.js';
 import {COST_DEFAULTS, rateToDisplay, rateFromDisplay, FT2_PER_M2} from '../src/core/cost.js';
@@ -1890,6 +1903,120 @@ await (async () => {
     // guard the fixture: with no end clearance the even spread would coincide
     if(Math.abs(row.tray.params.cellLen/want.length - (want[1] - want[0])) < 1e-9)
       throw new Error('vacuous fixture: the even spread equals the real pitch (endClearance 0?)');
+  });
+
+  t('tray render GRID: every pocket\'s trough floor sits at the SAME rim-minus-cellH plane, and a shorter row\'s pocket is CENTERED under the widest row\'s span', () => {
+    // GROUND-TRUTH CORRECTION: the real Cookie-Tray grid keeps cell SIZE
+    // (cellH included) uniform across the whole tray -- only pocket COUNT
+    // varies row to row, via nColsPerRow (cookietray.js's header). This
+    // replaces an earlier version of this pin that tested per-ROW cellH
+    // variation, which is not how the real app's grid works. Isolated by
+    // mesh INSERTION ORDER (buildTray3d's own loop: 8 fixed outer-body/
+    // flange/lip meshes, then row-major pockets, 3 meshes each -- sweep +
+    // 2 end caps -- then ONE shared rim-land mesh last), not by scanning
+    // the whole group, because the outer body's own base cap sits at y0
+    // (below every trough floor) and would otherwise contaminate a naive
+    // global minimum.
+    const p = trayParams({wall: 3, colDivider: 3, cellLen: 100, cellWid: 40, cellH: 22, cradleR: 5,
+      nCells: 2, nColsPerRow: [1, 2]});                  // row 0: 1 pocket; row 1 (widest): 2
+    eq(p.cols, [1, 2], 'fixture must actually have differing pocket counts per row:');
+    const {group} = buildTray3d(p, null);
+    const wantChildren = 8 + 3*(1 + 2) + 1;              // fixed + 3*pockets + rim land
+    eq(group.children.length, wantChildren, `expected ${wantChildren} children:`);
+    const meshMinY = mesh => {
+      const pos = mesh.geometry.attributes.position, m = mesh.matrixWorld, v = new THREE.Vector3();
+      let min = Infinity;
+      for(let i = 0; i < pos.count; i++){ v.fromBufferAttribute(pos, i).applyMatrix4(m); if(v.y < min) min = v.y; }
+      return min;
+    };
+    const meshCenterX = mesh => {
+      const pos = mesh.geometry.attributes.position, m = mesh.matrixWorld, v = new THREE.Vector3();
+      let min = Infinity, max = -Infinity;
+      for(let i = 0; i < pos.count; i++){ v.fromBufferAttribute(pos, i).applyMatrix4(m); min = Math.min(min, v.x); max = Math.max(max, v.x); }
+      return (min + max)/2;
+    };
+    const y0 = -p.overallH/2, rimY = y0 + p.H;
+    // row 0's single pocket (children[8..10]), row 1's two pockets ([11..13], [14..16])
+    approx(meshMinY(group.children[8]),  rimY - p.cellH, 'row 0 pocket 0 trough floor:');
+    approx(meshMinY(group.children[11]), rimY - p.cellH, 'row 1 pocket 0 trough floor:');
+    approx(meshMinY(group.children[14]), rimY - p.cellH, 'row 1 pocket 1 trough floor -- SAME depth as every other pocket:');
+    // row 1 (2 pockets) spans symmetrically about the tray's own centre line;
+    // row 0's lone pocket must sit centered on that same line, not flush to
+    // one edge (trayParams/tray3d's own centering rule -- see cookietray.js)
+    const row1Center = (meshCenterX(group.children[11]) + meshCenterX(group.children[14]))/2;
+    approx(row1Center, 0, 'row 1 (widest) is itself centred on the tray:');
+    approx(meshCenterX(group.children[8]), row1Center, 'row 0\'s single pocket centres under row 1\'s span:');
+  });
+
+  t('tray render: a REAL Cookie-Tray share link imports, fits, and renders with every product inside its own pocket -- no ghost instances', () => {
+    // A user supplied a real link (?cl=48&cr=2.5&nc=2&pkm=stack&qty=7&cpc=2)
+    // as the ground-truth-correction task's own acceptance test: "ensure no
+    // product is glitching through the tray and renders correctly". Runs the
+    // exact import path applyTrayLink uses (parseTrayLink -> project.tray/
+    // collation -> resolveActiveRow -> collate() -> buildTray3d), end to end.
+    const LINK = 'https://trtle4.github.io/Cookie-Tray/?cl=48&cr=2.5&nc=2&pkm=stack&qty=7&cpc=2';
+    const parsed = parseTrayLink(LINK);
+    ok(parsed, 'link must parse');
+    const p = newProject();
+    p.interlayer = 'tray';
+    const tr = p.tray;
+    tr.nCells = parsed.nCells;
+    tr.params = {...parsed.params};
+    tr.nColsPerRow = parsed.nColsPerRow || null;
+    const pr = parsed.product;
+    const piece = pr.productType === 'round'
+      ? {kind: 'cylinder', diameter: pr.cookieDiameter, thickness: pr.cookieThickness}
+      : {kind: 'box', L: pr.productThickness, W: pr.productWidth, H: pr.productHeight};
+    const perCell = Math.max(1, Math.ceil(pr.qtyTotal/parsed.nCells));
+    const stack = pr.packMode === 'stack';
+    Object.assign(p.primary.collation, {
+      piece, pieceOrientation: stack ? 'flat' : 'on-edge', stackAxis: stack ? 'Z' : 'X',
+      perStack: perCell, nx: 1, ny: 1
+    });
+
+    const row = resolveActiveRow(p, '1mm');
+    ok(row.tray.fits, `tray must fit, misfitReason=${row.tray.misfitReason}`);
+
+    const col = collate(p.primary.collation);
+    const contents = {piece, stackAxis: p.primary.collation.stackAxis, perCell, pieces: col.pieces};
+    const {group} = buildTray3d(row.tray.params, contents);
+    let inst = null;
+    group.traverse(o => { if(o.isInstancedMesh) inst = o; });
+    ok(inst, 'product instances must be drawn');
+    // GHOST-INSTANCE regression: buildTray3d used to size the InstancedMesh
+    // as per*pockets.length (every pocket across every row), not per*nCells
+    // (each row gets exactly ONE row's worth) -- with nCols=2 that allocated
+    // double the real count, leaving the surplus half with an uninitialized
+    // identity matrix (a product rendered at the tray's local origin).
+    eq(inst.count, perCell*row.tray.params.nCells,
+       `expected exactly ${perCell*row.tray.params.nCells} instances (no ghosts), got ${inst.count}`);
+
+    const P = row.tray.params;
+    const rimY = -P.overallH/2 + P.H, floorY = rimY - P.cellH;
+    const rowSpanMax = P.topL - 2*P.wall;
+    const pockets = [];
+    for(let r = 0; r < P.nCells; r++){
+      const cz = -P.topW/2 + P.wall + P.cellWid/2 + r*(P.cellWid + P.divider);
+      const colsInRow = P.cols[r];
+      const rowSpan = colsInRow*P.cellLen + (colsInRow - 1)*P.colDivider;
+      const rowX0 = -rowSpanMax/2 + (rowSpanMax - rowSpan)/2;
+      for(let c = 0; c < colsInRow; c++)
+        pockets.push({cx: rowX0 + P.cellLen/2 + c*(P.cellLen + P.colDivider), cz});
+    }
+    const M = new THREE.Matrix4(), v = new THREE.Vector3();
+    let outOfBounds = 0, belowFloor = 0, beyondRim = 0;
+    for(let i = 0; i < inst.count; i++){
+      inst.getMatrixAt(i, M);
+      v.setFromMatrixPosition(M);
+      const inAnyPocket = pockets.some(pk =>
+        Math.abs(v.x - pk.cx) <= P.cellLen/2 + 1e-6 && Math.abs(v.z - pk.cz) <= P.cellWid/2 + 1e-6);
+      if(!inAnyPocket) outOfBounds++;
+      if(v.y < floorY - 1e-6) belowFloor++;
+      if(Math.abs(v.x) > P.topL/2 + 1e-6 || Math.abs(v.z) > P.topW/2 + 1e-6) beyondRim++;
+    }
+    ok(outOfBounds === 0, `${outOfBounds}/${inst.count} instances centred outside every pocket's own footprint`);
+    ok(belowFloor === 0, `${belowFloor}/${inst.count} instances below the trough floor`);
+    ok(beyondRim === 0, `${beyondRim}/${inst.count} instances beyond the tray's own rim`);
   });
 
   t('tray STL: well-formed triangles whose bbox is the tray box', () => {
@@ -6736,6 +6863,165 @@ await (async () => {
   if(el('perfEnable').checked){ el('perfEnable').click(); await settle(); }
   setStyle(origCaseStyle); await settle();
   el('tab2d').click(); setLevel('case'); await settle();
+})();
+
+/* ==================================================================
+   MOBILE LAYOUT: the render must be TOUCHABLE at phone width, not just
+   visible. The reported bug was never the touch code (fold3d.js's pointer
+   handling is correct and untouched here) -- it was .toolbar/.mode3d
+   floating, absolutely positioned, over nearly the entire canvas, so every
+   touch meant for orbit/pinch landed on a button instead. Confirmed live
+   (outside this suite, via a real trusted CDP touch dispatch -- a hand-
+   built PointerEvent cannot exercise setPointerCapture at all, trusted or
+   not, so it was useless for this): with the old floating layout, a touch
+   drag centred on the stage changed NOTHING; with pointer-events:none
+   forced onto .toolbar/.mode3d/.viewcube as a diagnostic, the exact same
+   drag rotated the camera immediately. The fix moves .toolbar/.mode3d out
+   of the floating layer into normal document flow below a new .stagecanvas
+   box (sticky, a guaranteed height) at the existing 860px breakpoint --
+   fold3d.js is untouched, touchAction:none included.
+
+   Both pins below need REAL layout CSS, which this file's own top-level
+   DOM never loads (see the mobile/desktop fixture comments up top) -- so
+   both drive the fixtures' iframes, not this document. That is also the
+   answer to "can the harness express a viewport width at all": yes, via
+   a real iframe loading the real index.html at a real width, not via any
+   CSS-media trick in this skeleton page. */
+await (async () => {
+  async function readyFixture(frame){
+    await new Promise(resolve => {
+      const ready = () => frame.contentDocument && frame.contentDocument.getElementById('style')
+        && frame.contentDocument.getElementById('style').options.length > 0;
+      if(ready()) return resolve();
+      frame.addEventListener('load', async () => {
+        const start = Date.now();
+        while(!ready() && Date.now() - start < 8000) await new Promise(r => setTimeout(r, 50));
+        resolve();
+      }, {once: true});
+    });
+  }
+  const mframe = document.getElementById('mobileFixture');
+  const dframe = document.getElementById('desktopFixture');
+  await readyFixture(mframe);
+  await readyFixture(dframe);
+  const fx = frame => ({
+    doc: () => frame.contentDocument,
+    el: id => frame.contentDocument.getElementById(id),
+    cs: node => frame.contentWindow.getComputedStyle(node),
+    fire: (node, type) => node.dispatchEvent(new Event(type, {bubbles: true})),
+    settle: () => new Promise(r => setTimeout(r, 300))     // 3D init (WebGL) needs longer than a plain rail edit
+  });
+  const m = fx(mframe), d = fx(dframe);
+  // enter 3D/case depth in BOTH fixtures the way a user does: click the tab,
+  // click the depth. Nothing here touches either iframe's project object.
+  async function enter3dCase(f){
+    f.el('tab3d').click(); await f.settle();
+    f.el('d_case').click(); await f.settle();
+  }
+  await enter3dCase(m);
+  await enter3dCase(d);
+
+  t('mobile (390px): the canvas has a real, non-zero reachable area -- not covered by .toolbar/.mode3d', () => {
+    const sc = m.el('cvWrap').parentElement;      // .stagecanvas, the sticky/guaranteed-height box
+    if(!sc.classList.contains('stagecanvas')) throw new Error('fixture drift: #cvWrap is no longer inside .stagecanvas');
+    // scroll past the header/chain strip so the STICKY canvas settles at
+    // top:0 -- exactly the position it holds for the entire rest of the
+    // page once a user has scrolled at all, and the position the touch
+    // fix's own diagnosis was measured against. Restored in `finally`: the
+    // later toolbar/mode3d-ordering pin reads viewport-relative rects too,
+    // and a scroll position leaking out of this pin corrupts it the same
+    // way a stale project edit would corrupt a later project-reading pin.
+    try{
+      mframe.contentWindow.scrollTo(0, 600);
+      const r = sc.getBoundingClientRect();
+      if(!(r.height >= 200)) throw new Error(`.stagecanvas is too short to be a usable viewport: ${r.height}px (want >= 200px)`);
+      if(!(r.width > 0)) throw new Error('.stagecanvas has zero width');
+      // The ViewCube is a legitimate, small, canvas-anchored navigation tool
+      // in one corner on every viewport -- not part of this bug and not what
+      // this pin is about, so its OWN measured rect (not a guessed fraction
+      // of the canvas) is excluded from sampling. Every other point in the
+      // grid must hit the canvas itself, not a control.
+      const vc = m.el('viewCubeWrap').getBoundingClientRect();
+      const inViewCube = (x, y) => x >= vc.left && x <= vc.right && y >= vc.top && y <= vc.bottom;
+      const cols = 5, rows = 5, misses = [];
+      let sampled = 0;
+      for(let i = 0; i < rows; i++){
+        for(let j = 0; j < cols; j++){
+          const x = r.left + (j + 0.5)*r.width/cols;
+          const y = r.top + (i + 0.5)*r.height/rows;
+          if(inViewCube(x, y)) continue;
+          sampled++;
+          const hit = m.doc().elementFromPoint(x, y);
+          if(!hit || hit.tagName !== 'CANVAS') misses.push({x: Math.round(x), y: Math.round(y), hit: hit ? (hit.id || hit.tagName) : null});
+        }
+      }
+      if(sampled < 10) throw new Error(`vacuous fixture: only ${sampled} non-ViewCube sample points -- grid too coarse or ViewCube too large to test anything`);
+      if(misses.length) throw new Error(`${misses.length}/${sampled} sample points (outside the ViewCube) did not reach the canvas: ${JSON.stringify(misses)}`);
+    } finally { mframe.contentWindow.scrollTo(0, 0); }
+  });
+
+  t('mobile (390px): .toolbar and .mode3d sit BELOW the canvas in flow, not on top of it', () => {
+    const scBottom = m.el('cvWrap').parentElement.getBoundingClientRect().bottom;
+    const toolbarTop = m.el('viewToolbar').getBoundingClientRect().top;
+    const mode3dTop = m.el('mode3d').getBoundingClientRect().top;
+    if(m.cs(m.el('viewToolbar')).position === 'absolute') throw new Error('.toolbar is still absolutely positioned at 390px -- it would float back over the canvas');
+    if(toolbarTop < scBottom - 1) throw new Error(`.toolbar (top=${toolbarTop}) overlaps .stagecanvas (bottom=${scBottom}) instead of following it`);
+    if(mode3dTop < toolbarTop) throw new Error('.mode3d renders above .toolbar -- ordering changed');
+  });
+
+  t("mobile (390px): the chain strip is a single row a user can scroll, not several rows eating the screen", () => {
+    const cs = m.el('chainString');
+    if(m.cs(cs).flexWrap === 'wrap') throw new Error('chain strip still wraps at 390px -- back to consuming multiple rows');
+    if(!(cs.scrollWidth > cs.clientWidth)) throw new Error('vacuous fixture: chain strip is not actually wider than its box, so a scrollable row proves nothing here');
+  });
+
+  t('mobile (390px): driving a real control through the DOM -- Grid/White toggle actually flips', () => {
+    const grid = m.el('bgGrid'), white = m.el('bgWhite');
+    if(!grid.classList.contains('on')) throw new Error('vacuous fixture: expected Grid to be the active background before this pin touches anything');
+    white.click();
+    if(white.classList.contains('on') !== true || grid.classList.contains('on') !== false)
+      throw new Error('clicking White at 390px did not flip the toggle — control is not actually reachable/working at this width');
+    grid.click();   // restore, so nothing leaks into a later pin
+    if(!grid.classList.contains('on')) throw new Error('restoring Grid after the pin failed — background stuck on White');
+  });
+
+  t('touchAction stays \'none\' on the 3D canvas — pinned as a VALUE so a layout edit cannot silently drop it', () => {
+    const canvas = m.el('cvWrap').querySelector('canvas');
+    if(!canvas) throw new Error('vacuous fixture: no canvas built at case depth');
+    eq(canvas.style.touchAction, 'none', 'touchAction:');
+  });
+
+  /* ---- desktop (>860px): the mobile-only rules must not leak upward.
+     Hand-derived from the UNCHANGED desktop CSS literals (top:14px,
+     right:16px, translateX(-50%) centring), not recomputed from whatever
+     the code currently does — a pin that re-derives its expectation from
+     the same source it is checking cannot fail when that source is wrong. */
+  t('desktop (1400px): .stagecanvas is still absolute + inset:0 inside .stage — the mobile sticky/height rules do not apply', () => {
+    if(d.doc().defaultView.matchMedia('(max-width:860px)').matches) throw new Error('vacuous fixture: the desktop iframe matches the mobile breakpoint');
+    const stage = d.el('cvWrap').closest('.stage').getBoundingClientRect();
+    const sc = d.el('cvWrap').parentElement.getBoundingClientRect();
+    if(d.cs(d.el('cvWrap').parentElement).position !== 'absolute') throw new Error('.stagecanvas must stay position:absolute above the breakpoint');
+    approx(sc.top, stage.top, '.stagecanvas top vs .stage top:', 0.5);
+    approx(sc.left, stage.left, '.stagecanvas left vs .stage left:', 0.5);
+    approx(sc.width, stage.width, '.stagecanvas width vs .stage width:', 0.5);
+    approx(sc.height, stage.height, '.stagecanvas height vs .stage height:', 0.5);
+  });
+
+  t('desktop (1400px): .toolbar/.mode3d/.viewcube keep their exact floating positions (goldens, hand-derived from the CSS literals)', () => {
+    const stage = d.el('cvWrap').closest('.stage').getBoundingClientRect();
+    const toolbar = d.el('viewToolbar').getBoundingClientRect();
+    const vc = d.el('viewCubeWrap').getBoundingClientRect();
+    if(d.cs(d.el('viewToolbar')).position !== 'absolute') throw new Error('.toolbar must stay position:absolute above the breakpoint');
+    if(d.cs(d.el('mode3d')).position !== 'absolute') throw new Error('.mode3d must stay position:absolute above the breakpoint');
+    // .toolbar: top:16px, horizontally centred (left:50% + translateX(-50%))
+    approx(toolbar.top, stage.top + 16, '.toolbar top:', 1);
+    approx((toolbar.left + toolbar.right)/2, (stage.left + stage.right)/2, '.toolbar horizontal centre:', 1);
+    // .viewcube: top:14px, right:16px (i.e. right EDGE sits 16px in from .stage's right edge)
+    approx(vc.top, stage.top + 14, '.viewcube top:', 1);
+    approx(stage.right - vc.right, 16, '.viewcube right inset:', 1);
+  });
+
+  m.el('tab2d').click(); d.el('tab2d').click();   // restore both fixtures to their default view
 })();
 
 save.clearAutosave();

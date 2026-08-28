@@ -183,6 +183,12 @@ export function newProject(){
     // from the product" (auto-with-override), any number overrides it.
     tray: {
       nCells: 2,                       // default when enabled: 2 cells x 10 on edge
+      // THE 2D GRID's per-row pocket-count override (see cookietray.js's
+      // TRAY_DEFAULTS.nColsPerRow doc). null = every row gets the SAME
+      // pocket count (tray.params.nCols, itself defaulting to 1 — the
+      // legacy single-pocket-per-row tray) — every project saved before the
+      // grid existed loads with this null, bit-identical.
+      nColsPerRow: null,
       // NOTE there is deliberately no `perCell` here. Products-per-cell is
       // owned by the COLLATION (perStack x nx x ny) and nothing else; storing
       // it again would be a second writer for one quantity, free to disagree.
@@ -346,17 +352,41 @@ export const TIER_NOUN = {primary: 'wrap', secondary: 'carton', tertiary: 'case'
  * orientation (flat / on-edge + stack axis), which decides what envelope L
  * actually is (e.g. an on-edge sleeve's N·t run), not by moving the seals.
  *
- * Round girth (π·d) is therefore meaningful only when the collation forms a
- * single circular tube running along L: one stack (nx=ny=1) of cylinders
- * lying ON EDGE with the cylinder axis along L, i.e. stackAxis X. A lone slug
- * and an on-edge sleeve of N are the same tube, longer. A flat stack presents
- * a rectangular d×t profile, and any multi-stack arrangement (nx or ny > 1)
- * is not one tube — both stay rectangular. The Build UI uses this same
- * predicate, so the two can never silently disagree.
+ * Round girth (π·d) is therefore meaningful whenever the collation forms a
+ * SINGLE circular tube running along L: any number of cylinders lying ON
+ * EDGE, stacked ALONG the tube axis (stackAxis X), with nothing beside them
+ * (ny 1) — a lone slug and an on-edge sleeve of N are the same tube, just
+ * longer, so nx is NOT restricted here. collate() already folds nx into
+ * envelope.L (nx stacks of `perStack` pieces each, all in line along X), and
+ * the flowwrap consumer (core/styles/flowwrap.js) derives cutLength/filmArea
+ * from that envelope L alone — never from a piece count — so the tube's
+ * length scales correctly with nx for free; only girth (independent of L by
+ * construction: `Math.PI*p.roundDiameter`) needs to stay nx-invariant, which
+ * it already is. Verified by hand: envelope.L and film area both scale with
+ * nx while girth does not, at nx = 1/3/10 (see the golden fixtures + pins).
+ *
+ * ny is what actually breaks the circle: a second row across W puts a SECOND
+ * circle beside the first (two side-by-side tubes), not inside it — a flat
+ * stack (cylinder axis vertical) is the other structurally-rectangular case.
+ * Both stay rectangular.
+ *
+ * No separate "layers" (nz) guard: `Collation` (this file's own typedef, see
+ * collation.js) carries no such field — layers/nz is a CONTAINMENT concept
+ * (candidate grids for cartons-in-case; see `irreducible()`/
+ * `parentCandidates` below), never a property of a product collation.
+ * collate()'s own math makes the physical scenario impossible here anyway:
+ * envelope.H is always exactly `stack.z`, and `stack.z` is only inflated
+ * along whichever axis IS `stackAxis` — with stackAxis pinned to 'X' below,
+ * H can never hold more than one piece's own cross-section, so there is no
+ * axis left for "layers" (tubes stacked vertically) to occupy even in
+ * principle.
+ *
+ * The Build UI uses this same predicate, so the two can never silently
+ * disagree.
  */
 export function roundGirthEligible(collation){
   if(collation.piece.kind !== 'cylinder') return false;
-  if(collation.nx !== 1 || collation.ny !== 1) return false;
+  if(collation.ny !== 1) return false;   // nx is unrestricted -- see the doc above
   if(resolvePieceOrientation(collation) !== 'on-edge') return false;
   return collation.stackAxis === 'X';   // the on-edge tube axis must run along L (the machine direction)
 }
@@ -529,6 +559,23 @@ export function uboardAutoF(project){
   return contentEnvelope(project.primary).outer.H;
 }
 
+/**
+ * THE tray auto-derivation: cell length, width, depth AND cradle radius,
+ * straight out of the ported Cookie-Tray inverse path (`deriveTrayParams`).
+ * Exported so the tray stage and the rail's "auto" readout are one
+ * derivation rather than two copies that agree until they don't.
+ *
+ * PACKMODE, read from the collation's own `stackAxis` — 'Z' (vertically
+ * stacked, the Pile Pack default) is Cookie-Tray's "stack" (flat, stacked)
+ * mode; anything else is "standing" (their default, an on-edge roll or a
+ * box run end to end). No new field: a Z-stacked collation and a Cookie-
+ * Tray "stack" pocket are the SAME physical arrangement (see
+ * collation.js — stackAxis:'Z' already stacks pieces by their own
+ * thickness/height, exactly what a stacked pocket needs), so this reads the
+ * one fact that already exists rather than adding a parallel one.
+ * @param {Object} project
+ * @param {Object} [content]  contentEnvelope(project.primary)
+ */
 export function trayAutoCells(project, content = contentEnvelope(project.primary)){
   const tray = project.tray || {};
   const ov = tray.params || {};
@@ -536,18 +583,20 @@ export function trayAutoCells(project, content = contentEnvelope(project.primary
   const piece = content.config.piece;
   const perCell = content.count;
   const nCells = Math.max(1, Math.round(tray.nCells || 1));
+  const nCols = Math.max(1, Math.round(num(ov.nCols) ? ov.nCols : 1));
+  const packMode = content.config.stackAxis === 'Z' ? 'stack' : 'standing';
   const probe = deriveTrayParams({
     ...ov,                                        // pass-through §3 inputs (wall, floor, ...)
-    qtyTotal: perCell*nCells, nCells,
+    qtyTotal: perCell*nCells, nCells, nCols, packMode,
     sideClearance: num(tray.sideClearance) ? tray.sideClearance : 1.5,
     endClearance:  num(tray.endClearance)  ? tray.endClearance  : 3,
+    cradleClearance: num(ov.cradleClearance) ? ov.cradleClearance : 0,
     ...(piece.kind === 'cylinder'
       ? {productType: 'round', cookieDiameter: piece.diameter, cookieThickness: packPitchOf(piece)}
       : {productType: 'rectangle', productThickness: packPitchOf(piece),
-         productWidth: piece.W, productHeight: piece.H}),
-    cellH: 1, cradleClearance: Number.MAX_SAFE_INTEGER   // probe-only; see above
+         productWidth: piece.W, productHeight: piece.H})
   });
-  return {cellLen: probe.cellLen, cellWid: probe.cellWid};
+  return {cellLen: probe.cellLen, cellWid: probe.cellWid, cellH: probe.cellH, cradleR: probe.cradleR};
 }
 
 /** The tray stage's own solve — called ONLY from resolveWrapContents()'s
@@ -561,29 +610,34 @@ function solveTrayStage(project, content){
   const env = content.outer;                            // ONE cell's product envelope
   const ov = tray.params || {};
   const num = v => typeof v === 'number' && isFinite(v);
-  const endC = num(tray.endClearance) ? tray.endClearance : 3;
-  const sideC = num(tray.sideClearance) ? tray.sideClearance : 1.5;
 
   const nCells = Math.max(1, Math.round(tray.nCells || 1));
   const auto = trayAutoCells(project, content);          // THE derivation (see below)
 
   // auto-with-override, one axis at a time — the AUTO half now comes entirely
   // from the ported, validated inverse path; only the user's own overrides are
-  // applied here.
+  // applied here. cellH and cradleR are now BOTH auto-derived from the real
+  // product fit (Cookie-Tray's own zf()/Bf() rules — packMode-aware: a
+  // "standing" trough is as deep as the product's own vertical extent, a
+  // "stack" trough is as deep as the stacked count needs), replacing an
+  // earlier local cellWid/2 heuristic that could undersize a stacked
+  // product's trough and let it clip through the floor.
   const cellLen = num(ov.cellLen) ? ov.cellLen : auto.cellLen;
   const cellWid = num(ov.cellWid) ? ov.cellWid : auto.cellWid;
-  // trough DEPTH is ours, not theirs: their derive defaults cellH to a flat
-  // 28mm, we use the shallowest trough that still completes the cradle. It
-  // follows the EFFECTIVE width, so a cellWid override deepens the trough too.
-  const cellH   = num(ov.cellH)   ? ov.cellH   : cellWid/2;
-  // M4, a DELIBERATE override of the validated path. trayParams derives
-  // cradleR = cellWid/2 when it is null, and guards cellH >= cradleR — so a
-  // user who shallows the trough below the half-width would get a THROW rather
-  // than simply a shallower cradle. Null on the normal path (their rule owns
-  // it); clamped to the trough only when that guard would otherwise fire.
-  const cradleR = num(ov.cradleR) ? ov.cradleR : (cellH < cellWid/2 ? cellH : null);
+  const cellH   = num(ov.cellH)   ? ov.cellH   : auto.cellH;
+  const cradleR = num(ov.cradleR) ? ov.cradleR : auto.cradleR;
 
-  const p = trayParams({...ov, nCells, cellLen, cellWid, cellH, cradleR});
+  // THE 2D GRID: each of the nCells rows (channels across the tray's width)
+  // is split along its OWN length into pockets — nCols pockets uniformly,
+  // or tray.nColsPerRow's own per-row count when it names exactly nCells
+  // rows (mismatched lengths fall back to the uniform value rather than
+  // throwing here — trayParams() itself is the one place that validates and
+  // rejects a genuinely malformed array).
+  const nCols = Math.max(1, Math.round(num(ov.nCols) ? ov.nCols : 1));
+  const nColsPerRow = Array.isArray(tray.nColsPerRow) && tray.nColsPerRow.length === nCells
+    ? tray.nColsPerRow : null;
+
+  const p = trayParams({...ov, nCells, cellLen, cellWid, cellH, cradleR, nCols, nColsPerRow});
 
   // the product bottoms out on the trough floor, which sits at the tray's own
   // floor thickness — so its top is floor + the collation's standing height
@@ -592,10 +646,30 @@ function solveTrayStage(project, content){
 
   // FOOTPRINT-ONLY fit. Height is deliberately absent from this test: a
   // product standing above the cells is the normal case for an open tray,
-  // not a failure. Only an override that makes a cell too small in plan is.
+  // not a failure.
+  //
+  // WIDTH is always checked against the collation's own ACTUAL footprint
+  // (`env.W`, sensitive to nx/ny/stackAxis) — nCols pockets split a row
+  // along its LENGTH only; every pocket in a row is still exactly one
+  // product wide, so a wider-than-one-stack collation (ny > 1, or the run
+  // laid along the wrong axis) must still fail here regardless of nCols.
+  // Comparing against `auto.cellWid` instead would be tautological whenever
+  // cellWid is auto (auto.cellWid IS cellWid then, by construction), which
+  // is exactly the bug this replaced: a 2-stack-wide collation silently
+  // "fit" a 1-stack-wide auto cell.
+  //
+  // LENGTH: at nCols === 1 (the common case, and every fixture that predates
+  // the grid), this is the same `env.L` check the width axis uses — the
+  // whole row is one pocket. At nCols > 1, `env.L` is the run collate()
+  // assembled for ALL of the row's `perCell` items in one continuous stack,
+  // which overstates what a single pocket needs once that count is split;
+  // `auto.cellLen` is what trayAutoCells/deriveTrayParams — the ported,
+  // validated Cookie-Tray inverse — computes for ONE pocket's own share
+  // (perCol = ceil(perCell/nCols)), so it's the physically correct
+  // comparison once the grid is actually splitting the row.
   const EPS = 1e-9;
   const widthFits = cellWid + EPS >= env.W;
-  const lengthFits = cellLen + EPS >= env.L;
+  const lengthFits = nCols > 1 ? (cellLen + EPS >= auto.cellLen) : (cellLen + EPS >= env.L);
   const fits = widthFits && lengthFits;
   // A misfit here is nearly always a collation the tray MODEL cannot express
   // (more than one stack across a cell, or the run laid along the wrong axis),
@@ -611,7 +685,8 @@ function solveTrayStage(project, content){
     proud: isProud(p, standingH),
     perCell: content.count,
     total: nCells*content.count,
-    cellAuto: {cellLen: !num(ov.cellLen), cellWid: !num(ov.cellWid), cellH: !num(ov.cellH)}
+    cellAuto: {cellLen: !num(ov.cellLen), cellWid: !num(ov.cellWid),
+               cellH: !num(ov.cellH), cradleR: !num(ov.cradleR)}
   };
 }
 

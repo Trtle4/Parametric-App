@@ -20,6 +20,7 @@
  * centred on the origin in plan and sits with its base at y = -overallH/2, to
  * match how every other depth centres its subject for the Dims overlay.
  */
+import {packPitchOf} from '../core/cookietray.js';
 
 /** Slight tint difference so the flange/lip read as separate features. */
 const trayMat = new THREE.MeshStandardMaterial({
@@ -93,9 +94,9 @@ const box = (l, h, w, mat) => new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat
  */
 export function buildTray3d(p, contents){
   const group = new THREE.Group();
-  const {topL, topW, bottomL, bottomW, outerL, outerW, H, floor, cellLen, cellWid,
-         nCells, wall, divider, flangeT, lipH, lipT, overallH, cornerR, cradleR,
-         bottomCornerR, outerR} = p;
+  const {topL, topW, bottomL, bottomW, outerL, outerW, H, cellWid, cellLen, cellH, cradleR,
+         wall, divider, colDivider, flangeT, lipH, lipT, overallH, cornerR,
+         bottomCornerR, outerR, cols, nCells} = p;
   const y0 = -overallH/2;                         // the tray's own base plane
 
   /* ---- outer drafted body, with ROUNDED CORNERS ------------------------
@@ -130,57 +131,104 @@ export function buildTray3d(p, contents){
    * cradleR arc) swept along the cell length, capped at both ends. The rim
    * land between pockets is the divider, drawn as the flat strip left over —
    * so the dividers are what remains between recesses rather than bars laid
-   * on a flat pan. */
-  const rimY = y0 + H;                       // trough opening sits at the rim
-  const cellsY0 = y0 + floor;                // trough floor rides on the tray floor
-  const halfL = cellLen/2;
-  const prof = troughProfile(cellWid, Math.max(H - floor, 0.5), Math.min(cradleR, cellWid/2), TROUGH_SEG);
-  for(let j = 0; j < nCells; j++){
-    const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
-    group.add(new THREE.Mesh(sweepProfileX(prof, -halfL, halfL, cz, cellsY0), trayMat));
-    group.add(new THREE.Mesh(capProfile(prof, -halfL, cz, cellsY0, false), trayMat));
-    group.add(new THREE.Mesh(capProfile(prof,  halfL, cz, cellsY0, true),  trayMat));
+   * on a flat pan.
+   *
+   * THE 2D GRID: `nCells` channels stack along Z, each its own uniform
+   * cellWid/cellH/cradleR (never per-row — see cookietray.js's own doc: the
+   * real Cookie-Tray grid keeps cell SIZE uniform and only varies pocket
+   * COUNT per row). Each channel is split along X into `cols[row]` pockets
+   * of `cellLen`, `colDivider` apart — a row with fewer pockets than the
+   * widest row is centred within the tray's own length, matching
+   * trayParams' own `topL` derivation exactly (same `cols`/`colDivider`
+   * values, so the geometry and that derivation can never disagree about
+   * how wide a row's own span is). */
+  const rimY = y0 + H;                        // trough opening, shared by every pocket
+  const floorY = rimY - cellH;                // uniform floor — one cellH for the whole tray
+  const rowSpanMax = topL - 2*wall;           // = maxCols*cellLen + (maxCols-1)*colDivider
+  const prof = troughProfile(cellWid, Math.max(cellH, 0.5), Math.min(cradleR, cellWid/2), TROUGH_SEG);
+  const pockets = [];                         // {cx, cz, row, col} — every pocket, reused below
+  for(let r = 0; r < nCells; r++){
+    const cz = -topW/2 + wall + cellWid/2 + r*(cellWid + divider);
+    const colsInRow = cols[r];
+    const rowSpan = colsInRow*cellLen + (colsInRow - 1)*colDivider;
+    const rowX0 = -rowSpanMax/2 + (rowSpanMax - rowSpan)/2;   // this row's own left edge, centred
+    for(let c = 0; c < colsInRow; c++){
+      const cx = rowX0 + cellLen/2 + c*(cellLen + colDivider);
+      pockets.push({cx, cz, row: r, col: c});
+      const halfL = cellLen/2;
+      group.add(new THREE.Mesh(sweepProfileX(prof, cx - halfL, cx + halfL, cz, floorY), trayMat));
+      group.add(new THREE.Mesh(capProfile(prof, cx - halfL, cz, floorY, false), trayMat));
+      group.add(new THREE.Mesh(capProfile(prof, cx + halfL, cz, floorY, true),  trayMat));
+    }
   }
   // the rim land: everything inside the rim that is NOT a pocket mouth
-  group.add(new THREE.Mesh(rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider,
-                                      nCells, wall, rimY), trayMat2));
+  group.add(new THREE.Mesh(rimLandGeo(topL, topW, nCells, cellWid, divider, wall,
+                                      cols, cellLen, colDivider, rimY), trayMat2));
 
   /* ---- product sitting IN the cells ------------------------------------
    * The tray owns the cells; the COLLATION owns what sits in one of them, so
-   * the piece run is replicated per cell rather than re-derived here. Pieces
-   * bear on the trough floor, which is why a tall product visibly stands
-   * proud of the rim — the same fact the envelope's max() encodes. */
+   * the piece run is replicated per pocket rather than re-derived here (the
+   * SAME product fills every pocket in every row — one collation feeds the
+   * whole grid). Pieces bear on the trough floor, which is why a tall
+   * product visibly stands proud of the rim — the same fact the envelope's
+   * max() encodes. */
   if(contents && contents.piece && contents.perCell > 0){
     const {geo, rot} = pieceGeo(contents.piece, contents.stackAxis);
-    // Along-cell positions come from the COLLATION's own placements — the list
-    // the caller already hands us — not from an even cellLen/perCell spread.
-    // The two differ by endClearance/perCell per product (12.3mm vs the real
-    // 12.0mm on the default tray): an even spread silently distributes the end
-    // clearance BETWEEN every product, where physically the products sit
-    // nose-to-tail and the slack pools at the ends of the run. The placements
-    // are already centred on the envelope, and the cell is centred on 0, so
-    // they drop straight in. Falls back to the old spread only if no placement
-    // list was supplied (a caller that has the count but not the layout).
+    const stack = contents.stackAxis === 'Z';
+    // Along-cell positions come from the COLLATION's own placements — the
+    // list the caller already hands us — not from an even spread. The two
+    // differ by endClearance/perCell per product: an even spread silently
+    // distributes the end clearance BETWEEN every product, where physically
+    // the products sit nose-to-tail (standing) or face-to-face (stack) and
+    // the slack pools at the ends of the run/stack. Used EXACTLY (dropped
+    // straight in, both the along-cell x AND the resting z — a stacked
+    // piece's own z climbs per piece, never one constant "rise" applied to
+    // all of them) only when there is a SINGLE pocket per row: with more
+    // than one pocket the collation's one combined run has to be split into
+    // that many shorter ones, which needs its own pitch-based placement —
+    // an even spread within each pocket, not pixel-identical to what the
+    // real Cookie-Tray app's own symmetric distribution would draw, but a
+    // correct, non-overlapping, non-overflowing one.
     const pls = (contents.pieces && contents.pieces.length) ? contents.pieces : null;
     const per = pls ? pls.length : Math.max(1, Math.round(contents.perCell));
+    const pitch = packPitchOf(contents.piece);
+    const rise = pieceRise(contents.piece, contents.stackAxis);
+    // `per` is that ROW's own total (every row gets the SAME collation, split
+    // across that row's own pockets -- see the doc above), so the instance
+    // count is per*nCells, NOT per*pockets.length: with more than one pocket
+    // per row (nCols > 1) `pockets.length` over-counts by the pocket-per-row
+    // factor, which over-allocated the InstancedMesh and left the surplus
+    // instances with an uninitialized (identity) transform -- ghost product
+    // rendered at the tray's local origin. Caught testing a real multi-pocket
+    // Cookie-Tray link end to end (nCells=3, nCols=2): 9 real placements,
+    // 18 allocated.
     const total = per*nCells;
     if(total > 0 && total <= 4000){
       const inst = new THREE.InstancedMesh(geo, productMat, total);
       const M = new THREE.Matrix4();
-      const pitch = cellLen/per;
-      // pieces rest in the cradle, so their centre sits a radius up from the
-      // arc's lowest point rather than on a flat floor
-      const rise = pieceRise(contents.piece, contents.stackAxis);
       let k = 0;
-      for(let j = 0; j < nCells; j++){
-        const cz = -topW/2 + wall + cellWid/2 + j*(cellWid + divider);
-        for(let i = 0; i < per; i++){
-          const cx = pls ? pls[i].x : (i + 0.5)*pitch - cellLen/2;
-          if(rot) M.copy(rot); else M.identity();
-          M.setPosition(cx, cellsY0 + rise, cz);
-          inst.setMatrixAt(k++, M);
+      for(const {cx, cz, row, col} of pockets){
+        const colsInRow = cols[row];
+        if(colsInRow === 1 && pls){
+          for(let i = 0; i < per; i++){
+            if(rot) M.copy(rot); else M.identity();
+            M.setPosition(cx + pls[i].x, floorY + pls[i].z, cz);
+            inst.setMatrixAt(k++, M);
+          }
+        }else{
+          // this pocket's own share of the row's total count, split evenly
+          // (see the doc above — not the real app's exact symmetric split)
+          const perPocket = Math.ceil(per/colsInRow);
+          const start = col*perPocket, count = Math.min(perPocket, per - start);
+          for(let i = 0; i < count; i++){
+            if(rot) M.copy(rot); else M.identity();
+            if(stack) M.setPosition(cx, floorY + rise + i*pitch, cz);
+            else      M.setPosition(cx + (i + 0.5)*pitch - count*pitch/2, floorY + rise, cz);
+            inst.setMatrixAt(k++, M);
+          }
         }
       }
+      inst.count = k;   // exactly the matrices actually written -- see the `total` doc above
       inst.instanceMatrix.needsUpdate = true;
       group.add(inst);
     }
@@ -321,8 +369,17 @@ function capProfile(prof, x, cz, y, flip){
  * outline and the pocket mouths. Drawn as strips around each pocket, so the
  * dividers appear as the material left between recesses rather than as bars
  * sitting on a flat pan.
+ *
+ * THE 2D GRID: `nCells` rows stack along Z at the UNIFORM `cellWid` (never
+ * per row — cell size is the same everywhere, only pocket COUNT varies —
+ * see cookietray.js). Within a row the land follows THAT row's own pocket
+ * count (`cols[row]`), centred within the tray's own length exactly as
+ * buildTray3d's own pocket walk centres it (same `rowSpanMax` derivation),
+ * so the land and the troughs can never disagree about where a pocket
+ * mouth is; the bands BETWEEN two rows, and above/below the first and last
+ * row, span the full topL.
  */
-function rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider, nCells, wall, y){
+function rimLandGeo(topL, topW, nCells, cellWid, divider, wall, cols, cellLen, colDivider, y){
   const parts = [];
   const hx = topL/2, hz = topW/2;
   const add = (x0, x1, z0, z1) => {
@@ -332,15 +389,26 @@ function rimLandGeo(topL, topW, cornerR, cellLen, cellWid, divider, nCells, wall
     g.translate((x0 + x1)/2, y, (z0 + z1)/2);
     parts.push(g);
   };
-  const cellZ = j => -hz + wall + j*(cellWid + divider);
-  // end lands (beyond the pockets along the cell run)
-  add(-hx, -cellLen/2, -hz, hz);
-  add(cellLen/2, hx, -hz, hz);
-  // the outer wall lands and the dividers between pockets
-  add(-cellLen/2, cellLen/2, -hz, cellZ(0));
-  for(let j = 0; j < nCells - 1; j++)
-    add(-cellLen/2, cellLen/2, cellZ(j) + cellWid, cellZ(j + 1));
-  add(-cellLen/2, cellLen/2, cellZ(nCells - 1) + cellWid, hz);
+  const rowSpanMax = topL - 2*wall;
+  let prevEdge = -hz;                        // z of the land/pocket boundary walked so far
+  for(let r = 0; r < nCells; r++){
+    const z0 = -hz + wall + r*(cellWid + divider);
+    const z1 = z0 + cellWid;
+    const colsInRow = cols[r];
+    const rowSpan = colsInRow*cellLen + (colsInRow - 1)*colDivider;
+    const rowX0 = -rowSpanMax/2 + (rowSpanMax - rowSpan)/2;
+    const cellX = c => rowX0 + c*(cellLen + colDivider);
+    // the band above this row (outer wall, or the divider since the last row)
+    add(-hx, hx, prevEdge, z0);
+    // this row's own end lands (beyond its pockets, centring a shorter row)
+    // + its internal pocket-to-pocket dividers
+    add(-hx, rowX0, z0, z1);
+    add(rowX0 + rowSpan, hx, z0, z1);
+    for(let c = 0; c < colsInRow - 1; c++)
+      add(cellX(c) + cellLen, cellX(c + 1), z0, z1);
+    prevEdge = z1;
+  }
+  add(-hx, hx, prevEdge, hz);                // the band below the last row
   return parts.length ? mergeGeos(parts) : new THREE.BufferGeometry();
 }
 

@@ -87,17 +87,30 @@ function placed(tray){
   };
 }
 
-/** The cell mouths in placed plan coordinates, centred on (0, 0), y down.
- *  The run extent is `cellLen`; across the run the cells start one outer
- *  `wall` in from the rim and repeat at `cellWid + divider` — the same walk
- *  tray3d.js sweeps its troughs along, so plan and part agree by shape. */
+/** The cell (pocket) mouths in placed plan coordinates, centred on (0, 0),
+ *  y down. `nCells` rows walk across (the SAME uniform cellWid every row —
+ *  only pocket COUNT varies row to row, never cell size — see
+ *  cookietray.js), each split along its own length into `p.cols[row]`
+ *  pockets, centred exactly as trayParams/tray3d.js centre a shorter row.
+ *  Each cell carries its own `row`/`col` index so the dims below can find
+ *  two adjacent pockets to measure a pitch from. */
 function planCells(g){
   const {p} = g, out = [];
-  for(let j = 0; j < p.nCells; j++){
-    const a0 = -p.topW/2 + p.wall + j*(p.cellWid + p.divider), a1 = a0 + p.cellWid;
-    out.push(g.runAlongL
-      ? {x0: -p.cellLen/2, x1: p.cellLen/2, y0: a0, y1: a1}
-      : {x0: a0, x1: a1, y0: -p.cellLen/2, y1: p.cellLen/2});
+  const rowSpanMax = p.topL - 2*p.wall;
+  let along0 = -p.topW/2 + p.wall;
+  for(let r = 0; r < p.nCells; r++){
+    const a0 = along0, a1 = a0 + p.cellWid;
+    const colsInRow = p.cols[r];
+    const rowSpan = colsInRow*p.cellLen + (colsInRow - 1)*p.colDivider;
+    const rowB0 = -rowSpanMax/2 + (rowSpanMax - rowSpan)/2;
+    for(let c = 0; c < colsInRow; c++){
+      const b0 = rowB0 + c*(p.cellLen + p.colDivider), b1 = b0 + p.cellLen;
+      out.push({
+        ...(g.runAlongL ? {x0: b0, x1: b1, y0: a0, y1: a1} : {x0: a0, x1: a1, y0: b0, y1: b1}),
+        row: r, col: c
+      });
+    }
+    along0 += p.cellWid + p.divider;
   }
   return out;
 }
@@ -132,26 +145,45 @@ function topTile(g, x, y){
     ? {orient: 'h', x1: cx + a, x2: cx + b, side: 'above', rank, value, key, label}
     : {orient: 'v', y1: cy + a, y2: cy + b, side: 'right', rank, value, key, label};
 
+  // CELL L/W are UNIFORM across the whole grid (only pocket COUNT varies
+  // row to row — see cookietray.js), so these stay the same bare, single
+  // callouts every tray has always shown, keyed cellLen/cellWid exactly as
+  // every existing pin already reads.
   const c0 = cells[0];
   const runA = g.runAlongL ? c0.x0 : c0.y0, runB = g.runAlongL ? c0.x1 : c0.y1;
   const acrA = g.runAlongL ? c0.y0 : c0.x0, acrB = g.runAlongL ? c0.y1 : c0.x1;
   const dims = [span(runSide, runA, runB, 0, p.cellLen, 'cellLen', 'CELL L'),
                 span(acrossSide, acrA, acrB, 0, p.cellWid, 'cellWid', 'CELL W')];
-
-  // PITCH, centre to centre — the view of `divider` the rail also shows
-  let acrossTop = 1;
-  if(cells.length > 1){
+  let acrossTop = 1, runTop = 1;
+  // ROW PITCH, centre to centre across the rows — the view of `divider`
+  // the rail also shows. Measured from column 0 of the first two rows
+  // (every row has at least one pocket), so this works whether the grid is
+  // uniform or asymmetric.
+  if(p.nCells > 1){
+    const row0 = cells.find(c => c.row === 0 && c.col === 0);
+    const row1 = cells.find(c => c.row === 1 && c.col === 0);
     const mid = c => g.runAlongL ? (c.y0 + c.y1)/2 : (c.x0 + c.x1)/2;
-    dims.push(span(acrossSide, mid(cells[0]), mid(cells[1]), 1, p.pitch, 'pitch', 'PITCH'));
+    dims.push(span(acrossSide, mid(row0), mid(row1), acrossTop, p.pitch, 'pitch', 'ROW PITCH'));
     acrossTop = 2;
+  }
+  // POCKET PITCH, centre to centre along a row's own pockets — only when at
+  // least one row actually has more than one, measured from whichever row
+  // has the most (guaranteed >= 2 pockets there).
+  const widestRow = p.cols.indexOf(p.maxCols);
+  if(p.maxCols > 1){
+    const p0 = cells.find(c => c.row === widestRow && c.col === 0);
+    const p1 = cells.find(c => c.row === widestRow && c.col === 1);
+    const mid = c => g.runAlongL ? (c.x0 + c.x1)/2 : (c.y0 + c.y1)/2;
+    dims.push(span(runSide, mid(p0), mid(p1), runTop, p.colPitch, 'colPitch', 'POCKET PITCH'));
+    runTop = 2;
   }
   // the envelope, outermost on both sides and the only callouts left bare
   dims.push(g.runAlongL
-    ? {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: 1, value: g.L, key: 'overallL'}
+    ? {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: runTop, value: g.L, key: 'overallL'}
     : {orient: 'h', x1: 0, x2: g.L, side: 'above', rank: acrossTop, value: g.L, key: 'overallL'});
   dims.push(g.runAlongL
     ? {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: acrossTop, value: g.W, key: 'overallW'}
-    : {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: 1, value: g.W, key: 'overallW'});
+    : {orient: 'v', y1: 0, y2: g.W, side: 'right', rank: runTop, value: g.W, key: 'overallW'});
 
   // FLANGE WIDTH — a 5mm land on a 139mm sheet: a leader, not a dimension
   // line whose two ticks would be further apart than the span they bound.
@@ -191,9 +223,15 @@ function elevation(g, name, x, y, across, wantRun){
   ]}];
 
   // The troughs, seen through the wall. Along the run a trough reads as ONE
-  // rectangular recess (its bottom is the cradle's lowest line, seen end-on);
-  // ACROSS the run each cell shows its real U cross-section — straight sides
-  // down to the cradle arc — and the dividers as the land between them.
+  // rectangular recess per POCKET (its bottom is the cradle's lowest line,
+  // seen end-on — every pocket shares the same UNIFORM cellH, but a row can
+  // have several pockets side by side, each its own recess); ACROSS the run
+  // each cell shows its real U cross-section — straight sides down to the
+  // cradle arc — and the dividers as the land between them.
+  //
+  // yFloor is UNIFORM (one cellH for the whole tray — see cookietray.js:
+  // the real grid keeps cell size the same everywhere, only pocket COUNT
+  // varies), matching tray3d.js buildTray3d's identical rule.
   //
   // The cradle is drawn as a true SVG arc from cellWid/cradleR/depth — the
   // same parameters tray3d.js tessellates its swept profile from, in this
@@ -201,23 +239,31 @@ function elevation(g, name, x, y, across, wantRun){
   // is taken from it, and an arc of radius r is exactly the shape those
   // parameters describe (more exactly than the 10-segment polyline, in fact).
   const cells = planCells(g);
-  const spans = wantRun
-    ? [{a: -p.cellLen/2, b: p.cellLen/2}]
-    : cells.map(c => (across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1}));
-  const yRim = oH - p.H, yFloor = oH - p.floor;
-  for(const s of spans){
-    if(wantRun){
-      shapes.push({kind: 'rect', line: 'cell', x: cx + s.a, y: yRim,
-                   w: s.b - s.a, h: p.H - p.floor});
-      continue;
+  const yRim = oH - p.H;
+  const yFloor = yRim + p.cellH;
+  if(wantRun){
+    // one rectangle per pocket (every row's own pockets, seen end-on) —
+    // overlapping pockets from different rows draw the same rectangle more
+    // than once, which is harmless (identical geometry, same fill)
+    const seen = new Set();
+    for(const c of cells){
+      const s = across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1};
+      const k = `${s.a.toFixed(3)}|${s.b.toFixed(3)}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      shapes.push({kind: 'rect', line: 'cell', x: cx + s.a, y: yRim, w: s.b - s.a, h: p.cellH});
     }
-    const half = (s.b - s.a)/2, c0 = cx + (s.a + s.b)/2;
-    const r = Math.max(0.01, Math.min(p.cradleR, half, yFloor - yRim));
-    const flat = half - r;
-    shapes.push({kind: 'path', line: 'cell', d:
-      `M ${c0 - half} ${yRim} L ${c0 - half} ${yFloor - r} ` +
-      `A ${r} ${r} 0 0 0 ${c0 - flat} ${yFloor} L ${c0 + flat} ${yFloor} ` +
-      `A ${r} ${r} 0 0 0 ${c0 + half} ${yFloor - r} L ${c0 + half} ${yRim}`});
+  }else{
+    for(const c of cells){
+      const s = across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1};
+      const half = (s.b - s.a)/2, c0 = cx + (s.a + s.b)/2;
+      const r = Math.max(0.01, Math.min(p.cradleR, half, yFloor - yRim));
+      const flat = half - r;
+      shapes.push({kind: 'path', line: 'cell', d:
+        `M ${c0 - half} ${yRim} L ${c0 - half} ${yFloor - r} ` +
+        `A ${r} ${r} 0 0 0 ${c0 - flat} ${yFloor} L ${c0 + flat} ${yFloor} ` +
+        `A ${r} ${r} 0 0 0 ${c0 + half} ${yFloor - r} L ${c0 + half} ${yRim}`});
+    }
   }
 
   const isFront = across === 'L';
@@ -228,6 +274,9 @@ function elevation(g, name, x, y, across, wantRun){
                  value: bot, exactVal: true, key: isFront ? 'baseL' : 'baseW', label: 'BASE'}];
   const leaders = [];
   if(isFront){
+    // CELL DEPTH is uniform — one cellH for the whole tray (see
+    // cookietray.js: the real grid varies pocket COUNT per row, never cell
+    // size), so this stays the same bare callout every tray has always shown.
     // heights, stacked on the ONE free side: the feature inboard, the
     // envelope outboard
     dims.push({orient: 'v', y1: yRim, y2: yFloor, side: 'left', rank: 0,
@@ -246,10 +295,23 @@ function elevation(g, name, x, y, across, wantRun){
   }else{
     dims.push({orient: 'v', y1: 0, y2: oH, side: 'right', rank: 0,
                value: oH, key: 'overallH2', label: 'OVERALL H'});
-    // the DIVIDER land between two troughs, in the view that shows it
-    if(spans.length > 1)
-      leaders.push({px: cx + (spans[0].b + spans[1].a)/2, py: yRim,
-                    dx: 0, dy: -oH*0.75, key: 'divider', divider: true});
+    // the DIVIDER land between the first two across-positions, in the view
+    // that shows it (a same-row channel divider with one row present; still
+    // a real divider — same value, same land — when the first two entries
+    // straddle a row boundary instead)
+    const acrEdge = c => across === 'L' ? {a: c.x0, b: c.x1} : {a: c.y0, b: c.y1};
+    // Two distinct dividers now exist — row-to-row (`divider`) and
+    // pocket-to-pocket within a row (`colDivider`) — so which one this
+    // adjacent pair actually straddles has to be read off their `row`
+    // index, not assumed: cells[0]/cells[1] land in the same row (a
+    // pocket divider) whenever row 0 has more than one pocket, and in
+    // different rows (a row divider) otherwise.
+    if(cells.length > 1){
+      const sameRow = cells[1].row === cells[0].row;
+      leaders.push({px: cx + (acrEdge(cells[0]).b + acrEdge(cells[1]).a)/2, py: yRim,
+                    dx: 0, dy: -oH*0.75, key: sameRow ? 'colDivider' : 'divider',
+                    divider: true, sameRow});
+    }
   }
   return {name, x, y, w: outer, h: oH, shapes, dims, leaders};
 }
@@ -293,12 +355,25 @@ function titleRows(tray, g, p, fmt, exact, unit, dateStr){
   if(tray.proud)
     rows.push(['Envelope (proud product)',
                `${fmt(tray.outer.L)} × ${fmt(tray.outer.W)} × ${fmt(tray.outer.H)} ${unit}`]);
+  // Cell size (L x W x D, cradle) is UNIFORM across the whole tray — only
+  // pocket COUNT varies row to row, via `p.cols` (see cookietray.js) — so
+  // there is exactly one size row, not one per row of the grid.
+  const gridded = p.maxCols > 1 || p.cols.some(c => c !== p.cols[0]);
   rows.push(
     ['Base (drafted)', `${exact(g.bottomL)} × ${exact(g.bottomW)} ${unit}`],
-    ['Cells', `${p.nCells} × ${tray.perCell} = ${tray.total} products`],
-    ['Cell L × W × D', `${fmt(p.cellLen)} × ${fmt(p.cellWid)} × ${fmt(p.cellH)} ${unit}` +
-                           ` · pitch ${fmt(p.pitch)} · cradle R ${exact(p.cradleR)}`],
-    ['Material', `wall ${exact(p.wall)} · divider ${exact(p.divider)} · floor ${exact(p.floor)} ${unit}`],
+    ['Cells', `${p.nCells} × ${tray.perCell} = ${tray.total} products` +
+              (gridded ? ` · pockets/row ${p.cols.join('+')}` : '')]
+  );
+  rows.push(['Cell L × W × D',
+    `${fmt(p.cellLen)} × ${fmt(p.cellWid)} × ${fmt(p.cellH)} ${unit}` +
+      ` · cradle R ${exact(p.cradleR)}` +
+      (p.nCells > 1 ? ` · row pitch ${fmt(p.pitch)}` : '') +
+      (p.maxCols > 1 ? ` · pocket pitch ${fmt(p.colPitch)}` : '')
+  ]);
+  rows.push(
+    ['Material', `wall ${exact(p.wall)} · divider ${exact(p.divider)}` +
+                 (p.maxCols > 1 ? ` · pocket divider ${exact(p.colDivider)}` : '') +
+                 ` · floor ${exact(p.floor)} ${unit}`],
     ['Rim', `flange ${exact(p.stripL)} × ${exact(p.stripW)}, ${exact(p.flangeT)} thick` +
             ` · lip ${exact(p.lipH)} ${unit}`],
     ['Draft', `${p.effectiveDraftDeg.toFixed(1)}°`],
@@ -382,7 +457,8 @@ export function drawTray2d(svg, tray, unit, dateStr){
     }
     for(const l of t.leaders){
       const text = l.angle    ? `DRAFT ${p.effectiveDraftDeg.toFixed(1)}°`
-                 : l.divider  ? `DIVIDER ${exact(p.divider)}`
+                 : l.divider  ? (l.sameRow ? `POCKET DIVIDER ${exact(p.colDivider)}`
+                                            : `ROW DIVIDER ${exact(p.divider)}`)
                  : l.lip      ? `LIP ${exact(p.lipH)}`
                  : `FLANGE ${exact(p.stripL)}`;
       body += leader(x + l.px, y + l.py, x + l.px + l.dx, y + l.py + l.dy,
