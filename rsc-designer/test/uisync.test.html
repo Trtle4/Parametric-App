@@ -7057,6 +7057,37 @@ await (async () => {
       throw new Error(`an already-enabled, non-active tier's toggle should stay collapsed for space, got display:${m.cs(tog).display}`);
   });
 
+  t('mobile (390px): the depth-level tabs row (Product/Tray/.../Trailer) does not overflow the page', () => {
+    // .mode3d itself wraps its .seg GROUPS onto new lines at this width — but
+    // depthsel (8 buttons, ~530px, cannot wrap or shrink internally) was a
+    // single un-splittable row wider than the viewport, centred by .mode3d's
+    // justify-content and unclipped/unscrolled: it overflowed the page
+    // SYMMETRICALLY (~70px past each edge at 393px), which is why "Product"
+    // read as CUT OFF (a few-px sliver) rather than merely off-screen, and
+    // why body's own overflow inflated scrollWidth past the viewport,
+    // exposing body's --paper background as a grey strip past the right
+    // edge -- one mechanism, not two separate bugs.
+    const bodyScrollWidth = m.doc().body.scrollWidth, innerWidth = mframe.contentWindow.innerWidth;
+    if(bodyScrollWidth > innerWidth + 1)
+      throw new Error(`body.scrollWidth (${bodyScrollWidth}) exceeds the viewport (${innerWidth}) -- the page itself scrolls sideways`);
+  });
+
+  t('mobile (390px): the depth-level tabs row is instead contained and independently scrollable, and "Product" is reachable', () => {
+    const seg = m.el('mode3d').querySelector('.seg.depthsel');
+    if(!seg) throw new Error('depthsel seg not found');
+    if(m.cs(seg).overflowX !== 'auto' && m.cs(seg).overflowX !== 'scroll')
+      throw new Error(`depthsel overflow-x should be auto/scroll, got ${m.cs(seg).overflowX}`);
+    const rect = seg.getBoundingClientRect();
+    if(rect.right > mframe.contentWindow.innerWidth + 1 || rect.left < -1)
+      throw new Error(`depthsel row still extends past the viewport: left=${rect.left}, right=${rect.right}`);
+    if(!(seg.scrollWidth > seg.clientWidth))
+      throw new Error('vacuous fixture: depthsel content is not actually wider than its box, so scrollability proves nothing');
+    seg.scrollLeft = 0;
+    const prodRect = m.el('d_product').getBoundingClientRect();
+    if(!(prodRect.width > 20))
+      throw new Error(`"Product" is not fully visible at scrollLeft=0: width=${prodRect.width}`);
+  });
+
   /* ---- desktop (>860px): the mobile-only rules must not leak upward.
      Hand-derived from the UNCHANGED desktop CSS literals (top:14px,
      right:16px, translateX(-50%) centring), not recomputed from whatever
