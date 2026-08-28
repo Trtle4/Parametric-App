@@ -608,7 +608,21 @@
        when not the thing you're looking at. */
     .chainStrip{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:7px 12px}
     .cs-node, .cs-arrow{flex:0 0 auto}
-    .cs-node:not(.active) .cs-style, .cs-node:not(.active) .cs-tog{display:none}
+    /* The toggle itself (.cs-tog — the enable/disable button, or the
+       None/Tray/U-board <select> on the interlayer node) must stay reachable
+       on a DISABLED node even when collapsed: it is the ONLY way to turn a
+       skipped optional tier on in the first place (the node body's own click
+       is a deliberate no-op while disabled — see renderChainString's
+       `activate` — there is no other control). Hiding it unconditionally
+       made every optional tier, interlayer included, permanently
+       unreachable on mobile: a node can only become "active" by first being
+       enabled, and it can only be enabled through this control, so hiding it
+       while inactive/disabled was a chicken-and-egg trap. Still hidden for
+       an ALREADY-enabled, merely non-active tier (the compact "collapse to
+       just the level name" this rule exists for), where the node body click
+       (setActiveLevel) remains a real way in. */
+    .cs-node:not(.active) .cs-style{display:none}
+    .cs-node:not(.active):not(.disabled) .cs-tog{display:none}
     /* single column, RENDER PINNED on top with its own space; the control
        columns flow beneath it and the PAGE scrolls — nothing floats over the
        canvas. The rails must NOT shrink+internal-scroll (they do at flex
@@ -628,6 +642,19 @@
        chain strip, min-height as a floor on very short viewports. */
     .stagecanvas{position:sticky;top:0;z-index:6;height:50vh;min-height:300px;
       border-bottom:1px solid var(--line);box-shadow:0 6px 14px rgba(20,30,40,.10)}
+    /* `vh` is the LARGE viewport (address bar collapsed) on mobile Safari/
+       Chrome — taller than what's actually on screen while that chrome is
+       still showing, which is the normal state right after load. The canvas
+       and its content size and centre correctly against the CSS box either
+       way (fold3d.js's ResizeObserver reads the real element, not a cached
+       viewport number), so nothing there was wrong — the box itself was
+       just bigger than the visible screen, silently extending its BOTTOM
+       edge under the browser chrome. `dvh` tracks the viewport that is
+       actually visible; declared after `vh` so it only overrides in
+       browsers that support it (every other browser keeps the `vh` fallback
+       above), and needs no companion resize handler since the browser
+       itself recomputes it as chrome shows/hides. */
+    .stagecanvas{height:50dvh}
     /* .toolbar/.mode3d were floating PILLS positioned absolute/centred over
        the canvas — at phone width, stacked and wrapped, they covered nearly
        the whole stage and every touch meant for orbit/pan landed on a
