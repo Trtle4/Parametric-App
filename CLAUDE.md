@@ -977,6 +977,56 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   preserving by construction, and a rearrangement that only ever ranks at
   or below the layouts already in every fixture's list never displaces a
   `list[0]`).
+- **CORRECTED (split-band-flush task): a layer has slack in TWO
+  INDEPENDENT directions, and the first version of the sandwich
+  construction sent both to the same place.** The Part 2 entry above's own
+  "central void" — hand-computed as "two 5mm gaps flanking the middle
+  band" — was, on inspection, describing the bug this task fixes, not a
+  feature: those two gaps were a full-depth CHANNEL between the middle
+  band and each majority half, because the majority halves were pushed
+  flush to the DECK's own outer edge (`u = ±U/2`) regardless of where the
+  middle band actually sat. Band-normal (u) slack — the three bands'
+  combined width falling short of the deck width — is a margin AROUND the
+  whole group and must never appear BETWEEN bands; band-parallel (v) slack
+  — one band's own length falling short of its neighbours' — is the
+  construction's actual, only void, and belongs INSIDE that band, not at
+  its edges. `sandwichLayouts` now keeps the two separate: majority halves
+  sit flush against the SHORT band's own edges (adjacent, zero gap; `u =
+  ±(n2u*b/2 + (i+0.5)*a)`, not `±U/2`), and the whole group — `k*a +
+  n2u*b` wide — is centred on the deck exactly like `stripLayouts`'s own
+  `maxU` convention, so any leftover lands outside the group, split evenly.
+  The new `bandRowsV(count, p, bandLength)` is the one place either kind of
+  v-layout happens: an ordinary centred block when a band's own extent
+  already equals `bandLength` (the longer of the majority/middle lengths —
+  no shortfall, no void), or, when it falls short, `count` split into two
+  EQUAL groups flush to `bandLength`'s two ends with the shortfall
+  consolidated into ONE centred void between them — mirroring, one level
+  down, the exact "push to two ends, leftover in the middle" pattern the
+  group-centring fix now correctly reserves for the u-axis. `count` must be
+  even for that split to land exactly centred (an odd count has no exact
+  split — `null`, not a candidate, the SAME rule `k`'s own evenness already
+  used) — a new constraint the original Part 2 fixture's own "3+2+3"
+  (n2v=1, uneven by construction, one case can't be "pushed to both ends")
+  couldn't satisfy, so it no longer emits at all; replaced with a
+  hand-verified "3+4+3" (case 65×50×100, deck 250×180) where n2v=2 splits
+  cleanly. A `rows*b === n2v*a` fixture (case 40×30×100, deck 250×120)
+  confirms the OTHER new rule — no length mismatch, no void, no candidate
+  at all — and is non-vacuous: without the length-equality gate, that exact
+  combo has a real k=2 candidate, so the gate is refusing something, not
+  nothing. Mutation-tested two ways: an IN-PIN reconstruction of the old
+  `u = ±(U/2 - (i+0.5)*a)` formula (same k1/a the real candidate already
+  solved) reopens exactly the reported channel while the candidate's own
+  COUNT is untouched, proving count alone could never have caught this; and
+  splicing the actual OLD `sandwichLayouts` function back into the real
+  module and re-running the suite fails exactly the four pins that encode
+  the new rules (adjacency, void location, group margin, no-short-band-no-
+  candidate) while the count-match and count-invariance-sweep pins —
+  and every other suite, `golden.json` 998/998 — stay green, confirming the
+  fix moves positions only. Sweep coverage held without adjustment: the
+  pre-existing count-invariance/no-overlap sweeps (CL 90–220 × CW 60–180 ×
+  a 500×400 deck) still produce 105 sandwich instances post-fix, comfortably
+  past their own `n > 10` vacuousness floor, so the new evenness/
+  length-mismatch gates cut the SHAPE of what's emitted, not the volume.
 - **RESOLVED (render-controls task): the render controls are two groups
   with different jobs, and that split is now a DOM fact, not a CSS
   convention.** Inventory first, per the task's own instruction, because
