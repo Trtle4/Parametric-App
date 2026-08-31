@@ -30,8 +30,32 @@ export const DERATINGS = [
   'Sustained load / creep: ~35–40% loss over time',
   'Humidity: up to ~50% loss at high RH',
   'Pallet overhang & misalignment',
-  'Cutouts, hand-holds, and print'
+  'Cutouts, hand-holds, and print',
+  'Interlocking (any layer turned from straight stacking): commonly ~40–50% ' +
+    'loss vs columnar — the load path no longer runs case-corner to case-corner'
 ];
+
+/**
+ * The interlock caveat is a WARNING that applies only when the load actually
+ * IS interlocked — never a blanket line in a static list the user has
+ * already learned to skim. Read the SCHEDULE, not the family/pattern
+ * string: `family: 'optimal'` can still pick the straight candidate with no
+ * interlocking at all, and a custom per-layer schedule may flip only one
+ * layer of many. This module deliberately DISCLOSES rather than applies —
+ * see the module doc — so this still returns a caveat STRING, never a
+ * numeric factor for a caller to silently fold into the BCT ratio.
+ * @param {boolean[]|null|undefined} layerFlips  bottom-first per-layer
+ *   schedule (core/palletpatterns.js candidate.layerFlips)
+ * @returns {string|null} the caveat, or null when nothing is interlocked
+ */
+export function interlockCaveat(layerFlips){
+  if(!layerFlips || !layerFlips.some(Boolean)) return null;
+  const n = layerFlips.filter(Boolean).length;
+  return `This load is INTERLOCKED (${n} of ${layerFlips.length} layer${layerFlips.length === 1 ? '' : 's'} ` +
+    `turned from straight stacking): expect roughly 40–50% LESS compression strength than the same ` +
+    `case count stacked columnarly — the corner-to-corner load path is broken on those layers. Treat ` +
+    `the BCT figure above as optimistic for this arrangement.`;
+}
 
 /**
  * McKee BCT from mm inputs.

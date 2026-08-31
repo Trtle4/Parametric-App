@@ -383,6 +383,127 @@ t('family filter flows through the chain (column strips the mixed layouts)', () 
   });
 })();
 
+/* ================================================================
+   PART 1 — interlock becomes a per-layer SCHEDULE (layerFlips), not a
+   whole-load boolean. "Migration" here means the refactor from an
+   `interlock` boolean to a `layerFlips` array must reproduce today's two
+   auto-generated candidates (straight, every-odd-layer) bit-identically;
+   there is no project-level boolean field to convert (interlock was only
+   ever a per-candidate value, so the golden-parity tests above already
+   cover the ranked-list shape). A user-set schedule (the rail's rule, or
+   candidate.withSchedule directly) reaches arbitrary per-layer
+   arrangements — single-layer, or a tail from some layer up — the old
+   boolean never could.
+   ================================================================== */
+
+t('MIGRATION: interlock:true reproduces the alternating-odd-layer schedule bit-identically', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'interlock');
+  const cand = l.find(c => c.family === 'mixed');
+  ok(cand, 'no mixed interlock candidate');
+  eq(cand.layerFlips, Array.from({length: cand.layers}, (_, ly) => !!(ly & 1)), 'layerFlips must be exactly the alternating schedule:');
+  ok(cand.interlock, 'derived interlock boolean must be true');
+  eq(cand.warnings, [], 'the auto-generated candidate must never warn on its own:');
+});
+
+t('MIGRATION: the straight ("column") candidate reproduces the all-false schedule bit-identically', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'column');
+  ok(l.length, 'vacuous fixture');
+  eq(l[0].layerFlips, new Array(l[0].layers).fill(false), 'layerFlips must be all false:');
+  ok(!l[0].interlock, 'derived interlock boolean must be false');
+});
+
+t('SCHEDULE: all-false, a single flipped layer, and a flipped tail each produce exactly the requested per-layer arrangement', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  const cand = l.find(c => c.family === 'mixed' && !c.interlock);
+  ok(cand, 'no straight mixed candidate to schedule against');
+  ok(cand.layers >= 3, `vacuous fixture: need >=3 layers, got ${cand.layers}`);
+  const straight = cand.build();
+  const zs = [...new Set(straight.placements.map(p => p.z))].sort((a, b) => a - b);
+  const sigAt = (arr, z, flip) => arr.placements.filter(p => p.z === z)
+    .map(p => `${(flip ? -p.x : p.x).toFixed(2)},${(flip ? -p.y : p.y).toFixed(2)}`).sort().join(';');
+  const straightSigAt = z => sigAt(straight, z, false);
+
+  // for each schedule, every layer's placements -- UN-flipped when the
+  // schedule says it was flipped -- must equal that layer's own straight
+  // signature: the direct, hand-computable statement of "the schedule was
+  // honoured, layer by layer".
+  const check = (label, schedule) => {
+    const arr = cand.withSchedule(schedule).build();
+    for(let ly = 0; ly < cand.layers; ly++)
+      eq(sigAt(arr, zs[ly], !!schedule[ly]), straightSigAt(zs[ly]), `${label}: layer ${ly} (schedule=${schedule[ly]}) placements:`);
+  };
+  check('all-false', new Array(cand.layers).fill(false));
+  const single = new Array(cand.layers).fill(false); single[1] = true;
+  check('single true (layer 1 only)', single);
+  const tail = new Array(cand.layers).fill(false); for(let ly = 1; ly < cand.layers; ly++) tail[ly] = true;
+  check('true tail (every layer from 1 up)', tail);
+});
+
+t('WARNING: withSchedule fires the isOwn180 warning when an explicit flip is requested on a self-symmetric layer', () => {
+  // every ALIGNED grid is its own 180° turn by construction (a centred grid
+  // negates onto itself regardless of count or squareness) -- 'column' is
+  // aligned-grids-only, so its list[0] is guaranteed symmetric with no
+  // special-case fixture needed.
+  const l = palletPatternList(CASE, DECK, Z, 'column');
+  ok(l.length, 'vacuous fixture');
+  const cand = l[0];
+  ok(cand.layers >= 2, `vacuous fixture: need >=2 layers, got ${cand.layers}`);
+  const schedule = new Array(cand.layers).fill(false); schedule[1] = true;
+  const withFlip = cand.withSchedule(schedule);
+  eq(withFlip.warnings.length, 1, `expected exactly one warning, got ${JSON.stringify(withFlip.warnings)}`);
+  ok(/180/.test(withFlip.warnings[0]), `warning should mention the 180° turn, got: ${withFlip.warnings[0]}`);
+  // and the arrangement really is unchanged from a straight stack, proving
+  // the warning is honest, not just decorative. Compared by SIGNATURE (the
+  // file's own stackSig, sorted), not raw array order: a symmetric set
+  // negates onto ITSELF but not necessarily onto the same enumeration
+  // order, and order was never a physical claim.
+  const straight = cand.build(), flipped = withFlip.build();
+  eq(stackSig(flipped), stackSig(straight), 'a warned no-op flip must produce the IDENTICAL arrangement (as a set) to the straight stack:');
+});
+
+t('WARNING: withSchedule does NOT warn on an asymmetric layer, or when nothing in the schedule is flipped', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  const asym = l.find(c => c.family === 'mixed');
+  ok(asym, 'no mixed candidate');
+  const flippedAsym = asym.withSchedule(new Array(asym.layers).fill(true));
+  eq(flippedAsym.warnings, [], 'an asymmetric layout must never warn, however it is flipped:');
+
+  const colList = palletPatternList(CASE, DECK, Z, 'column');
+  const cand2 = colList[0];
+  const noFlip = cand2.withSchedule(new Array(cand2.layers).fill(false));
+  eq(noFlip.warnings, [], 'a symmetric layout with NOTHING flipped must never warn:');
+});
+
+t('withSchedule degrades safely when the schedule length no longer matches the candidate\'s own layer count', () => {
+  const l = palletPatternList(CASE, DECK, Z, 'optimal');
+  const cand = l.find(c => c.family === 'mixed' && !c.interlock);
+  ok(cand, 'no straight mixed candidate');
+  const tooShort = cand.withSchedule([true]);           // far shorter than cand.layers
+  eq(tooShort.layerFlips.length, cand.layers, 'a short schedule must still produce a full-length array:');
+  eq(tooShort.layerFlips[0], true, 'the one supplied entry is honoured:');
+  ok(tooShort.layerFlips.slice(1).every(v => v === false), 'missing entries read false (columnar), never throw:');
+  const tooLong = cand.withSchedule(new Array(cand.layers + 5).fill(true));
+  eq(tooLong.layerFlips.length, cand.layers, 'a long schedule must be truncated to the candidate\'s own layer count:');
+});
+
+t('LAYER SCHEDULE flows through project.pallet.layerFlips: an override changes the committed row without touching pattern/patternIndex', () => {
+  const p = newProject();
+  const before = candidateCases(p, '1mm').find(x => x.patternList.length >= 1);
+  ok(before, 'no row with patterns');
+  const cand = before.patternList.find(c => c.family === 'mixed' && !c.interlock) || before.patternList[0];
+  ok(cand.layers >= 2, `vacuous fixture: need >=2 layers, got ${cand.layers}`);
+  // point patternIndex AT this exact candidate so chainMetrics/list[0] and
+  // this override apply to the SAME layout the test hand-derives against
+  p.pallet.patternIndex = before.patternList.indexOf(cand);
+  const schedule = new Array(cand.layers).fill(false); schedule[1] = true;
+  p.pallet.layerFlips = schedule;
+  const after = candidateCases(p, '1mm').find(x => x.patternList.length >= 1);
+  const row = applyPatternSelection(after, p);
+  eq(row.layerFlips, cand.withSchedule(schedule).layerFlips, 'row.layerFlips must reflect the override:');
+  eq(row.casesPerPallet, cand.total, 'count is unaffected by which layers are flipped:');
+  p.pallet.layerFlips = null; p.pallet.patternIndex = 0;
+});
+
 /* ---------- report ---------- */
 const fails = results.filter(r => r.startsWith('FAIL')).length;
 document.getElementById('out').textContent =
