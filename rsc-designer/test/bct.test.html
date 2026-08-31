@@ -9,7 +9,7 @@
      ECT 32 lb/in, caliper 0.16 in, box 12 x 10 in -> perimeter 44 in
      BCT = 5.87 * 32 * sqrt(0.16 * 44) = 187.84 * sqrt(7.04) = 498.394 lb
    In mm: caliper 4.064 mm, box 304.8 x 254 mm, perimeter 1117.6 mm. */
-import {estimateBCT, stackAnalysis, MCKEE_K, DERATINGS} from '../src/core/bct.js';
+import {estimateBCT, stackAnalysis, MCKEE_K, DERATINGS, interlockCaveat} from '../src/core/bct.js';
 import {boxesAboveBottom} from '../src/core/stack.js';
 
 const results = [];
@@ -125,10 +125,36 @@ t('zero load -> ratio is Infinity (a lone bottom box bears nothing), not a divid
   if(!a.meetsTarget) throw new Error('no load trivially meets target');
 });
 
-t('the field deratings are surfaced for the UI to show (creep, humidity, overhang, cutouts)', () => {
+t('the field deratings are surfaced for the UI to show (creep, humidity, overhang, cutouts, interlocking)', () => {
   if(DERATINGS.length < 4) throw new Error('expected the four field deratings');
   const joined = DERATINGS.join(' ').toLowerCase();
-  ['creep', 'humidity', 'overhang', 'cutout'].forEach(k => { if(!joined.includes(k)) throw new Error(`deratings should mention ${k}`); });
+  ['creep', 'humidity', 'overhang', 'cutout', 'interlock'].forEach(k => { if(!joined.includes(k)) throw new Error(`deratings should mention ${k}`); });
+});
+
+/* ---------- interlockCaveat: CONDITIONAL on the actual schedule, never on
+   family/pattern -- see Part 1's own instruction (bct.js is the one place
+   this app applies a derating factor NUMERICALLY vs merely discloses it,
+   and interlock must stay disclose-only like every other derating here). */
+
+t('interlockCaveat is null when nothing in the schedule is flipped', () => {
+  if(interlockCaveat([false, false, false]) !== null) throw new Error('all-false schedule must not caveat');
+  if(interlockCaveat([]) !== null) throw new Error('empty schedule must not caveat');
+  if(interlockCaveat(null) !== null) throw new Error('null schedule must not caveat');
+  if(interlockCaveat(undefined) !== null) throw new Error('undefined schedule must not caveat');
+});
+
+t('interlockCaveat fires, prominently, the moment ANY layer is flipped -- and counts them', () => {
+  const c = interlockCaveat([false, true, false]);
+  if(!c) throw new Error('a schedule with one flipped layer must caveat');
+  if(!/INTERLOCKED/.test(c)) throw new Error(`caveat should say INTERLOCKED, got: ${c}`);
+  if(!/1 of 3/.test(c)) throw new Error(`caveat should count the flipped layers (1 of 3), got: ${c}`);
+  if(!/40.*50/.test(c)) throw new Error(`caveat should cite the compression-loss range, got: ${c}`);
+});
+
+t('interlockCaveat never returns a numeric factor -- a string only, matching this module\'s disclose-not-apply rule', () => {
+  const c = interlockCaveat([true]);
+  if(typeof c !== 'string') throw new Error(`expected a string, got ${typeof c}`);
+  if(/^[\d.]+$/.test(c.trim())) throw new Error('caveat must not be a bare number');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

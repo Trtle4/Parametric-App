@@ -467,10 +467,14 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // derives a real pallet.stack from the absent doubleStack, so it is never
   // "missing" by the time fillProjectDefaults looks at it — only tareLb and
   // slipsheet, which that migration never touches, are genuinely new here.
+  // pallet.layerFlips (the Part 1 interlock-schedule task): a genuinely new
+  // field too, right after patternIndex in newProject()'s own key order —
+  // null (no override) is its correct default, same "filled, not silently
+  // absent" contract as every other entry here.
   eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
-                         'pallet.patternIndex', 'pallet.stacking', 'pallet.tareLb', 'pallet.slipsheet',
+                         'pallet.patternIndex', 'pallet.layerFlips', 'pallet.stacking', 'pallet.tareLb', 'pallet.slipsheet',
                          'tray', 'uboard', 'shelf', 'trailer'],
-     'the new openTop/perf/pallet.stacking/patternIndex/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
+     'the new openTop/perf/pallet.stacking/patternIndex/layerFlips/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
   eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
   eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
   eq(result.project.trailer.L, 16002, 'trailer defaulted to a real, editable 53\' van (not left undefined):');

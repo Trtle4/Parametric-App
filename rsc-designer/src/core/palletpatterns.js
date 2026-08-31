@@ -2,10 +2,12 @@
  * Pallet pattern repertoire: enumerate every viable case-on-pallet layer
  * layout as ONE RANKED candidate list — aligned grids (both in-plane
  * orientations), two-block rotated strips (every viable split, not just the
- * best), and perimeter pinwheels with a central void — plus interlocked
- * (odd-layer 180° turn) stacking variants. Path B: the named patterns EMERGE
- * from enumerating these defined constructions; this is NOT a general
- * packing solver, and it must never grow into one.
+ * best), sandwiched split bands with a central void (the same split, with
+ * the short band re-centred instead of pushed to an edge), and perimeter
+ * pinwheels with a central void — plus a per-layer interlock SCHEDULE (see
+ * `layerFlips` below) each layout can be stacked with. Path B: the named
+ * patterns EMERGE from enumerating these defined constructions; this is
+ * NOT a general packing solver, and it must never grow into one.
  *
  * The list is the single source for the pallet: project.js chainMetrics
  * bakes list[0] into every candidate row (ranking / default), retains the
@@ -114,6 +116,83 @@ function stripLayouts(CL, CW, PL, PW){
   return out;
 }
 
+/** Sandwiched split band with a central void — a DEFINED construction, not
+ *  discovered: stripLayouts always puts its short (rotated) block at ONE
+ *  end, so a "3+3+2" layer puts the short band at an edge. This splits the
+ *  MAJORITY band's k columns into two EQUAL halves (k must be even — an odd
+ *  k has no exact split, so that k is simply not a candidate for this
+ *  construction, the same "doesn't apply here" the module already uses for
+ *  a square footprint or a lone orientation), pushes one half flush to
+ *  EACH outer edge of the layer (u = ±U/2 — the real, full deck extent
+ *  every other construction here also uses, not the strip's own smaller
+ *  combined footprint), and puts the short (rotated) band in between,
+ *  centred at u=0. Because the two halves are EXACT mirrors of each other
+ *  and the short band is self-centred, the whole layer is its own 180°
+ *  turn by construction — see sym180 below, and the interlock-schedule
+ *  interaction this implies (core/bct.js/palletpatterns.js Part 1 doc).
+ *
+ *  COUNT INVARIANCE: this only REARRANGES the exact same k*rows + n2u*n2v
+ *  cells stripLayouts' own search would find for the matching k — it adds
+ *  or removes none, so the total for a given k is identical either way,
+ *  and the void this construction opens is the same "one case wouldn't
+ *  fit" leftover a mixed layout already has, just centred instead of
+ *  pushed to one side.
+ *
+ *  Only the MAXIMAL (highest-total) even k is emitted per axis/orientation
+ *  combo — the same pinwheel rule ("a variant that could grow is pure
+ *  noise in the cycle list"), and only when the short band is non-empty
+ *  (n2 >= 1): with nothing to sandwich this degenerates to a plain aligned
+ *  grid split apart for no reason, which is strictly worse than the real
+ *  aligned candidate at the same count and adds nothing the ranked list
+ *  doesn't already have. */
+function sandwichLayouts(CL, CW, PL, PW){
+  const out = [];
+  const fam = (U, V, a, b, swap) => {
+    const rows = Math.floor(V/b), n2v = Math.floor(V/a);
+    if(rows < 1) return;
+    let best = null;
+    for(let k = 2; k <= Math.floor(U/a); k += 2){
+      const n2u = Math.floor((U - k*a)/b), n2 = n2u*n2v;
+      if(n2 < 1) continue;                          // nothing to sandwich
+      const total = k*rows + n2;
+      if(!best || total > best.total) best = {k, n2u, total};
+    }
+    if(!best) return;
+    const {k, n2u} = best;
+    const k1 = k/2, n2 = n2u*n2v;
+    const positions = [];
+    const rotA = a !== CL;                          // majority-band orientation
+    // the two majority halves, flush to the layer's own OUTER edges — the
+    // full U (not a smaller combined-footprint span), matching the "pushes
+    // cases to the layer boundary" edge-justification this construction is
+    // for. Built as an exact mirror pair, which is what makes the whole
+    // layer symmetric regardless of how the leftover (U - k*a) splits.
+    for(const side of [-1, 1]) for(let i = 0; i < k1; i++){
+      const u = side*(U/2 - (i + 0.5)*a);
+      for(let j = 0; j < rows; j++){
+        const v = (j + 0.5)*b - rows*b/2;
+        positions.push(swap ? {x: v, y: u, rot: !rotA} : {x: u, y: v, rot: rotA});
+      }
+    }
+    // the short band, centred at u=0 — the gap between the two majority
+    // halves is itself centred (k1 is the SAME on each side), so a plain
+    // centred sub-grid here already IS "cases justified to the short
+    // band's own two edges, void in the middle" (see gridLayout's own
+    // centring, which does exactly this for one block).
+    for(let i = 0; i < n2u; i++){
+      const u = (i + 0.5)*b - n2u*b/2;
+      for(let j = 0; j < n2v; j++){
+        const v = (j + 0.5)*a - n2v*a/2;
+        positions.push(swap ? {x: v, y: u, rot: rotA} : {x: u, y: v, rot: !rotA});
+      }
+    }
+    out.push({positions, label: `${k1*rows}+${n2}+${k1*rows} sandwich`, family: 'sandwich'});
+  };
+  fam(PL, PW, CL, CW, false); fam(PL, PW, CW, CL, false);
+  fam(PW, PL, CL, CW, true);  fam(PW, PL, CW, CL, true);
+  return out;
+}
+
 /** Perimeter pinwheel/windmill — a DEFINED construction, not discovered:
  *  four i×j blocks around the deck edge, each turned 90° from its
  *  neighbour, C2-symmetric, with the central void/chimney left visibly
@@ -153,6 +232,19 @@ const sig = positions => positions
 /** Is the layer its own 180° turn? (Then the interlock flip is a no-op.) */
 const sym180 = positions =>
   sig(positions) === sig(positions.map(p => ({x: -p.x, y: -p.y, rot: p.rot})));
+
+/* ---------------- interlock SCHEDULE ----------------
+ * A per-layer boolean array, bottom first — `layerFlips[ly]` is whether
+ * layer `ly` gets the 180° turn. This replaced a single `interlock`
+ * boolean per candidate: "flip every odd layer" and "flip nothing" are just
+ * two values the array can hold, not two separate code paths, and the
+ * array is forward-compatible with editing an arbitrary layer's flip once
+ * per-layer editing UI exists (a `columnUpTo`+mode-enum pair would have to
+ * be thrown away the moment that lands). Every candidate still carries a
+ * derived `interlock` boolean (`layerFlips.some(Boolean)`) for the existing
+ * ranking tie-break and any caller that only needs "is anything flipped". */
+const straightSchedule    = layers => new Array(layers).fill(false);
+const alternatingSchedule = layers => Array.from({length: layers}, (_, ly) => !!(ly & 1));
 
 /* ---------------- deck validity: NO OVERHANG, EVER ----------------
  * A hard constraint on the generator, not a preference. Overhang removes
@@ -205,7 +297,7 @@ function deckFootprint(positions, l, w, deckL, deckW, allowOverhang){
 
 /* ---------------- the ranked list ---------------- */
 
-const FAMILY_RANK = {aligned: 0, mixed: 1, pinwheel: 2};
+const FAMILY_RANK = {aligned: 0, mixed: 1, sandwich: 2, pinwheel: 3};
 
 /** Guard absurd inputs, like containment's PLACEMENT_CAP. */
 const PER_LAYER_CAP = 20000;
@@ -240,9 +332,19 @@ const memo = new Map();
  * @param {boolean} [opts.noMemo=false]  skip the result cache. For
  *   hypothetical probes (core/sensitivity.js) whose dimensions never recur:
  *   caching them would only evict the real chain's entries.
- * @returns ranked candidates: {family, interlock, orientation, perLayer,
- *   layers, total, label, envelope, density, utilization, postOverhang,
- *   build()} — build() expands the fitInto-compatible Arrangement
+ * @returns ranked candidates: {family, layerFlips, interlock, orientation,
+ *   perLayer, layers, total, label, envelope, density, utilization,
+ *   postOverhang, warnings, build(), withSchedule()}. `layerFlips` is a
+ *   frozen per-layer boolean array, bottom first (`interlock` is just
+ *   `layerFlips.some(Boolean)`, kept for callers that only need "is
+ *   anything flipped"); `withSchedule(schedule)` returns a NEW candidate —
+ *   same layout/orientation, a different flip schedule — for a caller that
+ *   wants a specific per-layer arrangement rather than one of the two
+ *   auto-generated schedules (straight, or every odd layer). `warnings` is
+ *   populated only via `withSchedule`, when the requested schedule flips a
+ *   layer that is its own 180° turn (a no-op flip) — never on the two
+ *   auto-generated candidates, whose odd-layer default is expected, not a
+ *   user request. build() expands the fitInto-compatible Arrangement
  *   (placements included) on demand and caches it. Empty when nothing fits
  *   the deck: an honest "does not fit", never an overhanging fallback.
  *   `postOverhang` is `{L, W}` (mm proud in each dimension, 0 if not proud
@@ -285,6 +387,7 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       const gB = gridLayout(CL, CW, PL, PW, true, square);
       if(gB) layouts.push(gB);
       layouts.push(...stripLayouts(CL, CW, PL, PW));
+      layouts.push(...sandwichLayouts(CL, CW, PL, PW));
       layouts.push(...pinwheelLayouts(CL, CW, PL, PW));
     }
 
@@ -327,26 +430,51 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       const ohW = Math.max(0, (envelope.W + 2*postCaliperMM) - cavity.W);
       const postOverhang = (ohL > DECK_EPS || ohW > DECK_EPS) ? {L: ohL, W: ohW} : null;
 
-      const mk = interlock => {
+      const mk = layerFlips => {
+        const flips = Object.freeze(layerFlips.slice());
+        const interlock = flips.some(Boolean);
         const cand = {
-          family: lay.family, interlock, orientation: o,
+          family: lay.family, layerFlips: flips, interlock, orientation: o,
           perLayer, layers: st.layers, total: st.total,
           label: lay.label + (interlock ? ' · interlocked' : ''),
           envelope, postOverhang,
           density: envVol > 0 ? st.total*childVol/envVol : 0,
           utilization: cavityVol > 0 ? st.total*childVol/cavityVol : 0,
+          // populated only by withSchedule() below — the auto-generated
+          // straight/alternating candidates never warn (their flip, if any,
+          // is the app's own long-standing "flip every odd layer" default,
+          // not something a user explicitly asked for on THIS layer)
+          warnings: [],
           build(){
             if(this._arr) return this._arr;
             const placements = [];
             for(let ly = 0; ly < st.layers; ly++){
-              const flip = interlock && (ly & 1);
+              const flip = this.layerFlips[ly];
               const z = bottom + h/2 + ly*(h + betweenZ);
               for(const p of lay.positions)
                 placements.push({x: flip ? -p.x : p.x, y: flip ? -p.y : p.y, z,
                                  orientation: p.rot ? transpose(o) : o});
             }
             return (this._arr = {placements, perLayer, layers: st.layers, total: st.total,
-                                 envelope, utilization: cand.utilization, label: cand.label});
+                                 envelope, utilization: cand.utilization, label: cand.label,
+                                 layerFlips: this.layerFlips, warnings: this.warnings});
+          },
+          /** Rebuild this SAME layout/orientation/envelope with a DIFFERENT
+           *  per-layer flip schedule (bottom-first) — the entry point a
+           *  user's explicit schedule (or the UI's columnar-through-k rule)
+           *  goes through, distinct from the two auto-generated candidates
+           *  above. A schedule shorter or longer than this candidate's own
+           *  `layers` degrades safely: missing entries read false
+           *  (columnar), extra entries are ignored — the same forgiving-
+           *  clamp philosophy patternIndex already uses for a stale
+           *  selection, rather than throwing when the layer count moves
+           *  under a held schedule. Returns a NEW candidate; this one, and
+           *  its own `warnings`, are untouched. */
+          withSchedule(schedule){
+            const next = mk(Array.from({length: st.layers}, (_, ly) => !!(schedule && schedule[ly])));
+            if(symmetric && next.interlock)
+              next.warnings = ['Interlock requested on a layer that is its own 180° turn — the flip has no effect; this arrangement is identical to a straight stack.'];
+            return next;
           }
         };
         return cand;
@@ -358,13 +486,16 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       //   column   — straight aligned grids
       //   interlock — the flipped stacking of EVERY layout (identity flip
       //              included, matching the legacy interlock behaviour)
+      // Both non-'optimal' presets are just a fixed SCHEDULE now — a value
+      // the array holds, not a second branch of candidate-building logic;
+      // mk() itself no longer knows or cares which preset asked for it.
       if(family === 'optimal'){
-        cands.push(mk(false));
-        if(!symmetric) cands.push(mk(true));
+        cands.push(mk(straightSchedule(st.layers)));
+        if(!symmetric) cands.push(mk(alternatingSchedule(st.layers)));
       }else if(family === 'column'){
-        if(lay.family === 'aligned') cands.push(mk(false));
+        if(lay.family === 'aligned') cands.push(mk(straightSchedule(st.layers)));
       }else{ // 'interlock'
-        cands.push(mk(true));
+        cands.push(mk(alternatingSchedule(st.layers)));
       }
     }
   }
@@ -387,5 +518,6 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
  *  shape-compatible with fitInto's return. */
 export function emptyArrangement(){
   return {placements: [], perLayer: 0, layers: 0, total: 0,
-          envelope: {L: 0, W: 0, H: 0}, utilization: 0, label: ''};
+          envelope: {L: 0, W: 0, H: 0}, utilization: 0, label: '',
+          layerFlips: [], interlock: false, warnings: []};
 }

@@ -27,7 +27,7 @@ import {foldBuilders} from '../render/folds/index.js';
 import {PALLET_HEIGHT, MIN_FAITHFUL_DECK_H} from '../render/palletmesh.js';
 import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../render/shelf3d.js';
 import {fitInto, orientDims} from '../core/containment.js';
-import {stackAnalysis, DERATINGS} from '../core/bct.js';
+import {stackAnalysis, DERATINGS, interlockCaveat} from '../core/bct.js';
 import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT,
   CORNER_POST_DEFAULTS, cornerPostConfig, cornerPostHeightMM, cornerPostReachesCaseStack} from '../core/stack.js';
 import {cornerPostBasisOf, cornerPostRateOf} from '../core/materials.js';
@@ -800,6 +800,7 @@ function refreshPal(){
   }
   renderBCT(g, row);
   renderCornerPostNotes(row);
+  renderInterlockScheduleNote(row);
   drawDims();
 }
 
@@ -828,6 +829,58 @@ function renderCornerPostNotes(row){
     ? `<div class="countwarn">Corner posts stand proud of the pallet deck by ${fmtLen(oh.L, inputs.getUnit())} (L) / ${fmtLen(oh.W, inputs.getUnit())} (W). Normal practice — the pallet pattern is unaffected; the trailer footprint accounts for it.</div>`
     : '';
 }
+
+/** The interlock-SCHEDULE readout: the SELECTED candidate's own per-layer
+ *  flip array (row.layerFlips/row.patternWarnings — core/palletpatterns.js,
+ *  never re-derived here) plus the conditional BCT caveat
+ *  (core/bct.js interlockCaveat). Read from the SCHEDULE itself, never from
+ *  pattern/family: 'optimal' can still pick the straight candidate with
+ *  nothing interlocked at all, and a custom rule may flip only one layer of
+ *  many — a caveat keyed off `pattern === 'interlock'` would both miss and
+ *  over-warn. `refreshPal`'s own recompute consumer (a registered display,
+ *  same as renderBCT/renderCornerPostNotes), so it stays live on every edit
+ *  that could change the layer count — not just edits to the rule itself. */
+function renderInterlockScheduleNote(row){
+  const noteEl = el('palScheduleNote');
+  const flips = row && row.layerFlips;
+  if(!noteEl || !flips || !flips.length){ if(noteEl) noteEl.innerHTML = ''; return; }
+  const overridden = !!build.project.pallet.layerFlips;
+  const n = flips.filter(Boolean).length;
+  const parts = [`<div class="countwarn">${overridden ? 'Custom' : 'Auto'} schedule (bottom &rarr; top): ` +
+    `${flips.map(f => f ? 'I' : '&mdash;').join(' ')} &nbsp;(I = interlocked) &mdash; ` +
+    `${n} of ${flips.length} layer${flips.length === 1 ? '' : 's'} flipped.</div>`];
+  (row.patternWarnings || []).forEach(w => parts.push(`<div class="countwarn">&#9888; ${w}</div>`));
+  const caveat = interlockCaveat(flips);
+  if(caveat) parts.push(`<div class="countwarn" style="color:var(--danger)">${caveat}</div>`);
+  noteEl.innerHTML = parts.join('');
+}
+/** Compute a per-layer schedule from the rail's convenience rule —
+ *  "columnar through layer k, then interlock [this layer only|all layers
+ *  above]" — writing the FULL EXPANDED array into project.pallet.layerFlips
+ *  (never storing k+mode themselves; see project.js's own doc on why).
+ *  `layers` is the CURRENTLY resolved candidate's own layer count; a
+ *  schedule built against a since-changed count degrades safely through
+ *  candidate.withSchedule rather than needing to be kept in sync here. */
+function layerFlipsFromRule(columnUpTo, mode, layers){
+  const k = Math.max(0, Math.min(layers, Math.round(columnUpTo) || 0));
+  return Array.from({length: layers}, (_, ly) => ly < k ? false : (mode === 'single' ? ly === k : true));
+}
+function applyInterlockRule(){
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  const layers = (row && row.caseLayers) || 0;
+  if(layers < 1) return;   // nothing resolved yet to size a schedule against
+  build.project.pallet.layerFlips =
+    layerFlipsFromRule(+el('palColumnUpTo').value || 0, el('palInterlockMode').value, layers);
+  projectChanged();
+}
+['palColumnUpTo', 'palInterlockMode'].forEach(id =>
+  el(id).addEventListener(id === 'palInterlockMode' ? 'change' : 'input', applyInterlockRule));
+el('palScheduleAuto').addEventListener('click', () => {
+  build.project.pallet.layerFlips = null;
+  el('palColumnUpTo').value = 0;
+  el('palInterlockMode').value = 'tail';
+  projectChanged();
+});
 
 /* ---------- dimensional sensitivity: which case dimension is binding ---------
  * Read-only analysis (core/sensitivity.js) of what the smallest change to each

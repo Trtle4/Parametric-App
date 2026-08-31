@@ -217,6 +217,17 @@ export function newProject(){
       params: {caliper: 0.9, f: null}
     },
     pallet: {L: 48*25.4, W: 40*25.4, maxH: 60*25.4, baseH: 127, pattern: 'optimal', patternIndex: 0,
+      // Per-layer interlock SCHEDULE override — bottom-first boolean array,
+      // one entry per layer — or null (the default): no override, the
+      // selected candidate's OWN auto-generated schedule (straight, or
+      // every odd layer, per `pattern`/patternIndex) is used unmodified,
+      // bit-identical to before this field existed. Set by the rail's
+      // "columnar through layer k, then interlock..." rule (writing the
+      // expanded array, never a k+mode pair — see palletpatterns.js's own
+      // doc on why). A schedule whose length no longer matches the selected
+      // candidate's layer count (case/deck edited under a held schedule)
+      // degrades safely via candidate.withSchedule, never throws.
+      layerFlips: null,
       // stacking-strength (BCT) inputs — engineering guidance, not packing math.
       // ect: edge crush lb/in; unitWeightLb: gross weight per box (tare +
       // contents, which the app can't know); target: required safety factor.
@@ -1330,12 +1341,23 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     p.pattern,
     {postCaliperMM: cpCfg.enabled ? cpCfg.caliper : 0}
   );
-  const fit = patternList.length ? patternList[0].build() : emptyArrangement();
+  // A held layerFlips OVERRIDE applies to whichever candidate is selected —
+  // here, the ranked-best (list[0]) that bakes into this row's headline
+  // numbers. withSchedule() returns a NEW candidate sharing the same
+  // layout/orientation/envelope, so postOverhang below is unaffected (it's
+  // geometry-only, computed once per layout, shared across every schedule
+  // of that same layout by construction — never a second, divergent copy).
+  // No override (the default: null) is bit-identical to before this field
+  // existed, since `selected0` is then just `patternList[0]` itself.
+  const selected0 = patternList.length
+    ? (p.layerFlips ? patternList[0].withSchedule(p.layerFlips) : patternList[0])
+    : null;
+  const fit = selected0 ? selected0.build() : emptyArrangement();
   // Post overhang is a WARNING attached to the chosen candidate, never a
   // rejection (case overhang above already ran and is untouched) — read off
   // the SAME candidate list() and row.js/app.js surface it through the
   // existing warning channel. null when posts are off or nothing is proud.
-  const postOverhang = patternList.length ? patternList[0].postOverhang : null;
+  const postOverhang = selected0 ? selected0.postOverhang : null;
   const loadH = palletLoadH(fit, stackH);
   // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
   // AND its proud contents, so its area needs the loaded (proud) height stackH —
@@ -1387,6 +1409,11 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // null — a WARNING (surfaced through app.js's existing notice channel),
     // never a rejection and never a BCT derating. See palletpatterns.js.
     postOverhang,
+    // the SELECTED candidate's own per-layer flip schedule and any warning
+    // it carries (e.g. an explicit flip requested on a self-symmetric
+    // layer) — also on `fit`/`casesFit` (build()'s own return), surfaced
+    // here too since most other pallet-fit values already are.
+    layerFlips: fit.layerFlips, patternWarnings: fit.warnings,
     // cube utilization: total carton volume over the LOAD envelope
     // (deck footprint x load height above the deck, wood excluded) —
     // the freight-driving number
@@ -1414,8 +1441,15 @@ export function applyPatternSelection(row, project){
   if(!list || !list.length) return row;
   const p = project.pallet;
   const i = Math.max(0, Math.min(list.length - 1, p.patternIndex > 0 ? Math.floor(p.patternIndex) : 0));
-  if(i === 0) return row;
-  const fit = list[i].build();
+  // index 0 with NO schedule override is a genuine no-op: list[0] is exactly
+  // what chainMetrics already baked into `row`. A held layerFlips override
+  // still needs applying even at index 0 (chainMetrics applied the SAME
+  // override to the SAME candidate to build `row` in the first place, so
+  // this recomputes an identical result — harmless, and far simpler than
+  // detecting "did the caller already apply this exact schedule").
+  if(i === 0 && !p.layerFlips) return row;
+  const selected = p.layerFlips ? list[i].withSchedule(p.layerFlips) : list[i];
+  const fit = selected.build();
   const stackH = row.unitStackH;
   const loadH = palletLoadH(fit, stackH);
   const cartonsPerPallet = fit.total*row.perPalletMultiplier;
@@ -1427,7 +1461,8 @@ export function applyPatternSelection(row, project){
     cartonsPerPallet,
     coveragePct: deckCoveragePct(fit, row.outer, p),
     loadH,
-    postOverhang: list[i].postOverhang,
+    postOverhang: selected.postOverhang,
+    layerFlips: fit.layerFlips, patternWarnings: fit.warnings,
     cubeUtilPct: palletCubeUtilPct(row.palletUnitVol, cartonsPerPallet, p, loadH),
     piecesPerPallet: row.piecesPerCarton != null ? row.piecesPerCarton*cartonsPerPallet : row.piecesPerPallet,
     filmKgPerPallet: row.filmKgPerCarton != null ? row.filmKgPerCarton*cartonsPerPallet : row.filmKgPerPallet,
