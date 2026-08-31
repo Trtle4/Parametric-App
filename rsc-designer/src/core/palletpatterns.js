@@ -116,40 +116,88 @@ function stripLayouts(CL, CW, PL, PW){
   return out;
 }
 
+/** A layer has slack in TWO INDEPENDENT directions, and they must never be
+ *  conflated (that conflation was this construction's own bug — see the
+ *  CORRECTION note below): band-normal (u) slack is a margin AROUND the
+ *  group, and band-parallel (v) slack is a void INSIDE whichever band falls
+ *  short of its neighbours' length. `bandRowsV` builds the v-positions for
+ *  ONE band and is the single place either kind of v-layout happens: an
+ *  ordinary centred block when this band's own extent already equals
+ *  `bandLength` (the longer of the two — no shortfall, no void), or —
+ *  when it falls short — `count` split into two EQUAL groups flush to the
+ *  two ends of `bandLength`, the shortfall consolidated into ONE void
+ *  between them. `count` must be even for that split to land EXACTLY
+ *  centred (an odd count has no exact split — `null`, "not a candidate for
+ *  this construction", the same rule `fam` already applies to an odd k). */
+function bandRowsV(count, p, bandLength){
+  const span = count*p;
+  if(Math.abs(span - bandLength) < 1e-6)
+    return Array.from({length: count}, (_, j) => (j + 0.5)*p - span/2);
+  if(count % 2 !== 0) return null;
+  const half = count/2, vs = [];
+  for(let j = 0; j < half; j++) vs.push(-bandLength/2 + (j + 0.5)*p);   // flush to the − end
+  for(let j = 0; j < half; j++) vs.push(bandLength/2 - (j + 0.5)*p);    // flush to the + end (exact mirror of the above)
+  return vs;
+}
+
 /** Sandwiched split band with a central void — a DEFINED construction, not
  *  discovered: stripLayouts always puts its short (rotated) block at ONE
  *  end, so a "3+3+2" layer puts the short band at an edge. This splits the
  *  MAJORITY band's k columns into two EQUAL halves (k must be even — an odd
  *  k has no exact split, so that k is simply not a candidate for this
  *  construction, the same "doesn't apply here" the module already uses for
- *  a square footprint or a lone orientation), pushes one half flush to
- *  EACH outer edge of the layer (u = ±U/2 — the real, full deck extent
- *  every other construction here also uses, not the strip's own smaller
- *  combined footprint), and puts the short (rotated) band in between,
- *  centred at u=0. Because the two halves are EXACT mirrors of each other
- *  and the short band is self-centred, the whole layer is its own 180°
- *  turn by construction — see sym180 below, and the interlock-schedule
- *  interaction this implies (core/bct.js/palletpatterns.js Part 1 doc).
+ *  a square footprint or a lone orientation) and puts the short (rotated)
+ *  band between them.
+ *
+ *  CORRECTION — bands must be FLUSH. A layer has band-normal (u) slack and
+ *  band-parallel (v) slack, and an earlier version of this construction
+ *  sent both to the same place: the two majority halves were pushed flush
+ *  to the layer's own OUTER edges (u = ±U/2), leaving the band-normal
+ *  leftover as a gap BETWEEN each majority half and the short band —
+ *  visually, a full-depth channel down each side of the middle band, not a
+ *  "central void" at all. The two kinds of slack now go to the two places
+ *  the physical picture actually has room for them:
+ *    - band-normal (u): the THREE bands sit adjacent, sharing edges (zero
+ *      gap), and the whole GROUP — not the layer's own bands individually —
+ *      is centred on the deck, `(i + 0.5)*a - maxU/2` exactly like
+ *      stripLayouts/pinwheelLayouts already centre their own footprints.
+ *      Any leftover this leaves (U - maxU) is a margin OUTSIDE the group,
+ *      split evenly on both sides by that same centring — never a gap
+ *      between bands.
+ *    - band-parallel (v): a band whose own v-extent falls short of its
+ *      neighbours' does not silently absorb that shortfall as its own
+ *      (smaller) centred block, which would just move the "channel"
+ *      problem onto a different axis (splitting the shortfall into two
+ *      end-margins instead of one). `bandRowsV` (above) is the fix: the
+ *      short band's cases push to both v-ends of the LONGER reference
+ *      length, and the shortfall becomes the ONE central void this
+ *      construction is actually named for.
  *
  *  COUNT INVARIANCE: this only REARRANGES the exact same k*rows + n2u*n2v
  *  cells stripLayouts' own search would find for the matching k — it adds
- *  or removes none, so the total for a given k is identical either way,
- *  and the void this construction opens is the same "one case wouldn't
- *  fit" leftover a mixed layout already has, just centred instead of
- *  pushed to one side.
+ *  or removes none, so the total for a given k is identical either way, and
+ *  this correction only MOVES positions, never changes counts.
  *
  *  Only the MAXIMAL (highest-total) even k is emitted per axis/orientation
  *  combo — the same pinwheel rule ("a variant that could grow is pure
- *  noise in the cycle list"), and only when the short band is non-empty
- *  (n2 >= 1): with nothing to sandwich this degenerates to a plain aligned
- *  grid split apart for no reason, which is strictly worse than the real
- *  aligned candidate at the same count and adds nothing the ranked list
- *  doesn't already have. */
+ *  noise in the cycle list") — and only when the short band is non-empty
+ *  (n2 >= 1) AND the two neighbouring lengths actually differ: with
+ *  nothing to sandwich, or nothing to sandwich AROUND (rows*b === n2v*a —
+ *  no shortfall, hence no void), this degenerates to a plain aligned grid
+ *  split apart for no reason, which is strictly worse than the real aligned
+ *  candidate at the same count and adds nothing the ranked list doesn't
+ *  already have. */
 function sandwichLayouts(CL, CW, PL, PW){
   const out = [];
   const fam = (U, V, a, b, swap) => {
     const rows = Math.floor(V/b), n2v = Math.floor(V/a);
-    if(rows < 1) return;
+    if(rows < 1 || n2v < 1) return;
+    const majLen = rows*b, midLen = n2v*a;
+    if(Math.abs(majLen - midLen) < 1e-6) return;      // no shortfall -> no void -> not a candidate (rule: bands must differ)
+    const bandLength = Math.max(majLen, midLen);
+    const majV = bandRowsV(rows, b, bandLength);
+    const midV = bandRowsV(n2v, a, bandLength);
+    if(!majV || !midV) return;                        // an odd short-band row count has no exact centred split
     let best = null;
     for(let k = 2; k <= Math.floor(U/a); k += 2){
       const n2u = Math.floor((U - k*a)/b), n2 = n2u*n2v;
@@ -162,27 +210,25 @@ function sandwichLayouts(CL, CW, PL, PW){
     const k1 = k/2, n2 = n2u*n2v;
     const positions = [];
     const rotA = a !== CL;                          // majority-band orientation
-    // the two majority halves, flush to the layer's own OUTER edges — the
-    // full U (not a smaller combined-footprint span), matching the "pushes
-    // cases to the layer boundary" edge-justification this construction is
-    // for. Built as an exact mirror pair, which is what makes the whole
-    // layer symmetric regardless of how the leftover (U - k*a) splits.
+    // the two majority halves, flush to the SHORT BAND'S OWN edges (not the
+    // deck) -- adjacent, zero gap. Built as an exact mirror pair (same k1 on
+    // each side), which is what makes the whole layer symmetric regardless
+    // of how the band-normal leftover (U - maxU) splits outside the group.
     for(const side of [-1, 1]) for(let i = 0; i < k1; i++){
-      const u = side*(U/2 - (i + 0.5)*a);
-      for(let j = 0; j < rows; j++){
-        const v = (j + 0.5)*b - rows*b/2;
+      const u = side*(n2u*b/2 + (i + 0.5)*a);
+      for(let vi = 0; vi < rows; vi++){
+        const v = majV[vi];
         positions.push(swap ? {x: v, y: u, rot: !rotA} : {x: u, y: v, rot: rotA});
       }
     }
-    // the short band, centred at u=0 — the gap between the two majority
-    // halves is itself centred (k1 is the SAME on each side), so a plain
-    // centred sub-grid here already IS "cases justified to the short
-    // band's own two edges, void in the middle" (see gridLayout's own
-    // centring, which does exactly this for one block).
+    // the short band, centred at u=0 (unchanged -- the u leftover this used
+    // to absorb as a side gap is now outside the group entirely, per the
+    // doc comment above); its OWN v-positions come from bandRowsV, which is
+    // where this correction's actual void now lives.
     for(let i = 0; i < n2u; i++){
       const u = (i + 0.5)*b - n2u*b/2;
-      for(let j = 0; j < n2v; j++){
-        const v = (j + 0.5)*a - n2v*a/2;
+      for(let vi = 0; vi < n2v; vi++){
+        const v = midV[vi];
         positions.push(swap ? {x: v, y: u, rot: rotA} : {x: u, y: v, rot: !rotA});
       }
     }

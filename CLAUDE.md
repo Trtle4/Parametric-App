@@ -977,3 +977,146 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   preserving by construction, and a rearrangement that only ever ranks at
   or below the layouts already in every fixture's list never displaces a
   `list[0]`).
+- **CORRECTED (split-band-flush task): a layer has slack in TWO
+  INDEPENDENT directions, and the first version of the sandwich
+  construction sent both to the same place.** The Part 2 entry above's own
+  "central void" — hand-computed as "two 5mm gaps flanking the middle
+  band" — was, on inspection, describing the bug this task fixes, not a
+  feature: those two gaps were a full-depth CHANNEL between the middle
+  band and each majority half, because the majority halves were pushed
+  flush to the DECK's own outer edge (`u = ±U/2`) regardless of where the
+  middle band actually sat. Band-normal (u) slack — the three bands'
+  combined width falling short of the deck width — is a margin AROUND the
+  whole group and must never appear BETWEEN bands; band-parallel (v) slack
+  — one band's own length falling short of its neighbours' — is the
+  construction's actual, only void, and belongs INSIDE that band, not at
+  its edges. `sandwichLayouts` now keeps the two separate: majority halves
+  sit flush against the SHORT band's own edges (adjacent, zero gap; `u =
+  ±(n2u*b/2 + (i+0.5)*a)`, not `±U/2`), and the whole group — `k*a +
+  n2u*b` wide — is centred on the deck exactly like `stripLayouts`'s own
+  `maxU` convention, so any leftover lands outside the group, split evenly.
+  The new `bandRowsV(count, p, bandLength)` is the one place either kind of
+  v-layout happens: an ordinary centred block when a band's own extent
+  already equals `bandLength` (the longer of the majority/middle lengths —
+  no shortfall, no void), or, when it falls short, `count` split into two
+  EQUAL groups flush to `bandLength`'s two ends with the shortfall
+  consolidated into ONE centred void between them — mirroring, one level
+  down, the exact "push to two ends, leftover in the middle" pattern the
+  group-centring fix now correctly reserves for the u-axis. `count` must be
+  even for that split to land exactly centred (an odd count has no exact
+  split — `null`, not a candidate, the SAME rule `k`'s own evenness already
+  used) — a new constraint the original Part 2 fixture's own "3+2+3"
+  (n2v=1, uneven by construction, one case can't be "pushed to both ends")
+  couldn't satisfy, so it no longer emits at all; replaced with a
+  hand-verified "3+4+3" (case 65×50×100, deck 250×180) where n2v=2 splits
+  cleanly. A `rows*b === n2v*a` fixture (case 40×30×100, deck 250×120)
+  confirms the OTHER new rule — no length mismatch, no void, no candidate
+  at all — and is non-vacuous: without the length-equality gate, that exact
+  combo has a real k=2 candidate, so the gate is refusing something, not
+  nothing. Mutation-tested two ways: an IN-PIN reconstruction of the old
+  `u = ±(U/2 - (i+0.5)*a)` formula (same k1/a the real candidate already
+  solved) reopens exactly the reported channel while the candidate's own
+  COUNT is untouched, proving count alone could never have caught this; and
+  splicing the actual OLD `sandwichLayouts` function back into the real
+  module and re-running the suite fails exactly the four pins that encode
+  the new rules (adjacency, void location, group margin, no-short-band-no-
+  candidate) while the count-match and count-invariance-sweep pins —
+  and every other suite, `golden.json` 998/998 — stay green, confirming the
+  fix moves positions only. Sweep coverage held without adjustment: the
+  pre-existing count-invariance/no-overlap sweeps (CL 90–220 × CW 60–180 ×
+  a 500×400 deck) still produce 105 sandwich instances post-fix, comfortably
+  past their own `n > 10` vacuousness floor, so the new evenness/
+  length-mismatch gates cut the SHAPE of what's emitted, not the volume.
+- **RESOLVED (render-controls task): the render controls are two groups
+  with different jobs, and that split is now a DOM fact, not a CSS
+  convention.** Inventory first, per the task's own instruction, because
+  this was never a single-container move: `#hud` (index.html) is only the
+  gesture legend; the actual controls live in four separate containers —
+  `#viewToolbar` (2D/3D/Shelf/Build tabs), `#mode3d` (Fold, the depth tabs,
+  the candidate cycle arrows, Solid/Cutaway, Explode, Dims, Grid/White —
+  hierarchy view only), `#modeShelf` (Solid/Cutaway, Grid/White — shelf view
+  only), and the depth tabs/cycle arrows specifically (`.depthsel`,
+  `#candCycle`) that used to live INSIDE `#mode3d`. **Scope** (what am I
+  looking at: the depth tabs + candidate navigator) is now `#scopeBar`, a
+  new element docked directly under `#chainString`, outside `<main>`/
+  `.stage` entirely — a continuation of the chain strip's own navigation, so
+  it needs no per-breakpoint placement CSS at all, only the same
+  overflow-x:auto/nowrap treatment the chain strip already uses (the WHOLE
+  bar scrolls as one row, not the inner `.seg.depthsel` alone — a
+  deliberate choice, caught by mutation-testing the extracted depthsel-
+  scroll pin against the real change, which is why that pin now reads
+  `#scopeBar`'s own `overflow-x`, not the inner seg's). **View** (how is it
+  drawn: Solid/Cutaway, Explode, Dims, Grid/White) stays in `#mode3d`/
+  `#modeShelf`, which now share ONE `grid-area:rail` and ONE set of CSS
+  rules — never both visible at once, so nothing to collide. `.stage`
+  became a CSS grid (`grid-template-areas: "toolbar toolbar" / "canvas
+  rail"` desktop, `"canvas" "toolbar" "rail"` mobile — canvas stays FIRST on
+  mobile per the original sticky-pinned-render intent, so only the AREA
+  order differs by breakpoint, never the element set or the DOM order) so
+  `#viewToolbar` docks as a full-width in-flow top bar and the view rail
+  becomes a narrow (72px) side column outside the canvas on desktop —
+  vertical space is scarce there (~750px of laptop viewport after chrome,
+  already spent by the header/chain strip/scope bar) — reflowing to a
+  horizontal strip below the canvas on mobile, where width is scarce
+  instead. ONE breakpoint-driven rule, not two control trees: the 860px
+  query only changes `grid-template-areas`/`flex-direction`, never adds or
+  removes an element. `.stagecanvas` went from `position:absolute;inset:0`
+  to a plain grid item with its own `position:relative` — confirmed safe by
+  research before touching it: nothing in JS reads `.stage`'s own rect
+  (fold3d.js/viewcube.js measure `cvWrap`/their own `parentElement`
+  directly), so a grid item's box works exactly like the old inset:0 box
+  did for every child anchored on it. Every control kept its id, label, and
+  click handler — `el(id)` lookups are flat everywhere in this codebase (no
+  `.closest()`/`querySelector` assuming DOM proximity to `#mode3d`, one
+  research-confirmed exception on `#m3fold` unrelated to this move), so
+  relocating markup needed zero JS changes beyond `setView()` gaining one
+  more `el('scopeBar').style.display` line alongside the existing
+  `#mode3d`/`#modeShelf` toggles. The defect the task named was real: `#hud`
+  (2D-view-only) claims "scroll zoom · drag pan · dblclick reset", but the
+  2D view has NO touch path at all (no wheel handler, and pan is gated
+  behind a zoom level only wheel can reach) — every clause is false on
+  touch and there is no working substitute to state, so it's hidden there
+  instead of rewritten (`updateHudGestureLegend`, keyed off
+  `matchMedia('(pointer:coarse)')`, the one new capability check this
+  codebase needed — nothing else here queries input mode up front, only
+  fold3d.js's per-EVENT `pointerType` checks). `#orbithint` (3D/shelf) had
+  the same defect independently — "right-drag pan · scroll zoom" have no
+  touch analogue either — fixed by factoring its four separate hardcoded-
+  string call sites (hierarchy/fold mode entry, Solid/Cutaway state, shelf
+  entry) down to ONE `orbitGesturePrefix()` that every site composes a
+  suffix onto, so the mouse/touch fork exists in exactly one place. Every
+  test harness's DOM skeleton had to move with the markup, per this file's
+  own rule: `test/uisync.test.html`'s bare skeleton had `.depthsel`/
+  `#candCycle` INSIDE its own `#mode3d` mock and no `#scopeBar`/
+  `#hudGesture` at all — since `setView()` now unconditionally writes
+  `el('scopeBar').style.display`, every one of that file's several thousand
+  pre-existing pins (not just this task's new ones) would have thrown at
+  the very first view switch had the skeleton not been updated; caught
+  before it shipped, not discovered as a regression. Mutation-tested three
+  ways: moving `.depthsel` back into `#mode3d` in real `index.html` (not
+  just the skeleton) failed the new structural-membership pin immediately
+  (`#d_case is not inside #scopeBar`) and, as a side effect, the depthsel-
+  reachability pin too; reintroducing `position:absolute;inset:0` on
+  `.mode3d` (mimicking the exact old bug) failed the rail's own
+  position-check pin AND the canvas-obstruction pin at both widths it now
+  runs at (extended from mobile-only to mobile+desktop, per the task); and
+  the obstruction pin's own sampler is exercised against a synthetic
+  overlay element inline in its own pin, proving `canvasObstructionMisses`
+  is capable of failing at all, not merely "not obviously trivial" — the
+  first version of that pin READ CLEAN on a false positive, because the
+  preceding legend-input-mode block leaves the desktop fixture parked on
+  the 2D tab (no `<canvas>` on screen, `#cvWrap` display:none), so the
+  "clean" baseline it diffed against was itself already obstructed for an
+  unrelated reason; fixed by re-entering 3D/case on the fixture immediately
+  before the mutation runs. `test/uisync.test.html`'s own DOM-fixture rule
+  (`uisync.test.html cannot run to completion in this sandbox`) held again
+  here (identical failure reproduced via `git stash`, unrelated to this
+  task) — verified instead by extracting the new block verbatim into a
+  standalone harness driving the same real `<iframe src="../index.html">`
+  fixtures, exactly this session's established workaround, deleted once
+  confirmed and the edit to the real file was all that remained. Full
+  regression: `golden.json` 998/998 unchanged (a layout/placement change
+  touches no geometry), every other suite green except `saveload.test.html`
+  (4 pre-existing `pallet.stack.cornerPost` failures, confirmed via
+  `git stash` to predate this task and already flagged as out of scope in
+  the corner-post task's own entry above).

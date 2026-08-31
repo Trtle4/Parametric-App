@@ -2441,9 +2441,9 @@ function applyHierarchy(resetCam){
   subjectDims.nest = res.outer ? (depth === 'pallet'
     ? {...res.outer, palletMM: bundle.stack.baseHeightMM.reduce((s, h) => s + h, 0)} : res.outer) : null;
   hier.show(true);
-  el('orbithint').textContent = solid
-    ? 'drag orbit · right-drag pan · scroll zoom · Solid — artwork on every face'
-    : 'drag orbit · right-drag pan · scroll zoom · click a unit to open it';
+  el('orbithint').textContent = orbitGesturePrefix() + (solid
+    ? ' · Solid — artwork on every face'
+    : ' · click a unit to open it');
   el('hierHud').style.display = 'block';
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
   renderLegend(bundle, depth, solid);
@@ -2511,7 +2511,7 @@ function applyFoldMode(){
   if(view !== '3d') return;
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('m3viewmode').style.display = 'none';   // Solid/Cutaway is a hierarchy-mode control
-  el('orbithint').textContent = 'drag orbit · right-drag pan · scroll zoom';
+  el('orbithint').textContent = orbitGesturePrefix();
   refresh3d();   // owns box vs. artwork-cladding visibility
   if(activeStyle().structure === 'flexible') fold.jumpClosed();
   else fold.startFold();
@@ -2591,6 +2591,30 @@ function drawDims(){
   ov.style.display = 'block';
 }
 
+/* ---------- gesture legends: a claim about what is on screen, same
+   principle as the 2D CUT/CREASE legend by #hud2dKeys ---------- */
+// A coarse pointer (no hover, no precise pointing — the standard proxy for
+// "primary input is touch") makes both this app's gesture legends lie:
+// #orbithint's "right-drag pan · scroll zoom" have no touch analogue (no
+// secondary mouse button, no wheel event) — the real touch gesture set,
+// read straight off fold3d.js's own pointer handlers, is one-finger orbit,
+// two-finger pan, pinch zoom. #hud's "scroll zoom · drag pan · dblclick
+// reset" is worse: the 2D view has NO touch path at all (no wheel handler,
+// and pan is gated behind a zoom level only wheel can reach), so on touch
+// every clause is false and there is no working substitute to state —
+// hidden there instead of rewritten. Nothing else in this codebase queries
+// input mode up front (fold3d.js only checks e.pointerType per EVENT, i.e.
+// once a gesture is already in flight); matchMedia('(pointer:coarse)') is
+// the standard synchronous capability check, added here for the first time.
+function orbitGesturePrefix(){
+  return matchMedia('(pointer: coarse)').matches
+    ? 'drag orbit · two-finger pan · pinch zoom'
+    : 'drag orbit · right-drag pan · scroll zoom';
+}
+function updateHudGestureLegend(){
+  el('hudGesture').style.display = matchMedia('(pointer: coarse)').matches ? 'none' : '';
+}
+
 /* ---------- view switching ---------- */
 function setView(v){
   view = v;
@@ -2603,9 +2627,11 @@ function setView(v){
   el('cvWrap').style.display    = canvas ? 'block' : 'none';
   el('buildWrap').style.display = v === 'build' ? 'block' : 'none';
   el('hud').style.display       = v === '2d' ? 'flex' : 'none';
+  if(v === '2d') updateHudGestureLegend();
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
   el('modeShelf').style.display = v === 'shelf' ? 'flex' : 'none';
+  el('scopeBar').style.display  = v === '3d' ? 'flex' : 'none';
   el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
   if(v === 'shelf') refreshCompareControl();   // slots may have changed since last time
   updateArtPanel();
@@ -2656,7 +2682,7 @@ function setView(v){
       fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false); hier.show(false);
       fold.stopFold();
       fold.setOrbit(SHELF_ORBIT.rotX, SHELF_ORBIT.rotY, SHELF_ORBIT.span);
-      el('orbithint').textContent = 'drag orbit · right-drag pan · scroll zoom · front panels face you';
+      el('orbithint').textContent = orbitGesturePrefix() + ' · front panels face you';
       refreshShelf();
     }
     fold.resize3d();

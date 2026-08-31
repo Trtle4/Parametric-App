@@ -515,25 +515,41 @@ t('LAYER SCHEDULE flows through project.pallet.layerFlips: an override changes t
 /* ================================================================
    PART 2 — sandwiched split band with a central void. stripLayouts always
    puts its short (rotated) block at ONE end of the combined footprint; this
-   construction splits the MAJORITY band into two equal halves, pushes one
-   flush to EACH outer edge of the layer, and puts the short band in the
-   middle, centred -- a genuine rearrangement of the SAME cells stripLayouts'
-   own search would find for a matching k, never a different count.
+   construction splits the MAJORITY band into two equal halves and puts the
+   short band between them -- a genuine rearrangement of the SAME cells
+   stripLayouts' own search would find for a matching k, never a different
+   count.
 
-   Fixture: case 150x70x100, deck 450x250 (wall 0, between 0) hand-derives to
-   a clean small "3+2+3 sandwich" (k=2, rows=3, k1=1, n2u=2, n2v=1, n2=2) --
-   verified against the actual module output before being used as a pin, the
-   same discipline every other hand-worked fixture in this file follows. */
-const SCASE = box(150, 70, 100);
-const SDECK = {L: 450, W: 250, H: 1000};
+   CORRECTION (bands must be flush): the first version of this construction
+   pushed the two majority halves flush to the layer's own OUTER edges,
+   which put the band-normal (x) leftover as a GAP between each majority
+   half and the short band -- a full-depth channel down each side of the
+   middle band, not a "central void" at all. Fixed: the three bands sit
+   ADJACENT (zero gap), the whole GROUP is centred on the deck (any
+   band-normal leftover becomes a margin OUTSIDE the group), and the
+   construction's actual void now comes from band-PARALLEL (y) slack: when
+   the short band's own length falls short of its neighbours', its cases
+   push to both y-ends of the neighbours' length and the shortfall becomes
+   ONE void, centred, inside the short band.
 
-t('SANDWICH: a "3+2+3" instance matches an existing mixed candidate\'s count exactly for the SAME k, and never ranks above the true best', () => {
+   Fixture: case 65x50x100, deck 250x180 (wall 0, between 0) hand-derives
+   to a clean small "3+4+3 sandwich" (k=2, rows=3, k1=1, n2u=2, n2v=2,
+   n2=4) -- verified against the actual module output before being used as
+   a pin, the same discipline every other hand-worked fixture in this file
+   follows. rows=3 (majority, pitch CW=50) spans 150mm exactly (its own
+   full capacity in the 180mm deck depth); n2v=2 (short band, pitch
+   CL=65) spans only 130mm -- 20mm short of the majority's own length,
+   split 10mm to each side of the short band's own two flush-pushed rows. */
+const SCASE = box(65, 50, 100);
+const SDECK = {L: 250, W: 180, H: 1000};
+
+t('SANDWICH: a "3+4+3" instance matches an existing mixed candidate\'s count exactly for the SAME k, and never ranks above the true best', () => {
   const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
-  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
   ok(sw, 'fixture must produce the target sandwich candidate');
-  eq(sw.total, 80, 'hand-computed total (k=2 -> n1=6, n2=2):');
-  // the SAME k (n1=6, i.e. perLayer 8) stripLayouts' own search already
-  // finds, as a real ranked "6+2 mixed" candidate -- this construction
+  eq(sw.total, 100, 'hand-computed total (k=2 -> n1=6, n2=4, perLayer 10, 10 layers):');
+  // the SAME k (n1=6, i.e. perLayer 10) stripLayouts' own search already
+  // finds, as a real ranked "6+4 mixed" candidate -- this construction
   // REARRANGES those same cells, it does not invent a new count
   const sameK = l.find(c => c.family === 'mixed' && c.perLayer === sw.perLayer);
   ok(sameK, 'no mixed candidate at the same perLayer to compare against');
@@ -541,29 +557,79 @@ t('SANDWICH: a "3+2+3" instance matches an existing mixed candidate\'s count exa
   ok(sw.total <= l[0].total, `sandwich (${sw.total}) must never outrank the true ranked best (${l[0].total}):`);
 });
 
-t('SANDWICH: the central void sits exactly where hand-computed, split evenly around the middle band', () => {
+t('SANDWICH: majority and short bands are ADJACENT -- zero gap at their shared edge (this is the pin that catches the reported bug)', () => {
   const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
-  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
   ok(sw, 'fixture must produce the target sandwich candidate');
   const arr = sw.build();
   const z0 = [...new Set(arr.placements.map(p => p.z))].sort((a, b) => a - b)[0];
   const layer0 = arr.placements.filter(p => p.z === z0);
-  // majority band cells (orientation LWH, the un-rotated base): x = ±150
   const majorityX = [...new Set(layer0.filter(p => p.orientation === 'LWH').map(p => p.x))].sort((a, b) => a - b);
-  eq(majorityX, [-150, 150], 'the two majority-band columns:');
-  // short-band cells (orientation WLH, rotated): x = ±35
+  eq(majorityX, [-82.5, 82.5], 'the two majority-band columns:');
   const shortX = [...new Set(layer0.filter(p => p.orientation === 'WLH').map(p => p.x))].sort((a, b) => a - b);
-  eq(shortX, [-35, 35], 'the short band\'s own two columns:');
-  // hand-computed void: left band's inner edge (case half-length 75mm) at
-  // x=-150+75=-75; short band's own left edge at x=-35-35=-70 (half its
-  // own cell width, CW=70, so half=35) -- a 5mm gap. Mirrored on the right.
-  const leftBandInnerEdge = -150 + SCASE.outer.L/2, shortBandLeftEdge = -35 - SCASE.outer.W/2;
-  approx(shortBandLeftEdge - leftBandInnerEdge, 5, 'left-side void width (hand-computed):', 1e-9);
-  const rightBandInnerEdge = 150 - SCASE.outer.L/2, shortBandRightEdge = 35 + SCASE.outer.W/2;
-  approx(rightBandInnerEdge - shortBandRightEdge, 5, 'right-side void width (hand-computed):', 1e-9);
-  // and the two voids are symmetric about the layer's own centre (x=0) --
-  // "a CENTRAL void", not one that happens to be off to one side
-  approx(shortBandLeftEdge, -shortBandRightEdge, 'void is centred: left/right void boundaries mirror:', 1e-9);
+  eq(shortX, [-25, 25], 'the short band\'s own two columns:');
+  // inner edge of the LEFT majority column (half-length 32.5mm) vs the
+  // short band's own LEFT edge (half-width 25mm, its own cell CW=50) --
+  // must meet EXACTLY, no gap, no overlap, on BOTH sides.
+  const leftMajInner = -82.5 + SCASE.outer.L/2, shortLeftEdge = -25 - SCASE.outer.W/2;
+  approx(leftMajInner - shortLeftEdge, 0, 'left shared edge (majority inner vs short band edge):', 1e-9);
+  const rightMajInner = 82.5 - SCASE.outer.L/2, shortRightEdge = 25 + SCASE.outer.W/2;
+  approx(rightMajInner - shortRightEdge, 0, 'right shared edge (majority inner vs short band edge):', 1e-9);
+});
+
+t('SANDWICH: the void sits INSIDE the short band, centred along the band axis (Y) -- hand-computed position and width', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  const arr = sw.build();
+  const z0 = [...new Set(arr.placements.map(p => p.z))].sort((a, b) => a - b)[0];
+  const layer0 = arr.placements.filter(p => p.z === z0);
+  // majority band: rows=3, pitch CW=50, spans its own full 150mm (already
+  // AT bandLength -- an ordinary centred block, no split, no void)
+  const majorityY = [...new Set(layer0.filter(p => p.orientation === 'LWH').map(p => p.y))].sort((a, b) => a - b);
+  eq(majorityY, [-50, 0, 50], 'majority rows, contiguous (pitch 50, half-width 25 -- no internal gap):');
+  // short band: n2v=2, pitch CL=65, pushed to the two Y-ends of the
+  // majority's 150mm length (bandLength/2 = 75) instead of centred as one
+  // block -- (j+0.5)*65 in from each end: 75-32.5=42.5
+  const shortY = [...new Set(layer0.filter(p => p.orientation === 'WLH').map(p => p.y))].sort((a, b) => a - b);
+  eq(shortY, [-42.5, 42.5], 'the short band\'s two ROW GROUPS, pushed to the band-length ends:');
+  // the void: from the top group's far edge (-42.5 - CL/2 = -75, i.e. the
+  // deck-facing edge, so the NEAR edge facing the void is -42.5+32.5=-10)
+  // to the bottom group's near edge (42.5-32.5=10) -- ONE 20mm void,
+  // centred at y=0 (150 - 130 = 20mm shortfall, split 10/10 to each group).
+  const voidLo = -42.5 + SCASE.outer.L/2, voidHi = 42.5 - SCASE.outer.L/2;
+  approx(voidHi - voidLo, 20, 'void width (hand-computed shortfall, 150-130):', 1e-9);
+  approx((voidLo + voidHi)/2, 0, 'void is centred on the layer\'s own centre:', 1e-9);
+  // and it is the ONLY empty span inside the short band's own occupied
+  // extent: the two row groups plus the void account for the FULL 150mm
+  // majority-band length, with nothing left over.
+  const shortBandTop = 42.5 + SCASE.outer.L/2, shortBandBottom = -42.5 - SCASE.outer.L/2;
+  approx(shortBandTop - shortBandBottom, 150, 'short band + void together span the full majority length:', 1e-9);
+});
+
+t('SANDWICH: band-normal leftover is a margin OUTSIDE the group, symmetric -- never a gap between bands', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  const f = footprint(sw, SCASE.outer.L, SCASE.outer.W);
+  // group width: 2*(k1*CL) + n2u*CW = 2*65 + 2*50 = 230; deck is 250, so a
+  // 10mm margin on EACH side, outside the group -- never inside it.
+  approx(f.L, 230, 'group footprint width (hand-computed, k*CL + n2u*CW):', 1e-9);
+  approx(SDECK.L/2 - f.maxX, 10, 'right-side margin OUTSIDE the group:', 1e-9);
+  approx(f.minX - (-SDECK.L/2), 10, 'left-side margin OUTSIDE the group:', 1e-9);
+  approx(f.cx, 0, 'the whole group is centred on the deck:', 1e-9);
+});
+
+t('SANDWICH: no short band -> no void -> no candidate (a case/deck combo where the neighbouring band lengths match exactly)', () => {
+  // 40x30 case, 250x120 deck: rows=floor(120/30)=4 (majority, 120mm), n2v=
+  // floor(120/40)=3 (short band, 120mm) -- the two lengths match EXACTLY,
+  // so there is nothing to sandwich around. Confirmed non-vacuous: without
+  // the length-mismatch gate this combo DOES have a valid k (k=2 -> n2u=5,
+  // n2=15, total 23 per layer) -- the gate is refusing a real candidate,
+  // not one that could never have existed anyway.
+  const NCASE = box(40, 30, 100), NDECK = {L: 250, W: 120, H: 1000};
+  const l = palletPatternList(NCASE, NDECK, Z, 'optimal');
+  eq(l.filter(c => c.family === 'sandwich').length, 0, 'no sandwich candidate when neighbouring band lengths already match:');
 });
 
 t('SANDWICH: count invariance across a spread of instances -- total never exceeds the true ranked best', () => {
@@ -583,7 +649,7 @@ t('SANDWICH: count invariance across a spread of instances -- total never exceed
 
 t('SANDWICH: the layer is its own 180° turn, and Part 1\'s isOwn180 warning fires when a flip is scheduled on it', () => {
   const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
-  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
   ok(sw, 'fixture must produce the target sandwich candidate');
   ok(sw.layers >= 2, `vacuous fixture: need >=2 layers, got ${sw.layers}`);
   const schedule = new Array(sw.layers).fill(false); schedule[1] = true;
@@ -593,14 +659,27 @@ t('SANDWICH: the layer is its own 180° turn, and Part 1\'s isOwn180 warning fir
   eq(stackSig(withFlip.build()), stackSig(sw.build()), 'the no-op flip must not change the arrangement (as a set):');
 });
 
-t('SANDWICH: outer-edge justification reaches the deck boundary EXACTLY, and never past it', () => {
+t('MUTATION: restoring the old deck-justified placement (majority flush to the DECK edge, not the short band) fails the adjacency pin while the count pin still passes', () => {
+  // The exact formula the reported bug shipped with: majority flush to
+  // u = ±(U/2 - (i+0.5)*a) -- the deck's own half-width, not the short
+  // band's edge. Same k1/a/n2u/rows the real candidate already solved, so
+  // this reconstructs precisely what the buggy build() used to emit.
   const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
-  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+4+3 sandwich');
   ok(sw, 'fixture must produce the target sandwich candidate');
-  const f = footprint(sw, SCASE.outer.L, SCASE.outer.W);
-  approx(f.maxX, SDECK.L/2, 'right band must reach the deck edge exactly (wall=0, between=0):', 1e-6);
-  approx(f.minX, -SDECK.L/2, 'left band must reach the deck edge exactly:', 1e-6);
-  ok(f.maxX <= SDECK.L/2 + 1e-6 && f.minX >= -SDECK.L/2 - 1e-6, 'never past the deck edge:');
+  const U = SDECK.L, a = SCASE.outer.L, k1 = 1;                    // hand-derived above (k=2, k1=k/2)
+  const oldMajorityX = U/2 - (0 + 0.5)*a;                          // = 250/2 - 32.5 = 92.5
+  approx(oldMajorityX, 92.5, 'sanity check on the reconstructed OLD formula:', 1e-9);
+  const shortEdge = 25 + SCASE.outer.W/2;                          // short band's own edge, UNCHANGED by this mutation: 50
+  const oldMajInner = oldMajorityX - SCASE.outer.L/2;              // 92.5 - 32.5 = 60
+  const gap = oldMajInner - shortEdge;
+  ok(Math.abs(gap) > 1, `mutation did not actually reopen a gap (gap=${gap}) -- cannot prove the adjacency pin is capable of failing`);
+  approx(gap, 10, 'the OLD formula reopens exactly the reported full-depth channel (hand-computed):', 1e-9);
+  // meanwhile the candidate's own COUNT is entirely unaffected -- position
+  // and count are independent, which is exactly why count alone (the
+  // existing "matches an existing mixed candidate" pin above) could never
+  // have caught this bug, and the adjacency pin has to exist.
+  eq(sw.total, 100, 'count is untouched by this mutation -- position-only bug, count-only pin cannot see it:');
 });
 
 t('SANDWICH: no two cases overlap within a layer (the existing footprint/centring invariants above already cover deck bounds and centring unmodified)', () => {

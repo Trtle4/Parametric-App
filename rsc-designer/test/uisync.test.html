@@ -195,12 +195,19 @@
   <button id="viewCubeRight">&gt;</button>
   <button id="viewCubeHome">home</button>
 </div>
-<div id="mode3d" style="display:none">
-  <button id="m3fold">Fold</button>
+<!-- Scope bar: level depth + candidate navigator, docked outside #mode3d/
+     #modeShelf now (the render-controls regrouping) — real app.js's
+     setView() writes el('scopeBar').style.display unconditionally, so this
+     must exist or EVERY pin in this file throws at the very first view
+     switch, not just the ones this task added. -->
+<div id="scopeBar" style="display:none">
   <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_uboard">U-board</button><button id="d_wrap">Wrap</button
   ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
   ><button id="d_pallet">Pallet</button><button id="d_trailer">Trailer</button>
   <div id="candCycle" style="display:none"><button id="candPrev"></button><span id="candPos"></span><span id="candKey"></span><button id="candNext"></button></div>
+</div>
+<div id="mode3d" style="display:none">
+  <button id="m3fold">Fold</button>
   <div id="m3viewmode"><button id="m3solid">Solid</button><button id="m3cut" class="on">Cutaway</button></div>
   <!-- exploded view toolbar the real app wires at boot (m3explodeToggle/
        Factor/Axis) — must exist or app.js's applyHierarchy throws at every
@@ -225,7 +232,7 @@
   <button id="btnPdf">Pallet PDF</button><button id="btnStateSheet" style="display:none">State sheet</button>
   <button id="btnExplodedSheet" style="display:none">Exploded sheet</button>
 </div>
-<div id="hud"><span id="hud2dKeys"></span></div>
+<div id="hud"><span id="hud2dKeys"></span><span id="hudGesture"></span></div>
 <div id="hierHud" style="display:none"></div>
 <div id="hierLegend" style="display:none"></div>
 <div id="orbithint"></div>
@@ -6921,43 +6928,56 @@ await (async () => {
   await enter3dCase(m);
   await enter3dCase(d);
 
-  t('mobile (390px): the canvas has a real, non-zero reachable area -- not covered by .toolbar/.mode3d', () => {
-    const sc = m.el('cvWrap').parentElement;      // .stagecanvas, the sticky/guaranteed-height box
-    if(!sc.classList.contains('stagecanvas')) throw new Error('fixture drift: #cvWrap is no longer inside .stagecanvas');
-    // scroll past the header/chain strip so the STICKY canvas settles at
-    // top:0 -- exactly the position it holds for the entire rest of the
-    // page once a user has scrolled at all, and the position the touch
-    // fix's own diagnosis was measured against. Restored in `finally`: the
-    // later toolbar/mode3d-ordering pin reads viewport-relative rects too,
-    // and a scroll position leaking out of this pin corrupts it the same
-    // way a stale project edit would corrupt a later project-reading pin.
-    try{
-      mframe.contentWindow.scrollTo(0, 600);
-      const r = sc.getBoundingClientRect();
-      if(!(r.height >= 200)) throw new Error(`.stagecanvas is too short to be a usable viewport: ${r.height}px (want >= 200px)`);
-      if(!(r.width > 0)) throw new Error('.stagecanvas has zero width');
-      // The ViewCube is a legitimate, small, canvas-anchored navigation tool
-      // in one corner on every viewport -- not part of this bug and not what
-      // this pin is about, so its OWN measured rect (not a guessed fraction
-      // of the canvas) is excluded from sampling. Every other point in the
-      // grid must hit the canvas itself, not a control.
-      const vc = m.el('viewCubeWrap').getBoundingClientRect();
-      const inViewCube = (x, y) => x >= vc.left && x <= vc.right && y >= vc.top && y <= vc.bottom;
-      const cols = 5, rows = 5, misses = [];
-      let sampled = 0;
-      for(let i = 0; i < rows; i++){
-        for(let j = 0; j < cols; j++){
-          const x = r.left + (j + 0.5)*r.width/cols;
-          const y = r.top + (i + 0.5)*r.height/rows;
-          if(inViewCube(x, y)) continue;
-          sampled++;
-          const hit = m.doc().elementFromPoint(x, y);
-          if(!hit || hit.tagName !== 'CANVAS') misses.push({x: Math.round(x), y: Math.round(y), hit: hit ? (hit.id || hit.tagName) : null});
-        }
+  // Shared sampler: a 5x5 grid over .stagecanvas, excluding the ViewCube's
+  // own measured rect (a legitimate small canvas-anchored control, not part
+  // of this bug), asserting every other point hits the <canvas> itself.
+  // Factored out so the mutation-test pin near the bottom of this block can
+  // run the IDENTICAL check against a deliberately-broken DOM and confirm
+  // it actually catches the obstruction, not just that it passed once.
+  function canvasObstructionMisses(f){
+    const sc = f.el('cvWrap').parentElement;      // .stagecanvas
+    const r = sc.getBoundingClientRect();
+    const vc = f.el('viewCubeWrap').getBoundingClientRect();
+    const inViewCube = (x, y) => x >= vc.left && x <= vc.right && y >= vc.top && y <= vc.bottom;
+    const cols = 5, rows = 5, misses = [];
+    let sampled = 0;
+    for(let i = 0; i < rows; i++){
+      for(let j = 0; j < cols; j++){
+        const x = r.left + (j + 0.5)*r.width/cols;
+        const y = r.top + (i + 0.5)*r.height/rows;
+        if(inViewCube(x, y)) continue;
+        sampled++;
+        const hit = f.doc().elementFromPoint(x, y);
+        if(!hit || hit.tagName !== 'CANVAS') misses.push({x: Math.round(x), y: Math.round(y), hit: hit ? (hit.id || hit.tagName) : null});
       }
-      if(sampled < 10) throw new Error(`vacuous fixture: only ${sampled} non-ViewCube sample points -- grid too coarse or ViewCube too large to test anything`);
-      if(misses.length) throw new Error(`${misses.length}/${sampled} sample points (outside the ViewCube) did not reach the canvas: ${JSON.stringify(misses)}`);
-    } finally { mframe.contentWindow.scrollTo(0, 0); }
+    }
+    return {r, sampled, misses};
+  }
+
+  // Extended to DESKTOP, not just mobile: the render-controls regrouping
+  // removed .toolbar/.mode3d's position:absolute floating entirely (not
+  // just below the 860px breakpoint the original touch fix covered), so the
+  // canvas must be unobstructed at BOTH widths now -- this is the pin that
+  // stops overlay creeping back in at either one.
+  [{f: m, frame: mframe, label: 'mobile (390px)', scroll: 600},
+   {f: d, frame: dframe, label: 'desktop (1400px)', scroll: 0}].forEach(({f, frame, label, scroll}) => {
+    t(`${label}: the canvas has a real, non-zero reachable area -- not covered by any control container`, () => {
+      const sc = f.el('cvWrap').parentElement;      // .stagecanvas
+      if(!sc.classList.contains('stagecanvas')) throw new Error('fixture drift: #cvWrap is no longer inside .stagecanvas');
+      // scroll past the header/chain strip so a STICKY canvas (mobile) settles
+      // at top:0 -- exactly the position it holds for the rest of the page
+      // once a user has scrolled at all. Restored in `finally`: later pins in
+      // this block read viewport-relative rects too, and a leaked scroll
+      // position corrupts them the same way a stale project edit would.
+      try{
+        if(scroll) frame.contentWindow.scrollTo(0, scroll);
+        const {r, sampled, misses} = canvasObstructionMisses(f);
+        if(!(r.height >= 200)) throw new Error(`.stagecanvas is too short to be a usable viewport: ${r.height}px (want >= 200px)`);
+        if(!(r.width > 0)) throw new Error('.stagecanvas has zero width');
+        if(sampled < 10) throw new Error(`vacuous fixture: only ${sampled} non-ViewCube sample points -- grid too coarse or ViewCube too large to test anything`);
+        if(misses.length) throw new Error(`${misses.length}/${sampled} sample points (outside the ViewCube) did not reach the canvas: ${JSON.stringify(misses)}`);
+      } finally { if(scroll) frame.contentWindow.scrollTo(0, 0); }
+    });
   });
 
   t('mobile (390px): .stagecanvas sizes against the DYNAMIC viewport (dvh), not just the large one (vh)', () => {
@@ -7073,49 +7093,205 @@ await (async () => {
   });
 
   t('mobile (390px): the depth-level tabs row is instead contained and independently scrollable, and "Product" is reachable', () => {
-    const seg = m.el('mode3d').querySelector('.seg.depthsel');
+    // #scopeBar itself is the scrollable box now (one row, same mechanism as
+    // .chainStrip above it -- depthsel + candCycle scroll TOGETHER as the
+    // "next rank" of that same navigation), not the inner .seg.depthsel --
+    // extracting depthsel out of #mode3d moved the scroll boundary with it.
+    const seg = m.el('scopeBar').querySelector('.seg.depthsel');
     if(!seg) throw new Error('depthsel seg not found');
-    if(m.cs(seg).overflowX !== 'auto' && m.cs(seg).overflowX !== 'scroll')
-      throw new Error(`depthsel overflow-x should be auto/scroll, got ${m.cs(seg).overflowX}`);
-    const rect = seg.getBoundingClientRect();
+    const bar = m.el('scopeBar');
+    if(m.cs(bar).overflowX !== 'auto' && m.cs(bar).overflowX !== 'scroll')
+      throw new Error(`#scopeBar overflow-x should be auto/scroll, got ${m.cs(bar).overflowX}`);
+    const rect = bar.getBoundingClientRect();
     if(rect.right > mframe.contentWindow.innerWidth + 1 || rect.left < -1)
-      throw new Error(`depthsel row still extends past the viewport: left=${rect.left}, right=${rect.right}`);
-    if(!(seg.scrollWidth > seg.clientWidth))
-      throw new Error('vacuous fixture: depthsel content is not actually wider than its box, so scrollability proves nothing');
-    seg.scrollLeft = 0;
+      throw new Error(`#scopeBar still extends past the viewport: left=${rect.left}, right=${rect.right}`);
+    if(!(bar.scrollWidth > bar.clientWidth))
+      throw new Error('vacuous fixture: #scopeBar content is not actually wider than its box, so scrollability proves nothing');
+    bar.scrollLeft = 0;
     const prodRect = m.el('d_product').getBoundingClientRect();
     if(!(prodRect.width > 20))
       throw new Error(`"Product" is not fully visible at scrollLeft=0: width=${prodRect.width}`);
   });
 
-  /* ---- desktop (>860px): the mobile-only rules must not leak upward.
-     Hand-derived from the UNCHANGED desktop CSS literals (top:14px,
-     right:16px, translateX(-50%) centring), not recomputed from whatever
-     the code currently does — a pin that re-derives its expectation from
-     the same source it is checking cannot fail when that source is wrong. */
-  t('desktop (1400px): .stagecanvas is still absolute + inset:0 inside .stage — the mobile sticky/height rules do not apply', () => {
+  /* ================================================================
+     RENDER CONTROLS: grouped by job, placed by scarce axis. Follow-on to
+     the mobile fix above -- that moved .toolbar/.mode3d out of overlay
+     ONLY below 860px; this extends "no overlay" to EVERY width and splits
+     the controls into two structurally separate groups:
+       Scope (#scopeBar, docked under the chain strip, both platforms):
+         level tabs (#d_product..#d_trailer) + candidate navigator
+         (#candCycle) -- "what am I looking at", a continuation of the
+         chain strip's own navigation.
+       View (#mode3d/#modeShelf, now a CSS-grid area of .stage):
+         Solid/Cutaway, Explode, Dims, Grid/White -- "how is it drawn",
+         placed by the SCARCE axis: a compact side rail on desktop
+         (vertical space is scarce there), reflowed to a strip under the
+         canvas on mobile (width is scarce there) via ONE shared rule, not
+         two control trees -- see .mode3d's own comment in index.html.
+     The two OLD desktop-goldens pins below (`.stagecanvas is still
+     absolute + inset:0`, `.toolbar/.mode3d/.viewcube keep their exact
+     floating positions`) asserted the very floating-overlay geometry this
+     task removes -- replaced, not just patched, with pins for the grid
+     geometry that replaces it. */
+
+  t('desktop (1400px): .stagecanvas is a normal grid item beside the view rail -- no longer an absolute overlay', () => {
     if(d.doc().defaultView.matchMedia('(max-width:860px)').matches) throw new Error('vacuous fixture: the desktop iframe matches the mobile breakpoint');
     const stage = d.el('cvWrap').closest('.stage').getBoundingClientRect();
-    const sc = d.el('cvWrap').parentElement.getBoundingClientRect();
-    if(d.cs(d.el('cvWrap').parentElement).position !== 'absolute') throw new Error('.stagecanvas must stay position:absolute above the breakpoint');
-    approx(sc.top, stage.top, '.stagecanvas top vs .stage top:', 0.5);
-    approx(sc.left, stage.left, '.stagecanvas left vs .stage left:', 0.5);
-    approx(sc.width, stage.width, '.stagecanvas width vs .stage width:', 0.5);
-    approx(sc.height, stage.height, '.stagecanvas height vs .stage height:', 0.5);
+    const sc = d.el('cvWrap').parentElement.getBoundingClientRect();      // .stagecanvas
+    const toolbar = d.el('viewToolbar').getBoundingClientRect();
+    const rail = d.el('mode3d').getBoundingClientRect();
+    if(d.cs(d.el('cvWrap').parentElement).position === 'absolute')
+      throw new Error('.stagecanvas is still position:absolute -- the canvas-overlay bug is back');
+    approx(sc.left, stage.left, '.stagecanvas left vs .stage left:', 1);
+    approx(sc.top, toolbar.bottom, '.stagecanvas top should follow the toolbar row, not sit under it:', 1);
+    approx(sc.right, rail.left, '.stagecanvas right should meet the view rail edge-to-edge, not run under it:', 1);
   });
 
-  t('desktop (1400px): .toolbar/.mode3d/.viewcube keep their exact floating positions (goldens, hand-derived from the CSS literals)', () => {
+  t('desktop (1400px): .toolbar docks as a full-width in-flow top bar -- not the old floating centred pill', () => {
     const stage = d.el('cvWrap').closest('.stage').getBoundingClientRect();
     const toolbar = d.el('viewToolbar').getBoundingClientRect();
+    if(d.cs(d.el('viewToolbar')).position === 'absolute')
+      throw new Error('.toolbar is still position:absolute -- it would float back over the canvas');
+    approx(toolbar.top, stage.top, '.toolbar top vs .stage top:', 1);
+    approx(toolbar.left, stage.left, '.toolbar left vs .stage left:', 1);
+    approx(toolbar.right, stage.right, '.toolbar right vs .stage right (spans the full stage width):', 1);
+  });
+
+  t('desktop (1400px): the view rail is a compact column on the canvas edge, and the ViewCube keeps its own canvas-anchored corner', () => {
+    const sc = d.el('cvWrap').parentElement.getBoundingClientRect();      // .stagecanvas
+    const rail = d.el('mode3d').getBoundingClientRect();
     const vc = d.el('viewCubeWrap').getBoundingClientRect();
-    if(d.cs(d.el('viewToolbar')).position !== 'absolute') throw new Error('.toolbar must stay position:absolute above the breakpoint');
-    if(d.cs(d.el('mode3d')).position !== 'absolute') throw new Error('.mode3d must stay position:absolute above the breakpoint');
-    // .toolbar: top:16px, horizontally centred (left:50% + translateX(-50%))
-    approx(toolbar.top, stage.top + 16, '.toolbar top:', 1);
-    approx((toolbar.left + toolbar.right)/2, (stage.left + stage.right)/2, '.toolbar horizontal centre:', 1);
-    // .viewcube: top:14px, right:16px (i.e. right EDGE sits 16px in from .stage's right edge)
-    approx(vc.top, stage.top + 14, '.viewcube top:', 1);
-    approx(stage.right - vc.right, 16, '.viewcube right inset:', 1);
+    if(d.cs(d.el('mode3d')).position === 'absolute')
+      throw new Error('.mode3d is still position:absolute -- it would float back over the canvas');
+    if(!(rail.width > 0 && rail.width < 120)) throw new Error(`view rail should be a compact side column outside the canvas, got width=${rail.width}`);
+    if(!(rail.left >= sc.right - 1)) throw new Error('view rail overlaps .stagecanvas instead of sitting beside it');
+    // the ViewCube is unaffected by this restructuring -- still anchored to
+    // .stagecanvas's own top-right corner (its containing block; the CSS
+    // itself -- position:absolute;top:14px;right:16px -- is untouched),
+    // just against a narrower canvas box now that the rail sits beside it.
+    approx(vc.top, sc.top + 14, '.viewcube top:', 1);
+    approx(sc.right - vc.right, 16, '.viewcube right inset (relative to the narrower .stagecanvas, not .stage):', 1);
+  });
+
+  /* ---- structural group membership: a control physically placed in the
+     wrong container must fail this, not just look wrong -- the grouping IS
+     the information, so it has to be a DOM fact, not a convention. Checked
+     at both widths: same markup either way, so this doubles as a drift
+     check on the fixtures themselves. */
+  [['mobile (390px)', m], ['desktop (1400px)', d]].forEach(([label, f]) => {
+    t(`${label}: Scope controls (level tabs, candidate navigator) are structurally inside #scopeBar, never #mode3d/#modeShelf`, () => {
+      const scopeBar = f.el('scopeBar');
+      if(!scopeBar.contains(f.el('d_case'))) throw new Error('#d_case is not inside #scopeBar');
+      if(!scopeBar.contains(f.el('candCycle'))) throw new Error('#candCycle is not inside #scopeBar');
+      if(f.el('mode3d').contains(f.el('d_case'))) throw new Error('#d_case leaked back into #mode3d');
+      if(f.el('mode3d').contains(f.el('candCycle'))) throw new Error('#candCycle leaked back into #mode3d');
+      if(f.el('modeShelf').contains(f.el('d_case'))) throw new Error('#d_case leaked into #modeShelf');
+    });
+
+    t(`${label}: View controls (Solid/Cutaway, Explode, Dims, Grid/White) are structurally inside #mode3d/#modeShelf, never #scopeBar`, () => {
+      const scopeBar = f.el('scopeBar');
+      ['m3viewmode', 'm3explode', 'm3dims', 'm3bg'].forEach(id => {
+        if(!f.el('mode3d').contains(f.el(id))) throw new Error(`#${id} is not inside #mode3d`);
+        if(scopeBar.contains(f.el(id))) throw new Error(`#${id} leaked into #scopeBar -- a View control placed in the Scope group`);
+      });
+      ['shViewmode', 'shBg'].forEach(id => {
+        if(!f.el('modeShelf').contains(f.el(id))) throw new Error(`#${id} is not inside #modeShelf`);
+        if(scopeBar.contains(f.el(id))) throw new Error(`#${id} leaked into #scopeBar`);
+      });
+    });
+  });
+
+  /* ---- every control present + operable at both widths: at least one
+     control from EACH group, driven through the real DOM, at each width. */
+  [['mobile (390px)', m], ['desktop (1400px)', d]].forEach(([label, f]) => {
+    t(`${label}: driving a Scope control through the DOM -- a level tab actually switches the active depth`, () => {
+      if(!f.el('d_pallet') || f.el('d_pallet').disabled) throw new Error('vacuous fixture: pallet depth must be reachable to drive this control');
+      if(!f.el('d_case').classList.contains('on')) throw new Error('vacuous fixture: expected Case to be the active depth before this pin touches anything');
+      f.el('d_pallet').click();
+      if(!f.el('d_pallet').classList.contains('on') || f.el('d_case').classList.contains('on'))
+        throw new Error('clicking the Pallet level tab did not move the active depth -- Scope control is not actually reachable/working at this width');
+      f.el('d_case').click();   // restore, so nothing leaks into a later pin
+      if(!f.el('d_case').classList.contains('on')) throw new Error('restoring Case depth after the pin failed');
+    });
+
+    t(`${label}: driving a View control through the DOM -- the Dims toggle actually flips`, () => {
+      const dims = f.el('m3dims');
+      if(dims.classList.contains('on')) throw new Error('vacuous fixture: expected Dims to start off before this pin touches anything');
+      dims.click();
+      if(!dims.classList.contains('on')) throw new Error('clicking Dims did not toggle on -- View control is not actually reachable/working at this width');
+      dims.click();   // restore
+      if(dims.classList.contains('on')) throw new Error('restoring Dims after the pin failed -- stuck on');
+    });
+  });
+
+  /* ---- legend text differs by input mode. #orbithint claims mouse-only
+     gestures ("right-drag pan", "scroll zoom") that have no touch analogue;
+     #hud's span claims a gesture set the 2D view has NO touch path for at
+     all. Both are recomputed off matchMedia('(pointer:coarse)') -- mocked
+     here per-iframe (no real touch device in this harness) and restored in
+     `finally`, exactly like the project-state mocks elsewhere in this file. */
+  async function withPointerMode(frame, coarse, fn){
+    const realMM = frame.contentWindow.matchMedia.bind(frame.contentWindow);
+    frame.contentWindow.matchMedia = q => (q.replace(/\s+/g, '') === '(pointer:coarse)')
+      ? {matches: coarse, media: q, addEventListener(){}, removeEventListener(){}}
+      : realMM(q);
+    try{ await fn(); } finally { frame.contentWindow.matchMedia = realMM; }
+  }
+  let coarseOrbitText, fineOrbitText, coarseHudVisible, fineHudVisible;
+  await withPointerMode(dframe, true, async () => {
+    d.el('tab3d').click(); await d.settle();     // re-enters hierarchy mode -> recomputes #orbithint
+    coarseOrbitText = d.el('orbithint').textContent;
+    d.el('tab2d').click(); await d.settle();     // recomputes #hudGesture visibility
+    coarseHudVisible = d.cs(d.el('hudGesture')).display !== 'none';
+  });
+  await withPointerMode(dframe, false, async () => {
+    d.el('tab3d').click(); await d.settle();
+    fineOrbitText = d.el('orbithint').textContent;
+    d.el('tab2d').click(); await d.settle();
+    fineHudVisible = d.cs(d.el('hudGesture')).display !== 'none';
+  });
+
+  t('legend text differs by input mode: #orbithint (3D/shelf gesture hint)', () => {
+    if(!coarseOrbitText || !fineOrbitText) throw new Error('vacuous fixture: legend text was not captured');
+    if(coarseOrbitText === fineOrbitText)
+      throw new Error(`orbithint text is identical under coarse and fine pointer modes: "${coarseOrbitText}" -- legend does not actually vary by input mode`);
+    if(!/two-finger|pinch/.test(coarseOrbitText)) throw new Error(`coarse-pointer (touch) text should name the real touch gestures, got: "${coarseOrbitText}"`);
+    if(!/right-drag|scroll zoom/.test(fineOrbitText)) throw new Error(`fine-pointer (mouse) text should keep the original mouse gestures, got: "${fineOrbitText}"`);
+  });
+
+  t("legend text differs by input mode: #hud's gesture span is hidden on touch (the 2D view has no working touch equivalent)", () => {
+    if(coarseHudVisible === undefined || fineHudVisible === undefined) throw new Error('vacuous fixture: hud visibility was not captured');
+    if(coarseHudVisible) throw new Error('#hudGesture is still visible under a coarse (touch) pointer -- the mouse-only legend still claims gestures that do not work there');
+    if(!fineHudVisible) throw new Error('#hudGesture is hidden even under a fine (mouse) pointer -- legend broken for mouse users too');
+  });
+
+  /* ---- mutation: return one View control to a canvas overlay and prove
+     the obstruction pin actually fails. Mimics the exact old bug directly
+     (position:absolute;inset:0 inside .stagecanvas) rather than reverting
+     real CSS at runtime -- proves canvasObstructionMisses() is CAPABLE of
+     failing, not merely "not obviously trivial" (this file's own mutation-
+     testing rule). The preceding legend-mode block leaves `d` on the 2D tab
+     (no <canvas> on screen at all, #cvWrap display:none) -- re-enter 3D/case
+     first, or a clean canvasObstructionMisses() call would ALREADY report
+     misses for an unrelated reason, and the mutation would prove nothing. */
+  d.el('tab3d').click(); await d.settle();
+  d.el('d_case').click(); await d.settle();
+  t('mutation: a control returned to the canvas overlay makes the obstruction pin fail', () => {
+    const sc = d.el('cvWrap').parentElement;      // .stagecanvas
+    const mutant = d.doc().createElement('div');
+    mutant.id = '__mutantViewControlOverlay';
+    mutant.style.cssText = 'position:absolute;inset:0;z-index:9;background:transparent';
+    sc.appendChild(mutant);
+    try{
+      const {sampled, misses} = canvasObstructionMisses(d);
+      if(sampled < 10) throw new Error('vacuous mutation: not enough sample points to prove anything');
+      if(misses.length === 0)
+        throw new Error('mutation did not obstruct the canvas -- the obstruction pin cannot be proven to fail, so it cannot be trusted to catch a real regression');
+      if(!misses.every(x => x.hit === '__mutantViewControlOverlay'))
+        throw new Error(`mutation misses did not all land on the injected overlay -- sampler may be measuring the wrong thing: ${JSON.stringify(misses)}`);
+    } finally { mutant.remove(); }
+    const clean = canvasObstructionMisses(d);
+    if(clean.misses.length !== 0) throw new Error('removing the mutant overlay did not restore an unobstructed canvas -- fixture leaked state');
   });
 
   m.el('tab2d').click(); d.el('tab2d').click();   // restore both fixtures to their default view
