@@ -23,6 +23,7 @@ function eq(actual, expected, msg = ''){
   if(a !== b) throw new Error(`${msg} expected ${b}, got ${a}`);
 }
 const ok = (cond, msg) => { if(!cond) throw new Error(msg); };
+const approx = (a, e, msg = '', tol = 1e-6) => { if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); };
 const box = (L, W, H, allowed = ['LWH', 'WLH']) => ({outer: {L, W, H}, allowedOrientations: allowed});
 const Z = {wall: 0, between: 0};
 const stackSig = arr => arr.placements
@@ -198,7 +199,13 @@ t('INVARIANT: no arrangement extends past the deck (sweep, all families)', () =>
     }
   }
   ok(n > 500, `sweep too thin (${n} arrangements)`);
-  eq([...fams].sort(), ['aligned', 'mixed', 'pinwheel'], 'all three families exercised:');
+  // 'sandwich' (Part 2: the split-band-with-a-central-void construction)
+  // joins the set here too -- this IS the pin that already proves it never
+  // overhangs, across 500+ deck/case/clearance combinations, with no
+  // special-casing needed: sandwichLayouts feeds the SAME layouts array
+  // every other construction does, so the deck-validity gate above already
+  // covered it before this line was even touched.
+  eq([...fams].sort(), ['aligned', 'mixed', 'pinwheel', 'sandwich'], 'all four families exercised:');
 });
 
 t('INVARIANT: every arrangement is centred on the deck (even margins)', () => {
@@ -505,6 +512,130 @@ t('LAYER SCHEDULE flows through project.pallet.layerFlips: an override changes t
 });
 
 /* ---------- report ---------- */
+/* ================================================================
+   PART 2 — sandwiched split band with a central void. stripLayouts always
+   puts its short (rotated) block at ONE end of the combined footprint; this
+   construction splits the MAJORITY band into two equal halves, pushes one
+   flush to EACH outer edge of the layer, and puts the short band in the
+   middle, centred -- a genuine rearrangement of the SAME cells stripLayouts'
+   own search would find for a matching k, never a different count.
+
+   Fixture: case 150x70x100, deck 450x250 (wall 0, between 0) hand-derives to
+   a clean small "3+2+3 sandwich" (k=2, rows=3, k1=1, n2u=2, n2v=1, n2=2) --
+   verified against the actual module output before being used as a pin, the
+   same discipline every other hand-worked fixture in this file follows. */
+const SCASE = box(150, 70, 100);
+const SDECK = {L: 450, W: 250, H: 1000};
+
+t('SANDWICH: a "3+2+3" instance matches an existing mixed candidate\'s count exactly for the SAME k, and never ranks above the true best', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  eq(sw.total, 80, 'hand-computed total (k=2 -> n1=6, n2=2):');
+  // the SAME k (n1=6, i.e. perLayer 8) stripLayouts' own search already
+  // finds, as a real ranked "6+2 mixed" candidate -- this construction
+  // REARRANGES those same cells, it does not invent a new count
+  const sameK = l.find(c => c.family === 'mixed' && c.perLayer === sw.perLayer);
+  ok(sameK, 'no mixed candidate at the same perLayer to compare against');
+  eq(sw.total, sameK.total, 'sandwich total must equal the same-k mixed total exactly:');
+  ok(sw.total <= l[0].total, `sandwich (${sw.total}) must never outrank the true ranked best (${l[0].total}):`);
+});
+
+t('SANDWICH: the central void sits exactly where hand-computed, split evenly around the middle band', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  const arr = sw.build();
+  const z0 = [...new Set(arr.placements.map(p => p.z))].sort((a, b) => a - b)[0];
+  const layer0 = arr.placements.filter(p => p.z === z0);
+  // majority band cells (orientation LWH, the un-rotated base): x = ±150
+  const majorityX = [...new Set(layer0.filter(p => p.orientation === 'LWH').map(p => p.x))].sort((a, b) => a - b);
+  eq(majorityX, [-150, 150], 'the two majority-band columns:');
+  // short-band cells (orientation WLH, rotated): x = ±35
+  const shortX = [...new Set(layer0.filter(p => p.orientation === 'WLH').map(p => p.x))].sort((a, b) => a - b);
+  eq(shortX, [-35, 35], 'the short band\'s own two columns:');
+  // hand-computed void: left band's inner edge (case half-length 75mm) at
+  // x=-150+75=-75; short band's own left edge at x=-35-35=-70 (half its
+  // own cell width, CW=70, so half=35) -- a 5mm gap. Mirrored on the right.
+  const leftBandInnerEdge = -150 + SCASE.outer.L/2, shortBandLeftEdge = -35 - SCASE.outer.W/2;
+  approx(shortBandLeftEdge - leftBandInnerEdge, 5, 'left-side void width (hand-computed):', 1e-9);
+  const rightBandInnerEdge = 150 - SCASE.outer.L/2, shortBandRightEdge = 35 + SCASE.outer.W/2;
+  approx(rightBandInnerEdge - shortBandRightEdge, 5, 'right-side void width (hand-computed):', 1e-9);
+  // and the two voids are symmetric about the layer's own centre (x=0) --
+  // "a CENTRAL void", not one that happens to be off to one side
+  approx(shortBandLeftEdge, -shortBandRightEdge, 'void is centred: left/right void boundaries mirror:', 1e-9);
+});
+
+t('SANDWICH: count invariance across a spread of instances -- total never exceeds the true ranked best', () => {
+  let n = 0;
+  for(let CLn = 90; CLn <= 220; CLn += 15) for(let CWn = 60; CWn <= 180; CWn += 15){
+    const l = palletPatternList(box(CLn, CWn, 100), {L: 500, W: 400, H: 1000}, Z, 'optimal');
+    for(const sw of l.filter(c => c.family === 'sandwich')){
+      n++;
+      ok(sw.total <= l[0].total, `sandwich total (${sw.total}) exceeds the ranked best (${l[0].total}) at case ${CLn}x${CWn}`);
+      const sameK = l.find(c => c.family === 'mixed' && c.perLayer === sw.perLayer);
+      ok(sameK, `no same-perLayer mixed candidate to compare against at case ${CLn}x${CWn}`);
+      eq(sw.total, sameK.total, `sandwich vs same-k mixed total at case ${CLn}x${CWn}:`);
+    }
+  }
+  ok(n > 10, `sweep too thin to mean anything (${n} sandwich instances)`);
+});
+
+t('SANDWICH: the layer is its own 180° turn, and Part 1\'s isOwn180 warning fires when a flip is scheduled on it', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  ok(sw.layers >= 2, `vacuous fixture: need >=2 layers, got ${sw.layers}`);
+  const schedule = new Array(sw.layers).fill(false); schedule[1] = true;
+  const withFlip = sw.withSchedule(schedule);
+  eq(withFlip.warnings.length, 1, `expected exactly one warning, got ${JSON.stringify(withFlip.warnings)}`);
+  ok(/180/.test(withFlip.warnings[0]), `warning should mention the 180° turn, got: ${withFlip.warnings[0]}`);
+  eq(stackSig(withFlip.build()), stackSig(sw.build()), 'the no-op flip must not change the arrangement (as a set):');
+});
+
+t('SANDWICH: outer-edge justification reaches the deck boundary EXACTLY, and never past it', () => {
+  const l = palletPatternList(SCASE, SDECK, Z, 'optimal');
+  const sw = l.find(c => c.family === 'sandwich' && c.label === '3+2+3 sandwich');
+  ok(sw, 'fixture must produce the target sandwich candidate');
+  const f = footprint(sw, SCASE.outer.L, SCASE.outer.W);
+  approx(f.maxX, SDECK.L/2, 'right band must reach the deck edge exactly (wall=0, between=0):', 1e-6);
+  approx(f.minX, -SDECK.L/2, 'left band must reach the deck edge exactly:', 1e-6);
+  ok(f.maxX <= SDECK.L/2 + 1e-6 && f.minX >= -SDECK.L/2 - 1e-6, 'never past the deck edge:');
+});
+
+t('SANDWICH: no two cases overlap within a layer (the existing footprint/centring invariants above already cover deck bounds and centring unmodified)', () => {
+  // A general, family-agnostic overlap check -- position + footprint dims
+  // only, exactly footprint()'s own idiom above (orientation[0]==='L'?L:W) --
+  // run against sandwich specifically. Needing no sandwich-specific branch
+  // here IS the "existing verifier needs no modification" claim; if it did,
+  // the construction would be wrong.
+  const noOverlap = (placements, L, W) => {
+    const rects = placements.map(p => ({
+      cx: p.x, cy: p.y,
+      hx: (p.orientation[0] === 'L' ? L : W)/2, hy: (p.orientation[1] === 'L' ? L : W)/2
+    }));
+    for(let i = 0; i < rects.length; i++) for(let j = i + 1; j < rects.length; j++){
+      const a = rects[i], b = rects[j];
+      if(Math.abs(a.cx - b.cx) < a.hx + b.hx - 1e-6 && Math.abs(a.cy - b.cy) < a.hy + b.hy - 1e-6)
+        return false;
+    }
+    return true;
+  };
+  let n = 0;
+  for(let CLn = 90; CLn <= 220; CLn += 15) for(let CWn = 60; CWn <= 180; CWn += 15){
+    const box_ = box(CLn, CWn, 100);
+    const l = palletPatternList(box_, {L: 500, W: 400, H: 1000}, Z, 'optimal');
+    for(const sw of l.filter(c => c.family === 'sandwich')){
+      n++;
+      const arr = sw.build();
+      const z0 = [...new Set(arr.placements.map(p => p.z))][0];
+      ok(noOverlap(arr.placements.filter(p => p.z === z0), CLn, CWn),
+         `overlapping cases in sandwich "${sw.label}" at case ${CLn}x${CWn}`);
+    }
+  }
+  ok(n > 10, `sweep too thin to mean anything (${n} sandwich instances)`);
+});
+
 const fails = results.filter(r => r.startsWith('FAIL')).length;
 document.getElementById('out').textContent =
   `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');

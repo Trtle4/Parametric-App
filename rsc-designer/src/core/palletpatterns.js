@@ -2,10 +2,12 @@
  * Pallet pattern repertoire: enumerate every viable case-on-pallet layer
  * layout as ONE RANKED candidate list — aligned grids (both in-plane
  * orientations), two-block rotated strips (every viable split, not just the
- * best), and perimeter pinwheels with a central void — plus interlocked
- * (odd-layer 180° turn) stacking variants. Path B: the named patterns EMERGE
- * from enumerating these defined constructions; this is NOT a general
- * packing solver, and it must never grow into one.
+ * best), sandwiched split bands with a central void (the same split, with
+ * the short band re-centred instead of pushed to an edge), and perimeter
+ * pinwheels with a central void — plus a per-layer interlock SCHEDULE (see
+ * `layerFlips` below) each layout can be stacked with. Path B: the named
+ * patterns EMERGE from enumerating these defined constructions; this is
+ * NOT a general packing solver, and it must never grow into one.
  *
  * The list is the single source for the pallet: project.js chainMetrics
  * bakes list[0] into every candidate row (ranking / default), retains the
@@ -108,6 +110,83 @@ function stripLayouts(CL, CW, PL, PW){
       }
       out.push({positions, label: `${n1}+${n2} mixed`, family: 'mixed'});
     }
+  };
+  fam(PL, PW, CL, CW, false); fam(PL, PW, CW, CL, false);
+  fam(PW, PL, CL, CW, true);  fam(PW, PL, CW, CL, true);
+  return out;
+}
+
+/** Sandwiched split band with a central void — a DEFINED construction, not
+ *  discovered: stripLayouts always puts its short (rotated) block at ONE
+ *  end, so a "3+3+2" layer puts the short band at an edge. This splits the
+ *  MAJORITY band's k columns into two EQUAL halves (k must be even — an odd
+ *  k has no exact split, so that k is simply not a candidate for this
+ *  construction, the same "doesn't apply here" the module already uses for
+ *  a square footprint or a lone orientation), pushes one half flush to
+ *  EACH outer edge of the layer (u = ±U/2 — the real, full deck extent
+ *  every other construction here also uses, not the strip's own smaller
+ *  combined footprint), and puts the short (rotated) band in between,
+ *  centred at u=0. Because the two halves are EXACT mirrors of each other
+ *  and the short band is self-centred, the whole layer is its own 180°
+ *  turn by construction — see sym180 below, and the interlock-schedule
+ *  interaction this implies (core/bct.js/palletpatterns.js Part 1 doc).
+ *
+ *  COUNT INVARIANCE: this only REARRANGES the exact same k*rows + n2u*n2v
+ *  cells stripLayouts' own search would find for the matching k — it adds
+ *  or removes none, so the total for a given k is identical either way,
+ *  and the void this construction opens is the same "one case wouldn't
+ *  fit" leftover a mixed layout already has, just centred instead of
+ *  pushed to one side.
+ *
+ *  Only the MAXIMAL (highest-total) even k is emitted per axis/orientation
+ *  combo — the same pinwheel rule ("a variant that could grow is pure
+ *  noise in the cycle list"), and only when the short band is non-empty
+ *  (n2 >= 1): with nothing to sandwich this degenerates to a plain aligned
+ *  grid split apart for no reason, which is strictly worse than the real
+ *  aligned candidate at the same count and adds nothing the ranked list
+ *  doesn't already have. */
+function sandwichLayouts(CL, CW, PL, PW){
+  const out = [];
+  const fam = (U, V, a, b, swap) => {
+    const rows = Math.floor(V/b), n2v = Math.floor(V/a);
+    if(rows < 1) return;
+    let best = null;
+    for(let k = 2; k <= Math.floor(U/a); k += 2){
+      const n2u = Math.floor((U - k*a)/b), n2 = n2u*n2v;
+      if(n2 < 1) continue;                          // nothing to sandwich
+      const total = k*rows + n2;
+      if(!best || total > best.total) best = {k, n2u, total};
+    }
+    if(!best) return;
+    const {k, n2u} = best;
+    const k1 = k/2, n2 = n2u*n2v;
+    const positions = [];
+    const rotA = a !== CL;                          // majority-band orientation
+    // the two majority halves, flush to the layer's own OUTER edges — the
+    // full U (not a smaller combined-footprint span), matching the "pushes
+    // cases to the layer boundary" edge-justification this construction is
+    // for. Built as an exact mirror pair, which is what makes the whole
+    // layer symmetric regardless of how the leftover (U - k*a) splits.
+    for(const side of [-1, 1]) for(let i = 0; i < k1; i++){
+      const u = side*(U/2 - (i + 0.5)*a);
+      for(let j = 0; j < rows; j++){
+        const v = (j + 0.5)*b - rows*b/2;
+        positions.push(swap ? {x: v, y: u, rot: !rotA} : {x: u, y: v, rot: rotA});
+      }
+    }
+    // the short band, centred at u=0 — the gap between the two majority
+    // halves is itself centred (k1 is the SAME on each side), so a plain
+    // centred sub-grid here already IS "cases justified to the short
+    // band's own two edges, void in the middle" (see gridLayout's own
+    // centring, which does exactly this for one block).
+    for(let i = 0; i < n2u; i++){
+      const u = (i + 0.5)*b - n2u*b/2;
+      for(let j = 0; j < n2v; j++){
+        const v = (j + 0.5)*a - n2v*a/2;
+        positions.push(swap ? {x: v, y: u, rot: rotA} : {x: u, y: v, rot: !rotA});
+      }
+    }
+    out.push({positions, label: `${k1*rows}+${n2}+${k1*rows} sandwich`, family: 'sandwich'});
   };
   fam(PL, PW, CL, CW, false); fam(PL, PW, CW, CL, false);
   fam(PW, PL, CL, CW, true);  fam(PW, PL, CW, CL, true);
@@ -218,7 +297,7 @@ function deckFootprint(positions, l, w, deckL, deckW, allowOverhang){
 
 /* ---------------- the ranked list ---------------- */
 
-const FAMILY_RANK = {aligned: 0, mixed: 1, pinwheel: 2};
+const FAMILY_RANK = {aligned: 0, mixed: 1, sandwich: 2, pinwheel: 3};
 
 /** Guard absurd inputs, like containment's PLACEMENT_CAP. */
 const PER_LAYER_CAP = 20000;
@@ -308,6 +387,7 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       const gB = gridLayout(CL, CW, PL, PW, true, square);
       if(gB) layouts.push(gB);
       layouts.push(...stripLayouts(CL, CW, PL, PW));
+      layouts.push(...sandwichLayouts(CL, CW, PL, PW));
       layouts.push(...pinwheelLayouts(CL, CW, PL, PW));
     }
 

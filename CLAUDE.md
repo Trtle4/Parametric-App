@@ -887,3 +887,93 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   information the way there is for a cylinder's diameter/thickness — a user
   gets an on-edge box in a tray today by entering its dimensions in the
   orientation they want.
+- **RESOLVED (pallet-pattern task, two parts): interlock became a
+  per-layer SCHEDULE, and a new sandwiched-split-band construction reuses
+  it.** Part 1 was built and committed first, on purpose — it changes the
+  candidate SHAPE Part 2 emits into, and building Part 2 against the old
+  shape would have meant reworking it.
+
+  **Part 1**: `palletpatterns.js` candidates carried a whole-load
+  `interlock` boolean — the sixth boolean in this project that turned out
+  to be a set (`tray.enabled`, content kind, `doubleStack`, film axis, the
+  tray 2D grid, now this). Replaced with `layerFlips`: a per-layer boolean
+  array, bottom first. "Flip every odd layer" and "flip nothing" are just
+  two values the array can hold, not two code paths — the two
+  auto-generated candidates every family already produced (straight,
+  alternating) now build from `straightSchedule(layers)`/
+  `alternatingSchedule(layers)`, bit-identical to before (mutation-tested:
+  reverting `build()` to hardcode `ly & 1` breaks a schedule pin while the
+  two migration pins, which check the STORED `layerFlips` array rather than
+  built placements, stay green — exactly the split the task asked for).
+  Each candidate gained `withSchedule(schedule)`: a NEW candidate, same
+  layout/orientation/envelope, a different flip array — the entry point an
+  arbitrary schedule reaches through (a schedule shorter/longer than the
+  candidate's own layer count degrades safely, never throws), and where the
+  `isOwn180` no-op-flip WARNING lives — populated only here, never on the
+  two auto-generated candidates, whose odd-layer default is the app's own
+  long-standing behaviour, not a user request. `project.pallet.layerFlips`
+  (null = auto, bit-identical to before the field existed) is the project-
+  level override `chainMetrics`/`applyPatternSelection` apply to whichever
+  candidate is selected. `bct.js` gained `interlockCaveat(layerFlips)` —
+  conditional on the ACTUAL schedule, never on `family`/`pattern` (`family:
+  'optimal'` can still pick the straight candidate with nothing
+  interlocked at all) — plus a static DERATINGS line, keeping the module's
+  disclose-don't-apply rule: no numeric factor, ever. The rail's "columnar
+  through layer k, then interlock [this layer only|all layers above]" rule
+  WRITES the expanded array (never storing k+mode themselves — a scalar
+  pair would have to be thrown away the moment per-layer editing UI
+  lands), the same "one representation, one writer, a convenience control
+  on top" idiom `pallet.stack.positions`' own quick-set buttons already
+  established.
+
+  **Part 2**: `stripLayouts` always puts its short (rotated) block at ONE
+  end of the combined footprint, so a mixed layout's short band sits at an
+  edge. `sandwichLayouts` — a new construction alongside `stripLayouts`/
+  `pinwheelLayouts` — REARRANGES the exact same cells a matching-k
+  `stripLayouts` search would find: splits the majority band's k columns
+  into two EQUAL halves (k must be even — an odd k has no exact split, so
+  it's simply not a candidate for this construction, the same "doesn't
+  apply here" the module already uses for a square footprint), pushes one
+  half flush to EACH outer edge of the layer — the real full deck extent
+  every construction here uses, not the strip's own smaller combined
+  footprint, which is what makes this an "edge justification" distinct
+  from the original — and puts the short band in the middle, centred,
+  which is what turns its own ordinary leftover slack into a visible
+  central void split evenly on both sides. Emits only the maximal
+  (highest-total) even k per axis/orientation combo, and only when the
+  short band is non-empty (pinwheel's own "a variant that could grow, or a
+  split with nothing to sandwich, is pure noise" rule). Because the two
+  halves are an EXACT mirror pair and the short band is self-centred, the
+  whole layer is its own 180° turn BY CONSTRUCTION — Part 1's `isOwn180`
+  warning fires on it exactly like any other symmetric layout when an
+  explicit schedule flip is requested. `sandwich` joined `FAMILY_RANK`
+  between `mixed` and `pinwheel`, and needed no new selection machinery —
+  it rides the SAME ranked candidate list, cycle arrows, and Build table
+  every other family already does. Count invariance was the load-bearing
+  claim (this only rearranges cells, never adds or removes one) and it's
+  checked three ways: the sandwich total exactly equals a same-perLayer
+  `mixed` candidate's total for a hand-verified "3+2+3" fixture, across a
+  30+-instance sweep, and never exceeds the ranked-best overall. Central
+  void position/width is hand-computed from the same fixture (two 5mm
+  gaps flanking the middle band, symmetric about the layer's own centre —
+  not just "no overhang", the edge-pushing claim itself, checked by
+  confirming the outermost case footprint lands EXACTLY on the deck edge).
+  No new "geometric verifier" needed writing or modifying: the pre-existing
+  deck-bounds/centring sweep pins (which run against `palletPatternList`'s
+  own output generically) already covered `sandwich` the moment it started
+  appearing in the family set they iterate — the only change either pin
+  needed was widening its EXPECTED family list from three entries to four.
+  Mutation-tested precisely as specified: reverting the short band's own
+  centring to a one-sided placement (still split, so the candidate survives
+  dedupe as a distinct geometry, unlike a first mutation attempt that
+  reverted the WHOLE construction to the legacy contiguous layout and
+  collapsed it back into an existing `mixed` candidate via the module's own
+  geometric dedupe, killing the count pins along with the position ones —
+  informative, but not the specific failure mode asked for) breaks the
+  central-void and isOwn180-symmetry pins while every count/overhang/no-
+  overlap pin stays green, confirming count alone could never have caught
+  this and the position pin has to exist. Full regression both parts:
+  `golden.json` 998/998 unchanged (interlock's refactor is behavior-
+  preserving by construction, and a rearrangement that only ever ranks at
+  or below the layouts already in every fixture's list never displaces a
+  `list[0]`).
