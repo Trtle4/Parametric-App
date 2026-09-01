@@ -39,6 +39,86 @@ export function makeArtTexture(texCanvas){
 }
 
 /**
+ * The crimped end seal's two PLIES, derived — never authored.
+ *
+ * A flow wrap's end seal is not a panel with artwork of its own. It is the
+ * tube's own film, continuing past the product and pinched flat, so its
+ * mapping has to come from the SAME girth parameterisation the bands use: the
+ * section polyline, walked with the `faces` v-breakpoints. Flattening cuts
+ * that polyline where it crosses the mid-plane of the DECLARED flatten axis
+ * (`am.flattenAxis` — a machine fact the style states, never inferred from the
+ * section's shape) and lays each half flat. Each ply is therefore a
+ * half-girth run of v, read straight off the band breakpoints; together the
+ * two account for the full girth exactly once.
+ *
+ * The ply on the + side of the flatten axis is the one facing the shopper
+ * (the FRONT band sits there); the − side ply is centred on the rear seam,
+ * which is where the girth parameterisation starts and ends — so THAT ply
+ * comes back as TWO runs, contiguous around the tube but split in the
+ * template. Callers must draw both.
+ *
+ * IDEALISATION, stated: a half-girth of film (girth/2) is gathered into a flat
+ * width of only `across` — real film pleats at the corners. Each run is
+ * stretched uniformly over its share of the width rather than modelling the
+ * pleat, which keeps the mapping continuous and lands the FRONT band's own
+ * midpoint exactly on the fin's centreline.
+ *
+ * @param {object} am  geo.meta.artMap (needs section, faces, flattenAxis, ends)
+ * @returns {?{across: number[], acrossAxis: number, flatAxis: number,
+ *             plies: Array<{side: number, runs: Array<{v0,v1,a0,a1: number}>}>}}
+ *   null when the style declares no flatten axis, or when the section does not
+ *   cut into exactly two plies (anything else is not a simple flatten, and a
+ *   guess there would be worse than no mapping).
+ */
+export function finPlies(am){
+  if(!am || !Array.isArray(am.section) || !Array.isArray(am.faces)) return null;
+  const ci = am.flattenAxis === 'z' ? 1 : am.flattenAxis === 'y' ? 0 : -1;
+  if(ci < 0) return null;                       // undeclared: refuse, never assume
+  const ai = 1 - ci;                            // the ACROSS axis the flat fin spans
+  const sec = am.section, faces = am.faces;
+  if(sec.length !== faces.length + 1) return null;   // one band per segment, or this walk is not the girth
+
+  // v at each section vertex, straight off the bands' own breakpoints
+  const vAt = faces.map(f => f.v0);
+  vAt.push(faces[faces.length - 1].v1);
+
+  const vals = sec.map(p => p[ci]);
+  const mid = (Math.min(...vals) + Math.max(...vals))/2;
+  const cuts = [];
+  for(let i = 0; i < sec.length - 1; i++){
+    const A = sec[i], B = sec[i + 1], dA = A[ci] - mid, dB = B[ci] - mid;
+    if((dA < 0 && dB > 0) || (dA > 0 && dB < 0)){
+      const t = dA/(dA - dB);
+      cuts.push({
+        v: vAt[i] + t*(vAt[i + 1] - vAt[i]),
+        across: A[ai] + t*(B[ai] - A[ai]),
+        into: dB > 0 ? 1 : -1                   // which half the walk enters here
+      });
+    }
+  }
+  if(cuts.length !== 2) return null;
+
+  const vStart = vAt[0], vEnd = vAt[vAt.length - 1], half = (vEnd - vStart)/2;
+  const [c0, c1] = cuts;
+  const span = c0.across - c1.across;           // the far ply walks c1 -> c0
+  const l1 = vEnd - c1.v, l2 = c0.v - vStart;   // the far ply's two runs
+  const aMid = c1.across + (l1/half)*span;      // where its seam lands across the fin
+  return {
+    across: [c0.across, c1.across],
+    acrossAxis: ai, flatAxis: ci,
+    plies: [
+      // the walk between the two cuts lies in the half c0 opens into
+      {side: c0.into, runs: [{v0: c0.v, v1: c1.v, a0: c0.across, a1: c1.across}]},
+      // ...and the complement wraps the seam, so it is two runs, not one
+      {side: -c0.into, runs: [
+        {v0: c1.v, v1: vEnd, a0: c1.across, a1: aMid},
+        {v0: vStart, v1: c0.v, a0: aMid, a1: c0.across}
+      ]}
+    ]
+  };
+}
+
+/**
  * The closed pack geometry in the pack's canonical local frame (centred on the
  * origin, FRONT toward +Z). Material groups: 0 = printed faces (+ wrap crimp
  * fins), 1 = board caps (the tube ends a carton closes with flaps). Wraps
@@ -72,12 +152,51 @@ export function packArtGeometry(am){
   // crimped end fins (wrap only): flat quads standing out along the extrude
   // axis, carrying the end-seal column. Part of the printed group.
   if(am.ends && ax === 'x'){
-    const finLen = Math.max(am.ends[0].u1 - am.ends[0].u0, am.length*0.04);
-    const yMax = Math.max(...sec.map(p => p[0])), yMin = Math.min(...sec.map(p => p[0]));
-    const addFin = (baseX, dir, col) => {
-      const ex = baseX + dir*finLen, cu0 = col.u0/CW, cu1 = col.u1/CW;
-      quad([baseX, yMin, 0], [ex, yMin, 0], [ex, yMax, 0], [baseX, yMax, 0],
-           [cu0, 0], [cu1, 0], [cu1, 1], [cu0, 1], artP, artU);
+    const fp = finPlies(am);
+    // the crimp's PLIES, each a half-girth run of the tube's own v (finPlies).
+    // The fin used to be ONE quad carrying v 0..1 — the whole canvas height,
+    // fin allowance and all, squashed across its width. That is the same
+    // arbitrary-range mistake hierarchy3d.js's crimp tab already fixed for the
+    // pillow body by reading the crimp ring's own v; this reads the section
+    // walk instead, which is the same girth, one level earlier.
+    const spanAcross = Math.abs(fp ? fp.across[1] - fp.across[0]
+                                  : Math.max(...sec.map(p => p[0])) - Math.min(...sec.map(p => p[0])));
+    // the two plies are pressed together; separate them by a hair so neither
+    // z-fights the other. RENDER-ONLY, like fold3d's RENDER_MIN_THICKNESS —
+    // real film gauge is microns and would render as one surface.
+    const plyGap = Math.max(1e-3, spanAcross*0.002);
+    const addFin = (baseX, dir, end) => {
+      // draw the FULL printed extent, not just the seal: the bleed lies
+      // between the seal boundary and the film edge, so a fin drawn u0..u1
+      // stops exactly where the bleed starts and the bleed never prints.
+      const pU0 = end.printU0 != null ? end.printU0 : end.u0;
+      const pU1 = end.printU1 != null ? end.printU1 : end.u1;
+      const finLen = Math.max(pU1 - pU0, am.length*0.04);
+      const ex = baseX + dir*finLen;
+      // u runs INBOARD -> tip. At the leading end the film's u decreases
+      // outward (the blank's own edge is u=0); at the trailing end it
+      // increases. Reading it off the end's own printed extent by direction
+      // keeps both ends' bleed at the OUTSIDE, where bleed belongs.
+      const uIn = (dir < 0 ? pU1 : pU0)/CW, uTip = (dir < 0 ? pU0 : pU1)/CW;
+      if(!fp){                                   // no declared flatten: board-flat, unmapped
+        const yMax = Math.max(...sec.map(p => p[0])), yMin = Math.min(...sec.map(p => p[0]));
+        quad([baseX, yMin, 0], [ex, yMin, 0], [ex, yMax, 0], [baseX, yMax, 0],
+             [uIn, 0], [uTip, 0], [uTip, 1], [uIn, 1], artP, artU);
+        return;
+      }
+      for(const ply of fp.plies){
+        const off = ply.side*plyGap;
+        for(const r of ply.runs){
+          // positions are built from WORLD across-coordinates, identical at
+          // both ends -- the film's v at a given point of the tube does not
+          // depend on which end you look at, so the two crimps must not
+          // mirror in v. Only u mirrors, and that comes from `dir` above.
+          const P = a => { const pt = []; pt[fp.acrossAxis] = a; pt[fp.flatAxis] = off; return pt; };
+          const A = V(baseX, P(r.a0)), B = V(ex, P(r.a0)), C = V(ex, P(r.a1)), D = V(baseX, P(r.a1));
+          const v0 = r.v0/CH, v1 = r.v1/CH;
+          quad(A, B, C, D, [uIn, v0], [uTip, v0], [uTip, v1], [uIn, v1], artP, artU);
+        }
+      }
     };
     addFin(-half, -1, am.ends[0]);
     addFin(half, 1, am.ends[1]);

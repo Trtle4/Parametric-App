@@ -257,6 +257,17 @@ export function flowwrap(p){
           // 3D tube: extruded along X (the film run, L), girth around the Y-Z
           // cross-section. The film run carries u, the girth carries v.
           extrude: 'x', extrudeIsU: true, length: L,
+          // FLATTEN AXIS — the axis the end-seal jaws close along, and so the
+          // axis whose MID-PLANE cuts the section polyline into the crimp's two
+          // plies. STATED, never inferred from the section's shape: which way
+          // the tube collapses is a machine fact (jaw orientation relative to
+          // the fin seal), and a section that happens to be square, or round,
+          // carries no hint of it at all. A horizontal wrapper's jaws close
+          // vertically, and the pack's vertical is H — section z here (FRONT at
+          // +z, the fin seal on the opposite face, `finFace` 'bottom'). Cutting
+          // at z = 0 folds each SIDE band at its own midpoint, which is what
+          // puts one ply on the shopper's face and the other on the rear seam.
+          flattenAxis: 'z',
           // cross-section polyline (y,z): FRONT at +Z, the two BACK halves meet
           // at the rear seam (y=0, z=-sh/2). One segment per band, same order.
           section: [
@@ -269,9 +280,19 @@ export function flowwrap(p){
             {panel: 'side',  u0: p0, u1: p1, v0: yB[4], v1: yB[5]},
             {panel: 'back',  u0: p0, u1: p1, v0: yB[5], v1: yB[6]}
           ],
+          // CRIMPED END SEALS. `u0/u1` stay exactly what they were — the flat
+          // crimp itself, which hierarchy3d.js's pillow already reads. `printU0/
+          // printU1` add the film's FULL printed extent at that end, out to the
+          // blank's own edge: the bleed lives BETWEEN the seal boundary and the
+          // edge, so a consumer that draws only u0..u1 draws no bleed at all,
+          // and bleed that stops at the seal boundary is bleed that does
+          // nothing. No `v` is declared here on purpose — the crimp's girth
+          // mapping is DERIVED from this same section + faces walk by
+          // `finPlies` (render/artwork3d.js), never authored, so it cannot
+          // drift from the bands when a dimension changes.
           ends: [                                               // crimped end-seal columns (the flat crimp)
-            {u0: bleed, u1: sealEnd},
-            {u0: cutLength - sealEnd, u1: cutLength - bleed}
+            {u0: bleed, u1: sealEnd, printU0: 0, printU1: sealEnd},
+            {u0: cutLength - sealEnd, u1: cutLength - bleed, printU0: cutLength - sealEnd, printU1: cutLength}
           ]
         };
       })()

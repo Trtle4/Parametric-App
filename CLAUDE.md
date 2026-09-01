@@ -1278,3 +1278,62 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   the centre seam with the template's own panel text legible and unmirrored.
   Full regression: `golden.json` 998/998 unchanged, every suite green except
   the 4 pre-existing `saveload` `cornerPost` failures documented above.
+- **RESOLVED, WITH A REACHABILITY CAVEAT (flow-wrap end-seal task): the crimp
+  now has a derived girth mapping — but the path it fixes has no live consumer
+  today, and the path users DO see was already correct.** The declaration gap
+  was real: `flowwrap.js` gave each girth band a full template rect and then
+  declared the crimps as EXTENTS only (`ends: [{u0, u1}]`, no `v`), so nothing
+  downstream could map the seal — the information wasn't there. `finPlies`
+  (render/artwork3d.js) fills it by DERIVING, never authoring: it folds the
+  section polyline at the mid-plane of a newly DECLARED `flattenAxis` and reads
+  each half-girth straight off the bands' own `faces[].v` breakpoints. The
+  flatten axis is stated, not inferred, because which way the tube collapses is
+  a machine fact (jaw orientation relative to the fin seal) and a square — or
+  round — section carries no hint of it. Cutting at z=0 folds each SIDE band at
+  its own midpoint, which is what puts one ply on the shopper's face and the
+  other on the rear seam. Hand-verified on the default wrap (L90 W50 H120):
+  cuts at v=95.5 and v=265.5, the shopper ply spanning exactly girth/2 with
+  FRONT's own midpoint (v=180.5) landing on the fin centreline, and the seam
+  landing there too for the far ply. THE FAR PLY IS TWO RUNS, not one: it is
+  contiguous around the tube but the template cuts the girth at the seam, so a
+  consumer that assumes one run per ply drops half of it. IDEALISATION, stated
+  rather than hidden: a half-girth of film is gathered into a flat width of
+  only `fw` — real film pleats at the corners — and each run is stretched
+  uniformly over its share instead of modelling the pleat.
+
+  **CHIRALITY: there is none in v, and that is the finding.** The two crimps
+  mirror in u (the blank's edge is u=0 at one end and u=canvas.w at the other,
+  already in the data) but NOT in v: v is a MATERIAL coordinate, so the film at
+  a given point of the tube carries the same v whichever end you look at. The
+  risk the task flagged is real all the same — it enters if a builder assigns
+  UVs by CORNER ORDER instead of by world position, which silently negates the
+  across-coordinate at the far end. Positions are therefore built from world
+  across-coordinates at both ends, and the mutation (`dir > 0 ? -a : a`) was run
+  against the real renderer: it mirrors the trailing fin and fails both the
+  chirality and continuity pins, exactly as the task predicted.
+
+  **BLEED was doing nothing.** `ends` u-ranges are the SEAL (`bleed`→`sealEnd`),
+  so a fin drawn u0..u1 stops precisely where the bleed starts. Added
+  `printU0/printU1` — the film's full printed extent out to the blank's own edge
+  — and the renderer draws that, so the bleed prints OUTSIDE the seal boundary
+  where bleed belongs. `u0/u1` are untouched, because hierarchy3d.js's pillow
+  reads them.
+
+  **THE CAVEAT, and it is the important part.** `packArtGeometry`'s fin — the
+  thing this task fixes — is UNREACHABLE in the shipped app. Three paths, all
+  checked: the FOLD view is behind `FOLD_VIEW_ENABLED = false` (app.js); the
+  hierarchy's instanced children explicitly exclude wraps
+  (`else if(childKind !== 'wrap')`, hierarchy3d.js); and the shelf always builds
+  a wrap from `closedWrapParts`. Every wrap a user can see is the PILLOW, whose
+  crimp tab already reads the crimp ring's own v via `crimpVLookup` — correct,
+  two-ply, mirror-aware, and carrying the doc comment describing the very bug
+  ("used to stretch the whole canvas height (0..1) across its width") that
+  artwork3d's fin still had. So the symptom the task predicted was real and was
+  exactly where it said, but in dormant code. Verified by rendering
+  `packArtGeometry` standalone with per-band colours: the fin reads
+  side-half → FRONT → side-half, centred on FRONT. NOT rewired into the pillow:
+  `finPlies` gives an idealised FLAT two-ply split while `crimpVLookup`
+  continues the ramp's progressive gather onto the tab — related facts, not the
+  same one, so collapsing them would be wrong rather than DRY. The two-
+  computations smell is noted here deliberately; if the fold view is ever
+  revived, that is the moment to re-examine it.

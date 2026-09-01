@@ -21,7 +21,7 @@
    property before any mapping pin trusts it. */
 import {styles, styleById} from '../src/core/styles/index.js';
 import {glueNeverOutward, facesMatchDieline, capsCoverage, inapplicabilityReason, flatCanvasMatchesDieline, printPanelIsRealWall, rigidTubeStyleDeclaresFaces} from '../src/core/artworkInvariants.js';
-import {packArtGeometry} from '../src/render/artwork3d.js';
+import {packArtGeometry, finPlies} from '../src/render/artwork3d.js';
 import {perfBodyGeometry, perfRemovedGeometry} from '../src/render/perf3d.js';
 import {withPerforation, normalizePerf, applyPerfPreset, PERF_CHORD_TOL} from '../src/core/perf.js';
 import {composeArtCanvas, defaultFit} from '../src/render/artwork.js';
@@ -728,6 +728,244 @@ t('TEXTURE PLACEMENT: MUTATION -- the letterbox path (the shipped bug) leaves th
   const capRow = Math.round((1 - (fam.caps.top[1].v1 - 2)/am.canvas.h)*c.height);
   ok(!isArt(Math.round(c.width*0.5), capRow),
      'letterboxing must leave the cap band blank -- if it does not, this pin cannot prove the stretch pin catches the bug');
+});
+
+/* ================================================================
+   FLOW WRAP -- the END SEAL. The girth bands were already right; the crimp
+   was declared as an EXTENT (u only, no v), so nothing downstream could map
+   it, and packArtGeometry's fin stretched v 0..1 -- the whole web height,
+   fin allowance and all -- across the fin's width. `finPlies` derives the
+   mapping instead: fold the section polyline at the DECLARED flatten axis's
+   mid-plane and read each half-girth straight off the bands' own v.
+   ================================================================ */
+
+const WRAP = styleById('flowwrap');
+const wp = defaultParams(WRAP);                  // L=90, W=50, H=120
+const wgeo = WRAP.geometry(wp, {});
+const wam = wgeo.meta.artMap;
+const wfp = finPlies(wam);
+const wGirth = wam.faces[wam.faces.length - 1].v1 - wam.faces[0].v0;
+const runLen = ply => ply.runs.reduce((s, r) => s + (r.v1 - r.v0), 0);
+
+/** The 5 girth bands, each its own colour + F -- the same asymmetric fixture
+ *  discipline the carton pins use, so a mirrored or swapped ply fails. */
+const wRegions = wam.faces.map((f, i) => ({
+  id: ['band-back-a', 'band-side-1', 'band-front', 'band-side-2', 'band-back-b'][i],
+  color: ['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#d35400'][i],
+  u0: f.u0, u1: f.u1, v0: f.v0, v1: f.v1
+}));
+
+t('FLOW WRAP FIXTURE CALIBRATION: the five band regions are distinct, and the painted canvas is chirally asymmetric', () => {
+  for(let i = 0; i < wRegions.length; i++) for(let j = i + 1; j < wRegions.length; j++){
+    ok(wRegions[i].color !== wRegions[j].color, `${wRegions[i].id} and ${wRegions[j].id} share a colour`);
+    const a = wRegions[i], b = wRegions[j];
+    ok(!(a.v0 < b.v1 - 1e-6 && b.v0 < a.v1 - 1e-6), `${a.id} and ${b.id} overlap in v`);
+  }
+  // the F must not survive a mirror -- checked on the FRONT band, the one the
+  // shopper-facing ply is centred on
+  const {canvas, k} = paintChiralFixture(wam, wRegions);
+  const ctx = canvas.getContext('2d');
+  const r = wRegions[2];
+  const yTop = (wam.canvas.h - r.v1)*k, yBot = (wam.canvas.h - r.v0)*k, x0 = r.u0*k, x1 = r.u1*k;
+  const w = x1 - x0, h = yBot - yTop;
+  const px = (x, y) => ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+  const y = yTop + h*0.8, L = px(x0 + w*0.16, y), R = px(x1 - w*0.16, y);
+  const fg = d => d[0] < 60 && d[1] < 60 && d[2] < 60;
+  ok(fg(L) && !fg(R), `fixture is not chirally asymmetric: left fg=${fg(L)}, mirrored-right fg=${fg(R)}`);
+});
+
+t('FLOW WRAP: the flatten axis is DECLARED, and an undeclared one is refused rather than guessed', () => {
+  eq(wam.flattenAxis, 'z', 'the style must state which axis the jaws close along:');
+  ok(wfp, 'a declared flatten axis must yield a mapping');
+  ok(!finPlies({...wam, flattenAxis: undefined}), 'no declared axis must refuse, not fall back to a guess');
+});
+
+t('FLOW WRAP COVERAGE: the two plies together span the full girth EXACTLY once -- no overlap, no gap', () => {
+  eq(wfp.plies.length, 2, 'a flatten makes exactly two plies:');
+  approx(runLen(wfp.plies[0]), wGirth/2, 'the shopper-facing ply is a half-girth:', 1e-9);
+  approx(runLen(wfp.plies[1]), wGirth/2, 'the far ply is a half-girth:', 1e-9);
+  approx(runLen(wfp.plies[0]) + runLen(wfp.plies[1]), wGirth, 'together, the full girth:', 1e-9);
+  // and every point of the girth is covered by exactly ONE run
+  const runs = wfp.plies.flatMap(p => p.runs).map(r => [Math.min(r.v0, r.v1), Math.max(r.v0, r.v1)])
+    .sort((a, b) => a[0] - b[0]);
+  approx(runs[0][0], wam.faces[0].v0, 'coverage starts at the girth\'s own start:', 1e-9);
+  approx(runs[runs.length - 1][1], wam.faces[wam.faces.length - 1].v1, 'and ends at its end:', 1e-9);
+  for(let i = 1; i < runs.length; i++)
+    approx(runs[i][0], runs[i - 1][1], `run ${i} must butt the previous one -- no overlap, no gap:`, 1e-9);
+});
+
+t('FLOW WRAP FOLD POINTS: the cuts land on the SIDE bands\' own midpoints (hand-computed against the band breakpoints)', () => {
+  // reached by a different route than finPlies uses: finPlies walks the
+  // section polyline for the mid-plane crossing; this reads the band table.
+  const sideMid = i => (wam.faces[i].v0 + wam.faces[i].v1)/2;
+  const cuts = [wfp.plies[0].runs[0].v0, wfp.plies[0].runs[0].v1].sort((a, b) => a - b);
+  approx(cuts[0], sideMid(1), 'first fold at side band 1\'s midpoint:', 1e-9);
+  approx(cuts[1], sideMid(3), 'second fold at side band 2\'s midpoint:', 1e-9);
+  approx(cuts[0], 95.5, 'hand-computed for the default wrap (L90 W50 H120):', 1e-6);
+  approx(cuts[1], 265.5, 'hand-computed for the default wrap:', 1e-6);
+});
+
+t('FLOW WRAP PLY IDENTITY: the shopper-facing ply is centred on FRONT; the far ply on the rear seam', () => {
+  const front = wam.faces[2], frontMid = (front.v0 + front.v1)/2;
+  const shopper = wfp.plies.find(p => p.side > 0), far = wfp.plies.find(p => p.side < 0);
+  ok(shopper && far, 'one ply each side of the flatten plane');
+  // the shopper ply is ONE run containing FRONT whole
+  eq(shopper.runs.length, 1, 'the shopper-facing ply does not straddle the seam, so it is one run:');
+  ok(shopper.runs[0].v0 < front.v0 + 1e-9 && shopper.runs[0].v1 > front.v1 - 1e-9, 'it must contain the whole FRONT band');
+  // ...and FRONT's own midpoint lands on the fin's centreline
+  const r = shopper.runs[0], tMid = (frontMid - r.v0)/(r.v1 - r.v0);
+  approx(r.a0 + tMid*(r.a1 - r.a0), 0, 'FRONT\'s midpoint sits on the fin centreline:', 1e-6);
+  // the far ply wraps the seam, so in the TEMPLATE it is two runs -- and the
+  // seam itself (the girth's start/end) lands on the centreline too
+  eq(far.runs.length, 2, 'the far ply wraps the girth\'s start/end, so it is two runs:');
+  approx(far.runs[0].a1, 0, 'the rear seam lands on the fin centreline:', 1e-6);
+  approx(far.runs[1].a0, 0, 'and the second run continues from it:', 1e-6);
+});
+
+t('FLOW WRAP DERIVATION, NOT DUPLICATION: changing a girth dimension moves the fin mapping with it', () => {
+  const taller = finPlies(WRAP.geometry({...wp, H: wp.H*2}, {}).meta.artMap);
+  const g2 = (() => { const f = WRAP.geometry({...wp, H: wp.H*2}, {}).meta.artMap.faces;
+                      return f[f.length - 1].v1 - f[0].v0; })();
+  approx(runLen(taller.plies[0]), g2/2, 'a taller pack\'s ply is still exactly half of ITS girth:', 1e-9);
+  ok(Math.abs(taller.plies[0].runs[0].v0 - wfp.plies[0].runs[0].v0) > 1,
+     'the fold must MOVE when the girth changes -- a fin that stays put is authored, not derived');
+});
+
+t('FLOW WRAP DERIVATION: MUTATION -- a hardcoded fin v-range stops tracking the bands', () => {
+  // the stand-in for the defect this pin exists to stop: a fin whose v range
+  // was written down once instead of read off the section walk.
+  const frozen = {v0: wfp.plies[0].runs[0].v0, v1: wfp.plies[0].runs[0].v1};
+  const taller = finPlies(WRAP.geometry({...wp, H: wp.H*2}, {}).meta.artMap);
+  ok(Math.abs(taller.plies[0].runs[0].v0 - frozen.v0) > 1 || Math.abs(taller.plies[0].runs[0].v1 - frozen.v1) > 1,
+     'the frozen range would still match after a girth change -- the pin above could not tell derived from authored');
+});
+
+t('FLOW WRAP ROUND GIRTH: the derivation covers the round basis too -- still a half-girth per ply', () => {
+  const rgeo = WRAP.geometry({...wp, girthBasis: 'round', roundDiameter: 60}, {});
+  const ram = rgeo.meta.artMap, rfp = finPlies(ram);
+  ok(rfp, 'a round-basis wrap must still produce a mapping');
+  const rg = ram.faces[ram.faces.length - 1].v1 - ram.faces[0].v0;
+  approx(runLen(rfp.plies[0]) + runLen(rfp.plies[1]), rg, 'the two plies still span the round girth exactly once:', 1e-9);
+  approx(runLen(rfp.plies[0]), rg/2, 'and each is a half of it:', 1e-9);
+  // it works because the round basis is represented as the SAME rectangular
+  // polyline with proportionally scaled bands -- not because the walk handles
+  // arcs. It would handle an arc polyline (the crossing search is generic),
+  // but no style produces one today, so that path is untested, not proven.
+  ok(ram.section.length === wam.section.length, 'the round basis reuses the rectangular polyline, scaled');
+  ok(Math.abs(rg - wGirth) > 1, 'fixture assumption: the round girth must actually differ, or this pin proves nothing');
+});
+
+/* ---- render-level: what the built geometry actually carries ------------- */
+
+const wg = packArtGeometry(wam);
+const wHalf = wam.length/2;
+// guarded: a null mapping must make the pins below FAIL, never kill the
+// whole file at import and take every unrelated pin with it
+const wAcross = wfp ? wfp.across : [0, 0];        // the fold edges, world Y
+
+t('FLOW WRAP RENDER: both plies are built at BOTH ends, and the fin carries girth v -- not the whole canvas', () => {
+  // the old fin put v=0 and v=canvas.h on its two edges. Nothing on a
+  // correctly mapped fin may reach either, since the girth starts at the fin
+  // allowance and ends before the far one.
+  const uv = wg.attributes.uv, pos = wg.attributes.position;
+  let finVerts = 0, outsideGirth = 0;
+  for(let i = 0; i < pos.count; i++){
+    if(Math.abs(pos.getX(i)) <= wHalf + 1e-6) continue;      // tube, not fin
+    finVerts++;
+    const v = uv.getY(i)*wam.canvas.h;
+    if(v < wam.faces[0].v0 - 1e-6 || v > wam.faces[wam.faces.length - 1].v1 + 1e-6) outsideGirth++;
+  }
+  ok(finVerts > 0, 'the fin must actually be built');
+  eq(outsideGirth, 0, 'no fin vertex may carry a v outside the girth (the old fin spanned the whole web):');
+});
+
+t('FLOW WRAP CONTINUITY: at each fold edge the fin carries the SAME v the tube band has at that point', () => {
+  // the fold edges are the only points where the flat fin and the round tube
+  // physically touch, so this is the continuity the fin mapping owns. The
+  // expected value comes from the BAND table, not from finPlies.
+  const sideMid = i => (wam.faces[i].v0 + wam.faces[i].v1)/2;
+  const expect = [[wAcross[0], sideMid(1)], [wAcross[1], sideMid(3)]];
+  const uv = wg.attributes.uv, pos = wg.attributes.position;
+  for(const end of [-1, 1]){
+    for(const [acrossY, wantV] of expect){
+      let hit = false;
+      for(let i = 0; i < pos.count; i++){
+        if(Math.abs(Math.abs(pos.getX(i)) - wHalf) > 1e-6 || Math.abs(Math.sign(pos.getX(i)) - end) > 0.5) continue;
+        if(Math.abs(pos.getY(i) - acrossY) > 1e-6) continue;
+        if(Math.abs(uv.getY(i)*wam.canvas.h - wantV) < 1e-6) hit = true;
+      }
+      ok(hit, `end ${end}: no fin vertex at the fold edge (y=${acrossY}) carries the band's own v=${wantV.toFixed(2)}`);
+    }
+  }
+});
+
+t('FLOW WRAP CHIRALITY: the two ends mirror in u but NOT in v -- the film\'s v at a point of the tube is the same at both ends', () => {
+  const uv = wg.attributes.uv, pos = wg.attributes.position;
+  const vAt = (end, acrossY) => {
+    const found = [];
+    for(let i = 0; i < pos.count; i++){
+      if(Math.abs(Math.abs(pos.getX(i)) - wHalf) > 1e-6 || Math.abs(Math.sign(pos.getX(i)) - end) > 0.5) continue;
+      if(Math.abs(pos.getY(i) - acrossY) > 1e-6) continue;
+      found.push(uv.getY(i)*wam.canvas.h);
+    }
+    return found.sort((a, b) => a - b);
+  };
+  for(const acrossY of wAcross){
+    const lead = vAt(-1, acrossY), trail = vAt(1, acrossY);
+    ok(lead.length > 0 && trail.length > 0, `both ends must have vertices at y=${acrossY}`);
+    eq(lead.map(v => +v.toFixed(6)), trail.map(v => +v.toFixed(6)),
+       `leading and trailing must carry the SAME v at y=${acrossY} (v is a material coordinate, not a view):`);
+  }
+  // u, by contrast, MUST mirror: the blank's edge is u=0 at one end and
+  // u=canvas.w at the other, and the tip of each fin is the film's own edge
+  const tipU = end => {
+    let best = null;
+    for(let i = 0; i < pos.count; i++){
+      if(Math.sign(pos.getX(i)) !== end || Math.abs(pos.getX(i)) <= wHalf + 1e-6) continue;
+      const u = uv.getX(i)*wam.canvas.w;
+      if(best === null || (end < 0 ? u < best : u > best)) best = u;
+    }
+    return best;
+  };
+  ok(tipU(-1) < wam.canvas.w/2 && tipU(1) > wam.canvas.w/2, 'the two ends must take their u from opposite edges of the blank');
+});
+
+t('FLOW WRAP CHIRALITY: MUTATION -- applying one end\'s fold sense to both mirrors the trailing fin and fails the pin', () => {
+  // the defect: building the far end's quad from the near end's corner order,
+  // so its across-coordinates come out negated and v runs the wrong way.
+  const uv = wg.attributes.uv, pos = wg.attributes.position;
+  const vAt = (end, acrossY) => {
+    const found = [];
+    for(let i = 0; i < pos.count; i++){
+      if(Math.abs(Math.abs(pos.getX(i)) - wHalf) > 1e-6 || Math.abs(Math.sign(pos.getX(i)) - end) > 0.5) continue;
+      if(Math.abs(pos.getY(i) - acrossY) > 1e-6) continue;
+      found.push(+(uv.getY(i)*wam.canvas.h).toFixed(6));
+    }
+    return found.sort((a, b) => a - b);
+  };
+  const y = wAcross[0];
+  const real = vAt(1, y), mirrored = vAt(1, -y);          // what a negated across would give
+  ok(JSON.stringify(real) !== JSON.stringify(mirrored),
+     'the two fold edges must carry DIFFERENT v, or a mirrored end could not be detected at all');
+  eq(vAt(-1, y), real, 'unmutated: the leading end already agrees with the trailing one:');
+});
+
+t('FLOW WRAP BLEED: printed film reaches PAST the seal boundary, out to the blank\'s own edge', () => {
+  const end0 = wam.ends[0];
+  ok(end0.printU0 != null && end0.printU1 != null, 'the style must declare the printed extent, not just the seal');
+  ok(end0.printU0 < end0.u0 - 1e-9, `the printed extent must start OUTSIDE the seal (${end0.printU0} vs seal ${end0.u0})`);
+  approx(end0.printU0, 0, 'and reach the blank\'s own edge:', 1e-9);
+  approx(wam.ends[1].printU1, wam.canvas.w, 'the far end likewise reaches its edge:', 1e-9);
+  // and the BUILT fin actually carries those bleed u's -- a declaration the
+  // renderer clipped at the seal would be bleed that does nothing
+  const uv = wg.attributes.uv, pos = wg.attributes.position;
+  let beyond = 0;
+  for(let i = 0; i < pos.count; i++){
+    if(Math.abs(pos.getX(i)) <= wHalf + 1e-6) continue;
+    const u = uv.getX(i)*wam.canvas.w;
+    if(u < end0.u0 - 1e-6 || u > wam.ends[1].u1 + 1e-6) beyond++;
+  }
+  ok(beyond > 0, 'no built fin vertex lies beyond the seal boundary -- the bleed is being clipped');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;
