@@ -51,12 +51,23 @@ t('costForBasis returns null for a non-positive/absent rate or quantity, never z
   eq(costForBasis('perLength', -1, {lengthM: 5}), null, 'negative rate');
 });
 
-t('MATERIAL_REGISTRY carries exactly the four named streams -- cartonBoard, uboardBoard, slipsheet, cornerPost', () => {
-  eq(Object.keys(MATERIAL_REGISTRY).sort(), ['cartonBoard', 'cornerPost', 'slipsheet', 'uboardBoard']);
+t('MATERIAL_REGISTRY carries exactly the five named streams -- cartonBoard, uboardBoard, slipsheet, cornerPost, capBoard', () => {
+  eq(Object.keys(MATERIAL_REGISTRY).sort(), ['capBoard', 'cartonBoard', 'cornerPost', 'slipsheet', 'uboardBoard']);
 });
-t('cartonBoard/uboardBoard registry defaults are BIT-IDENTICAL to cost.js COST_DEFAULTS -- one source, not two copies', () => {
+t('cartonBoard/uboardBoard/capBoard registry defaults are BIT-IDENTICAL to cost.js COST_DEFAULTS -- one source, not two copies', () => {
   approx(MATERIAL_REGISTRY.cartonBoard.defaultRate, COST_DEFAULTS.cartonBoardPerM2);
   approx(MATERIAL_REGISTRY.uboardBoard.defaultRate, COST_DEFAULTS.uboardBoardPerM2);
+  approx(MATERIAL_REGISTRY.capBoard.defaultRate, COST_DEFAULTS.capBoardPerM2);
+});
+t('capBoard is its OWN stream -- its rate key is shared with no other, so pricing cases never reprices caps', () => {
+  const cap = MATERIAL_REGISTRY.capBoard;
+  eq(cap.basis, 'perArea');
+  const others = Object.entries(MATERIAL_REGISTRY).filter(([k]) => k !== 'capBoard');
+  for(const [k, e] of others){
+    if(e.rateKey) ok(e.rateKey !== cap.rateKey, `capBoard shares its rateKey with ${k}`);
+    if(e.rateKeys) for(const rk of Object.values(e.rateKeys))
+      ok(rk !== cap.rateKey, `capBoard shares its rateKey with ${k}`);
+  }
 });
 t('cornerPost allowedBases is exactly {perLength, perPiece} -- never perArea (angle board is not sold by area)', () => {
   eq([...MATERIAL_REGISTRY.cornerPost.allowedBases].sort(), ['perLength', 'perPiece']);

@@ -1077,6 +1077,36 @@
         <div id="cpCostNote"></div>
       </div>
 
+      <h2 style="margin-top:6px">Top &amp; bottom caps</h2>
+      <div class="field">
+        <label>Enable <span class="hint">independent — either, both or neither</span></label>
+        <div class="inp">
+          <label class="chk"><input id="capTop" type="checkbox"> Top</label>
+          <label class="chk"><input id="capBottom" type="checkbox"> Bottom</label>
+        </div>
+      </div>
+      <div id="capFields" style="display:contents">
+        <div class="field">
+          <label>Skirt depth <span class="hint">blank = 2in</span></label>
+          <div class="inp"><input id="capSkirt" type="number" min="0" step="0.1" placeholder="auto"></div>
+        </div>
+        <div class="field">
+          <label>Caliper <span class="hint">mm</span></label>
+          <div class="inp"><input id="capCaliper" type="number" min="0" step="0.1" value="3"></div>
+        </div>
+        <div class="field">
+          <label>Corner relief <span class="hint">blank = one caliper</span></label>
+          <div class="inp"><input id="capRelief" type="number" min="0" step="0.1" placeholder="auto"></div>
+        </div>
+        <div id="capReliefNote"></div>
+        <div class="field">
+          <label>Material density <span class="hint">kg/m&sup3;</span></label>
+          <div class="inp"><input id="capDensity" type="number" min="0" step="10" value="150"></div>
+        </div>
+        <div id="capBlankNote"></div>
+        <div id="capStructNote"></div>
+      </div>
+
       <h2 style="margin-top:6px">Stacking (BCT)</h2>
       <div class="field">
         <label>Edge crush ECT <span class="hint">lb/in</span></label>

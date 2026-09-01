@@ -29,7 +29,9 @@ import {buildShelf, showShelf, clearShelfBays, shelfBay, faceUpRoll} from '../re
 import {fitInto, orientDims} from '../core/containment.js';
 import {stackAnalysis, DERATINGS, interlockCaveat} from '../core/bct.js';
 import {resolveStack, BASE_KINDS, STACK_DEFAULTS, SLIPSHEET_DEFAULTS, PALLET_TARE_LB_DEFAULT,
-  CORNER_POST_DEFAULTS, cornerPostConfig, cornerPostHeightMM, cornerPostReachesCaseStack} from '../core/stack.js';
+  CORNER_POST_DEFAULTS, cornerPostConfig, cornerPostHeightMM, cornerPostReachesCaseStack,
+  resolveCaps, loadFootprintStagesMM} from '../core/stack.js';
+import {CAP_DEFAULTS, capConfig, capEnabled, capsPerPosition} from '../core/cap.js';
 import {cornerPostBasisOf, cornerPostRateOf} from '../core/materials.js';
 import {resolveTrailer, TRAILER_DEFAULTS, FLOOR_FAMILY_DEFAULT} from '../core/trailer.js';
 import {showNest, showProduct} from '../render/nest3d.js';
@@ -247,6 +249,18 @@ function activeUboard(){
   const row = resolveActiveRow(build.project, build.getRounding(), selKey());
   return (row && row.uboard) || null;
 }
+/** The resolved caps for the ACTIVE row — the blanks, the shared centre
+ *  panel and the per-cap weight (core/stack.js resolveCaps). null when no cap
+ *  is on, or when no case arrangement has resolved a footprint to build one
+ *  on. ONE reader, so the 2D drawing, the 3D fold and the rail notes are
+ *  three views of one resolved object. */
+function activeCaps(){
+  const proj = build.project;
+  if(!capEnabled(proj)) return null;
+  const row = resolveActiveRow(proj, build.getRounding(), selKey());
+  const fp = caseFootprintOf(row);
+  return fp ? resolveCaps(fp, proj) : null;
+}
 
 /* ---------- refreshers: every view renders the ACTIVE LEVEL of the project */
 
@@ -328,6 +342,42 @@ function refresh2d(){
       stat('Caliper', `${fmtLen(ub.params.caliper, u)} ${u}`) +
       stat('Flap panel (f)', `${fmtLen(ub.params.f, u)} ${u}`) +
       levelUnitCostStat();
+    return;
+  }
+  if(activeLevel === 'pallet' && capEnabled(build.project)){
+    // The pallet level has no dieline of its OWN — but a cap is a real rigid
+    // blank (a plus outline + four creases), so with one enabled the level
+    // does have something to draw, and it draws through the SAME
+    // style-agnostic draw2d() every carton/case dieline and the U-board use.
+    // A plus is just a 20-point `cut` polygon; draw2d needed no change.
+    const caps = activeCaps();
+    if(!caps){
+      el('svg').innerHTML = `<text x="50%" y="50%" text-anchor="middle" fill="var(--ink-3)" font-family="var(--mono)" font-size="14">No case arrangement resolved yet — nothing to size a cap against</text>`;
+      setSummary('—', '—', '--'); el('styleStats').innerHTML = '';
+      return;
+    }
+    // ONE blank shape serves both caps (same centre panel, same skirt), so a
+    // load with both draws one drawing, not two identical ones.
+    const g = caps.top || caps.bottom;
+    const {w, h} = draw2d(el('svg'), g, u, '', null);
+    update2dTabLabel();
+    const areaU = u === 'mm' ? 'm²' : 'ft²';
+    // the PLUS area, off the geometry's own meta — never w*h, which is the
+    // bounding rectangle and overstates the blank by the four corner squares
+    const plusConv = u === 'mm' ? g.meta.plusAreaMM2/1e6 : g.meta.plusAreaMM2/92903.04;
+    const outerText = `${fmtLen(g.outer.L, u)} × ${fmtLen(g.outer.W, u)} × ${fmtLen(g.outer.H, u)} ${u}`;
+    setSummary(`${fmtLen(w, u)} × ${fmtLen(h, u)} ${u}`, outerText, `${plusConv.toFixed(3)} ${areaU}`);
+    const stat = (lab, val) => `<div class="stat"><span class="lab">${lab}</span><span class="val">${val}</span></div>`;
+    const which = [caps.cfg.top ? 'top' : null, caps.cfg.bottom ? 'bottom' : null].filter(Boolean).join(' + ');
+    el('styleStats').innerHTML =
+      stat('Caps', which) +
+      stat('Centre panel', `${fmtLen(caps.centre.L, u)} × ${fmtLen(caps.centre.W, u)} ${u}`) +
+      stat('Skirt depth', `${fmtLen(caps.cfg.skirt, u)} ${u}`) +
+      stat('Caliper', `${fmtLen(caps.cfg.caliper, 'mm')} mm`) +
+      stat('Corner relief', `${fmtLen(caps.cfg.relief, 'mm')} mm — flaps trimmed`) +
+      stat('Material', 'Paperboard') +
+      stat('Blank area (plus)', `${plusConv.toFixed(3)} ${areaU}`) +
+      stat('Weight each', `${caps.weightEachLb.toFixed(2)} lb`);
     return;
   }
   if(!isStyleLevel()){
@@ -800,6 +850,7 @@ function refreshPal(){
   }
   renderBCT(g, row);
   renderCornerPostNotes(row);
+  renderCapNotes(row);
   renderInterlockScheduleNote(row);
   drawDims();
 }
@@ -812,9 +863,17 @@ function refreshPal(){
  *  load footprint plus posts stands proud of the deck, never a rejection). */
 function renderCornerPostNotes(row){
   const cfg = cornerPostConfig(build.project);
-  const structEl = el('cpStructNote'), costEl = el('cpCostNote'), ohEl = el('cpOverhangNote');
+  const structEl = el('cpStructNote'), costEl = el('cpCostNote');
+  // The overhang note is rendered FIRST and unconditionally, because it is
+  // no longer a post note: posts and the cap both stand outboard, and either
+  // alone can make the load proud of the deck. Leaving it inside the
+  // posts-off early return would have silenced it for a capped load with no
+  // posts -- the exact shape of the scoping bug CLAUDE.md's outerFlaps entry
+  // records ("an option scoped to one consumer needs re-scoping when a
+  // second consumer starts reading the same fact").
+  renderLoadOverhangNote(row);
   if(!cfg.enabled){
-    structEl.innerHTML = ''; costEl.innerHTML = ''; ohEl.innerHTML = '';
+    structEl.innerHTML = ''; costEl.innerHTML = '';
     return;
   }
   const reaches = cornerPostReachesCaseStack(build.project, row.loadH || 0);
@@ -824,10 +883,55 @@ function renderCornerPostNotes(row){
   costEl.innerHTML = cornerPostBasisOf(build.project) === 'perPiece'
     ? `<div class="countwarn">Cost basis is <strong>per piece</strong>: raising or lowering post height will NOT change corner-post cost. Switch to per-length to have cost follow height.</div>`
     : '';
-  const oh = row.postOverhang;
-  ohEl.innerHTML = oh
-    ? `<div class="countwarn">Corner posts stand proud of the pallet deck by ${fmtLen(oh.L, inputs.getUnit())} (L) / ${fmtLen(oh.W, inputs.getUnit())} (W). Normal practice — the pallet pattern is unaffected; the trailer footprint accounts for it.</div>`
-    : '';
+}
+
+/** The LOAD-overhang warning: whatever stands outboard of the cases -- corner
+ *  posts, a cap, or both -- makes the load stand proud of the deck. Names the
+ *  CONTRIBUTORS THAT ARE ACTUALLY ON rather than asserting "corner posts",
+ *  which it did while posts were the only one: attributing a cap's caliper to
+ *  a post the user may not even have enabled is a readout that lies about its
+ *  own cause. Reads row.loadOverhang (core/palletpatterns.js), never
+ *  re-derived. */
+function renderLoadOverhangNote(row){
+  const ohEl = el('cpOverhangNote');
+  const oh = row && row.loadOverhang;
+  if(!oh){ ohEl.innerHTML = ''; return; }
+  const on = [];
+  if(cornerPostConfig(build.project).enabled) on.push('Corner posts');
+  if(capEnabled(build.project)) on.push('the cap');
+  const who = on.length ? on.join(' and ') : 'The load';
+  const verb = on.length === 1 && on[0] === 'the cap' ? 'stands' : (on.length ? 'stand' : 'stands');
+  const u = inputs.getUnit();
+  ohEl.innerHTML = `<div class="countwarn">${who.charAt(0).toUpperCase() + who.slice(1)} ${verb} proud of the pallet deck by ${fmtLen(oh.L, u)} (L) / ${fmtLen(oh.W, u)} (W). Normal practice — the pallet pattern is unaffected; the trailer footprint accounts for it.</div>`;
+}
+
+/** The cap advisories, in the same `countwarn` look every other pallet-rail
+ *  note uses. Three things the model owes the user:
+ *   - the RELIEF CHOICE, stated: this app trims the flaps rather than
+ *     enlarging the corner cutout, and a user reading a blank they will send
+ *     to a converter needs to know which convention produced it.
+ *   - the BLANK, read off the ROW (row.capPlusAreaM2/row.capCentreMM —
+ *     decorateRow's own numbers, never re-derived here), so the rail and the
+ *     cost column can never disagree about how big a cap is.
+ *   - the NON-CONTRIBUTION, stated as plainly as the posts' is: a cap has
+ *     caliper and weight and carries no stacking load.
+ *  Registered through refreshPal like renderBCT/renderCornerPostNotes, so it
+ *  stays live on every edit that could move the load footprint. */
+function renderCapNotes(row){
+  const reliefEl = el('capReliefNote'), blankEl = el('capBlankNote'), structEl = el('capStructNote');
+  const cfg = capConfig(build.project);
+  if(!(cfg.top || cfg.bottom)){
+    reliefEl.innerHTML = ''; blankEl.innerHTML = ''; structEl.innerHTML = '';
+    return;
+  }
+  const u = inputs.getUnit(), pu = inputs.getPalUnit();
+  const raw = (build.project.pallet.stack && build.project.pallet.stack.cap) || {};
+  reliefEl.innerHTML = `<div class="countwarn">Corner relief is applied by TRIMMING each flap by ${fmtLen(cfg.relief, 'mm')} mm at both ends${raw.relief == null ? ' (auto — one caliper)' : ''}, not by enlarging the corner cutout. Adjacent folded flaps therefore clear each other by ${fmtLen(2*cfg.relief, 'mm')} mm, and the blank's bounding box is unchanged.</div>`;
+  const c = row && row.capCentreMM;
+  blankEl.innerHTML = c
+    ? `<div class="countwarn">Centre panel ${fmtLen(c.L, pu)} &times; ${fmtLen(c.W, pu)} ${pu} (the load footprint INCLUDING corner posts — a cap goes over them). Blank bounding box ${fmtLen(c.L + 2*cfg.skirt, pu)} &times; ${fmtLen(c.W + 2*cfg.skirt, pu)} ${pu}; charged area is the PLUS (${(row.capPlusAreaM2 || 0).toFixed(3)} m&sup2;), the four corner squares excluded as cut-away.</div>`
+    : `<div class="countwarn">No case arrangement has resolved yet, so there is no load footprint to size a cap against.</div>`;
+  structEl.innerHTML = `<div class="countwarn">Caps are modelled as NON-STRUCTURAL: caliper and weight only, zero stacking contribution.${cfg.bottom ? ' A bottom cap does distribute load across pallet deckboard gaps in reality — that function is deliberately not modelled.' : ''}</div>`;
 }
 
 /** The interlock-SCHEDULE readout: the SELECTED candidate's own per-layer
@@ -860,10 +964,22 @@ function renderInterlockScheduleNote(row){
  *  (never storing k+mode themselves; see project.js's own doc on why).
  *  `layers` is the CURRENTLY resolved candidate's own layer count; a
  *  schedule built against a since-changed count degrades safely through
- *  candidate.withSchedule rather than needing to be kept in sync here. */
+ *  candidate.withSchedule rather than needing to be kept in sync here.
+ *
+ *  INTERLOCK IS A RELATIVE PROPERTY, NOT AN ABSOLUTE ONE. `layerFlips[ly]`
+ *  is an absolute orientation — whether layer `ly` takes the 180° turn — but
+ *  what interlocks a load is CONSECUTIVE LAYERS DIFFERING. 'tail' used to
+ *  set every layer from k up to `true`, which reads as "interlock them all"
+ *  and is precisely wrong: they then all share ONE orientation, so only the
+ *  k-1/k boundary interlocks and everything above it is a column again. It
+ *  must ALTERNATE from k — flip, straight, flip, straight — so that every
+ *  adjacent pair above k differs. 'single' is unchanged and was always
+ *  right: one flipped layer differs from BOTH its neighbours, which is
+ *  exactly "interlock that one layer". */
 function layerFlipsFromRule(columnUpTo, mode, layers){
   const k = Math.max(0, Math.min(layers, Math.round(columnUpTo) || 0));
-  return Array.from({length: layers}, (_, ly) => ly < k ? false : (mode === 'single' ? ly === k : true));
+  return Array.from({length: layers}, (_, ly) =>
+    ly < k ? false : (mode === 'single' ? ly === k : (ly - k) % 2 === 0));
 }
 function applyInterlockRule(){
   const row = resolveActiveRow(build.project, build.getRounding(), selKey());
@@ -940,6 +1056,19 @@ function refreshSensitivity(){
  * ECT short form (core/bct.js) predicts SHORT-TERM lab compression; the safety
  * factor absorbs the field deratings, shown in the "how" panel. Registered via
  * refreshPal (a recompute consumer), so it updates live on every input. */
+/** The CASE STACK's own occupied footprint for a solved row — the rectangle
+ *  every outboard contributor nests around (core/stack.js
+ *  loadFootprintStagesMM). `row.casesFit.envelope` is the one real case-stack
+ *  footprint object in the app; null when nothing actually fit, which every
+ *  reader must handle as "no footprint" rather than substituting the deck —
+ *  a deck bigger than the case stack would size a cap to the wrong rectangle.
+ *  ONE reader, so the three resolveStack call sites cannot disagree about
+ *  which rectangle a load stands on. */
+function caseFootprintOf(row){
+  const env = row && row.casesFit && row.casesFit.envelope;
+  return (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : null;
+}
+
 function clearBCT(){
   ['bctRatio', 'bctVal', 'bctLoad'].forEach(id => el(id).textContent = '--');
   el('bctRatio').style.color = ''; el('bctNote').textContent = ''; el('bctHowBody').innerHTML = '';
@@ -969,7 +1098,7 @@ function renderBCT(g, row){
   // THE stack, resolved once (core/stack.js) from the chain's own pallet-fit
   // numbers — boxesAboveBottom and the tare bearing on the bottom case come
   // from here, never recomputed independently.
-  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
+  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0, caseFootprint: caseFootprintOf(row)});
   const a = stackAnalysis({
     ectLbPerIn: st.ect, caliperMm: g.meta.caliper || 0, L_mm: g.outer.L, W_mm: g.outer.W,
     boxesAbove: stack.boxesAboveBottom, tareAboveLb: stack.tareAboveLb, casesPerLayer: row.casesPerLayer || 0,
@@ -2010,6 +2139,9 @@ function chainCostRows(){
   if(proj.primary && proj.primary.wrap) rows.add('film');
   if(isTierEnabled('tray')) rows.add('tray');
   if(isTierEnabled('uboard')) rows.add('uboard');
+  // caps are a pallet-level accessory, not a chain tier -- there is no
+  // isTierEnabled('cap') to ask, so this reads the cap config directly
+  if(capEnabled(proj)) rows.add('cap');
   return rows;
 }
 /**
@@ -2113,6 +2245,19 @@ function updateExportButtonsState(){
     el('btnArt').style.display = 'none';
     el('btnSpec').style.display = 'none';
     setStateChip(ub ? 'valid' : 'muted', ub ? 'U-board dieline' : 'U-board disabled');
+    return;
+  }
+  if(activeLevel === 'pallet' && capEnabled(build.project)){
+    // The pallet level has no dieline of its own, but a CAP is a real rigid
+    // blank -- so with one enabled the level has something to export, and
+    // downloadDXF() takes any Geometry generically (the U-board's own note
+    // above): the existing exporter picking it up, not a second one.
+    const caps = activeCaps();
+    el('btnDXF').disabled = !caps;
+    el('btnDXF').title = caps ? '' : 'No case arrangement resolved yet — nothing to size a cap against';
+    el('btnArt').style.display = 'none';
+    el('btnSpec').style.display = 'none';
+    setStateChip(caps ? 'valid' : 'muted', caps ? 'Cap blank' : 'Cap unresolved');
     return;
   }
   if(lvl.kind !== 'style'){
@@ -2298,7 +2443,7 @@ function hierarchyBundle(proj = build.project, rowIn = null){
   };
   // computed once, read by BOTH bundle.stack and bundle.trailer below —
   // never a second resolveStack() call for the trailer's own use.
-  const theStack = resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
+  const theStack = resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0, caseFootprint: caseFootprintOf(row)});
   return {
     art,
     caseGeo: row.geo.case,
@@ -2361,6 +2506,17 @@ function hierarchyBundle(proj = build.project, rowIn = null){
       const env = row.casesFit && row.casesFit.envelope;
       const footprint = (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : {L: cases.deck.L, W: cases.deck.W};
       return {height: cornerPostHeightMM(proj, row.loadH || 0), legL: cpCfg.legL, legW: cpCfg.legW, caliper: cpCfg.caliper, footprint};
+    })(),
+    // CAPS: the resolved centre panel + config the pallet render draws from.
+    // `centre` is the POST stage of core/stack.js's nesting (a cap goes over
+    // the posts), resolved ONCE there -- hierarchy3d.js never nests a
+    // footprint of its own, which is the whole point of that function
+    // existing. null when no cap is on or no arrangement has resolved.
+    cap: (() => {
+      const caps = activeCaps();
+      if(!caps) return null;
+      return {top: caps.cfg.top, bottom: caps.cfg.bottom, caliper: caps.cfg.caliper,
+              skirt: caps.cfg.skirt, centre: caps.centre};
     })(),
     // THE trailer (core/trailer.js): a CONSTRAINT LAYER consuming the SAME
     // stack above — never a second computation of stack height/weight,
@@ -2849,6 +3005,7 @@ function commitPallet(){
   ss.L = numOrNull(el('ssL').value);
   ss.W = numOrNull(el('ssW').value);
   commitCornerPost();
+  commitCap();
 }
 /** Corner post inputs -> project.pallet.stack.cornerPost / project.cost
  *  (ONE writer each). Height/legs are auto-with-override (blank = null =
@@ -2877,6 +3034,37 @@ function commitCornerPost(){
   const rateIn = +el('cpRate').value || 0;
   if(cp.costBasis === 'perLength') cost.cornerPostPerLengthM = Math.max(0, rateFromDisplay(rateIn, 'length', pu));
   else cost.cornerPostPerPiece = Math.max(0, rateIn);
+}
+
+/** Cap inputs -> project.pallet.stack.cap (ONE writer). `top`/`bottom` are
+ *  independent booleans; `skirt`/`relief` are auto-with-override (blank =
+ *  null = auto, one caliper for relief); caliper/density always carry a
+ *  number, the same shape the corner-post and slipsheet blocks use.
+ *
+ *  The cap RATE is not written here: it is an ordinary per-area rate and
+ *  rides the generic RATE_ROWS panel (cost.js) like carton/case/U-board
+ *  board, rather than needing the corner post's basis-selector special
+ *  case. */
+function commitCap(){
+  const stack = build.project.pallet.stack || (build.project.pallet.stack = {positions: [{base: 'pallet'}]});
+  const cap = stack.cap || (stack.cap = {...CAP_DEFAULTS, skirt: null});
+  const pu = inputs.getPalUnit();
+  const numOrNull = v => v === '' ? null : (Number.isFinite(+v) ? +v : null);
+  cap.top = el('capTop').checked;
+  cap.bottom = el('capBottom').checked;
+  const sk = numOrNull(el('capSkirt').value);
+  cap.skirt = sk != null ? toMM(sk, pu) : null;
+  // CALIPER AND RELIEF ARE MM-NATIVE, and their labels say so. Routing a
+  // board thickness through the PALLET unit (inches, by default) round-trips
+  // it through fmtInputValue's display rounding and quietly turns 3mm into
+  // 2.9972mm -- visible on the drawn blank's own caliper label, which is
+  // where it was caught. Skirt depth stays in the pallet unit: it is a
+  // load-scale dimension (2in) alongside deck height and pallet size, not a
+  // material thickness.
+  const rel = numOrNull(el('capRelief').value);
+  cap.relief = rel;
+  cap.caliper = Math.max(0, +el('capCaliper').value || 0);
+  cap.density = Math.max(0, +el('capDensity').value || 0);
 }
 /** Write project.pallet back into the pallet rail fields (after a load). */
 /** Warn at the mesh's faithful-shape boundary rather than drawing something
@@ -2943,6 +3131,22 @@ function writeCornerPostFields(){
   el('cpRate').value = basis === 'perLength'
     ? (rate ? +rateToDisplay(rate, 'length', pu).toFixed(4) : '')
     : (rate || '');
+  writeCapFields();
+}
+/** Cap rail fields — the same auto/override shape as the corner-post block
+ *  above. `#capFields` is hidden (not removed) when NEITHER cap is on, the
+ *  `#cpFields`/`#ssField` idiom. */
+function writeCapFields(){
+  const raw = (build.project.pallet.stack && build.project.pallet.stack.cap) || {};
+  const cfg = capConfig(build.project);
+  const pu = inputs.getPalUnit();
+  el('capTop').checked = cfg.top;
+  el('capBottom').checked = cfg.bottom;
+  el('capFields').style.display = (cfg.top || cfg.bottom) ? 'contents' : 'none';
+  el('capSkirt').value = raw.skirt != null ? fmtInputValue(fromMM(raw.skirt, pu), pu) : '';
+  el('capRelief').value = raw.relief != null ? raw.relief : '';   // mm-native, see commitCap
+  el('capCaliper').value = cfg.caliper;
+  el('capDensity').value = cfg.density;
 }
 function onPalletEdited(){
   commitPallet();
@@ -2954,6 +3158,8 @@ function onPalletEdited(){
 ['pal', 'palMaxH', 'palBaseH', 'bctEct', 'bctWeight', 'bctTarget', 'palTareLb',
  'ssCaliper', 'ssDensity', 'ssWeightLb', 'ssL', 'ssW',
  'cpHeight', 'cpLegL', 'cpLegW', 'cpCaliper', 'cpDensity', 'cpRate'].forEach(id => el(id).addEventListener('input', onPalletEdited));
+['capSkirt', 'capCaliper', 'capRelief', 'capDensity'].forEach(id =>
+  el(id).addEventListener('input', () => { commitCap(); projectChanged(); }));
 ['palPattern'].forEach(id => el(id).addEventListener('change', onPalletEdited));
 function onCornerPostToggled(){
   commitCornerPost();
@@ -2961,6 +3167,12 @@ function onCornerPostToggled(){
   projectChanged();
 }
 ['cpEnabled', 'cpBasis'].forEach(id => el(id).addEventListener('change', onCornerPostToggled));
+function onCapToggled(){
+  commitCap();
+  writeCapFields();   // show/hide the detail fields for the new on/off state
+  projectChanged();
+}
+['capTop', 'capBottom'].forEach(id => el(id).addEventListener('change', onCapToggled));
 
 el('units').addEventListener('change', () => {
   if(!inputs.switchUnits()) return;
@@ -3044,7 +3256,7 @@ function refreshTrailer(){
   const outerNoun = describeChain(build.project).outerNoun;
   if(!row || !row.geo || !row.geo[outerNoun] || !(row.casesPerPallet > 0)){ clearTrailer(); return; }
   const u = inputs.getUnit(), f = v => fmtLen(v, u);
-  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0});
+  const stack = resolveStack(build.project, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0, caseFootprint: caseFootprintOf(row)});
   const tr = resolveTrailer(build.project, stack, row.casesPerPallet);
   const hasCase = outerNoun === 'case';
   el('trlCounts').textContent = `${tr.stacksPerTrailer} / ${tr.unitLoadsPerTrailer} / ${tr.casesPerTrailer} ${hasCase ? 'cases' : 'cartons'}`;
@@ -3323,6 +3535,15 @@ fold.onFrame(drawDims);
 // for the worst face of the Path-A bug: the DXF file could differ from what
 // was on screen. Now it cannot: one source.
 el('btnDXF').addEventListener('click', () => {
+  if(activeLevel === 'pallet' && capEnabled(build.project)){
+    const caps = activeCaps();
+    // same reasoning as the U-board branch below: a disabled button is a DOM
+    // property, not a JS guarantee, so fail visibly rather than silently
+    if(!caps){ showNotice('No case arrangement has resolved yet — nothing to size a cap against.', true); return; }
+    const g = caps.top || caps.bottom;   // ONE blank shape serves both caps
+    downloadDXF(g, g.inner, inputs.getUnit(), 'CAP');
+    return;
+  }
   if(LEVELS[activeLevel].kind === 'uboard'){
     const ub = activeUboard();
     // the button is disabled whenever there's no U-board (updateExportButtonsState),

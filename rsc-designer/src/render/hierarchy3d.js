@@ -19,7 +19,7 @@ import {explodeTier, axisOffsets} from './explode.js';
 import {buildTray3d} from './tray3d.js';
 import {buildUboard3d} from './uboard3d.js';
 import {packArtGeometry, packArtMaterials, makeArtTexture} from './artwork3d.js';
-import {buildGmaPallet, buildSlipsheet, PALLET_MATERIAL, SLIPSHEET_MATERIAL, buildCornerPostSet, CORNER_POST_MATERIAL} from './palletmesh.js';
+import {buildGmaPallet, buildSlipsheet, PALLET_MATERIAL, SLIPSHEET_MATERIAL, buildCornerPostSet, CORNER_POST_MATERIAL, buildCap} from './palletmesh.js';
 import {buildTrailerShell} from './trailermesh.js';
 import {orientBasis} from './orient.js';
 
@@ -1847,14 +1847,29 @@ function buildPallet(bundle, outerTier, S, solid, explode){
   const nLoads = positions.length;
   const baseHeights = bundle.stack.baseHeightMM;
   const footprints = bundle.stack.footprintMM;
+  //
+  // CAPS add ONE CALIPER per enabled cap to each position's own height -- a
+  // bottom cap under the cases, a top cap over them. The SKIRTS add none:
+  // they hang alongside the load, inside the height the cases already have,
+  // which is why only the panel thicknesses appear here. Same rule
+  // core/stack.js's capHeightGrowthMM states for the numeric stack height,
+  // so the drawn stack and the reported stack height cannot disagree.
+  const capSpec = bundle.cap;
+  const capBottomT = capSpec && capSpec.bottom ? capSpec.caliper : 0;
+  const capTopT    = capSpec && capSpec.top    ? capSpec.caliper : 0;
   const posOffsets = [];
-  { let acc = 0; for(let u = 0; u < nLoads; u++){ posOffsets.push(acc); acc += baseHeights[u] + loadH; } }
-  const totalStackH = posOffsets[nLoads - 1] + baseHeights[nLoads - 1] + loadH;
+  { let acc = 0; for(let u = 0; u < nLoads; u++){ posOffsets.push(acc); acc += baseHeights[u] + capBottomT + loadH + capTopT; } }
+  const totalStackH = posOffsets[nLoads - 1] + baseHeights[nLoads - 1] + capBottomT + loadH + capTopT;
   for(let u = 0; u < nLoads; u++){
     const yOff = posOffsets[u];
     const uOpenIdx = u === 0 ? openIdx : -1;
     const baseH = baseHeights[u];
     const fp = footprints[u];
+    // Everything that rides ON this position -- the cases and the posts
+    // standing beside them -- sits on the bottom cap when there is one, and
+    // on the base itself when there isn't. ONE expression, so a cap can never
+    // lift the cases without also lifting the posts they stand beside.
+    const rideY = yOff + baseH + capBottomT;
 
     // this position's own base — the ONE shared GMA pallet asset (base at
     // y=0, top face at baseH) for a 'pallet' position, or a thin flat
@@ -1872,7 +1887,8 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     group.add(timber);
 
     // Corner posts: 4 per position, standing on THIS position's own base top
-    // (yOff + baseH), outboard of the CASE STACK's own footprint (bundle.
+    // (rideY -- the bottom cap when there is one, else the base itself),
+    // outboard of the CASE STACK's own footprint (bundle.
     // cornerPost.footprint == row.casesFit.envelope) -- NOT the deck, so a
     // deck bigger than the case stack doesn't pin the posts to the deck's
     // farther-out corner. bundle.cornerPost is null when posts are off —
@@ -1880,8 +1896,29 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     if(bundle.cornerPost){
       const cp = bundle.cornerPost;
       const posts = buildCornerPostSet(cp.footprint, cp.height, cp.legL, cp.legW, cp.caliper);
-      posts.position.y = yOff + baseH;
+      posts.position.y = rideY;
       group.add(posts);
+    }
+
+    // THE CAPS. One continuous surface over the whole layer face with a
+    // skirt wrapping the edges -- the shape difference from the four
+    // discrete posts it sits over. Both are built on the SAME resolved
+    // centre panel (bundle.cap.centre == the post stage of the nesting), so
+    // the cap clears the posts by construction rather than by a local
+    // adjustment here. buildCap puts local y=0 at the face touching the
+    // cases for BOTH directions, so each one positions at its own case
+    // boundary with no per-direction offset.
+    if(capSpec){
+      if(capSpec.bottom){
+        const cb = buildCap(capSpec.centre, capSpec.skirt, capSpec.caliper, -1);
+        cb.position.y = rideY;              // panel's top face against the cases
+        group.add(cb);
+      }
+      if(capSpec.top){
+        const ct = buildCap(capSpec.centre, capSpec.skirt, capSpec.caliper, 1);
+        ct.position.y = rideY + loadH;      // panel's underside on top of the cases
+        group.add(ct);
+      }
     }
 
     // closed units — textured when the pallet's pack (the outer tier: case, or
@@ -1903,17 +1940,17 @@ function buildPallet(bundle, outerTier, S, solid, explode){
       // BUNDLE (no shell, cartons + skin), or a shrink-wrapped tray (shell +
       // cartons + skin). One draw pass instances the parts across the pallet;
       // the shrink skin is a translucent box per unit rising to the loaded top.
-      openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, yOff + baseH + restOffset,
+      openTrayInstances(closed, outerTier.geo, bundle.cartonGeo, bundle.cartons.placements, rideY + restOffset,
         {shell: openOuter, skin: shrinkOuter, skinH: contentTopLocal + co.H/2});
     }else if(art && art.am && art.canvas && closed.length){
-      for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: yOff + baseH + pl.z, z: pl.y}), 'pallet')) group.add(m);
+      for(const m of artInstances(art.am, art.canvas, closed, pl => ({x: pl.x, y: rideY + pl.z, z: pl.y}), 'pallet')) group.add(m);
     }else{
       for(const [o, list] of groupByOrientation(explodedCases, uOpenIdx)){
         const od = orient(co, o);
         const cgeo = roundedBoxGeo(Math.max(od.l - 2, 1), Math.max(od.h - 2, 1), Math.max(od.w - 2, 1), 3, 2);
         const inst = new THREE.InstancedMesh(cgeo, board, list.length);
         const M = new THREE.Matrix4();
-        list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, yOff + baseH + pl.z, pl.y); inst.setMatrixAt(k, M); });
+        list.forEach(({pl}, k) => { M.identity(); M.setPosition(pl.x, rideY + pl.z, pl.y); inst.setMatrixAt(k, M); });
         inst.userData = {pick: list.map(x => x.i), tierName: 'pallet'};
         pickables.push({mesh: inst, tier: 'pallet'});
         group.add(inst);
@@ -1922,7 +1959,7 @@ function buildPallet(bundle, outerTier, S, solid, explode){
     if(u === 0 && !solid && explodedCases[openIdx]){
       const pl = explodedCases[openIdx];
       const cg = buildContainer(outerTier, bundle, S, [openIdx], {explode});
-      cg.position.set(pl.x, yOff + baseH + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
+      cg.position.set(pl.x, rideY + pl.z + restOffset, pl.y);   // rest on the slot floor, like the field
       cg.quaternion.copy(orientQuat(pl.orientation));
       group.add(cg);
     }

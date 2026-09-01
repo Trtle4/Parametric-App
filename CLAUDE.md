@@ -1486,3 +1486,121 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   design, since it changes what "scope controls" means — `#scopeBar` is now
   the candidate navigator alone, and that prompt should be re-read against
   this state rather than run against the four-selector one.
+
+- **RESOLVED (interlock-schedule fix): interlock is a RELATIVE property, and
+  the rail's "every layer above" rule was writing it as an ABSOLUTE one.**
+  `layerFlips[ly]` is whether layer `ly` takes the 180° turn — an absolute
+  orientation — but what interlocks a load is CONSECUTIVE LAYERS DIFFERING.
+  `layerFlipsFromRule`'s `tail` mode set every layer from k up to `true`,
+  which reads like "interlock them all" and is exactly wrong: they then share
+  ONE orientation, so only the k-1/k boundary interlocks and everything above
+  is a column again — the reported symptom precisely. It now ALTERNATES from
+  k. `single` was always right and is untouched: one flipped layer differs
+  from both its neighbours, which is what "interlock that one layer" means.
+  **The pin's SHAPE mattered more than usual here.** A pin asserting "every
+  layer above k is flipped" would have PASSED the bug maximally and read as a
+  green confirmation of it, so every pin in `test/interlock.test.html`
+  asserts the RELATIVE property instead. The geometry block proves the two
+  are not the same claim by showing an all-flipped tail producing layers that
+  are position-for-position IDENTICAL — the bug stated geometrically, which
+  is what makes the rail pins' choice of assertion legible rather than
+  arbitrary. Mutation-tested: restoring flip-all fails exactly the three tail
+  pins and nothing else.
+
+- **RESOLVED (top-and-bottom-caps task): the load's outer footprint had no
+  single owner, and building the fourth contributor was the moment to make
+  one.** Survey first, and it found worse than duplication: FIVE independent
+  `2 x caliper` additions over THREE different starting rectangles.
+  `trailer.js` grew the PALLET DECK; `palletpatterns.js`'s overhang check and
+  both render paths (`palletmesh.js`, `hierarchy3d.js`) grew the CASE-STACK
+  ENVELOPE — so the trailer packed its floor on `deck + 2t` while the posts
+  were DRAWN at `caseEnvelope + 2t`. `loadFootprintStagesMM(cases, project)`
+  is now the one place, returning all three stages by name — `.cases`,
+  `.posts`, `.cap` — each nesting the PREVIOUS one rather than re-deriving
+  from the cases, which is exactly the mistake that lets a later contributor
+  land inboard of an earlier one. Returning every stage rather than only the
+  outermost is what lets the cap take `.posts` as its centre panel (a cap
+  goes OVER the posts) without a second computation. **WHICH rectangle a
+  caller starts from is deliberately NOT answered there** — it takes the base
+  as an argument, so the deck-vs-envelope disagreement, which predates caps,
+  is consolidated without being silently changed.
+  **THE BLANK is a plus, and the relief choice is stated.** Centre panel,
+  four flaps, four corner squares removed, four creases, bounding box
+  `(cL + 2x) x (cW + 2x)`. With the squares removed exactly the folded flaps
+  interfere by about a caliper; of the two fixes this TRIMS THE FLAPS by
+  `relief` at each end (default one caliper, `null` = auto, an explicit 0
+  surviving as a real choice) rather than enlarging the cutout, because
+  trimming leaves the bounding box — the number a supplier quotes a sheet
+  against — untouched while still opening a real gap (2 x relief, both flaps
+  giving up their share). Drawn at the PALLET level, which previously said
+  "no dieline here": a cap is a real rigid blank, so it goes through the SAME
+  style-agnostic `draw2d()` every carton/case dieline uses (a plus is just a
+  20-vertex `cut` polygon; the renderer needed no change) and through the
+  SAME generic `downloadDXF`, the U-board's own precedent.
+  **THICKNESS YES, STRENGTH NO, and the pin for it had to be rebuilt.** The
+  first version called `stackAnalysis` twice with identical arguments, which
+  proves nothing — it is the same call, and a real strength credit added
+  inside `bct.js` would sail past it. Replaced with two that can actually
+  fail: a STRUCTURAL one reading `bct.js`'s own source (no import of cap.js,
+  no cap-shaped parameter in `stackAnalysis`'s destructured list) and an
+  END-TO-END one reading the RENDERED BCT readout with a BOTTOM cap on — the
+  right probe precisely because a bottom cap adds no compression load either,
+  so any movement at all is a strength credit that should not exist. A top
+  cap would move the ratio legitimately through tare and could not
+  distinguish the two.
+  **WEIGHT IS ASYMMETRIC, which is the reason it routes through the tare path
+  instead of being a flat term.** A top cap sits ON its load's cases and bears
+  on that load's own bottom case (so top caps count n times, including the
+  bottom position's); a bottom cap sits UNDER them and bears on nothing within
+  its load (so bottom caps count n-1, excluded at the bottom position for
+  exactly the reason its base is). Total load weight counts BOTH at every
+  position — a different question, and the comment says so, because "what
+  bears on the bottom case" and "what the trailer carries" are two facts one
+  number cannot hold.
+  **FOUR MUTATIONS RUN AGAINST THE REAL SOURCE, and the first one exposed a
+  hole.** Charging the bounding rectangle in `decorateRow` PASSED all 29 pins:
+  the area pin compared `capPlusAreaMM2` to its own formula and to a
+  `materialCost` call the test made itself, so the quantity the app actually
+  CHARGES was completely unwatched — the "a pin that calls the builder says
+  nothing about whether the app calls it" rule, hit again one level up. Fixed
+  by anchoring the row's charged area to the DRAWN blank's own
+  `meta.plusAreaMM2` (a different call path, reached by the 2D view and the
+  DXF), so the two consumers of one fact must agree; the mutation then failed
+  immediately. The other three were caught first time: a bogus cap term in
+  `stackAnalysis` fails the structural pin, treating the bottom cap like the
+  top fails four pins (including the rendered BCT, which showed the phantom as
+  `+ 0.3 lb tare`), and nesting the cap off the bare cases fails three.
+  **`postOverhang` became `loadOverhang`, and its readout names its causes.**
+  Posts were the only contributor when it was written; a cap standing proud
+  and being reported as "corner posts stand proud" is a readout lying about
+  its own cause, and the note also had to move OUT of the posts-off early
+  return or a capped load with no posts would have been silenced entirely —
+  the same expiring-scope shape the `outerFlaps` entry above records.
+  `opts.postCaliperMM` became `opts.outboardMM` and now carries the TOTAL
+  per-side growth (the doubling moved to the summing side with the name).
+  **DELIBERATELY NOT MODELLED, stated rather than left ambiguous:** a bottom
+  cap really does distribute load across a pallet's deckboard gaps. There is
+  no deckboard-gap model to hang it on, and inventing a strength credit is
+  what `bct.js`'s own disclose-don't-apply rule exists to prevent — so it is
+  disclosed in the rail note instead, and a pin asserts that disclosure is
+  present. The COST assumption is stated the same way: the plus is charged,
+  and if the corner squares are lost in the trim rather than recovered as
+  scrap the true sheet cost is the bounding rectangle and this figure is
+  optimistic by that difference.
+  **Density is 150 kg/m³, not the post board's 700.** A 48x40 cap at 3mm comes
+  out ~1.2 lb, the order of magnitude a real corrugated cap weighs; borrowing
+  the post's laminated-stock density would have made it five times that, and
+  a pin holds the figure between 0.5 and 3 lb so a later "tidy the densities"
+  edit cannot quietly restore it.
+  **A unit round-trip was caught by the drawing, not by a pin.** Caliper and
+  relief were being committed through the PALLET unit (inches), so 3mm
+  round-tripped to 2.9972mm and the blank's own caliper label read
+  `t 2.9972mm`. They are mm-native now, matching their labels; skirt depth
+  stays in the pallet unit, being a load-scale dimension alongside deck height.
+  Full regression: `golden.json` 998/998 unchanged (caps off is bit-identical
+  by construction — an absent `cap` key reads as all-defaults, which is both
+  caps off, so no schema migration was needed). Every suite green, and the
+  four long-standing `saveload` `cornerPost` failures are FIXED rather than
+  inherited: they asserted the whole `stack` object in migration pins whose
+  subject is `positions` alone, so every later default added beside them
+  (cornerPost, then cap) broke a fixture that never tested it.
