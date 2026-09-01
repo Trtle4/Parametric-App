@@ -29,7 +29,28 @@ function probeStorage(){
 export const hasStorage = probeStorage();
 
 function safeGet(key){ if(!hasStorage) return null; try{ return localStorage.getItem(key); }catch(e){ return null; } }
-function safeSet(key, value){ if(!hasStorage) return false; try{ localStorage.setItem(key, value); return true; }catch(e){ return false; } }
+/** Write, and SAY WHY IT FAILED. This used to return a bare `false` for every
+ *  failure, and both callers threw that away -- so a project too big for
+ *  localStorage produced a Save-to-slot button that did nothing at all, with
+ *  no error anywhere, and an autosave that quietly kept an older snapshot.
+ *  A convenience that fails is fine; a convenience that fails SILENTLY is
+ *  not, because the user cannot tell it from success.
+ *  @returns {{ok:boolean, reason:'none'|'unavailable'|'quota'|'error', bytes:number}} */
+function safeSet(key, value){
+  const bytes = value ? value.length : 0;
+  if(!hasStorage) return {ok: false, reason: 'unavailable', bytes};
+  try{
+    localStorage.setItem(key, value);
+    return {ok: true, reason: 'none', bytes};
+  }catch(e){
+    // QuotaExceededError is the one that matters and the one that actually
+    // happens: artwork is stored in the save file, and a few megabytes of it
+    // will not fit a ~5MB origin quota. Name it, so the caller can say
+    // something useful instead of "didn't work".
+    const quota = e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22);
+    return {ok: false, reason: quota ? 'quota' : 'error', bytes};
+  }
+}
 function safeRemove(key){ if(!hasStorage) return; try{ localStorage.removeItem(key); }catch(e){} }
 
 /* ---------------- file layer ---------------- */
@@ -72,12 +93,22 @@ let autosaveTimer = null;
  *  time) so it always captures the latest project, not a stale snapshot
  *  from when the timer was set. Best-effort: a write failure is swallowed,
  *  never surfaced as a blocking error — autosave is a convenience. */
-export function scheduleAutosave(stateFn, delayMs = 800){
+export function scheduleAutosave(stateFn, delayMs = 800, onFail){
   if(!hasStorage) return;
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
-    try{ safeSet(AUTOSAVE_KEY, JSON.stringify(serializeProject(stateFn()))); }
-    catch(e){ /* best-effort */ }
+    let res;
+    try{ res = safeSet(AUTOSAVE_KEY, JSON.stringify(serializeProject(stateFn()))); }
+    catch(e){ res = {ok: false, reason: 'error', bytes: 0}; }
+    if(res.ok) return;
+    // A FAILED AUTOSAVE MUST NOT LEAVE THE OLD ONE BEHIND. The previous
+    // entry is now a snapshot of a project the user has since moved on
+    // from -- and startup restores it while announcing "Restored your last
+    // session", which presents stale work as current. Losing a restore
+    // point is bad; silently restoring the WRONG one and saying it is the
+    // right one is worse, because the user has no way to notice.
+    safeRemove(AUTOSAVE_KEY);
+    if(onFail) onFail(res);
   }, delayMs);
 }
 
@@ -115,6 +146,9 @@ export function listSlots(){
   }
   return out;
 }
+/** @returns safeSet's own {ok, reason, bytes} — CHECK IT. A slot that could
+ *  not be written looks exactly like one that was, from the UI, unless the
+ *  caller says otherwise. */
 export function saveToSlot(i, name, state){
   return safeSet(SLOT_KEY(i), JSON.stringify({name: name || `Slot ${i}`, doc: serializeProject(state)}));
 }

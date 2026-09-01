@@ -748,10 +748,30 @@ function crimpVLookup(ring, uvs, axisIsW){
     const ws = r.pts.map(x => x[0]);
     return {top: r === topRun, min: Math.min(...ws), max: Math.max(...ws), f: interp(r.pts)};
   });
+  // OUT-OF-RANGE QUERIES ARE NORMAL HERE, and picking the wrong run for one
+  // is what made the end seals disagree with the body.
+  //
+  // The crimp TAB is built at the pack's FULL width (crossDim), but the crimp
+  // RING's own extreme sits a hair inside that -- ringPoints fillets the
+  // corners -- so the outermost tab vertices at BOTH ends always fall outside
+  // every run by a few microns. The old fallback was `|| cands[0]`, the FIRST
+  // candidate in walk order, which owns the negative-w side. On that side the
+  // clamp landed on the right value by luck; on the positive-w side it
+  // clamped to that run's far endpoint, which is the SEAM -- so the back
+  // half-band's v got painted across the corner of the fin, and the print
+  // stopped agreeing with the body it continues. One end looked right and the
+  // other did not, purely because the two tabs are mirrored in world space.
+  //
+  // Clamp to the run the query is actually NEAREST instead. A vertex a micron
+  // past a filleted corner then picks that corner's own run, at both ends and
+  // on both plies, which is what "the film carries on across the crimp line"
+  // means geometrically.
+  const gap = (r, w) => w < r.min ? r.min - w : (w > r.max ? w - r.max : 0);
   return (w, isTop) => {
     const cands = shaped.filter(r => r.top === isTop);
     if(!cands.length) return 0;
-    const hit = cands.find(r => w >= r.min - 1e-6 && w <= r.max + 1e-6) || cands[0];
+    const hit = cands.find(r => gap(r, w) <= 1e-6)
+             || cands.reduce((a, b) => (gap(b, w) < gap(a, w) ? b : a));
     return hit.f(w);
   };
 }

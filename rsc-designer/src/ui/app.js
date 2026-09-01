@@ -4020,6 +4020,23 @@ document.addEventListener('drop', e => {
   if(file) loadProjectFromFile(file);
 });
 
+/** ONE message for every localStorage write failure, so the slot button and
+ *  autosave explain the same thing the same way — and both name the remedy.
+ *  Save (to file) has no quota: it is the durable path this app has always
+ *  documented as primary, and the one to point at when the convenience layer
+ *  runs out of room. */
+function storageFailureMessage(res, lead){
+  const mb = res && res.bytes ? (res.bytes/1048576).toFixed(1) : null;
+  if(res && res.reason === 'quota')
+    return `${lead}: this project${mb ? ` (${mb} MB)` : ''} is larger than the browser will store. ` +
+           `Artwork is the usual reason — it is kept in the save file. Use “Save” to write a project ` +
+           `FILE instead; a file has no size limit. Removing artwork, or saving to a slot before ` +
+           `adding it, also works.`;
+  if(res && res.reason === 'unavailable')
+    return `${lead}: this browser has local storage disabled (private mode, or a site setting). Use “Save” to write a project file.`;
+  return `${lead}: the browser refused the write. Use “Save” to write a project file.`;
+}
+
 /* localStorage slots — convenience only; hidden/disabled outright if
    storage isn't available, so the rest of the app is completely unaffected. */
 function refreshSlotSelect(){
@@ -4047,8 +4064,15 @@ if(!save.hasStorage){
     const existing = save.listSlots()[i - 1];
     const name = prompt('Name this slot:', (existing && existing.name) || `Slot ${i}`);
     if(name === null) return;
-    save.saveToSlot(i, name, gatherSaveState());
+    // CHECK THE RESULT. This used to discard it, so a project too big for
+    // localStorage -- which any project carrying artwork is -- produced a
+    // button that did nothing whatsoever: no slot written, no error, the
+    // select still reading "(empty)". Reported as "unable to save a new
+    // named slot", and it was exactly that.
+    const res = save.saveToSlot(i, name, gatherSaveState());
     refreshSlotSelect();
+    if(res && res.ok){ showNotice(`Saved to slot ${i} — "${name}".`, false); return; }
+    showNotice(storageFailureMessage(res, `Slot ${i} was NOT saved`), true);
   });
   el('btnSlotLoad').addEventListener('click', () => {
     const i = +el('slotSel').value;
@@ -4110,7 +4134,18 @@ notify.onRefresh('shelfFields', writeShelfFields);
 notify.onRefresh('exportButtons', updateExportButtonsState);
 notify.onRefresh('artworkPanel', updateArtPanel);
 notify.onRefresh('perfPanel', mountPerfSection);
-notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState));
+// AUTOSAVE, and what happens when it cannot write. A failed autosave used to
+// be swallowed AND leave the previous entry in place, so the next load
+// restored an older project while announcing "Restored your last session" --
+// stale work presented as current, which is worse than no restore at all.
+// save.js now clears the stale entry and calls back; this says so, once per
+// session, so the user knows their only durable path is Save (to file).
+let autosaveWarned = false;
+notify.onRefresh('autosave', () => save.scheduleAutosave(gatherSaveState, 800, res => {
+  if(autosaveWarned) return;
+  autosaveWarned = true;
+  showNotice(storageFailureMessage(res, 'Autosave is OFF for this project'), true);
+}));
 
 // 3D candidate-cycle arrows: a second control onto build.js's selection state.
 // The listener keeps "N of M"/enable in step with the table's live sort (fires
