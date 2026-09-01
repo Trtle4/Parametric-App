@@ -57,6 +57,15 @@ export const SHEET_CAMERAS = Object.freeze({
 
 /** Sheet defaults, in device pixels. Every one of them is a constant: a
  *  dimension that followed the viewport would make the output a screenshot. */
+/** The computed value of a :root design token, or a literal fallback when
+ *  there is no document to read (a headless harness, a worker). */
+function readToken(name, fallback){
+  try{
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }catch(e){ return fallback; }
+}
+
 export const SHEET_DEFAULTS = Object.freeze({
   cell: {w: 660, h: 460},
   gap: 18,
@@ -69,7 +78,14 @@ export const SHEET_DEFAULTS = Object.freeze({
   ink2: '#59656C',
   ink3: '#8A959B',
   line: '#D2D9DE',
-  font: '"DM Mono", ui-monospace, monospace',
+  // The sheet is EXPORT, so it is monospace by the app's own type rule --
+  // but a canvas `ctx.font` cannot take a CSS var, so this reads the live
+  // --mono token at module load with a literal fallback. Written as a read
+  // rather than a copy because a hardcoded family here would be a second
+  // definition of a fact index.html owns, and would silently keep rendering
+  // the old face after a token change (which is exactly what a stale copy in
+  // export/png.js did once already).
+  font: readToken('--mono', '"IBM Plex Mono", ui-monospace, monospace'),
   quality: 0.92
 });
 

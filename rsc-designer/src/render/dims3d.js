@@ -8,7 +8,7 @@
  * along the edge's perpendicular-outward direction, scaled to the box size, so
  * the callout clears the geometry from every orbit angle. Thin extension
  * leaders run from the measured points (after a small gap) out to the
- * dimension line; arrowheads terminate exactly at the extents; a DM Mono
+ * dimension line; arrowheads terminate exactly at the extents; a monospaced
  * number sits just beyond.
  *
  * At pallet level the single height is split into three stacked dimensions —
