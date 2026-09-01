@@ -58,6 +58,9 @@ async function survey(width){
     await settle(160);
   };
   const R = {width, thrown, present: qa('#chainString .cs-node').map(n => n.dataset.node), reach: {}, toggle: {}, excl: {}, trailer: {}, counts: {}, canvas: {}};
+  // captured BEFORE the reachability loop below clicks through every level —
+  // this is what a first-time visitor actually sees
+  R.initialActive = activeNode();
 
   // ---- reachability: click each node, read the app's OWN level readout ----
   for(const k of ['product', 'wrap', 'carton', 'case', 'pallet', 'trailer']){
@@ -195,6 +198,10 @@ const LABEL = {product: 'PRODUCT', tray: 'TRAY', uboard: 'U-BOARD', wrap: 'WRAP'
                carton: 'CARTON', case: 'CASE', pallet: 'PALLET', trailer: 'TRAILER'};
 
 for(const [tag, R] of [['wide', W], ['narrow', N]]){
+  t(`DEFAULT LEVEL (${tag} ${R.width}px): a first-time visitor lands on Product, not three tiers of packaging already wrapped around it`, () => {
+    eq(R.initialActive, 'product', 'the chain strip\'s own active node on a fresh, un-clicked load:');
+  });
+
   t(`REACHABLE (${tag} ${R.width}px): every level, the trailer included, is selectable from the ONE strip`, () => {
     const bad = LEVELS.filter(k => !R.reach[k] || R.reach[k].readout !== LABEL[k]);
     eq(bad, [], `levels that did not become active (readout is the app's own #tbLevel): ${JSON.stringify(R.reach)} —`);

@@ -1908,3 +1908,28 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   "correct" for an on-edge pack is a product decision this task did not
   make. If a real workflow needs it, that is the next task, not a hidden
   side effect of this one.
+- **RESOLVED (default-level task): the app opens on Product, not Case.**
+  Requested as "update landing page to be the product" — clarified, once the
+  repo and live GitHub Pages deployment were checked and found to already
+  serve the working app directly (no separate marketing page exists to
+  update), to mean the level a fresh, first-time visit lands on: "when you
+  first open the link it should default to show the product level. Right
+  now it's the case that gets shown." Two sites set the SAME fact and had
+  to move together: the module-scope `let activeLevel = 'case'` (the value
+  anything reads before boot finishes) and the actual boot-time
+  `setActiveLevel('case')` call the app runs after `initBuild()` — the real,
+  authoritative default-setter, since it does the full rail/view mount, not
+  just the variable assignment. Changing only one would have left a
+  transient-then-corrected mismatch window, not a real default change.
+  Neither `activeLevel` nor any default level is part of the persisted save
+  schema, so this only ever affects a truly fresh load (a restored autosave
+  or loaded file still opens wherever the user left it, unchanged, since
+  `applyLoadedState` never touches the boot-time default). Pinned in `test/
+  chainstrip.test.html`, which already drives a real, un-clicked fresh load
+  of the app in an iframe before its own reachability sweep starts clicking
+  through every level — `R.initialActive` is captured at that exact moment
+  (before the sweep overwrites it), at both the wide and narrow widths the
+  file already tests. Mutation-tested: reverting either `setActiveLevel`
+  call site back to `'case'` (the module-scope default alone was not
+  re-tested in isolation, since `setActiveLevel` always runs after it at
+  boot and would silently correct it) fails both new pins immediately.
