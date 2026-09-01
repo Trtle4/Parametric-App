@@ -3,12 +3,12 @@
  *   - 2D dieline/blank: rasterize the SVG's FULL natural extent (view2d.base)
  *     at a fixed resolution, independent of the on-screen zoom/pan. The SVG
  *     markup emits CSS custom properties (var(--cut), var(--crease), …) and
- *     the DM Mono / Hanken families; an <img> raster is an isolated context
+ *     the app's own font families; an <img> raster is an isolated context
  *     with no access to the page's :root variables or its @font-face cache,
  *     so those are resolved to LITERAL values first — otherwise the file
  *     renders black-on-transparent. Fonts are embedded as base64 @font-face
- *     (best-effort) so the numerals actually come out in DM Mono, not a
- *     system fallback.
+ *     (best-effort) so a drawing's numerals come out in the app's own
+ *     monospace, not a system fallback.
  *   - 3D: fold3d.capturePNG reads the WebGL drawing buffer directly (see there).
  */
 import {view2d} from '../render/dieline2d.js';
@@ -28,7 +28,7 @@ import {view2d} from '../render/dieline2d.js';
  * exported PNG dropped every cell line and the legend swatch that names them
  * while the on-screen drawing was perfect. Scanning cannot go stale.
  *
- * Font families carry double quotes ("DM Mono",…) that would break the
+ * Font families carry double quotes ("IBM Plex Mono",…) that would break the
  * double-quoted SVG attribute they sit in, so those get re-quoted single.
  *
  * Exported so a pin can run the app's REAL drawing markup through it and
@@ -64,15 +64,22 @@ export function saveBlob(bytes, filename, type = 'application/pdf'){
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-// --- font embedding: fetch the page's own DM Mono + Hanken woff2 once, base64,
-// and build @font-face rules the isolated SVG raster can actually use. Cached;
-// wrapped so a fetch failure degrades to system fonts rather than breaking
-// the export. ------------------------------------------------------------
+// --- font embedding: base64 the page's OWN vendored woff2 files once and
+// build @font-face rules the isolated SVG raster can actually use. Cached;
+// wrapped so a failure degrades to system fonts rather than breaking the
+// export.
+//
+// READ FROM THE PAGE'S OWN STYLESHEET, never from a list here. This used to
+// name two font families with hardcoded fonts.googleapis.com
+// URLs -- a hand-maintained copy of a fact that lives in fonts/fonts.css,
+// which is exactly the shape that let this same module ship a stale token
+// list once before (the exported PNG dropped every cell line because
+// `--accent` was missing from a hand-written array). Now it walks the real
+// @font-face rules the document already loaded, so renaming a family or
+// swapping a weight cannot leave this behind, and an export made offline
+// embeds the same faces the screen is using.
+// ------------------------------------------------------------------------
 let fontCss = null;   // resolved <style> body, or '' if unavailable
-const FONT_FACES = [
-  {family: 'DM Mono', css: 'https://fonts.googleapis.com/css2?family=DM+Mono:wght@500&display=swap'},
-  {family: 'Hanken Grotesk', css: 'https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@600;700&display=swap'}
-];
 
 async function toDataUri(url){
   const res = await fetch(url);
@@ -83,17 +90,38 @@ async function toDataUri(url){
   return `data:font/woff2;base64,${btoa(bin)}`;
 }
 
+/** Every @font-face the document actually loaded, as {family, url} — read
+ *  out of the live stylesheets. A cross-origin sheet throws on .cssRules
+ *  access; ours is same-origin, and a throw is caught per sheet so one
+ *  unreadable third-party sheet cannot cost us the readable ones. */
+function documentFontFaces(){
+  const out = [];
+  for(const sheet of document.styleSheets){
+    let rules;
+    try{ rules = sheet.cssRules; }catch(e){ continue; }
+    if(!rules) continue;
+    for(const r of rules){
+      if(r.type !== CSSRule.FONT_FACE_RULE) continue;
+      const family = (r.style.getPropertyValue('font-family') || '').replace(/['"]/g, '').trim();
+      const src = r.style.getPropertyValue('src') || '';
+      const url = (src.match(/url\(["']?([^"')]+)["']?\)/) || [])[1];
+      if(family && url) out.push({family, url, weight: r.style.getPropertyValue('font-weight') || '400'});
+    }
+  }
+  return out;
+}
+
 async function embeddedFontCss(){
   if(fontCss !== null) return fontCss;
   try{
-    const blocks = [];
-    for(const f of FONT_FACES){
-      // Google's css2 returns @font-face blocks with gstatic woff2 URLs; grab
-      // the first (latin) src per family — enough for dimension text + labels.
-      const css = await (await fetch(f.css)).text();
-      const url = (css.match(/url\((https:\/\/[^)]+\.woff2)\)/) || [])[1];
-      if(!url) continue;
-      const data = await toDataUri(url);
+    const faces = documentFontFaces();
+    // ONE face per family is enough for the raster (dimension text + labels);
+    // taking them all would base64 every weight and subset into every export.
+    const seen = new Set(), blocks = [];
+    for(const f of faces){
+      if(seen.has(f.family)) continue;
+      seen.add(f.family);
+      const data = await toDataUri(f.url);
       blocks.push(`@font-face{font-family:'${f.family}';font-style:normal;font-weight:400 700;src:url(${data}) format('woff2');}`);
     }
     fontCss = blocks.join('');

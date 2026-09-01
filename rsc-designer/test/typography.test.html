@@ -1,0 +1,256 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>typography — two roles, one rule</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* TWO TYPE ROLES, AND THE SPLIT IS THE RULE.
+     --sans (Inter)          -- ALL LANGUAGE: anything read as words.
+     --mono (IBM Plex Mono)  -- OUTPUT AND EXPORT ONLY: drawing sheets,
+                                dimension callouts, the title block, the
+                                build id, exported PNG/SVG.
+
+   Monospace had been carrying 44 of index.html's 52 font-family
+   declarations -- section headers, every field hint, help prose, select
+   values -- which is what made the interface read as a terminal and cost
+   real width (a hint string measured 212px in the old mono against 185px in
+   Inter at the same size; the style select truncated mid-word).
+
+   THE STRUCTURAL PIN IS THE POINT. Checking a handful of elements resolve to
+   the right family would pass while mono crept back in somewhere nobody
+   sampled. So the exhaustive pin reads index.html's OWN CSS and asserts that
+   every --mono declaration belongs to an allowlisted output selector -- a
+   rule that has to be argued with, not a spot check.
+
+   The other thing worth pinning is the reason the fonts were vendored at
+   all: the review found the browser could not reach fonts.googleapis.com,
+   so the app had been silently rendering in fallback faces. A font fallback
+   is invisible, so "it looks fine" is not evidence. These pins measure. */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const eq = (a, e, m = '') => { if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); };
+
+const settle = (ms = 150) => new Promise(r => setTimeout(r, ms));
+
+/* ===================================== the stylesheet, as text ========= */
+
+const indexHtml = await fetch('../index.html').then(r => r.text());
+const fontsCss  = await fetch('../fonts/fonts.css').then(r => r.text());
+
+/** MONO IS ALLOWED HERE AND NOWHERE ELSE. Each entry is output: something
+ *  that appears on a drawing sheet or in an exported file, not a word in the
+ *  interface. Adding to this list is a decision; it should be hard. */
+const MONO_OUTPUT_SELECTORS = [
+  '.brand .buildid',        // a build identifier, not language
+  '#dimsOverlay .dx-txt',   // dimension callouts drawn over the model
+  '.titleblock'             // the drawing sheet's title block
+];
+
+/** Every selector in index.html's <style> that declares font-family:var(--mono),
+ *  by walking the text and remembering the most recent rule opener — the same
+ *  way the reassignment itself was done, so the pin and the change agree on
+ *  what "owns" a declaration. */
+function monoDeclaringSelectors(css){
+  const out = [];
+  let cur = null;
+  for(const ln of css.split('\n')){
+    const m = ln.match(/^\s*([.#][^{]*?)\{/);
+    if(m) cur = m[1].trim();
+    if(/font-family:\s*var\(--mono\)/.test(ln)) out.push(cur || '(unknown)');
+  }
+  return out;
+}
+
+t('RULE: every --mono declaration in index.html belongs to an OUTPUT selector', () => {
+  const decls = monoDeclaringSelectors(indexHtml);
+  ok(decls.length > 0, 'fixture: there must be SOME mono left, or this pin is vacuous — ' +
+     'output type is supposed to still exist');
+  const stray = decls.filter(sel => !MONO_OUTPUT_SELECTORS.some(a => sel.includes(a)));
+  eq(stray, [], 'these selectors set --mono but are not output — language belongs in --sans:');
+});
+
+t('RULE: the fixture is capable of failing — the walker finds a planted UI-side mono use', () => {
+  // Confirm the SPECIMEN, not just the instrument: prove monoDeclaringSelectors
+  // would actually catch a regression, rather than returning [] for a reason
+  // unrelated to the rule (a changed declaration format, say).
+  const planted = indexHtml.replace(
+    '.field > label .hint{', '.field > label .hint{font-family:var(--mono);');
+  const decls = monoDeclaringSelectors(planted);
+  ok(decls.some(s => s.includes('.field > label .hint')),
+     'the walker must see a mono declaration added to a language selector');
+  const stray = decls.filter(sel => !MONO_OUTPUT_SELECTORS.some(a => sel.includes(a)));
+  ok(stray.length > 0, 'and must report it as stray');
+});
+
+/** Source with comments removed. Both files EXPLAIN in prose why the Google
+ *  Fonts link was dropped, so a naive substring test matches its own subject's
+ *  documentation and fails on a correct file. Strip comments and test the
+ *  code. */
+const stripComments = src => src
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+t('SELF-HOSTED: index.html requests no third-party font, and fonts.css ships real faces', () => {
+  ok(!/fonts\.googleapis\.com|fonts\.gstatic\.com/.test(stripComments(indexHtml)),
+     'index.html still references a Google Fonts host — a blocked request must not be able to ' +
+     'change the typographic system');
+  ok(/href=["']fonts\/fonts\.css["']/.test(indexHtml), 'index.html must link the vendored sheet');
+  const faces = (fontsCss.match(/@font-face/g) || []).length;
+  ok(faces >= 4, `fonts.css must declare real faces, found ${faces}`);
+  ok(!/https?:\/\//.test(fontsCss.replace(/\/\*[\s\S]*?\*\//g, '')),
+     'no @font-face rule may point at a remote URL — the whole point is that the files are local');
+  ok(/Inter/.test(fontsCss) && /IBM Plex Mono/.test(fontsCss),
+     'both families must be declared');
+});
+
+const pngSrc = await fetch('../src/export/png.js').then(r => r.text());
+t('SELF-HOSTED: export/png.js reads the document\'s own @font-face rules', () => {
+  ok(!/fonts\.googleapis\.com/.test(stripComments(pngSrc)),
+     'png.js must not fetch fonts from Google at export time — it used to carry a hardcoded ' +
+     'family list with css2 URLs, the same hand-maintained shape that once made it export a ' +
+     'drawing with every cell line missing');
+  // A STRUCTURAL PROPERTY, not a spelling. The first version of this pin
+  // looked for the literal `FONT_FACE_RULE`, which a behaviour-preserving
+  // edit (the numeric constant 5) satisfies just as well -- so it was
+  // testing how the code is written, not what it does. What actually matters
+  // is that png.js CANNOT NAME A FAMILY: if it holds no family literal, it
+  // has nothing to go stale against, and must be deriving them.
+  const code = stripComments(pngSrc);
+  for(const fam of ['Inter', 'IBM Plex Mono', 'DM Mono', 'Hanken Grotesk'])
+    ok(!code.includes(fam),
+       `png.js names the family "${fam}" — a font list here is a second definition of a fact ` +
+       'fonts/fonts.css owns, and it is the exact shape that once shipped a stale token list');
+});
+
+/* ========================================= the LIVE app ================ */
+
+const frame = await new Promise(resolve => {
+  const f = document.createElement('iframe');
+  f.style.cssText = 'width:1400px;height:900px;border:0';
+  f.src = '../index.html';
+  f.addEventListener('load', () => resolve(f), {once: true});
+  document.getElementById('rig').appendChild(f);
+});
+await settle(1600);
+const w = frame.contentWindow, d = frame.contentDocument;
+await w.document.fonts.ready;
+const q = s => d.querySelector(s);
+const famOf = sel => { const e = q(sel); return e ? w.getComputedStyle(e).fontFamily.split(',')[0].replace(/["']/g, '').trim() : null; };
+
+/** Width of a string in a named family, measured in the APP's own document —
+ *  the way to tell a loaded web font from a silent fallback. */
+const widthIn = (fam, text = 'Handgloves 0123456789') => {
+  const c = d.createElement('canvas').getContext('2d');
+  c.font = `16px ${fam}`;
+  return c.measureText(text).width;
+};
+
+const L = {
+  faceCount: w.document.fonts.size,
+  // a family that certainly does not exist — anything resolving to the same
+  // width as this is NOT loaded, it is the browser's default
+  bogus: widthIn('"NoSuchFamily12345"'),
+  inter: widthIn('Inter'),
+  plex: widthIn('"IBM Plex Mono"'),
+  language: {
+    sectionHeader: famOf('.rail h2'),
+    fieldLabel:    famOf('.field > label'),
+    fieldHint:     famOf('.field > label .hint'),
+    inputValue:    famOf('.field .inp input'),
+    unitChip:      famOf('.field .inp .unit'),
+    button:        famOf('.btn'),
+    statValue:     famOf('.stat .val'),
+    chainNode:     famOf('.cs-node .cs-lvl')
+  },
+  output: {
+    buildId:    famOf('.brand .buildid'),
+    titleBlock: famOf('.titleblock')
+  },
+  bodyNumeric: w.getComputedStyle(d.body).fontVariantNumeric
+};
+
+t('LOADED: both vendored families actually resolve — not a silent fallback', () => {
+  ok(L.faceCount >= 4, `the document must register the vendored faces, got ${L.faceCount}`);
+  ok(Math.abs(L.inter - L.bogus) > 1,
+     `Inter measures the same as a nonexistent family (${L.inter}) — it did not load, and a font ` +
+     'fallback is silent, which is exactly how the previous setup went unnoticed');
+  ok(Math.abs(L.plex - L.bogus) > 1,
+     `IBM Plex Mono measures the same as a nonexistent family (${L.plex}) — it did not load`);
+  ok(Math.abs(L.inter - L.plex) > 1,
+     'the two families must measure differently from each other, or one is standing in for the other');
+});
+
+t('ROLE: every LANGUAGE surface resolves to Inter', () => {
+  for(const [k, fam] of Object.entries(L.language)){
+    ok(fam, `${k}: element not found — the pin must measure something`);
+    eq(fam, 'Inter', `${k} is language and must be set in the sans:`);
+  }
+});
+
+t('ROLE: OUTPUT surfaces resolve to IBM Plex Mono', () => {
+  for(const [k, fam] of Object.entries(L.output)){
+    ok(fam, `${k}: element not found`);
+    eq(fam, 'IBM Plex Mono', `${k} is output and must stay monospaced:`);
+  }
+});
+
+t('NUMBERS: digits are tabular app-wide, so a proportional face still columns up', () => {
+  // Monospace used to provide digit alignment for free at ~40 sites. A
+  // proportional face has to be asked -- once, on body, rather than at each
+  // site, because a hand-maintained list of "places that show numbers" is the
+  // shape this codebase has already watched go stale.
+  ok(/tabular-nums/.test(L.bodyNumeric),
+     `body must request tabular figures (got "${L.bodyNumeric}")`);
+  // MEASURED, not merely declared -- and measured IN THE DOM, because canvas
+  // measureText ignores font-variant-numeric entirely. The first version of
+  // this pin measured Inter's proportional figures on a canvas and reported
+  // the (correct, expected) difference as a failure: the instrument could not
+  // see the property under test.
+  const mk = txt => {
+    const el = d.createElement('span');
+    el.textContent = txt;
+    el.style.cssText = 'position:absolute;left:-9999px;font-size:16px;white-space:pre';
+    d.body.appendChild(el);
+    return el;
+  };
+  const a = mk('111111'), b = mk('000000');
+  const wa = a.getBoundingClientRect().width, wb = b.getBoundingClientRect().width;
+  // and a control: the SAME strings with tabular figures explicitly off must
+  // differ, or the comparison above proves nothing about the property
+  a.style.fontVariantNumeric = 'proportional-nums';
+  b.style.fontVariantNumeric = 'proportional-nums';
+  const pa = a.getBoundingClientRect().width, pb = b.getBoundingClientRect().width;
+  a.remove(); b.remove();
+  ok(Math.abs(pa - pb) > 0.5,
+     'fixture: with proportional figures these strings must differ, or Inter is not loaded and ' +
+     'this pin cannot distinguish tabular from anything else');
+  ok(Math.abs(wa - wb) < 0.5,
+     `inherited tabular figures must make equal-length digit strings equal-width (got ${wa} vs ${wb})`);
+});
+
+t('FALLBACK: both stacks name a real system fallback, so a missing file degrades in kind', () => {
+  const root = w.getComputedStyle(d.documentElement);
+  const sans = root.getPropertyValue('--sans');
+  const mono = root.getPropertyValue('--mono');
+  ok(/system-ui|-apple-system|sans-serif/.test(sans), `--sans needs a system fallback, got "${sans}"`);
+  ok(/ui-monospace|monospace/.test(mono), `--mono needs a monospace fallback, got "${mono}"`);
+  // and the fallback must be the SAME KIND: a sans falling back to a mono (or
+  // the reverse) would change the layout, not just the texture
+  ok(!/monospace/.test(sans), '--sans must not fall back to a monospace');
+});
+
+frame.remove();
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

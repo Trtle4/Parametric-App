@@ -1604,3 +1604,79 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   inherited: they asserted the whole `stack` object in migration pins whose
   subject is `positions` alone, so every later default added beside them
   (cornerPost, then cap) broke a fixture that never tested it.
+
+- **RESOLVED (typography task): monospace was doing the job of a UI font, and
+  the web fonts were not loading at all.** Two findings, one of them
+  invisible until it was measured.
+  **(1) The ratio, not the families.** Of index.html's 52 `font-family`
+  declarations, 44 were `--mono`: section headers, every field hint, help
+  prose, select values, toggle labels. DM Mono was carrying the interface,
+  which is what made a packaging tool read as a terminal — and it cost real
+  width, not just taste. Measured at the same size: the hint string "derived
+  — solved from the carton" is 212px in DM Mono against 185px in Inter (13%),
+  which is why hints wrapped to two awkwardly-centred lines and the style
+  select truncated mid-word at `FEFCO 201 Regular Slotte(`. The tokens now
+  carry TWO ROLES and the split is the rule, stated at `:root`: `--sans`
+  (Inter) is ALL LANGUAGE — anything a person reads as words; `--mono` (IBM
+  Plex Mono) is OUTPUT AND EXPORT ONLY — drawing sheets, dimension callouts,
+  the title block, the build id, exported PNG/SVG. 41 declarations moved; 3
+  stayed. Every one was classified individually rather than blanket-replaced,
+  because "is this output?" is a judgement a regex cannot make.
+  **(2) THE FONTS WERE NEVER LOADING.** The browser could not reach
+  fonts.googleapis.com at all (`ERR_CONNECTION_RESET`) — so the app had been
+  rendering in fallback faces, and every screenshot taken during the
+  preceding cap and interlock work was of a design nobody had actually seen.
+  A font fallback is SILENT: nothing errors, nothing looks broken, the page
+  is simply not the thing that was designed. Reviewing it required
+  downloading the woff2 files and serving them locally first. Both families
+  are now VENDORED under `fonts/` (185KB, six files — Inter is variable, so
+  one 47KB latin file covers every weight), the Google `<link>` is gone, and
+  a pin asserts the app requests no third-party font. That also removes the
+  `display=swap` FOUT and the question of handing every user's IP to a third
+  party to render a form label. **The remaining third-party request is the
+  three.js CDN script** — pre-existing, out of a font task's scope, and noted
+  here because the measurement that found the font problem also found it.
+  **TABULAR FIGURES, ASKED ONCE.** Monospace was providing digit alignment
+  for free at ~40 sites; a proportional face has to be asked. Asked on
+  `body`, inherited, rather than at each site — a hand-maintained list of
+  "places that show numbers" is precisely the shape this codebase has already
+  watched go stale (see `export/png.js`'s own token list, below).
+  **`export/png.js` was fetching fonts FROM GOOGLE at export time**, from a
+  hardcoded `FONT_FACES` list naming DM Mono and Hanken Grotesk with css2
+  URLs — the same hand-maintained-copy-of-a-fact shape that once made this
+  exact module ship a stale token list and export every tray drawing with its
+  cell lines missing. It now walks the document's own `@font-face` rules, so
+  renaming a family or swapping a weight cannot leave the exporter behind,
+  and an export made offline embeds the same faces the screen is using.
+  `render/sheet.js` had the same smell in miniature (a hardcoded family
+  string for a canvas `ctx.font`, which cannot take a CSS var) and now reads
+  the live `--mono` token with a literal fallback.
+  `export/palletpdf.js` is untouched and correct as-is: it uses the PDF
+  base-14 Helvetica, viewer-resident with nothing embedded, and never
+  referenced either web font.
+  **THE PIN THAT MATTERS IS STRUCTURAL.** Checking that a handful of elements
+  resolve to the right family would pass while mono crept back in somewhere
+  nobody sampled. `test/typography.test.html` instead reads index.html's OWN
+  CSS and asserts every `--mono` declaration belongs to an allowlisted OUTPUT
+  selector — a rule that has to be argued with, not a spot check — and
+  carries a companion pin that plants a UI-side mono use and confirms the
+  walker catches it, so the allowlist cannot pass by returning nothing.
+  **THREE OF THE NINE PINS WERE WRONG ON FIRST WRITE, in instructive ways.**
+  Two tested for the string `fonts.googleapis.com` in the source and failed
+  on a CORRECT file, because index.html and png.js each EXPLAIN IN PROSE why
+  the Google link was removed — an instrument reacting to its own subject's
+  documentation; they strip comments now. The third tried to verify tabular
+  figures with canvas `measureText`, which ignores `font-variant-numeric`
+  entirely, so it measured Inter's proportional figures and reported the
+  correct, expected difference as a failure; it measures in the DOM now, with
+  a `proportional-nums` control proving the comparison can tell the two
+  apart. And a fourth was weak rather than wrong: it looked for the literal
+  `FONT_FACE_RULE` in png.js, which a behaviour-preserving edit (the numeric
+  constant `5`) satisfies just as well — it was testing how the code is
+  WRITTEN. It now asserts png.js contains NO font-family literal at all: with
+  nothing to name, it has nothing to go stale against. Mutation-tested:
+  putting mono back on field hints fails the structural pin; re-adding the
+  Google link fails the self-hosting pin; reintroducing a hardcoded family
+  list in png.js fails the derivation pin.
+  Full regression: `golden.json` 998/998 unchanged (a font change touches no
+  geometry) and every suite green.
