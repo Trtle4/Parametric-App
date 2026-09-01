@@ -1,0 +1,173 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>flow-wrap end seal — print continuity across the crimp</title>
+<pre id="out">running…</pre>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+/* THE FILM RUNS CONTINUOUSLY THROUGH THE CRIMP. The pillow's body, its two
+   ramps and its two crimp tabs are one web: the print does not restart at the
+   crimp line, it carries on. `crimpVLookup` (hierarchy3d.js) exists to make
+   the tab read the ramp's own girth v rather than inventing a range.
+   These pins hold that at the ONE place it was getting it wrong.
+
+   THE DEFECT, measured before it was fixed: the crimp TAB is built at the
+   pack's FULL width (crossDim), while the crimp RING's own extreme sits a few
+   microns inside that, because ringPoints fillets the corners. So the
+   outermost tab vertices at BOTH ends always query outside every run of the
+   lookup. The old fallback took the FIRST candidate run, which owns the
+   negative-w side: on that side the clamp landed on the right value by luck,
+   and on the positive-w side it clamped to that run's far endpoint -- the
+   SEAM. The back half-band's v was painted across the corner of the fin, so
+   the print stopped agreeing with the body it continues. Recorded numbers,
+   +L end, bottom ply: v was 0.9356 (the seam) where the top ply at the same
+   corner read 0.2817.
+
+   WHY ONE END LOOKED FINE. The two tabs are mirrored in world space, so the
+   corner that lands on the lucky side of the fallback differs between them.
+   Both ends were equally wrong; only one showed it. A pin that checked a
+   single end would have passed on a broken pack -- hence EVERY pin below runs
+   over both, and one asserts the two ends agree with each other outright. */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const approx = (a, e, m = '', tol = 1e-3) => { if(!(Math.abs(a - e) <= tol)) throw new Error(`${m} expected ${e}, got ${a}`); };
+
+const {newProject, resolveActiveRow} = await import('../src/core/project.js');
+const {closedWrapParts} = await import('../src/render/hierarchy3d.js');
+
+/* ---------------------------------------------------------- fixture --- */
+
+const proj = newProject();
+const row = resolveActiveRow(proj, '1mm', null);
+const pieces = row && row.arr && row.arr.pieces;
+const wrapGeo = row && row.geo && row.geo.wrap;
+const am = wrapGeo && wrapGeo.meta && wrapGeo.meta.artMap;
+
+// a printed pack: the UVs only get assigned when there IS artwork
+const cvs = document.createElement('canvas'); cvs.width = cvs.height = 8;
+cvs.getContext('2d').fillRect(0, 0, 8, 8);
+
+const bundle = {
+  wraps: pieces && {
+    placements: pieces.placements, envelope: pieces.envelope, pieces: pieces.placements,
+    filmEnvelope: wrapGeo ? wrapGeo.inner : pieces.envelope,
+    piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
+    nx: pieces.nx, ny: pieces.ny, wrapAxis: pieces.wrapAxis
+  },
+  wrapGeo, art: {wrap: cvs}, tray: row && row.tray || null, uboard: row && row.uboard || null
+};
+const defs = bundle.wraps ? closedWrapParts(bundle) : [];
+// closedWrapParts order: body, ramp+L, ramp-L, tab+L, tab-L, [fin]
+const PART = {body: 0, rampPos: 1, rampNeg: 2, tabPos: 3, tabNeg: 4};
+
+const verts = geo => {
+  const p = geo.attributes.position, uv = geo.attributes.uv, out = [];
+  for(let k = 0; k < p.count; k++)
+    out.push({x: p.getX(k), y: p.getY(k), z: p.getZ(k), u: uv.getX(k), v: uv.getY(k)});
+  return out;
+};
+
+t('FIXTURE: a PRINTED wrap resolves, and every part carries real UVs', () => {
+  ok(pieces && pieces.seals, 'the default project must resolve a flow wrap with seals');
+  ok(am, 'the wrap style must publish an artMap, or nothing below is mapped at all');
+  ok(defs.length >= 5, `expected body + 2 ramps + 2 tabs, got ${defs.length}`);
+  for(const [name, i] of Object.entries(PART)){
+    const uv = defs[i].geo.attributes.uv;
+    ok(uv, `${name} has no uv attribute — an unprinted part cannot test print continuity`);
+    let v0 = Infinity, v1 = -Infinity;
+    for(let k = 0; k < uv.count; k++){ v0 = Math.min(v0, uv.getY(k)); v1 = Math.max(v1, uv.getY(k)); }
+    ok(v1 - v0 > 0.01, `${name}'s v is degenerate (${v0}..${v1}) — it would show one flat colour`);
+  }
+});
+
+/** The two rims that must agree at one end: the ramp's crimp ring, and the
+ *  tab's hinge. Both are picked by extreme position along the pack axis. */
+function rims(sign){
+  const R = verts(defs[sign > 0 ? PART.rampPos : PART.rampNeg].geo);
+  const T = verts(defs[sign > 0 ? PART.tabPos : PART.tabNeg].geo);
+  const xExt = sign > 0 ? Math.max(...R.map(p => p.x)) : Math.min(...R.map(p => p.x));
+  const xHin = sign > 0 ? Math.min(...T.map(p => p.x)) : Math.max(...T.map(p => p.x));
+  return {
+    ramp: R.filter(p => Math.abs(p.x - xExt) < 0.5),
+    tab:  T.filter(p => Math.abs(p.x - xHin) < 0.5)
+  };
+}
+
+const ENDS = [['+L', +1], ['-L', -1]];
+
+for(const [tag, sign] of ENDS){
+  t(`CONTINUITY (${tag}): every crimp-tab vertex continues the ramp's own girth v`, () => {
+    const {ramp, tab} = rims(sign);
+    ok(tab.length >= 4 && ramp.length >= 4, `fixture: rims too small (${tab.length}/${ramp.length})`);
+    for(const p of tab){
+      // the ramp vertex on the SAME ply (side of the fin) nearest this one
+      const same = ramp.filter(r => Math.sign(r.y || 1) === Math.sign(p.y || 1));
+      ok(same.length, `no ramp vertices on the ${p.y >= 0 ? 'upper' : 'lower'} ply`);
+      const near = same.reduce((a, b) => (Math.abs(b.z - p.z) < Math.abs(a.z - p.z) ? b : a));
+      approx(p.v, near.v,
+        `tab vertex at z=${p.z.toFixed(1)} (${p.y >= 0 ? 'upper' : 'lower'} ply) does not continue the ` +
+        `ramp's v at z=${near.z.toFixed(1)}:`, 0.02);
+    }
+  });
+
+  t(`CORNERS (${tag}): at the fin's outer edges the two plies MEET, so their v must agree`, () => {
+    // THE EXACT DEFECT. The ring wraps around the corner, so at the extreme
+    // cross-coordinate the upper and lower plies are the same material point
+    // and must carry the same v. The old fallback returned the SEAM here on
+    // one side, which is the far end of the girth walk.
+    const {tab} = rims(sign);
+    const zs = tab.map(p => p.z);
+    for(const zc of [Math.min(...zs), Math.max(...zs)]){
+      const at = tab.filter(p => Math.abs(p.z - zc) < 0.5);
+      const up = at.filter(p => p.y >= 0), lo = at.filter(p => p.y < 0);
+      ok(up.length && lo.length, `fixture: corner z=${zc.toFixed(1)} must carry both plies`);
+      const vu = up[0].v, vl = lo[0].v;
+      approx(vl, vu, `at the fin corner z=${zc.toFixed(1)} the two plies disagree ` +
+        `(upper ${vu.toFixed(4)}, lower ${vl.toFixed(4)}) — the print tears across the corner:`, 0.02);
+    }
+  });
+
+  t(`BACK PANEL (${tag}): the lower ply spans the SEAM, so both back halves reach the seal`, () => {
+    // the pack's back is two half-bands meeting at the bottom seam. If the
+    // lower ply only ever reads one side of the seam, half the back never
+    // reaches the end seal at all.
+    const {tab} = rims(sign);
+    const lo = tab.filter(p => p.y < 0).map(p => p.v);
+    ok(lo.length, 'fixture: the tab must have a lower ply');
+    const vLo = am.faces[0].v0/am.canvas.h, vHi = am.faces[am.faces.length - 1].v1/am.canvas.h;
+    const mid = (vLo + vHi)/2;
+    ok(lo.some(v => v < mid), `the lower ply never reads the first back half (all v >= ${mid.toFixed(3)})`);
+    ok(lo.some(v => v > mid), `the lower ply never reads the second back half (all v <= ${mid.toFixed(3)})`);
+  });
+}
+
+t('BOTH ENDS AGREE: v is a MATERIAL coordinate, so the two seals carry the same girth values', () => {
+  // The ends mirror in u (opposite edges of the blank) but NOT in v: the film
+  // at a given point of the tube carries the same v whichever end you look
+  // at. This is the pin that would have caught a defect present at both ends
+  // but visible at only one -- which is exactly what shipped.
+  const key = a => a.map(p => p.v.toFixed(3)).sort().join(',');
+  const A = rims(+1).tab, B = rims(-1).tab;
+  ok(A.length === B.length, `the two tabs must have the same vertex count (${A.length} vs ${B.length})`);
+  ok(key(A) === key(B), `the two end seals carry different girth values:\n  +L ${key(A)}\n  -L ${key(B)}`);
+});
+
+t('U SEPARATION: the two ends read OPPOSITE edges of the blank — they are not the same column', () => {
+  // the companion to the pin above: v must match, u must not, or the fix
+  // "both ends agree" could be satisfied by collapsing them into one seal.
+  const uOf = a => a.reduce((s, p) => s + p.u, 0)/a.length;
+  const uA = uOf(rims(+1).tab), uB = uOf(rims(-1).tab);
+  ok(Math.abs(uA - uB) > 0.5, `the two tabs sit at u ${uA.toFixed(3)} and ${uB.toFixed(3)} — ` +
+     'they must read opposite ends of the film run');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

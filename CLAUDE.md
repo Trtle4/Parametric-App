@@ -1680,3 +1680,60 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   list in png.js fails the derivation pin.
   Full regression: `golden.json` 998/998 unchanged (a font change touches no
   geometry) and every suite green.
+
+- **RESOLVED (end-seal continuity + save-slot silence): two unrelated bugs,
+  one shared lesson — a failure that looks like a success is worse than a
+  failure that announces itself.**
+
+  **(1) The flow wrap's end-seal print tore at one corner, and only one end
+  showed it.** `crimpVLookup` (hierarchy3d.js) maps the crimp tab's v from the
+  ramp's own girth walk, so the film reads continuously through the crimp
+  rather than restarting. Its out-of-range fallback was `|| cands[0]` — the
+  FIRST candidate run in walk order. That matters because out-of-range queries
+  are NORMAL here: the crimp TAB is built at the pack's full width
+  (`crossDim`), while the crimp RING's own extreme sits a few microns inside
+  it, because `ringPoints` fillets the corners. So the outermost tab vertices
+  at BOTH ends always fall outside every run. `cands[0]` owns the negative-w
+  side, so on that side the clamp landed on the right value BY LUCK, and on
+  the positive-w side it clamped to that run's far endpoint — the SEAM.
+  Measured, +L end, bottom ply: v = 0.9356 where the top ply at the same
+  corner read 0.2817, i.e. the back half-band painted across the corner of the
+  fin. Fixed by clamping to the run the query is NEAREST rather than the first
+  one. **Both ends were equally wrong; only one looked it**, because the two
+  tabs are mirrored in world space — so a pin that checked one end would have
+  passed on a broken pack, and `test/wrapseal.test.html` runs every pin over
+  both plus one asserting the two ends agree outright (v is a MATERIAL
+  coordinate: the ends mirror in u, never in v). Diagnosed by dumping the real
+  UVs through `closedWrapParts` rather than from renders — three rounds of
+  eyeballing an isometric view had been ambiguous, because at that angle the
+  far side of a collapsing ramp legitimately shows the opposite end of the v
+  ramp. Mutation-tested: restoring `|| cands[0]` fails five pins across both
+  ends, including the one that names the user's own words ("the lower ply
+  never reads the first back half").
+
+  **(2) "Save to slot" did nothing, silently, on any project with artwork.**
+  `safeSet` caught `QuotaExceededError` and returned a bare `false`;
+  `saveToSlot` passed it up; the click handler DISCARDED it. Artwork is stored
+  in the save file (a few MB downscaled) against a ~5MB origin quota, so the
+  button wrote nothing, showed nothing, and left the select reading "(empty)".
+  `safeSet` now returns `{ok, reason, bytes}` and both callers act on it, with
+  ONE message builder so the slot button and autosave explain the same thing
+  the same way and both name the remedy (Save to file — no quota).
+  **The autosave half was worse and was found while checking the first.** A
+  failed autosave write left the PREVIOUS entry in place, and startup restores
+  that while announcing "Restored your last session" — stale work presented as
+  current, with no way for the user to notice. It now clears the stale entry
+  and says autosave is off, once. Losing a restore point is bad; silently
+  restoring the wrong one and calling it the right one is data loss with a
+  reassuring label on it.
+  **The fixture had to be corrected twice, and the fixture check caught both.**
+  Filling the real quota does not work in this harness — headless Chromium
+  accepted 100MB of ballast without complaint, so the slot saved anyway and
+  every pin reported a false green. Injecting `QuotaExceededError` at the
+  `setItem` boundary is both deterministic AND the more honest instrument:
+  the defect was never in detecting a full disk, it was the caller discarding
+  a failure the storage layer had correctly reported. A pin calling
+  `saveToSlot` directly would have passed throughout — these drive the real
+  button. Mutation-tested: discarding the result again fails three pins;
+  keeping the stale autosave fails the staleness pin.
+  Full regression: `golden.json` 998/998 unchanged, every suite green.

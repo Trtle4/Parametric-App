@@ -1,0 +1,181 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>save slots — a convenience that fails must SAY SO</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* A CONVENIENCE THAT FAILS IS FINE. A CONVENIENCE THAT FAILS SILENTLY IS NOT,
+   because the user cannot tell it from success.
+
+   Reported as "unable to save a new named slot", and that is exactly what it
+   was. `safeSet` caught QuotaExceededError and returned a bare `false`;
+   `saveToSlot` passed it up; the click handler DISCARDED it. So on any
+   project carrying artwork — artwork is stored in the save file, a few MB of
+   it against a ~5MB origin quota — the button did nothing at all: no slot
+   written, no error, the select still reading "(empty)".
+
+   The same swallow made autosave worse than useless. A failed write left the
+   PREVIOUS entry in place, and startup restores that while announcing
+   "Restored your last session" — stale work presented as current, with no
+   way for the user to notice. Losing a restore point is bad; silently
+   restoring the wrong one and calling it the right one is worse.
+
+   These pins drive the REAL buttons in a REAL app, because the defect was
+   never in the storage layer's logic (which correctly returned false) but in
+   the caller ignoring it — and a pin that called saveToSlot directly would
+   have passed throughout. */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const settle = (ms = 200) => new Promise(r => setTimeout(r, ms));
+
+/** Make the app's own storage writes fail with the error a full browser
+ *  raises, and leave reads alone.
+ *
+ *  FILLING THE REAL QUOTA WAS TRIED FIRST AND DOES NOT WORK HERE: headless
+ *  Chromium accepted 100MB of ballast without complaint, so the slot still
+ *  saved and every pin below reported a false green. Measured, not assumed —
+ *  the fixture check caught it.
+ *
+ *  Injecting at the API boundary is also the more honest instrument for what
+ *  is being tested. The defect was never in detecting a full disk; it was the
+ *  CALLER discarding a failure the storage layer had correctly reported. This
+ *  reproduces exactly that: setItem throws QuotaExceededError, safeSet catches
+ *  it, and the question is whether the UI says anything. */
+function denyWrites(w){
+  const real = w.localStorage.setItem.bind(w.localStorage);
+  w.localStorage.setItem = (k, v) => {
+    if(/^rsc-designer:/.test(k)){
+      const e = new Error('mock quota'); e.name = 'QuotaExceededError'; e.code = 22;
+      throw e;
+    }
+    return real(k, v);
+  };
+}
+
+function openApp(){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = 'width:1400px;height:900px;border:0';
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+/** Drive the real Save-to-slot button, answering its prompt, and report what
+ *  the app DID and what it SAID. `bloat` fills the project with artwork-sized
+ *  data first, which is how a real project exceeds the quota. */
+async function trySlotSave(bloat){
+  const f = await openApp();
+  await settle(1500);
+  const w = f.contentWindow, d = f.contentDocument;
+  try{ w.localStorage.clear(); }catch(e){}
+  const name = bloat ? 'Big Project' : 'Small Project';
+  w.prompt = () => name;                       // the real handler calls prompt()
+  if(bloat){
+    // A PROJECT THAT CANNOT FIT — reproduced as the error the browser raises
+    // when one does not. See denyWrites.
+    denyWrites(w);
+  }
+  d.getElementById('btnSlotSave').click();
+  await settle(700);
+  const notice = d.getElementById('loadNotice');
+  const out = {
+    stored: !!w.localStorage.getItem('rsc-designer:slot:1'),
+    label: d.getElementById('slotSel').options[0].textContent,
+    noticeShown: notice ? w.getComputedStyle(notice).display !== 'none' : false,
+    noticeText: notice ? notice.textContent : ''
+  };
+  f.remove();
+  return out;
+}
+
+const OKCASE = await trySlotSave(false);
+const FULL   = await trySlotSave(true);
+
+t('FIXTURE: the two cases genuinely differ — one write succeeds, the other cannot', () => {
+  ok(OKCASE.stored, 'the small project must actually save, or the failure case proves nothing');
+  ok(!FULL.stored, 'the ballasted case must genuinely fail to write, or there is no failure to report');
+});
+
+t('SUCCESS: a slot that saved says so, and the select shows the new name', () => {
+  ok(/Small Project/.test(OKCASE.label),
+     `the select must show the saved name (got "${OKCASE.label}")`);
+  ok(OKCASE.noticeShown && /Saved to slot 1/i.test(OKCASE.noticeText),
+     `a successful save must confirm itself (got "${OKCASE.noticeText.slice(0, 90)}")`);
+});
+
+t('FAILURE IS VISIBLE: a slot that could not be written raises a notice, not silence', () => {
+  // THE REPORTED BUG. Before the fix this assertion is the whole thing: the
+  // write failed and the app said nothing whatsoever.
+  ok(FULL.noticeShown, 'a failed slot save must show a notice — silence is indistinguishable from success');
+  ok(/NOT saved/i.test(FULL.noticeText),
+     `the notice must say the slot was not saved (got "${FULL.noticeText.slice(0, 120)}")`);
+});
+
+t('FAILURE IS ACTIONABLE: the notice names the cause and the remedy', () => {
+  ok(/browser will store|local storage disabled|refused the write/i.test(FULL.noticeText),
+     'the notice must say WHY, not just that it failed');
+  ok(/Save/i.test(FULL.noticeText) && /file/i.test(FULL.noticeText),
+     'the notice must point at the durable path (Save to file has no quota)');
+});
+
+t('NO FALSE LABEL: a slot that failed to save must not appear named in the select', () => {
+  // the select is rebuilt from listSlots() after the attempt; a failed write
+  // must leave it reading "(empty)", never the name the user just typed
+  ok(!/Big Project/.test(FULL.label),
+     `the select claims a slot that was never written (got "${FULL.label}")`);
+});
+
+/* ------------------------------------------------- autosave staleness --- */
+
+/** Autosave with a full quota: the previous entry must NOT survive to be
+ *  restored later as "your last session". */
+async function autosaveUnderPressure(){
+  const f = await openApp();
+  await settle(1500);
+  const w = f.contentWindow, d = f.contentDocument;
+  try{ w.localStorage.clear(); }catch(e){}
+  // let one good autosave land, so there IS a prior entry to go stale
+  const inp = d.getElementById('pal');
+  if(inp){ inp.value = '48 x 40'; inp.dispatchEvent(new Event('input', {bubbles: true})); }
+  await settle(1400);
+  const before = !!w.localStorage.getItem('rsc-designer:autosave');
+  // now make writes fail and edit again, so the next autosave cannot write
+  denyWrites(w);
+  if(inp){ inp.value = '44 x 36'; inp.dispatchEvent(new Event('input', {bubbles: true})); }
+  await settle(1600);
+  const after = !!w.localStorage.getItem('rsc-designer:autosave');
+  const notice = d.getElementById('loadNotice');
+  const out = {before, after, noticeText: notice ? notice.textContent : ''};
+  f.remove();
+  return out;
+}
+const AS = await autosaveUnderPressure();
+
+t('AUTOSAVE: a write that fails does not leave the PREVIOUS snapshot to be restored as current', () => {
+  ok(AS.before, 'fixture: a good autosave must land first, or there is no stale entry to test');
+  ok(!AS.after,
+     'the stale autosave survived a failed write — the next load would restore an older project ' +
+     'while announcing "Restored your last session", which is stale work presented as current');
+});
+
+t('AUTOSAVE: the user is told autosave is off, once, with the same remedy', () => {
+  ok(/Autosave is OFF/i.test(AS.noticeText),
+     `autosave failing must be stated (got "${AS.noticeText.slice(0, 120)}")`);
+  ok(/Save/i.test(AS.noticeText) && /file/i.test(AS.noticeText),
+     'and must point at the durable path');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
