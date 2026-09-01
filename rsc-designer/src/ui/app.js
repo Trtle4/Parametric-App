@@ -2029,13 +2029,10 @@ function mountCostRates(){
   });
 }
 
-const LEVEL_BRAND = {
-  product: {code: 'PRODUCT', sub: 'Product arrangement'},
-  tray:    {code: 'TRAY',    sub: 'Thermoformed sizing tray'},
-  uboard:  {code: 'UBOARD',  sub: 'Paperboard U-board interlayer'},
-  pallet:  {code: 'PALLET',  sub: 'Load on the pallet'},
-  trailer: {code: 'TRAILER', sub: 'Trailer fit'}
-};
+/** The app's own name — the header, PDF title block, and mobile spec sheet
+ *  title all read this ONE constant rather than the active style/level's own
+ *  name, so switching levels never changes what the app is called. */
+const APP_NAME = 'Packaging Toolbox';
 
 /** DXF/artwork/spec button availability: flexible styles have no die (film
  *  spec + artwork only); a disabled tier has no geometry to export at all.
@@ -2122,18 +2119,13 @@ function setActiveLevel(level){
   activeLevel = level;
   solidOverride = null;   // each level/depth re-picks its smart Solid/Cutaway default
   const lvl = LEVELS[level];
-  if(lvl.kind === 'style'){
-    const style = activeStyle();
-    el('brandCode').textContent = style.brand.code;
-    el('brandName').textContent = style.brand.sub;
-  }else{
-    el('brandCode').textContent = LEVEL_BRAND[level].code;
-    el('brandName').textContent = LEVEL_BRAND[level].sub;
-  }
-  // title block + mobile spec header follow the active level's part + name
-  el('tbPart').textContent = el('brandCode').textContent;
+  el('brandName').textContent = APP_NAME;
+  // title block + mobile spec header carry the app's own name too, never
+  // the active level's style/part name -- lvl.label (tbLevel, and msTitle's
+  // own suffix) is what still tells the two levels apart.
+  el('tbPart').textContent = APP_NAME;
   el('tbLevel').textContent = lvl.label.toUpperCase();
-  el('msTitle').textContent = `${el('brandCode').textContent} · ${lvl.label}`;
+  el('msTitle').textContent = `${APP_NAME} · ${lvl.label}`;
   updateExportButtonsState();
   updatePngButtonsState();
   if(el('style').value !== level) el('style').value = level;

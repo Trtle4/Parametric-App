@@ -36,6 +36,14 @@ export function a6120(p){
   const ch = Math.min(TAB_CHAMFER, TT);                   // tab chamfer legs
   const cg = Math.max(0, Math.min(g*0.5, GLUE_CHAMFER_MAX));
 
+  // TUCK PANEL cap coverage — clamped to the girth it can physically reach
+  // (a panel deeper than W would overshoot the far wall). Unlike the RSC's
+  // pair of majors, ONE flap here rarely reaches the whole W; the leftover
+  // is genuinely unprinted (the dust flaps under it carry no artwork either,
+  // same as this style's own board-cap fallback), so packArtGeometry fills
+  // it with plain board rather than the tuck panel guessing a wider reach.
+  const tuckVisible = Math.min(T, W);
+
   const cut = [
     [x1,yb],[0,yb+cg],[0,yt-cg],[x1,yt],                     // glue tab, chamfered ends
     [x2,yt],                                                 // back panel top edge (plain cut — closure is at its bottom)
@@ -151,7 +159,18 @@ export function a6120(p){
           {panel: 'side',  u0: x2, u1: x3, v0: yb, v1: yt},
           {panel: 'front', u0: x3, u1: x4, v0: yb, v1: yt},
           {panel: 'side',  u0: x4, u1: x5, v0: yb, v1: yt}
-        ]
+        ],
+        // ONE printed flap per end — the tuck panel, the SAME panel
+        // closure.top already names as the one that `holdsLid` (face 2 at
+        // top; face 0, the reverse end's tuck, at bottom). Depth is
+        // `tuckVisible`, not the full crease-to-tab reach: the tab itself
+        // folds DOWN inside the cavity, off the flat cap plane entirely, so
+        // it is never part of this quad. packArtGeometry fills whatever
+        // girth the panel doesn't reach with plain board.
+        caps: {
+          top:    tuckVisible > 0 ? [{face: 2, v0: yt, v1: yt + tuckVisible}] : [],
+          bottom: tuckVisible > 0 ? [{face: 0, v0: yb, v1: yb - tuckVisible}] : []
+        }
       }
     }
   };

@@ -52,6 +52,16 @@ export function fefco201(p, options = {}){
     [x1,yb1,x5,yb1],[x1,yt1,x5,yt1]                                   // horizontal flap folds
   ];
 
+  // MAJOR-FLAP PANELS — the single source `closure.top` below AND artMap.caps
+  // both read, so "which pair is major" can never disagree between the
+  // openability check and the artwork map. Length panels (0 back, 2 front)
+  // by default; width panels (1, 3) under `outerFlaps: 'W'` — see closure.top's
+  // own doc comment for why.
+  const majorPanels = [0, 1, 2, 3].filter(panel => {
+    const isLengthPanel = panel === 0 || panel === 2;
+    return outerFlaps === 'W' ? !isLengthPanel : isLengthPanel;
+  });
+
   // --- material compensation (outside dimensions of the erected case) -----
   // A closed RSC is bigger than its cavity by the board it is made of:
   //  * L and W each gain one board thickness per wall: the two length walls
@@ -112,19 +122,35 @@ export function fefco201(p, options = {}){
       // staggers inward) — length panels (0, 2) by default, width panels
       // (1, 3) under `outerFlaps: 'W'`.
       closure: {
-        top: [0, 1, 2, 3].map(panel => {
-          const isLengthPanel = panel === 0 || panel === 2;
-          const major = outerFlaps === 'W' ? !isLengthPanel : isLengthPanel;
-          return {panel, part: major ? 'major flap' : 'minor flap', holdsLid: major};
-        }),
+        top: [0, 1, 2, 3].map(panel => ({
+          panel, part: majorPanels.includes(panel) ? 'major flap' : 'minor flap',
+          holdsLid: majorPanels.includes(panel)
+        })),
         lidJoin: 'the tape along the centre seam'
       },
       // ARTWORK MAP — same upright-tube convention as the cartons (extrude
       // along H, girth around the four body walls, FRONT at +Z). The RSC panel
       // run is [glue | front L | side W | back L | side W]; the print panel
       // (x1..x2) is the FRONT. Height carries v (yb1..yt1, the body band); each
-      // wall's x-range carries u. Top/bottom are flaps — board caps, no art.
-      // Adding this is what lets a printed CASE show on every pallet instance.
+      // wall's x-range carries u.
+      //
+      // TOP/BOTTOM: the two MAJOR flaps (closure.top's own `holdsLid` pair —
+      // read from there, never recomputed, so the artwork map can't disagree
+      // with the openability check about which pair is major) are what a
+      // closed RSC actually shows looking down: majors-over-minors, taped at
+      // the centre seam, each reaching exactly to the middle (flapDepth =
+      // W/2), so the two together tile the FULL L×W cap with no gap and no
+      // overlap. `caps.top`/`caps.bottom` name which `faces` index supplies
+      // each flap and the blank v-range from its crease (the wall's own top/
+      // bottom edge, v0) to its tip (v1) — packArtGeometry folds each flat
+      // onto the cap plane, inheriting the wall's own u<->world-X mapping
+      // unchanged (the fold axis is parallel to X, so X never moves) and
+      // shifting the wall's own Z position toward the centreline by the flap
+      // depth. Minor (side) flaps are never declared here: they end up
+      // hidden under the majors on a real closed box, so they carry no
+      // outward-facing artwork either. A style with no `caps` (or an
+      // `outerFlaps` build whose majors don't exactly tile — not this one)
+      // falls back to `packArtGeometry`'s plain board cap.
       artMap: {
         canvas: {w: x5, h: yt2},
         up: 'v',
@@ -139,7 +165,11 @@ export function fefco201(p, options = {}){
           {panel: 'side',  u0: x4, u1: x5, v0: yb1, v1: yt1},
           {panel: 'front', u0: x1, u1: x2, v0: yb1, v1: yt1},
           {panel: 'side',  u0: x2, u1: x3, v0: yb1, v1: yt1}
-        ]
+        ],
+        caps: {
+          top:    majorPanels.map(face => ({face, v0: yt1, v1: yt2})),
+          bottom: majorPanels.map(face => ({face, v0: yb1, v1: yb0}))
+        }
       }
     }
   };
