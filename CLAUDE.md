@@ -1737,3 +1737,104 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   button. Mutation-tested: discarding the result again fails three pins;
   keeping the stale autosave fails the staleness pin.
   Full regression: `golden.json` 998/998 unchanged, every suite green.
+- **RESOLVED (drawings-not-exporting task): of the three export formats, only
+  the artwork SVG template was actually broken — and it was broken two ways,
+  plus a third, unrelated crash found by testing it.** DXF (`export/dxf.js`
+  transcribing `geo.cut`/`geo.crease` into CUT/CREASE layers) and the 2D PNG
+  (`export/png.js` rasterizing the on-screen dieline SVG, which draws both
+  arrays unconditionally) were both confirmed correct and left untouched —
+  verified by reading the real exported/rendered content (DXF entity counts,
+  the on-screen SVG's own `innerHTML`), not by re-deriving what they should
+  contain. The bug was in `export/artwork.js`'s `buildArtworkSVG`, the app's
+  only SVG-format export (behind "Artwork SVG" and the artwork panel's own
+  SVG/PNG buttons — PNG builds this SVG internally, then rasterizes it).
+  (1) Its "blank outline" was a `<rect>` over `geo.bbox` — the BOUNDING BOX,
+  never the die. A6120's back panel has no top flap at all while its side
+  panels' dust-flap sweeps and front tuck reach well past it; sealend and the
+  FEFCO 0300 tray are similarly irregular. The rectangle there was not a
+  simplification, it was a DIFFERENT, LARGER shape inviting a designer to
+  paint into a corner the die does not have. (2) Fold guidance came ONLY from
+  `geo.meta.refLines`, a field that exists SOLELY because flowwrap's own
+  `crease` array is genuinely empty ("film is never scored") — every RIGID
+  style (FEFCO 201, A6120, sealend, the tray) has real creases in `geo.crease`
+  that nothing here ever read, so every one of those templates shipped with
+  ZERO fold lines despite the sheet's own printed legend claiming "dashed =
+  fold reference". Fixed by drawing a `<polygon>` from `geo.cut` — the SAME
+  array DXF and the on-screen dieline already draw, so the template can never
+  show a different picture than the file it's meant to register against —
+  and falling back to `geo.crease` for fold lines whenever `refLines` is
+  empty: not a new source, the one that was always there.
+  **A third, unrelated crash surfaced from testing the fix, not from the
+  report**: `geo.meta.film` is truthy for BOTH flowwrap
+  (`{webWidth, cutLength, ...}`) and shrinkbundle
+  (`{surfaceM2, filmAreaM2, drawdownPct, opacityPct, girth, massPer1000g}`) —
+  two unrelated shapes sharing only `filmAreaM2`/`massPer1000g`. A bare
+  truthiness check on `f` (both in the header-line builder and in
+  `filmSpecText`, the "Copy film spec" button) read shrinkbundle's film as
+  flowwrap's and called `fmtLen` on its nonexistent `webWidth`, throwing —
+  silently breaking THREE buttons (`btnArt`, the artwork panel's SVG/PNG, and
+  `btnSpec`) for any shrink-bundle project, all reachable since they're gated
+  on `structure === 'flexible'`, which both flexible styles satisfy, and none
+  of the click handlers have a try/catch. Fixed by branching on
+  `geo.meta.style === 'flowwrap'` — the discriminant both styles already
+  declare — rather than on the shape of a field they happen to share the name
+  of; `filmSpecText` gained a genuine shrinkbundle-shaped branch reporting
+  its own fields (girth, drawdown, opacity) instead of guessing at flowwrap's.
+  `test/artworktemplate.test.html` holds all of this at the RENDERED string
+  (real `<polygon>`/`<line>` counts and vertex values from the real exported
+  text, never re-deriving `geo.cut`/`geo.crease`'s own shape), with a FIXTURE
+  pin proving A6120's die is genuinely non-rectangular (an independent
+  shoelace-area check) before trusting any pin built on that assumption, an
+  EXHAUSTIVE sweep over the whole style registry, and a DOM-driven
+  REACHABILITY block that drives the real "SVG" button in a real loaded app
+  and intercepts the actual downloaded Blob via `URL.createObjectURL`, so a
+  passing unit-level check can never stand in for "does the app actually call
+  this". Mutation-tested three ways, each restoring the fix afterward:
+  reverting to the old truthy `f` check re-crashes both the header line and
+  `filmSpecText`, caught immediately; reverting the outline/fold-line fix to
+  the old `<rect>` + `refLines`-only code fails all 16 outline/fold-line pins
+  while the fixture and crash-fix pins stay green (proving those two failure
+  classes are independently covered). Full regression: every runnable suite
+  green (`golden.json`'s own harness, `verify.html`, times out in this
+  sandbox exactly as it does on an unmodified baseline — confirmed via
+  `git stash`, unrelated to this change, which touches no geometry code at
+  all), including `explode.test.html`/`uboard.test.html`, whose identical
+  timeout was likewise confirmed pre-existing.
+- **RESOLVED (fragile-text task): "print text" is dead everywhere except one
+  renderer that kept drawing it.** Reported as "Fragile is still shown on the
+  2D dieline view... even though this does not impact the 3D render." The
+  literal word is nowhere in a fresh project — `project.printText`'s default
+  has been `''` since the artwork-mapping task — and the `#txt` control that
+  used to set it is not merely hidden, it is entirely unwired: nothing in
+  `app.js` reads `el('txt')` at all any more. So no live project can type
+  this in today; what the user was seeing is a value carried over from an
+  OLDER SAVE (confirmed against real ground truth: `test/fixtures/v1/
+  full-chain.pkg.json`, a v1 migration fixture predating the empty default,
+  has `project.printText === "FRAGILE"` verbatim). `persistence.js` still
+  round-trips the field on purpose (old saves must still deserialize), and
+  `dieline2d.js`'s `draw2d()` was still drawing it in solid black text
+  whenever present — the one place a value that can no longer be SET through
+  the UI was still visibly showing up. The 3D fold view already reads as
+  effectively dead for this: index.html's own control comment says printed
+  text "doesn't read" there now that materials are translucent, matching the
+  user's observation that 3D was unaffected. Fixed by making `draw2d()`
+  unconditionally never draw print-panel text — not "suppressed when artwork
+  is present" (the first fix attempted, and mutation-tested before being
+  discarded: it would have left `printText` showing on a legacy save with no
+  artwork uploaded, which does not satisfy "gone from all 2D dielines"). 3D
+  is untouched — `buildBox()` still bakes `printText` into the kraft box's
+  material — since the report was explicit that 3D was not the problem.
+  `printText` stays a parameter of `draw2d()` (accepted, now unused) rather
+  than a signature change, so the one production call site (`app.js`) and
+  six pre-existing calls in `uisync.test.html` need no touching for a
+  display-only decision. Verified against the REAL legacy fixture through
+  the real UI, not just the pure function: loading `full-chain.pkg.json` via
+  the actual "Load" button and checking the rendered carton/case 2D `<svg>`
+  for the literal string confirms it is gone (screenshotted). `test/
+  printtext2d.test.html` holds this at the rendered SVG string, per style
+  (fefco201/a6120/sealend/flowwrap — wraps, cartons and cases all share this
+  one renderer) x with/without a real uploaded-artwork image, so the "was it
+  conditional on artwork" question the first fix attempt got wrong stays
+  pinned open. Mutation-tested: restoring the old unconditional-draw code
+  fails 13 of 14 pins (only the artwork-layer-itself fixture check survives,
+  as expected — it asserts a fact the mutation never touches).

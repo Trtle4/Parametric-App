@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>2D dieline print text — never drawn</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* REPORTED: "Fragile is still shown on the 2d dieline view for wraps, cartons
+   and cases. Even though this does not impact the 3d render I want it gone
+   from all 2d dielines."
+
+   The word itself is nowhere in this codebase's live defaults -- project.
+   printText's default has been '' since the artwork-mapping task, and the
+   #txt control that used to set it was hidden app-wide a while back (see
+   index.html: "3D views are translucent now, print text doesn't read").
+   So no NEW project can type this in through the UI at all; what the user
+   is seeing is printText carried over from an older save (back when the
+   default was literally 'FRAGILE') or from before the control was hidden --
+   readState()/persistence still round-trip the field, by design, even
+   though nothing can set it anymore.
+
+   The 3D fold view already renders this as effectively dead: the control
+   comment says outright that translucent materials mean printed text
+   "doesn't read" there today. The 2D dieline was the one place a stored
+   printText value still rendered crisply and visibly -- draw2d() drew it
+   in solid black text unconditionally, regardless of whether the field is
+   even reachable anymore. Per the report, this is now UNCONDITIONALLY
+   suppressed on 2D: draw2d() never emits print-panel text, whether or not
+   printText is set and whether or not real artwork is present. 3D is left
+   exactly as it was -- the report explicitly said this doesn't affect it. */
+
+import {styleById} from '../src/core/styles/index.js';
+import {draw2d} from '../src/render/dieline2d.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+
+function defaultParams(style){
+  const p = {};
+  for(const d of style.params) p[d.key] = d.default;
+  return p;
+}
+const geoOf = id => styleById(id).geometry(defaultParams(styleById(id)), {});
+
+// a 1x1 red pixel PNG — enough to be a real, decodable image source; draw2d
+// never decodes it (it emits an <image href> string), so content doesn't matter
+const ART = {src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', fit: 'stretch', dx: 0, dy: 0, scale: 1};
+
+function svgFor(id, printText, art){
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  document.getElementById('rig').appendChild(svg);
+  draw2d(svg, geoOf(id), 'mm', printText, art);
+  const html = svg.innerHTML;
+  svg.remove();
+  return html;
+}
+
+const STYLES = ['fefco201', 'a6120', 'sealend', 'flowwrap'];   // wraps, cartons, cases all go through this one renderer
+
+t('FIXTURE: every style under test genuinely publishes a print panel (g.meta.print) — a pin with nothing to suppress proves nothing', () => {
+  for(const id of STYLES) ok(geoOf(id).meta.print, `${id}: no print panel — this pin proves nothing for it`);
+});
+
+for(const id of STYLES){
+  t(`NO ART (${id}): printText is still gone — this is not conditional on artwork`, () => {
+    const html = svgFor(id, 'FRAGILE', null);
+    ok(!/FRAGILE/.test(html), 'printText rendered on the 2D dieline with no artwork present');
+  });
+
+  t(`REAL ARTWORK (${id}): printText is gone, and the art layer itself still renders`, () => {
+    const html = svgFor(id, 'FRAGILE', ART);
+    ok(!/FRAGILE/.test(html), 'printText rendered on top of real artwork — the originally reported case');
+    ok(/<image[^>]*href="data:image\/png/.test(html), 'fixture: the artwork layer itself must still be present');
+  });
+
+  t(`REGRESSION (${id}): the rest of the dieline (outline, dims) is unaffected by the printText change`, () => {
+    const withText = svgFor(id, 'FRAGILE', null);
+    const withoutText = svgFor(id, '', null);
+    ok(/<polygon points=/.test(withText) && /<polygon points=/.test(withoutText),
+       'the cut outline must render regardless of printText');
+    ok(withText === withoutText, 'a non-empty printText must produce byte-identical markup to an empty one now');
+  });
+}
+
+t('EXHAUSTIVE: no style in the registry draws print text on its 2D dieline, with or without artwork', () => {
+  const bad = [];
+  for(const id of STYLES){
+    if(/ZZZTESTZZZ/.test(svgFor(id, 'ZZZTESTZZZ', null))) bad.push(`${id} (no art)`);
+    if(/ZZZTESTZZZ/.test(svgFor(id, 'ZZZTESTZZZ', ART))) bad.push(`${id} (with art)`);
+  }
+  ok(bad.length === 0, `these still show print text on the 2D dieline: ${bad.join(', ')}`);
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
