@@ -170,6 +170,81 @@ export function perfBodyGeometry(geo){
 }
 
 /**
+ * The REMOVED piece: what tears away, in display state. The complement of
+ * `perfBodyGeometry` along the SAME profile (`geo.perf.path`, the one arc
+ * core/perf.js polygonised for the dieline and the DXF) — never a bounding
+ * box or any other approximation, so the boundary the two pieces share is
+ * pixel-for-pixel the boundary `perfBodyGeometry` already draws. At a given
+ * s, the retained body runs h = 0..retained(s); this piece runs
+ * h = retained(s)..H (the panel's own full, unperforated height, the same
+ * `geo.inner.H` the retained body's own `yBody` is measured from) — so a
+ * segment already retained at its full height (no tear there) contributes
+ * nothing, and no material is invented or duplicated at the shared edge.
+ *
+ * UVs use artwork3d's carton mapping (u REVERSED, matching printCap's
+ * printed-faces loop and `perfBodyGeometry`'s own `uvAt`), so the printed
+ * share of the artwork above the tear reads exactly as it would on the
+ * intact, unopened pack — no re-derivation, no rectangular stand-in for
+ * the arc.
+ *
+ * Two-sided walls only (no floor/cap of its own — a torn-off lid has no
+ * base to speak of, and this piece's own top closure is Property 3's own
+ * cap-flap concern, not duplicated here). Material group 0 only (printed).
+ *
+ * @param {import('../core/types.js').Geometry} geo  carrying `perf.path`
+ * @returns {THREE.BufferGeometry|null}
+ */
+export function perfRemovedGeometry(geo){
+  const frames = perfFrames3d(geo);
+  if(!frames) return null;
+  const am = geo.meta.artMap, CW = am.canvas.w, CH = am.canvas.h;
+  const t = boardT(geo);
+  const yBody = -geo.inner.H/2;
+  const H = geo.inner.H;                        // the panel's own full, unperforated height
+
+  const wallP = [], wallU = [];
+  const tri = (P, Q, R, uP, uQ, uR, pA, uA) => { pA.push(...P, ...Q, ...R); uA.push(...uP, ...uQ, ...uR); };
+  const quad = (A, B, C, D, uA, uB, uC, uD, pA, uAr) => {
+    tri(A, B, C, uA, uB, uC, pA, uAr); tri(A, C, D, uA, uC, uD, pA, uAr);
+  };
+
+  for(const f of frames){
+    const p = f.panel;
+    const at = (s, h, off) => [
+      f.a[0] + f.d[0]*s + f.n[0]*off,
+      yBody + h,
+      f.a[1] + f.d[1]*s + f.n[1]*off
+    ];
+    const uvAt = (s, h) => [(p.u1 - Math.min(Math.max(s, 0), p.width))/CW, (p.v0 + Math.max(h, 0))/CH];
+
+    const prof = extendProfile(p.pts, t*CORNER_OVERLAP);
+    for(let i = 0; i < prof.length - 1; i++){
+      const [s0, h0] = prof[i], [s1, h1] = prof[i + 1];
+      if(Math.abs(s1 - s0) < 1e-9 && Math.abs(H - h0) < 1e-9 && Math.abs(H - h1) < 1e-9) continue;  // already fully retained here — nothing removed
+      const u00 = uvAt(s0, h0), u10 = uvAt(s1, h1), u11 = uvAt(s1, H), u01 = uvAt(s0, H);
+      // outer face, same winding convention as perfBodyGeometry's own walls
+      quad(at(s0, h0, t), at(s1, h1, t), at(s1, H, t), at(s0, H, t), u00, u10, u11, u01, wallP, wallU);
+      // inner face, the other way round
+      quad(at(s0, h0, 0), at(s0, H, 0), at(s1, H, 0), at(s1, h0, 0), u00, u01, u11, u10, wallP, wallU);
+      // the torn edge itself — the SAME edge perfBodyGeometry's own torn band
+      // shares, wound so its outward normal points AWAY from the retained
+      // body (opposite of perfBodyGeometry's version of this same edge)
+      quad(at(s0, h0, t), at(s0, h0, 0), at(s1, h1, 0), at(s1, h1, t), u00, u00, u10, u10, wallP, wallU);
+    }
+  }
+
+  if(!wallP.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(wallP, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(wallU, 2));
+  g.computeVertexNormals();
+  g.addGroup(0, wallP.length/3, 0);
+  g.userData.spanMax = Math.max(geo.outer.L, geo.outer.W, geo.outer.H);
+  g.userData.perfRemoved = true;
+  return g;
+}
+
+/**
  * The tear as a SURFACE LINE — what shipping state shows. A line, not a cut
  * and not a gap: the pack is intact, and this is where it will open.
  *
@@ -217,6 +292,13 @@ export function perfLineMaterial(){
  */
 export function perfDisplayBody(geo, mats){
   const g = perfBodyGeometry(geo);
+  if(!g) return null;
+  return new THREE.Mesh(g, mats);
+}
+
+/** The torn-away piece, ready to add beside the retained display body. */
+export function perfRemovedBody(geo, mats){
+  const g = perfRemovedGeometry(geo);
   if(!g) return null;
   return new THREE.Mesh(g, mats);
 }

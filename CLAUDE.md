@@ -1120,3 +1120,98 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   (4 pre-existing `pallet.stack.cornerPost` failures, confirmed via
   `git stash` to predate this task and already flagged as out of scope in
   the corner-post task's own entry above).
+- **RESOLVED (artwork-mapping task): four invariants — glue tab never
+  outward, side faces match the dieline, major panels get printed caps with
+  the RSC's own major flaps sourcing them, and a perforation tear keeps
+  artwork on BOTH pieces — centralised into one shared checker, run
+  exhaustively, with a chirally-asymmetric fixture so a mirrored or swapped
+  panel actually fails a pin instead of reading clean.** `core/
+  artworkInvariants.js` is pure/DOM-free (no THREE dependency) and holds the
+  properties genuinely shared across styles; per-style `faces`/`caps`
+  declarations correctly stay in each style file (a carton's panel run is
+  not a case's). Property 1 (`glueNeverOutward`) and property 2
+  (`facesMatchDieline` — every face rect's four corners are literal
+  endpoints of the style's own `crease` array, not an independently guessed
+  rectangle) run exhaustively over the style registry; a new
+  `rigidTubeStyleDeclaresFaces` closes the gap the task named explicitly —
+  a rigid, non-flat style with NO `am.faces` at all is an ERROR
+  (`applicable:true, ok:false`), never silently skipped the way a style with
+  genuinely nothing to check (flexible, or the tray's flat exemption) is.
+  Property 3 ("major panels printed, largest on top") turned out to have NO
+  general answer: a simple extruded tube's top and bottom caps are ALWAYS
+  area-tied by construction, so "largest" cannot be computed — confirmed by
+  proof, then by the user's own tie-break instruction ("for the RSC, the
+  LENGTH-panel flaps are the major ones — that's where the graphics are
+  sourced"), which maps directly onto `closure.top`'s PRE-EXISTING
+  `major flap`/`holdsLid` distinction (the openability check's own resolver)
+  rather than inventing a second orientation authority. `fefco201.js` now
+  extracts `majorPanels` ONCE and both `closure.top` and the new
+  `artMap.caps.top`/`.bottom` read it, so the two can never disagree about
+  which pair is major. The fold-flat derivation itself: a flap's CREASE
+  corners are the wall's own top/bottom edge (`V(±half, sec[face])`, the
+  SAME points the wall's own printed quad already uses) and its TIP corners
+  are those points with the girth coordinate pulled toward the centreline by
+  the flap's own depth — verified empirically via a vertex dump before
+  committing to it, confirming the RSC's two length-flaps meet EXACTLY at
+  the centreline with zero gap (W/2 + W/2 = W, by construction). `a6120`/
+  `sealend` are DELIBERATELY DEFERRED — each has one real dominant flap per
+  end, but its depth is a runtime PARAMETER (`tuckDepth`/`sealFlapDepth`)
+  that does not, in general, exactly tile the cap the way the RSC's fixed
+  W/2 majors do; giving them `caps` today would mean guessing a board-fill
+  for the leftover, so they keep the plain board cap `packArtGeometry`
+  already had. Property 4 (perforation keeps the leftover artwork, cut on
+  the real arc, not a rectangular approximation): `perf3d.js` gained
+  `perfRemovedGeometry`/`perfRemovedBody`, the exact geometric complement of
+  the existing `perfBodyGeometry` — both read the SAME single source
+  (`geo.perf.path.panels[i].pts`, `core/perf.js`'s own polygonised profile),
+  never re-deriving an approximation. **NOT YET WIRED into any live scene
+  consumer** — `fold3d.js`/`hierarchy3d.js`/`shelf3d.js` still only call
+  `perfDisplayBody`; the removed piece exists and is tested but nothing
+  renders it yet. Explicit, reported scoping decision, not a silent gap.
+  The FIXTURE (`test/artworkmapping.test.html`) paints a capital "F" — the
+  standard orientation-test glyph, no reflection or half-turn maps it onto
+  itself — per declared region in its own colour, with a calibration pin
+  (runs FIRST) proving the painted canvas is actually chirally asymmetric
+  before any mapping pin trusts it. The hardest bug was in the TEST, not the
+  code under test: `packArtGeometry`'s wall/cap quads are UNSUBDIVIDED (four
+  corner vertices, no interior points), and every box corner is the
+  physical meeting point of TWO OR THREE separate, unwelded quads (a wall
+  and its neighbour; a cap flap's crease and its own wall) — sampling "the
+  nearest vertex" to a corner-adjacent point is genuinely TIED between
+  those duplicates, and ties resolve by build order, not by which face you
+  meant. A first attempt (single nearest-vertex, then check "which region"
+  it lands in) silently picked the wrong duplicate — the FRONT ANCHOR pin
+  read a SIDE wall's corner and still "passed" once, by coincidence (the
+  crease v-value happens to be identical across all four walls, so a wrong
+  face's vertex can carry a numerically correct v and mask the bug). Fixed
+  by `verticesNearMM` (returns EVERY vertex within tolerance, not one) plus
+  matching against the SPECIFIC expected (u,v) value at that corner (derived
+  once, by hand, from `packArtGeometry`'s own construction) rather than "any
+  vertex in the right region" — region-membership alone cannot even catch a
+  MIRRORED flap (both a flap's true corner and its mirrored one sit inside
+  the same region's bounding rectangle; only the exact endpoint value
+  differs), which is why the mutation pin for this property checks the
+  numeric value, not category membership. A second, smaller instance of the
+  same boundary problem hit the region-classification (not vertex-finding)
+  step: a crease point sits EXACTLY on the wall/cap boundary in template
+  space too, and a rasterised `fillRect` does not paint its own far edge —
+  fixed by nudging a fraction of a mm into the cap's own interior (both u
+  and v) before classifying or sampling the canvas, never checking the
+  boundary line itself. TRAY: property 1 is vacuous (no manufacturer joint —
+  reported via `inapplicabilityReason`, not silently skipped) but properties
+  2 and 3 DO apply, per the task's own instruction, and needed their own
+  FLAT-style variant rather than reusing the tube checkers (a tray has no
+  `am.faces` girth walk at all — `flat:true` opts it into a different
+  mechanism). `flatCanvasMatchesDieline` checks the template canvas is
+  LITERALLY the blank's own bbox (no independent scale factor to drift);
+  `printPanelIsRealWall` checks `meta.print`'s four corners are literal
+  VERTICES of the style's own `cut` polygon — the tray's print panel is
+  bounded by knife-cut corner SLOTS, not by creases, so this reads `cut`
+  where the tube check reads `crease`, the correct boundary for THIS
+  panel's own construction. Both are exhaustible (any future `flat:true`
+  style is automatically covered) and both are mutation-tested. Full
+  regression: `golden.json` 998/998 unchanged (no geometry changed, only
+  which panels get printed vs board-capped, and a fold-flat cap derivation
+  from data that already existed), every other suite green except the
+  pre-existing `saveload.test.html`/`uisync.test.html` limitations already
+  documented above (unrelated files, confirmed untouched by this task).

@@ -1,0 +1,559 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>artwork mapping tests</title>
+<pre id="out">running…</pre>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+/* Artwork mapping: validate and correct across carton, case, and tray.
+   Four invariants, checked EXHAUSTIVELY over the style registry (core/
+   artworkInvariants.js is the single shared checker; adding a style without
+   a face declaration is an error here, not a skip), plus render-level
+   checks (major-panel caps, the FRONT anchor, the perf arc) that need real
+   THREE geometry and so live here rather than in the DOM-free checker.
+
+   FIXTURE DISCIPLINE (per this file's own task): a symmetric or uniform
+   test image cannot catch a mirrored face, a 180° turn, or two panels
+   swapped -- every pin built on one is a restatement. The fixture painted
+   below is CHIRALLY ASYMMETRIC and PER-PANEL DISTINCT: a capital "F" glyph
+   (the standard orientation-test letter -- no reflection or half-turn maps
+   it onto itself) in its own colour, once per template region. The
+   calibration pin runs FIRST and asserts the fixture itself has this
+   property before any mapping pin trusts it. */
+import {styles, styleById} from '../src/core/styles/index.js';
+import {glueNeverOutward, facesMatchDieline, capsCoverage, inapplicabilityReason, flatCanvasMatchesDieline, printPanelIsRealWall, rigidTubeStyleDeclaresFaces} from '../src/core/artworkInvariants.js';
+import {packArtGeometry} from '../src/render/artwork3d.js';
+import {perfBodyGeometry, perfRemovedGeometry} from '../src/render/perf3d.js';
+import {withPerforation, normalizePerf, applyPerfPreset, PERF_CHORD_TOL} from '../src/core/perf.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+function ok(cond, msg){ if(!cond) throw new Error(msg); }
+function approx(a, e, msg = '', tol = 1e-6){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e}, got ${a}`); }
+
+/** Default params for a style, from its own param descriptors -- never a
+ *  hand-typed duplicate list that could drift from the registry. */
+function defaultParams(style){
+  const p = {};
+  for(const d of style.params) p[d.key] = d.default;
+  return p;
+}
+
+/** Every style's resolved geometry, options-default, for exhaustive checks. */
+const allGeos = styles.map(s => ({style: s, geo: s.geometry(defaultParams(s), {})}));
+
+/* ================================================================
+   PROPERTY 1 -- the glue tab is never an outward face. EXHAUSTIVE.
+   ================================================================ */
+
+t('PROPERTY 1 (exhaustive): no style declares the joint flap as an outward face', () => {
+  const bad = [];
+  for(const {style, geo} of allGeos){
+    const r = glueNeverOutward(geo);
+    if(r.applicable && !r.ok) bad.push(`${style.id}: ${JSON.stringify(r.bad)}`);
+  }
+  if(bad.length) throw new Error(bad.join('; '));
+  // report which styles the check actually RAN on (applicable) vs skipped
+  // (no am.faces at all) -- exhaustive means every style was CONSIDERED,
+  // not that every style produced a face list.
+  const applicable = allGeos.filter(({geo}) => glueNeverOutward(geo).applicable).map(({style}) => style.id);
+  ok(applicable.length >= 3, `expected at least the three rigid-tube styles to be applicable, got ${JSON.stringify(applicable)}`);
+});
+
+t('PROPERTY 1: MUTATION -- injecting a glue face makes the checker fail (proves it can)', () => {
+  const geo = styleById('fefco201').geometry(defaultParams(styleById('fefco201')), {});
+  const mutant = {...geo, meta: {...geo.meta, artMap: {...geo.meta.artMap,
+    faces: [...geo.meta.artMap.faces, {panel: 'glue', u0: 0, u1: 30, v0: 100, v1: 250}]}}};
+  const r = glueNeverOutward(mutant);
+  ok(r.applicable && !r.ok, 'mutant with a glue face must fail the checker');
+  eq(r.bad, ['glue'], 'checker names the offending entry:');
+  // the REAL geometry, unmutated, still passes -- the mutation isn't
+  // vacuously failing everything
+  ok(glueNeverOutward(geo).ok, 'the real geometry must still pass');
+});
+
+/* ================================================================
+   PROPERTY 2 -- side faces match the 2D dieline. EXHAUSTIVE.
+   "derivable, not guessed" (artwork3d.js:4) verified against each style's
+   OWN crease array (authored for the dieline renderer, not for this check)
+   rather than trusted from the comment.
+   ================================================================ */
+
+t('PROPERTY 2 (exhaustive): every face rect is derivable from the style\'s own crease lines, not guessed', () => {
+  const bad = [];
+  for(const {style, geo} of allGeos){
+    const r = facesMatchDieline(geo);
+    if(r.applicable && !r.ok) bad.push(`${style.id}: ${JSON.stringify(r.bad)}`);
+  }
+  if(bad.length) throw new Error(bad.join('; '));
+  const applicable = allGeos.filter(({geo}) => facesMatchDieline(geo).applicable).map(({style}) => style.id);
+  ok(applicable.length >= 3, `expected at least the three rigid-tube styles to be applicable, got ${JSON.stringify(applicable)}`);
+});
+
+t('PROPERTY 2: MUTATION -- nudging one face rect off the crease lines makes the checker fail', () => {
+  const geo = styleById('fefco201').geometry(defaultParams(styleById('fefco201')), {});
+  const faces = geo.meta.artMap.faces.map((f, i) => i === 2 ? {...f, u0: f.u0 + 5} : f);   // front face, nudged
+  const mutant = {...geo, meta: {...geo.meta, artMap: {...geo.meta.artMap, faces}}};
+  const r = facesMatchDieline(mutant);
+  ok(r.applicable && !r.ok, 'a face rect off the crease lines must fail the checker');
+  eq(r.bad.map(b => b.panel), ['front'], 'checker names the offending panel:');
+  ok(facesMatchDieline(geo).ok, 'the real geometry, unmutated, still passes');
+});
+
+/* ================================================================
+   PROPERTY 1/2 APPLICABILITY -- report, don't silently skip, for a style
+   these properties are vacuous for (the tray's flat cross-blank).
+   ================================================================ */
+
+t('tray: property 1 (glue) is reported VACUOUS, not silently skipped', () => {
+  const geo = styleById('tray').geometry(defaultParams(styleById('tray')), {});
+  ok(!glueNeverOutward(geo).applicable, 'tray has no am.faces -- property 1 is vacuous for it');
+  const reason = inapplicabilityReason(geo);
+  ok(!!reason, 'a reason must be stated, not merely absent');
+  ok(/flat/.test(reason), `reason should name the flat cross-blank, got: ${reason}`);
+});
+
+/* ================================================================
+   TRAY: properties 2 and 3 APPLY (they are not vacuous like property 1's
+   glue tab -- a tray has no manufacturer joint, but it does have a real
+   template-to-dieline mapping and a real visible print panel) -- checked
+   against their own FLAT-style variant, since a tray has no am.faces girth
+   walk to reuse the tube checkers on.
+   ================================================================ */
+
+const trayGeo = styleById('tray').geometry(defaultParams(styleById('tray')), {});
+
+t('TRAY PROPERTY 2 (flat variant): the template canvas is literally the blank\'s own bbox, not an independently guessed size', () => {
+  const r = flatCanvasMatchesDieline(trayGeo);
+  ok(r.applicable, 'tray must be applicable to the flat canvas check');
+  ok(r.ok, 'tray\'s artMap.canvas must equal its own bbox');
+});
+
+t('TRAY PROPERTY 2: MUTATION -- shrinking the declared canvas off the real bbox makes the checker fail', () => {
+  const mutant = {...trayGeo, meta: {...trayGeo.meta, artMap: {...trayGeo.meta.artMap,
+    canvas: {w: trayGeo.meta.artMap.canvas.w - 10, h: trayGeo.meta.artMap.canvas.h}}}};
+  const r = flatCanvasMatchesDieline(mutant);
+  ok(r.applicable && !r.ok, 'a canvas that disagrees with the bbox must fail the checker');
+  ok(flatCanvasMatchesDieline(trayGeo).ok, 'the real geometry, unmutated, still passes');
+});
+
+t('TRAY PROPERTY 3 (flat variant): the declared print panel is a REAL wall region -- its corners are literal cut-polygon vertices', () => {
+  const r = printPanelIsRealWall(trayGeo);
+  ok(r.applicable, 'tray must be applicable to the print-panel check');
+  ok(r.ok, 'tray\'s meta.print corners must all be literal vertices of its own cut polygon');
+});
+
+t('TRAY PROPERTY 3: MUTATION -- nudging the print panel off the cut polygon\'s corner slots makes the checker fail', () => {
+  const mutant = {...trayGeo, meta: {...trayGeo.meta, print: {...trayGeo.meta.print, x0: trayGeo.meta.print.x0 + 3}}};
+  const r = printPanelIsRealWall(mutant);
+  ok(r.applicable && !r.ok, 'a print panel nudged off the real slot corners must fail the checker');
+  ok(printPanelIsRealWall(trayGeo).ok, 'the real geometry, unmutated, still passes');
+});
+
+/* ================================================================
+   CROSS-STYLE EXHAUSTIVENESS -- a rigid, non-flat style with NO face
+   declaration is an ERROR, not a silent skip. A missing `applicable` flag
+   would let a fifth style join the registry with nothing here to check it.
+   ================================================================ */
+
+t('CROSS-STYLE EXHAUSTIVENESS: every real rigid, non-flat style declares am.faces', () => {
+  const bad = [];
+  for(const {style, geo} of allGeos){
+    const r = rigidTubeStyleDeclaresFaces(geo);
+    if(r.applicable && !r.ok) bad.push(style.id);
+  }
+  if(bad.length) throw new Error(`missing face declaration: ${bad.join(', ')}`);
+  const applicable = allGeos.filter(({geo}) => rigidTubeStyleDeclaresFaces(geo).applicable).map(({style}) => style.id);
+  ok(applicable.length >= 3, `expected at least the three rigid-tube styles to be applicable, got ${JSON.stringify(applicable)}`);
+  ok(!applicable.includes('tray'), 'the tray\'s flat exemption must exclude it from this check, not silently pass it');
+});
+
+t('CROSS-STYLE EXHAUSTIVENESS: MUTATION -- a rigid, non-flat style with NO am.faces at all is flagged as an ERROR, not skipped', () => {
+  // a stand-in for "a fifth style" that forgot to declare faces entirely --
+  // rigid, no flat exemption, no artMap.faces.
+  const fifthStyle = {structure: 'rigid', meta: {artMap: {canvas: {w: 100, h: 100}, up: 'v'}}};
+  const r = rigidTubeStyleDeclaresFaces(fifthStyle);
+  ok(r.applicable, 'a rigid, non-flat style must be APPLICABLE to this check, not silently exempted');
+  ok(!r.ok, 'a rigid, non-flat style with no am.faces must fail -- a missing declaration is an error, not a skip');
+  // and a style with genuinely nothing to check (flexible, or no artMap at
+  // all) is correctly exempt -- this pin is not vacuously failing everything
+  const flexibleStyle = {structure: 'flexible', meta: {artMap: {ends: [{u0: 0, u1: 10}, {u0: 20, u1: 30}]}}};
+  ok(!rigidTubeStyleDeclaresFaces(flexibleStyle).applicable, 'a flexible style is genuinely exempt, not merely unchecked by mistake');
+});
+
+/* ================================================================
+   FIXTURE: chirally asymmetric, per-panel distinct. A solid colour swatch
+   cannot catch a mirrored face, a 180° turn, or two swapped panels -- every
+   region here gets its OWN colour AND an upright capital "F", the standard
+   orientation-test glyph (no reflection or half-turn maps it onto itself).
+   Coordinates are TEMPLATE mm (u right, v UP -- artMap's own convention,
+   `up:'v'` in every style); the canvas is only the rasterisation target.
+   ================================================================ */
+
+function paintF(g, x0, y0, w, h, color){
+  const m = Math.min(w, h)*0.12, iw = Math.max(2, w - 2*m), ih = Math.max(2, h - 2*m);
+  const ix = x0 + m, iy = y0 + m;
+  g.fillStyle = color;
+  g.fillRect(ix, iy, Math.max(1, iw*0.24), ih);                      // stem, full height
+  g.fillRect(ix, iy, iw, Math.max(1, ih*0.22));                      // top arm
+  g.fillRect(ix, iy + ih*0.42, iw*0.68, Math.max(1, ih*0.20));       // middle arm, shorter
+}
+
+/** Paint one canvas (CW x CH mm at k px/mm) with a distinct colour + F per
+ *  declared region. `regions`: [{id, u0,u1,v0,v1, color}]. Canvas y is
+ *  top-down; template v is bottom-up, so a region's HIGH-v edge (its "up")
+ *  lands at the SMALL-y (top) edge of its canvas rect -- the F's top arm
+ *  there is what makes "upright, unmirrored" a checkable claim, not just an
+ *  assumption. */
+function paintChiralFixture(am, regions, k = 3){
+  const CW = am.canvas.w, CH = am.canvas.h;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(CW*k)); c.height = Math.max(1, Math.round(CH*k));
+  const g = c.getContext('2d');
+  g.fillStyle = '#e8e2d5'; g.fillRect(0, 0, c.width, c.height);
+  for(const r of regions){
+    const x0 = r.u0*k, x1 = r.u1*k, yTop = (CH - r.v1)*k, yBot = (CH - r.v0)*k;
+    g.fillStyle = r.color;
+    g.fillRect(x0, yTop, x1 - x0, yBot - yTop);
+    paintF(g, x0, yTop, x1 - x0, yBot - yTop, '#101010');
+  }
+  return {canvas: c, k};
+}
+
+/** Which declared region (if any) a template-mm point falls inside. */
+function regionAt(regions, u, v, eps = 1e-3){
+  return regions.find(r => u >= r.u0 - eps && u <= r.u1 + eps && v >= r.v0 - eps && v <= r.v1 + eps) || null;
+}
+
+/** Nearest geometry vertex to a world position, and its UV converted BACK
+ *  to template mm (u = UV.x*CW, v = UV.y*CH) -- operating entirely in
+ *  template-mm space (never through THREE's texture/flipY pipeline, which
+ *  this check has no need of: it is asking "does this vertex carry the UV
+ *  the artMap declares for this region", not "does a render look right"). */
+function nearestVertexMM(geom, am, targetPos, tol = 8){
+  const pos = geom.attributes.position, uv = geom.attributes.uv;
+  let best = -1, bestD = Infinity;
+  for(let i = 0; i < pos.count; i++){
+    const dx = pos.getX(i) - targetPos[0], dy = pos.getY(i) - targetPos[1], dz = pos.getZ(i) - targetPos[2];
+    const d = dx*dx + dy*dy + dz*dz;
+    if(d < bestD){ bestD = d; best = i; }
+  }
+  if(bestD > tol*tol) throw new Error(`no vertex within ${tol}mm of ${JSON.stringify(targetPos)} (closest ${Math.sqrt(bestD).toFixed(2)}mm)`);
+  return {u: uv.getX(best)*am.canvas.w, v: uv.getY(best)*am.canvas.h};
+}
+
+/** ALL vertices within `tol` of a world position, as {u,v} in template mm.
+ *  A box corner is shared by TWO OR THREE faces/flaps at once -- separate,
+ *  unwelded quads whose corner vertices sit at the IDENTICAL 3D position
+ *  but carry different UVs (e.g. the RSC's front-wall/side-wall corner, or
+ *  a cap flap's crease meeting its own wall's edge). `nearestVertexMM`'s
+ *  single "nearest" pick is order-dependent there (a tie at distance 0 from
+ *  the shared point, broken by whichever quad happens to be built first) --
+ *  it silently returned a NEIGHBOUR face's vertex instead of the intended
+ *  one. These pins ask "does a vertex carrying THIS specific UV exist near
+ *  this corner", so they scan every candidate within tolerance and pick the
+ *  one that matches, rather than trusting a single arbitrary nearest. */
+function verticesNearMM(geom, am, targetPos, tol = 8){
+  const pos = geom.attributes.position, uv = geom.attributes.uv;
+  const found = [];
+  for(let i = 0; i < pos.count; i++){
+    const dx = pos.getX(i) - targetPos[0], dy = pos.getY(i) - targetPos[1], dz = pos.getZ(i) - targetPos[2];
+    if(dx*dx + dy*dy + dz*dz <= tol*tol) found.push({u: uv.getX(i)*am.canvas.w, v: uv.getY(i)*am.canvas.h});
+  }
+  if(!found.length) throw new Error(`no vertex within ${tol}mm of ${JSON.stringify(targetPos)}`);
+  return found;
+}
+
+const FCASE = styleById('fefco201');
+const fp = defaultParams(FCASE);                 // L=200, W=150, H=120, glue=35
+const fgeo = FCASE.geometry(fp, {});
+const fam = fgeo.meta.artMap;
+
+/** The 8 regions this RSC fixture declares: the 4 girth walls, plus the
+ *  two major-flap caps at each end (front + back only -- the minors carry
+ *  no outward artwork, property 3's own scope). */
+const fRegions = [
+  {id: 'wall-back',  color: '#c0392b', u0: fam.faces[0].u0, u1: fam.faces[0].u1, v0: fam.faces[0].v0, v1: fam.faces[0].v1},
+  {id: 'wall-side1', color: '#2980b9', u0: fam.faces[1].u0, u1: fam.faces[1].u1, v0: fam.faces[1].v0, v1: fam.faces[1].v1},
+  {id: 'wall-front', color: '#27ae60', u0: fam.faces[2].u0, u1: fam.faces[2].u1, v0: fam.faces[2].v0, v1: fam.faces[2].v1},
+  {id: 'wall-side2', color: '#8e44ad', u0: fam.faces[3].u0, u1: fam.faces[3].u1, v0: fam.faces[3].v0, v1: fam.faces[3].v1},
+  {id: 'cap-top-back',    color: '#d35400', u0: fam.faces[0].u0, u1: fam.faces[0].u1, v0: fam.caps.top[0].v0,    v1: fam.caps.top[0].v1},
+  {id: 'cap-top-front',   color: '#16a085', u0: fam.faces[2].u0, u1: fam.faces[2].u1, v0: fam.caps.top[1].v0,    v1: fam.caps.top[1].v1},
+  {id: 'cap-bottom-back', color: '#f39c12', u0: fam.faces[0].u0, u1: fam.faces[0].u1, v0: fam.caps.bottom[0].v1, v1: fam.caps.bottom[0].v0},
+  {id: 'cap-bottom-front',color: '#7f8c8d', u0: fam.faces[2].u0, u1: fam.faces[2].u1, v0: fam.caps.bottom[1].v1, v1: fam.caps.bottom[1].v0}
+];
+
+t('FIXTURE CALIBRATION: every declared region is distinct (no two overlap, no two share a colour)', () => {
+  for(let i = 0; i < fRegions.length; i++) for(let j = i + 1; j < fRegions.length; j++){
+    const a = fRegions[i], b = fRegions[j];
+    ok(a.color !== b.color, `${a.id} and ${b.id} share a colour`);
+    const overlapU = a.u0 < b.u1 - 1e-6 && b.u0 < a.u1 - 1e-6;
+    const overlapV = a.v0 < b.v1 - 1e-6 && b.v0 < a.v1 - 1e-6;
+    ok(!(overlapU && overlapV), `${a.id} and ${b.id} overlap in template space`);
+  }
+});
+
+t('FIXTURE CALIBRATION: the painted canvas is chirally asymmetric -- the F glyph does not survive a mirror', () => {
+  const {canvas, k} = paintChiralFixture(fam, fRegions);
+  const ctx = canvas.getContext('2d');
+  const r = fRegions.find(x => x.id === 'wall-front');
+  const yTop = (fam.canvas.h - r.v1)*k, yBot = (fam.canvas.h - r.v0)*k, x0 = r.u0*k, x1 = r.u1*k, w = x1 - x0, h = yBot - yTop;
+  // sample well BELOW the arms (stem-only zone, ~80% down the region) --
+  // the stem sits at the region's LEFT edge only, so a point there is
+  // foreground and its horizontal MIRROR (same row, mirrored x) is
+  // background (the F has nothing on the right at that height). If these
+  // ever read the SAME, the glyph has become symmetric and cannot catch a
+  // mirrored face.
+  const px = (x, y) => ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+  const y = yTop + h*0.8;
+  const left = px(x0 + w*0.16, y);
+  const mirroredRight = px(x1 - w*0.16, y);
+  const leftIsFg = left[0] < 60 && left[1] < 60 && left[2] < 60;      // '#101010'
+  const rightIsFg = mirroredRight[0] < 60 && mirroredRight[1] < 60 && mirroredRight[2] < 60;
+  ok(leftIsFg && !rightIsFg, `fixture is not chirally asymmetric at the sampled row: left fg=${leftIsFg}, mirrored-right fg=${rightIsFg}`);
+});
+
+/* ================================================================
+   PROPERTY 3 -- major panels printed, largest on top (RSC). The two major
+   flaps (closure.top's own holdsLid pair) fold flat and tile the cap
+   exactly; a plain board cap is no longer built for either end.
+   ================================================================ */
+
+t('PROPERTY 3: fefco201 declares caps for BOTH ends, and the coverage report says so', () => {
+  const r = capsCoverage(fgeo);
+  ok(r.applicable, 'a rigid tube style with no crimped ends must be applicable');
+  ok(r.hasCaps, 'fefco201 must declare caps');
+  eq(fam.caps.top.length, 2, 'two major flaps on top:');
+  eq(fam.caps.bottom.length, 2, 'two major flaps on bottom:');
+});
+
+t('PROPERTY 3: the built geometry has NO plain board-cap group -- both ends are fully printed', () => {
+  const {canvas} = paintChiralFixture(fam, fRegions);
+  void canvas;
+  const g = packArtGeometry(fam);
+  eq(g.groups.length, 1, 'exactly one material group (printed only):');
+  eq(g.groups[0].materialIndex, 0, 'the one group is the printed group:');
+});
+
+// Sample points are near a FLAP'S OWN CREASE corner (its root at the wall),
+// inset a few mm toward the flap's interior -- never at the tip/centreline,
+// where the front and back flaps' geometry LEGITIMATELY shares a position
+// (they meet exactly there, by design -- Property 3's own "tile exactly"
+// claim) with two différent, duplicated vertices at that one spot. The
+// geometry here is unsubdivided quads (two triangles, four corners, no
+// interior vertices), so `nearestVertexMM` only ever returns a CORNER's own
+// UV -- sampling near a corner is not a simplification, it is the only
+// place a vertex actually exists to sample.
+const capTargets = {
+  'top-front':    [fp.L/2 - 5, fam.length/2, fp.W/2 - 3],
+  'top-back':     [fp.L/2 - 5, fam.length/2, -fp.W/2 + 3],
+  'bottom-front': [fp.L/2 - 5, -fam.length/2, fp.W/2 - 3],
+  'bottom-back':  [fp.L/2 - 5, -fam.length/2, -fp.W/2 + 3]
+};
+
+/** The EXACT (u,v) a correct build carries at each capTarget's own crease
+ *  corner -- hand-derived from packArtGeometry's own creaseA/creaseB
+ *  construction (front/back flaps meet the wall at u1/u0 respectively; a
+ *  top flap's crease is its v0, a bottom flap's crease is likewise its own
+ *  v0). Ground truth for the disambiguating filter below: at a shared
+ *  corner, "falls in the right region" is not enough to catch a MIRRORED
+ *  u-range (both corners of a mirrored flap still sit inside the same
+ *  region's bounding rectangle), so these pins match the specific value. */
+const capExpected = {
+  'top-front':    {u: fam.faces[2].u1, v: fam.caps.top[1].v0},
+  'top-back':     {u: fam.faces[0].u0, v: fam.caps.top[0].v0},
+  'bottom-front': {u: fam.faces[2].u1, v: fam.caps.bottom[1].v0},
+  'bottom-back':  {u: fam.faces[0].u0, v: fam.caps.bottom[0].v0}
+};
+
+t('PROPERTY 3: each cap quadrant carries the CORRECT region\'s glyph -- sampled at its own crease corner', () => {
+  const {canvas, k} = paintChiralFixture(fam, fRegions);
+  const ctx = canvas.getContext('2d');
+  const g = packArtGeometry(fam);
+  const checks = [
+    {label: 'top-front',    region: 'cap-top-front'},
+    {label: 'top-back',     region: 'cap-top-back'},
+    {label: 'bottom-front', region: 'cap-bottom-front'},
+    {label: 'bottom-back',  region: 'cap-bottom-back'}
+  ];
+  const bad = [];
+  for(const c of checks){
+    const exp = capExpected[c.label];
+    // pick the candidate matching THIS corner's own expected UV, not just
+    // "the nearest" (a shared corner has several tied-distance duplicates)
+    const hit = verticesNearMM(g, fam, capTargets[c.label]).find(({u, v}) => Math.abs(u - exp.u) < 2 && Math.abs(v - exp.v) < 2);
+    if(!hit){ bad.push(`${c.label}: no vertex at this corner carries the expected UV (u=${exp.u},v=${exp.v})`); continue; }
+    // the crease vertex sits EXACTLY on the wall/cap boundary in v (the flap
+    // starts precisely where the wall ends) and its u is exactly the flap's
+    // own OUTER edge (a rasterised fillRect does not paint its own far
+    // edge column/row) -- nudge a fraction of a mm into the cap's own
+    // interior on BOTH axes before classifying/sampling, or the boundary
+    // point matches the wall region (regionAt's first-match order) or lands
+    // one pixel outside the painted rect entirely (background colour).
+    const nv = c.label.startsWith('top') ? hit.v + 0.5 : hit.v - 0.5;
+    const nu = c.label.endsWith('front') ? hit.u - 1 : hit.u + 1;
+    const region = regionAt(fRegions, nu, nv);
+    if(!region || region.id !== c.region) bad.push(`${c.label}: expected ${c.region}, got ${region ? region.id : 'no region'} (u=${nu.toFixed(1)},v=${nv.toFixed(1)})`);
+    else {
+      const px = ctx.getImageData(Math.round(nu*k), Math.round((fam.canvas.h - nv)*k), 1, 1).data;
+      const hex = '#' + [px[0], px[1], px[2]].map(x => x.toString(16).padStart(2, '0')).join('');
+      if(hex.toLowerCase() !== region.color.toLowerCase())
+        bad.push(`${c.label}: canvas pixel ${hex} does not match ${region.id}'s colour ${region.color}`);
+    }
+  }
+  if(bad.length) throw new Error(bad.join('; '));
+});
+
+t('PROPERTY 3: orientation makes sense when folding closed -- crease (wall edge) and tip (centreline) land on the DECLARED v ends, not swapped', () => {
+  const g = packArtGeometry(fam);
+  const half = fam.length/2, W = fp.W;
+  // front-top flap: crease is AT the front wall (world Z = +W/2), tip is AT
+  // the centreline (world Z = 0). If crease/tip were swapped, a vertex near
+  // the wall would carry the TIP's v (yt2) instead of the crease's (yt1).
+  const u1 = fam.faces[2].u1;
+  const findAtU = target => verticesNearMM(g, fam, target).find(c => Math.abs(c.u - u1) < 2);
+  const crease = findAtU([fp.L/2 - 5, half, W/2 - 3]);
+  const tip = findAtU([fp.L/2 - 5, half, 3]);
+  ok(crease, 'no front-flap vertex found near the crease corner');
+  ok(tip, 'no front-flap vertex found near the tip corner');
+  approx(crease.v, fam.caps.top[1].v0, 'crease-side vertex carries the crease v (flap root at the wall):', 1);
+  approx(tip.v, fam.caps.top[1].v1, 'tip-side vertex carries the tip v (flap end at the centreline):', 1);
+  ok(Math.abs(crease.v - tip.v) > 10, 'vacuous check: crease and tip v must actually differ');
+});
+
+t('PROPERTY 3: MUTATION -- mirroring the front cap flap\'s u-range makes the quadrant pin fail', () => {
+  // swap u0/u1 on the front TOP flap's SOURCE FACE -- packArtGeometry reads
+  // am.faces[flap.face].u0/u1 directly, so mirroring the face mirrors the cap.
+  const mutantFaces = fam.faces.map((f, i) => i === 2 ? {...f, u0: f.u1, u1: f.u0} : f);
+  const mutantAM = {...fam, faces: mutantFaces};
+  const g = packArtGeometry(mutantAM);
+  const exp = capExpected['top-front'];
+  // with u0/u1 swapped on the front face, the vertex at this corner now
+  // reads near the ORIGINAL u0 instead of u1 -- both are still inside the
+  // region's own bounding rectangle (a mirror can't be seen by "which
+  // region", only by "which EXACT value" -- the same value the pin above
+  // actually checks), so the disqualifying test is: no candidate here still
+  // carries the correct, un-mutated value.
+  const stillCorrect = verticesNearMM(g, fam, capTargets['top-front'])
+    .some(({u, v}) => Math.abs(u - exp.u) < 2 && Math.abs(v - exp.v) < 2);
+  ok(!stillCorrect, `mutation did not move this corner's UV away from the expected value (u=${exp.u}) -- pin cannot be proven to fail`);
+});
+
+/* ================================================================
+   FRONT ANCHOR (artwork3d.js:20) -- FRONT faces +Z, upright, unmirrored.
+   ================================================================ */
+
+t('FRONT ANCHOR: the front wall faces +Z and its u-mapping is unmirrored (u increases with world X, matching print\'s own left-to-right)', () => {
+  const g = packArtGeometry(fam);
+  const half = fam.length/2;
+  // sampled near the wall's own BOTTOM crease corners (Y = -half), not the
+  // body centre -- these quads are unsubdivided, so a vertex exists only at
+  // a corner (see PROPERTY 3's own comment above).
+  // a wall corner is shared with its neighbouring side wall at the exact
+  // same 3D position (see verticesNearMM's own comment) -- filter to the
+  // candidate that actually carries the front face's own expected endpoint.
+  const u0 = fam.faces[2].u0, u1 = fam.faces[2].u1;
+  const leftUV = verticesNearMM(g, fam, [-fp.L/2 + 3, -half + 3, fp.W/2]).find(c => Math.abs(c.u - u0) < 2);
+  const rightUV = verticesNearMM(g, fam, [fp.L/2 - 3, -half + 3, fp.W/2]).find(c => Math.abs(c.u - u1) < 2);
+  ok(leftUV, 'no front-wall vertex found near world -X (left) carrying u0');
+  ok(rightUV, 'no front-wall vertex found near world +X (right) carrying u1');
+  approx(leftUV.u, u0, 'world -X carries the front face\'s u0 (unmirrored):', 1);
+  approx(rightUV.u, u1, 'world +X carries the front face\'s u1 (unmirrored):', 1);
+  ok(rightUV.u > leftUV.u, 'u increases with world X -- not mirrored');
+});
+
+/* ================================================================
+   PROPERTY 4 -- perforation removal keeps the leftover artwork, cut on the
+   real arc. Uses the shipped 'bowed' preset (a real, non-trivial curve, not
+   a hand-rolled fixture): front panel, level corners (cornerH 0.55H both
+   ends) with bow -0.22H, so the profile is h(s) = 0.55H + bow*4t(1-t) --
+   FLAT at both corners (t=0,1) and DIPS to 0.55H+bow = 0.33H at the exact
+   midpoint (t=0.5). A rectangular approximation (retained height = the
+   corner value everywhere) would read 0.55H at the midpoint too -- the two
+   disagree by exactly |bow| = 0.22H, which is where a loose pin would not
+   look ("agree at the corners, diverge in the middle" -- this task's own
+   framing). core/perf.js's own single source (`geo.perf.path`) is the
+   ONLY place either builder reads a profile point from. */
+
+function bowedFefco(){
+  const geo = FCASE.geometry(fp, {});
+  const perf = {...applyPerfPreset('bowed', geo, null), enabled: true, state: 'display'};
+  return withPerforation(geo, perf);
+}
+
+t('PROPERTY 4: the raw perf path itself has a real arc, not a flat line -- front panel dips well below its own corner height at midspan', () => {
+  const geo = bowedFefco();
+  const H = fp.H;
+  const front = geo.perf.path.panels.find(p => p.face === 'front');
+  ok(front, 'front panel must be in the resolved path');
+  const mid = front.pts.reduce((best, [s, h]) => Math.abs(s - front.width/2) < Math.abs(best[0] - front.width/2) ? [s, h] : best, front.pts[0]);
+  const rectApprox = front.hA;                          // what a flat/rectangular reading would give
+  approx(front.hA, 0.55*H, 'corner height (hand-computed from the bowed preset):', 0.5);
+  ok(Math.abs(mid[1] - rectApprox) > 0.15*H, `midspan height ${mid[1].toFixed(1)} too close to the rectangular reading ${rectApprox.toFixed(1)} -- fixture not discriminating`);
+  approx(mid[1], 0.33*H, 'midspan height matches the hand-computed bowed value (0.55H - 0.22H):', 2);
+});
+
+t('PROPERTY 4: the RETAINED body\'s geometry follows the SAME arc, not the rectangular approximation, at a point mid-arc', () => {
+  const geo = bowedFefco();
+  const H = fp.H, half = fp.W/2;
+  const front = geo.perf.path.panels.find(p => p.face === 'front');
+  const mid = front.pts.reduce((best, [s, h]) => Math.abs(s - front.width/2) < Math.abs(best[0] - front.width/2) ? [s, h] : best, front.pts[0]);
+  const g = perfBodyGeometry(geo);
+  ok(g, 'retained body must build');
+  // world position of the midspan point on the front wall's outer face:
+  // X runs from +L/2 (s=0) to -L/2 (s=width) -- s = width/2 lands at X=0.
+  const target = [fp.L/2 - mid[0], -H/2 + mid[1], half];
+  const {u, v} = nearestVertexMM(g, fam, target);
+  // the rectangular stand-in this mutation checks against
+  const rectV = fam.caps ? fam.faces[2].v0 + front.hA : null;
+  approx(v, fam.faces[2].v0 + mid[1], 'retained-body vertex v matches the REAL arc height:', 2);
+  if(rectV !== null) ok(Math.abs(v - rectV) > 5, 'vacuous: real-arc v is too close to the rectangular-approximation v to distinguish');
+});
+
+t('PROPERTY 4: the REMOVED piece\'s geometry is the exact COMPLEMENT -- same arc, same seam, no gap and no double-cover', () => {
+  const geo = bowedFefco();
+  const H = fp.H, half = fp.W/2;
+  const front = geo.perf.path.panels.find(p => p.face === 'front');
+  const mid = front.pts.reduce((best, [s, h]) => Math.abs(s - front.width/2) < Math.abs(best[0] - front.width/2) ? [s, h] : best, front.pts[0]);
+  const gRemoved = perfRemovedGeometry(geo);
+  ok(gRemoved, 'removed piece must build');
+  // the removed piece's OWN lowest edge, at this s, is exactly the retained
+  // body's TOP edge at the same s -- the shared seam. Sample just above it.
+  const justAbove = [fp.L/2 - mid[0], -H/2 + mid[1] + 3, half];
+  const {v} = nearestVertexMM(gRemoved, fam, justAbove);
+  ok(v >= fam.faces[2].v0 + mid[1] - 2, `removed piece starts below the real seam (v=${v.toFixed(1)}, seam=${(fam.faces[2].v0 + mid[1]).toFixed(1)}) -- a gap or double-cover at the arc`);
+  // and its TOP edge reaches the panel's full, unperforated height (v1)
+  const topEdge = [fp.L/2 - mid[0], H/2 - 1, half];
+  const {v: vTop} = nearestVertexMM(gRemoved, fam, topEdge);
+  approx(vTop, fam.faces[2].v1, 'removed piece reaches the panel\'s full original height at its own top edge:', 2);
+});
+
+t('PROPERTY 4: MUTATION -- substituting a bounding rectangle for the arc fails the mid-arc pin', () => {
+  const geo = bowedFefco();
+  const H = fp.H, half = fp.W/2;
+  const front = geo.perf.path.panels.find(p => p.face === 'front');
+  // the rectangular stand-in this mutation checks against: a straight line
+  // from corner to corner (i.e. flat at hA, since hA===hB for this preset)
+  const flatPts = [[0, front.hA], [front.width, front.hB]];
+  const mutantPanels = geo.perf.path.panels.map(p => p.face === 'front' ? {...p, pts: flatPts} : p);
+  const mutantGeo = {...geo, perf: {...geo.perf, path: {...geo.perf.path, panels: mutantPanels}}};
+  const g = perfBodyGeometry(mutantGeo);
+  const mid = front.pts.reduce((best, [s, h]) => Math.abs(s - front.width/2) < Math.abs(best[0] - front.width/2) ? [s, h] : best, front.pts[0]);
+  const target = [fp.L/2 - mid[0], -H/2 + mid[1], half];
+  // the mutant has NO vertex at the real arc's midspan height anymore (the
+  // flat line sits at hA there instead) -- nearestVertexMM must fail to
+  // find one within tolerance, proving the mid-arc pin is capable of failing
+  let threw = false;
+  try{ nearestVertexMM(g, fam, target, 2); } catch(e){ threw = true; }
+  ok(threw, 'mutation (flat line) did not move the vertex away from the real-arc target -- pin cannot be proven to fail');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
+

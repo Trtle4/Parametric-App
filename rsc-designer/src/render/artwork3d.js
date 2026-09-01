@@ -14,8 +14,11 @@
  * `packArtGeometry` is the ONE geometry builder, shared by the single-pack fold
  * view (buildWrapArt) AND by the hierarchy/shelf InstancedMeshes (so every
  * instance of a pack type carries the same art from one texture). It returns a
- * CLOSED body: the printed faces as material group 0, plus board caps closing
- * the tube ends (cartons' top/bottom) as group 1 — so "Solid" looks solid.
+ * CLOSED body: the printed faces as material group 0, plus (per end) either
+ * printed MAJOR-FLAP quads — when the style declares `am.caps.top`/`.bottom`,
+ * e.g. an RSC's two major flaps, folded flat and tiling the cap exactly, so
+ * they join material group 0 too — or a plain board cap, as group 1, for a
+ * style/end that declares none — so "Solid" looks solid either way.
  *
  * Verified from the ViewCube: FRONT faces +Z (the shopper), upright, unmirrored
  * (the texture's default flipY cancels artMap's bottom-up v).
@@ -76,14 +79,26 @@ export function packArtGeometry(am){
     addFin(half, 1, am.ends[1]);
   }
 
-  // board caps: close the tube at ±half (a carton's top/bottom flap faces) when
-  // the style has no crimped ends. Triangle-fanned from the section centroid;
-  // caps carry board, not art, so their UVs are unused (0,0).
+  // caps: close the tube at ±half (a carton's top/bottom flap faces) when the
+  // style has no crimped ends. Two shapes, per end independently:
+  //   - PRINTED major flaps (am.caps.top / .bottom, e.g. an RSC): each flap
+  //     folds flat about an axis parallel to the extrude axis, so its crease
+  //     corners are exactly the wall's own top/bottom edge (V(e, pa/pb), the
+  //     SAME points the printed-faces loop above already places) and its tip
+  //     is that same section point pulled toward the centreline by the
+  //     flap's own depth — folding never moves the extrude-axis coordinate
+  //     (pt[0]), only the girth coordinate (pt[1]) shifts. u is inherited
+  //     unchanged from the flap's own wall face (u never moves either); v
+  //     runs from the crease (the wall's own edge v) to the declared tip.
+  //     Joins the PRINTED group (artP/artU) — this is real artwork, not board.
+  //   - a plain BOARD cap (the previous, only, behaviour), triangle-fanned
+  //     from the section centroid — UVs unused (0,0) — for any end a style
+  //     does not declare `caps` for.
   if(!am.ends){
     const uniq = sec.slice(0, sec.length - 1);        // drop the repeated closing point
     const cx = uniq.reduce((s, p) => s + p[0], 0)/uniq.length;
     const cy = uniq.reduce((s, p) => s + p[1], 0)/uniq.length;
-    const cap = (e, flip) => {
+    const boardCap = (e, flip) => {
       const C0 = V(e, [cx, cy]);
       for(let k = 0; k < uniq.length; k++){
         const a = V(e, uniq[k]), b = V(e, uniq[(k + 1) % uniq.length]);
@@ -91,7 +106,20 @@ export function packArtGeometry(am){
         else     tri(C0, a, b, [0, 0], [0, 0], [0, 0], capP, capU);
       }
     };
-    cap(half, false); cap(-half, true);
+    const printedCap = (e, flaps) => {
+      for(const flap of flaps){
+        const pa = sec[flap.face], pb = sec[flap.face + 1];
+        const depth = Math.abs(flap.v1 - flap.v0);
+        const shift = pt => [pt[0], pt[1] - Math.sign(pt[1])*depth];
+        const f = am.faces[flap.face];
+        const u0 = f.u0/CW, u1 = f.u1/CW, v0 = flap.v0/CH, v1 = flap.v1/CH;
+        const creaseA = V(e, pa), tipA = V(e, shift(pa)), tipB = V(e, shift(pb)), creaseB = V(e, pb);
+        quad(creaseA, tipA, tipB, creaseB, [u1, v0], [u1, v1], [u0, v1], [u0, v0], artP, artU);
+      }
+    };
+    const capsTop = am.caps && am.caps.top, capsBottom = am.caps && am.caps.bottom;
+    if(capsTop && capsTop.length) printedCap(half, capsTop); else boardCap(half, false);
+    if(capsBottom && capsBottom.length) printedCap(-half, capsBottom); else boardCap(-half, true);
   }
 
   const g = new THREE.BufferGeometry();
