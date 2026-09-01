@@ -85,7 +85,6 @@
 <div class="brand">
   <span id="brandName"></span>
 </div>
-<select id="style"></select>
 <button id="tab2d" class="on">2D</button>
 <button id="tab3d">3D</button>
 <button id="tabShelf">Shelf</button>
@@ -551,7 +550,7 @@ function deepRestore(target, src){
 function restoreProject(snap, key){
   deepRestore(build.project, snap);
   build.recompute(key);          // undefined keeps the current pick; null clears it
-  setLevel(el('style').value);
+  setLevel(curLevel());
 }
 
 /** A pin that EDITS the project. Same contract as t(), plus: it snapshots on
@@ -563,13 +562,29 @@ function restoreProject(snap, key){
  *  that only read. */
 function tEdit(name, fn){
   t(name, () => {
-    const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+    const snap = snapProject(), lvl = curLevel(), key = build.getSelectedCandidateKey();
     try{ fn(); }
-    finally{ restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl); }
+    finally{ restoreProject(snap, key); if(curLevel() !== lvl) setLevel(lvl); }
   });
 }
 
-function setLevel(level){ el('style').value = level; fire(el('style'), 'change'); }
+/* The chain strip is the ONE level selector now (the header <select> and the
+   3D depth tabs are gone), so the harness drives levels the way a user does:
+   by clicking a strip node. `tray`/`uboard` share ONE node -- the interlayer
+   slot -- which is the exclusivity the app now enforces, so asking for either
+   lands on the interlayer node and the app resolves which one is live. */
+function csNode(level){
+  const key = (level === 'tray' || level === 'uboard') ? 'interlayer' : level;
+  return document.querySelector(`#chainString .cs-node[data-node="${key}"]`);
+}
+function curLevel(){
+  const n = document.querySelector('#chainString .cs-node.active');
+  return n ? n.dataset.node : null;
+}
+/** The active level's enable/disable toggle -- ONE control per level, and it
+ *  lives on the strip (the detail panel's duplicate button is gone). */
+function tierToggle(){ return document.querySelector('#chainString .cs-node.active .cs-tog'); }
+function setLevel(level){ const n = csNode(level); if(n) n.click(); }
 
 /** Drive the vertical-axis MULTI-SELECT to a SINGLE axis (the old select's
  *  behaviour): check the target first (so the "never zero axes" guard never
@@ -821,14 +836,14 @@ await (async () => {
 
   t('disable/enable carton: rail structurally rebuilds, chain strip marks the carton disabled', () => {
     try{
-      el('tierToggleBtn').click();   // opens the confirm notice, does not itself disable
+      tierToggle().click();   // opens the confirm notice, does not itself disable
       const confirmBtn = Array.from(document.querySelectorAll('#loadNotice button')).find(b => /^Disable/.test(b.textContent));
       confirmBtn.click();
       eq(build.project.secondary.enabled, false, 'project reflects disabled:');
       const cartonNode = [...el('chainString').querySelectorAll('.cs-node')].find(n => /Carton/.test(n.textContent));
       if(!cartonNode || !cartonNode.classList.contains('disabled')) throw new Error('chain strip does not mark the carton node disabled');
     }finally{
-      if(build.project.secondary.enabled === false) el('tierToggleBtn').click();   // re-enable, no confirm needed
+      if(build.project.secondary.enabled === false) tierToggle().click();   // re-enable, no confirm needed
     }
     eq(build.project.secondary.enabled, true, 'project reflects re-enabled:');
   });
@@ -1065,7 +1080,7 @@ function confirmDisable(){
 await (async () => {
   setLevel('carton'); el('tab3d').click(); await settle();
   const hudBeforeDisable = el('hierHud').textContent;
-  el('tierToggleBtn').click(); await settle();   // opens the "Disable carton?" confirmation
+  tierToggle().click(); await settle();   // opens the "Disable carton?" confirmation
   confirmDisable(); await settle();
 
   t('carton disabled: the 3D hierarchy view still renders (HUD populated, not stuck empty from a crash)', () => {
@@ -1079,7 +1094,7 @@ await (async () => {
     if(el('d_case').disabled) throw new Error('Case depth should still be available');
     if(el('d_pallet').disabled) throw new Error('Pallet depth should still be available');
   });
-  el('tierToggleBtn').click(); await settle();   // re-enable (no confirmation needed for this direction)
+  tierToggle().click(); await settle();   // re-enable (no confirmation needed for this direction)
   t('carton disabled: re-enabling restores Carton depth without leaving the view broken', () => {
     if(el('d_carton').disabled) throw new Error('Carton depth should be available again once re-enabled');
     if(!el('hierHud').textContent) throw new Error('HUD went empty after re-enabling');
@@ -1130,7 +1145,7 @@ await (async () => {
   for(const lvl of ['wrap', 'carton', 'case']){
     setLevel(lvl); await settle();
     uncaught.length = 0;
-    el('tierToggleBtn').click(); await settle();   // opens the "Disable ...?" confirmation
+    tierToggle().click(); await settle();   // opens the "Disable ...?" confirmation
     confirmDisable(); await settle();
 
     t(`disable ${lvl} (as the active level): no uncaught error escapes the notify cycle`, () => {
@@ -1150,7 +1165,7 @@ await (async () => {
     }
 
     setLevel(lvl); await settle();                 // re-enable (no confirm needed) for the next iteration
-    el('tierToggleBtn').click(); await settle();
+    tierToggle().click(); await settle();
   }
   t('after disabling/re-enabling every tier in turn, the full chain is restored', () => {
     eq(build.project.secondary.enabled, true, 'carton re-enabled:');
@@ -1200,7 +1215,7 @@ await (async () => {
   });
 
   // disable the case -> the CARTON now rides the pallet directly
-  el('tierToggleBtn').click(); await settle();      // "Disable case?" confirmation
+  tierToggle().click(); await settle();      // "Disable case?" confirmation
   confirmDisable(); await settle();
   t('palletize (case disabled): readout is NOT blanked — the carton palletizes', () => {
     if(el('palTot').textContent === '--' || !(totNum() > 0))
@@ -1223,7 +1238,7 @@ await (async () => {
 
   // restore for any later work / a clean end state
   el('tab2d').click(); setLevel('case'); await settle();
-  el('tierToggleBtn').click(); await settle();       // re-enable the case (no confirm)
+  tierToggle().click(); await settle();       // re-enable the case (no confirm)
 })();
 
 /* ==================================================================
@@ -1280,12 +1295,12 @@ await (async () => {
     .find(n => n.querySelector('.cs-lvl').textContent === label);
 
   t('chain strip: one node per level, the active one highlighted', () => {
-    eq(el('chainString').querySelectorAll('.cs-node').length, 6, 'six level nodes (tray added):');
+    eq(el('chainString').querySelectorAll('.cs-node').length, 7, 'six chain nodes + the trailer consumer:');
     if(!stripNode('Case').classList.contains('active')) throw new Error('active level (Case) not highlighted');
   });
   tEdit('chain strip: clicking a node changes the active level', () => {
     stripNode('Carton').click();
-    eq(el('style').value, 'carton', 'active level follows the strip click:');
+    eq(curLevel(), 'carton', 'active level follows the strip click:');
     setLevel('case');
   });
   t('chain strip: disabling via the strip struck-throughs the node and labels the re-point arrow', () => {
@@ -1382,7 +1397,7 @@ await (async () => {
    * t()/tEdit(), which refuse async bodies (see CLAUDE.md), then assert
    * synchronously once state has actually settled. */
   {
-    const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+    const snap = snapProject(), lvl = curLevel(), key = build.getSelectedCandidateKey();
     const rangedProject = () => {
       const p = newProject();
       p.links[0] = {parent: 'tertiary', child: 'secondary', count: 10, arrangement: 'auto', countMax: 20, locked: false};
@@ -1407,12 +1422,12 @@ await (async () => {
           throw new Error(`expected casesPerPallet to change; both are ${before.casesPerPallet}`);
       });
     }finally{
-      restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl);
+      restoreProject(snap, key); if(curLevel() !== lvl) setLevel(lvl);
     }
   }
 
   t('arrangement badge + inert facing: MANUAL disables the facing select with a hint; AUTO re-enables it', () => {
-    const snap = snapProject(), lvl = el('style').value;
+    const snap = snapProject(), lvl = curLevel();
     try{
       setLevel('carton');
       el('pInArr').value = 'auto'; fire(el('pInArr'), 'change');
@@ -1442,7 +1457,7 @@ await (async () => {
    through the real lock control, the way a user actually does it.
    ================================================================== */
 await (async () => {
-  const snap3 = snapProject(), key3 = build.getSelectedCandidateKey(), lvl3 = el('style').value;
+  const snap3 = snapProject(), key3 = build.getSelectedCandidateKey(), lvl3 = curLevel();
 
   const unlock = () => {
     if(el('levelLockBtn').textContent.trim() === 'Unlock to edit') el('levelLockBtn').click();
@@ -1502,7 +1517,7 @@ await (async () => {
    a plan proportion) is untouched. L < W stays exactly as typed.
    ================================================================== */
 await (async () => {
-  const snap3b = snapProject(), key3b = build.getSelectedCandidateKey(), lvl3b = el('style').value;
+  const snap3b = snapProject(), key3b = build.getSelectedCandidateKey(), lvl3b = curLevel();
   const setDim = (id, mmVal) => { el(id).value = String(mmVal); fire(el(id), 'input'); fire(el(id), 'change'); };
 
   setLevel('wrap'); await settle();
@@ -1598,7 +1613,7 @@ await (async () => {
   const traySnap = snapProject();
   t('tray/uboard: off by default and present in the chain between product and wrap', () => {
     eq(build.project.interlayer, 'none', 'default interlayer:');
-    const opts = [...el('style').options].map(o => o.value);
+    const opts = [...document.querySelectorAll('#chainString .cs-node')].map(n => n.dataset.node);
     eq(opts.indexOf('tray'), opts.indexOf('product') + 1, 'tray follows product:');
     eq(opts.indexOf('uboard'), opts.indexOf('tray') + 1, 'uboard follows tray:');
     eq(opts.indexOf('wrap'), opts.indexOf('uboard') + 1, 'wrap follows uboard:');
@@ -2059,10 +2074,10 @@ await (async () => {
   /** Put the tray's 2D drawing on screen, hand the body a `redraw` it can call
    *  after an edit, and give back the level AND the 2D/3D tab it found. */
   function withTrayDrawing(fn){
-    const lvl = el('style').value, was3d = el('tab3d').classList.contains('on');
+    const lvl = curLevel(), was3d = el('tab3d').classList.contains('on');
     const redraw = () => { setLevel('tray'); el('tab2d').click(); return el('svg'); };
     try{ redraw(); return fn(redraw); }
-    finally{ if(was3d) el('tab3d').click(); if(el('style').value !== lvl) setLevel(lvl); }
+    finally{ if(was3d) el('tab3d').click(); if(curLevel() !== lvl) setLevel(lvl); }
   }
   const dimText = k => {
     const n = el('svg').querySelector(`[data-dim="${k}"]`);
@@ -4443,7 +4458,7 @@ await (async () => {
   // visibility (updateArtPanel) is the app's own "artwork present" signal,
   // and #btnArtRemove is the real undo.
   mel('tab2d').click();                              // updateArtPanel only runs on 2d/3d
-  mel('style').value = 'carton'; mfire(mel('style'), 'change'); await msettle();
+  mdoc.querySelector('#chainString .cs-node[data-node="carton"]').click(); await msettle();
   const c = mdoc.createElement('canvas'); c.width = c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#3c3'; g.fillRect(0, 0, 64, 64);
   const blob = await new Promise(res => c.toBlob(res, 'image/png'));
@@ -5016,7 +5031,7 @@ await (async () => {
     // that existed before cost did: the Build table's board column for the
     // case, and the rail's own board-area readout for the carton.
     eq(row.caseBoardM2, row.boardAreaM2, 'the case area IS the chain\'s board area:');
-    const lvl0 = el('style').value;
+    const lvl0 = curLevel();
     setLevel('carton');
     const shownArea = +(el('area').textContent.match(/[\d.]+/) || [])[0];
     setLevel(lvl0);
@@ -5139,7 +5154,7 @@ await (async () => {
    (never re-derived here) — same idiom as the cascade pins above.
    ================================================================== */
 await (async () => {
-  const snap = snapProject(), lvl = el('style').value, key = build.getSelectedCandidateKey();
+  const snap = snapProject(), lvl = curLevel(), key = build.getSelectedCandidateKey();
   const stripNode2 = label => [...el('chainString').querySelectorAll('.cs-node')]
     .find(n => n.querySelector('.cs-lvl').textContent === label);
   const rowNow = () => resolveActiveRow(build.project, build.getRounding(), build.getSelectedCandidateKey());
@@ -5179,7 +5194,7 @@ await (async () => {
     // locked case has no candidate to re-select, so it isolates the U-board's
     // own additive term cleanly.
   }finally{
-    restoreProject(snap, key); if(el('style').value !== lvl) setLevel(lvl);
+    restoreProject(snap, key); if(curLevel() !== lvl) setLevel(lvl);
   }
 })();
 
@@ -6645,7 +6660,8 @@ await (async () => {
   const mcs = node => mframe.contentWindow.getComputedStyle(node);
   const mfire = (node, type) => node.dispatchEvent(new Event(type, {bubbles: true}));
   const msettle = () => new Promise(r => setTimeout(r, 80));   // a real app + real recompute, not a bare microtask
-  const mSetLevel = level => { mel('style').value = level; mfire(mel('style'), 'change'); };
+  const mSetLevel = level => { const k = (level === 'tray' || level === 'uboard') ? 'interlayer' : level;
+    const n = mdoc().querySelector(`#chainString .cs-node[data-node="${k}"]`); if(n) n.click(); };
   const mSetStyle = id => { mel('levelStyleSel').value = id; mfire(mel('levelStyleSel'), 'change'); };
   // "reachable" means on-screen, not merely `display !== 'none'` — a
   // control positioned or clipped off the viewport reads display:block and

@@ -1412,16 +1412,13 @@ function toggleTier(level){
 /** The enable/disable control for the active tier (wrap/carton/case).
  *  Content and Pallet are always on — no control needed. */
 function mountEnableToggle(){
-  const host = el('levelEnable');
-  const lvl = LEVELS[activeLevel];
-  // style tiers AND the tray (a non-style optional level) both get the toggle
-  if(!CHAIN_OPTIONAL[activeLevel]){ host.innerHTML = ''; return; }
-  const on = isTierEnabled(activeLevel);
-  host.innerHTML =
-    `<div class="field"><label>Tier <span class="hint">${on ? 'in the chain' : 'skipped'}</span></label>
-      <div class="inp"><button type="button" id="tierToggleBtn" class="btn">${on ? `Disable ${lvl.label.toLowerCase()}` : `Enable ${lvl.label.toLowerCase()}`}</button></div>
-    </div>`;
-  el('tierToggleBtn').addEventListener('click', () => toggleTier(activeLevel));
+  // ONE enable/disable control per level, and it lives on the CHAIN STRIP --
+  // that is where chain membership is read at a glance, so that is where it
+  // is changed. This panel used to carry a second "Disable <level>" button
+  // for the same single fact; two controls for one boolean is how they drift
+  // (different labels, one refreshed and one stale). The strip's own toggle
+  // is the survivor; this host stays empty so the layout slot is unchanged.
+  el('levelEnable').innerHTML = '';
 }
 
 /** Map internal chain nouns to plain user-facing language (UAT #6): the
@@ -1450,6 +1447,12 @@ function nodeStyleLabel(k){
   if(k === 'pallet'){
     const u = inputs.getPalUnit();
     return `${Math.round(fromMM(proj.pallet.L, u))}×${Math.round(fromMM(proj.pallet.W, u))} ${u}`;
+  }
+  // the trailer is a CONSUMER, never a tier -- it has no `enabledOf`, so it
+  // must not reach the tier-enabled gate below (which would throw on it)
+  if(k === 'trailer'){
+    const t = proj.trailer;
+    return t && t.name ? t.name : 'fit check';
   }
   if(!isTierEnabled(k)) return '';
   const s = styleById(LEVELS[k].styleIdOf(proj));
@@ -1503,11 +1506,13 @@ function renderChainString(){
       node.tabIndex = 0;
       node.setAttribute('role', 'group');
       node.setAttribute('aria-label', `Interlayer: ${INTERLAYER_LABEL[mode]}`);
+      node.dataset.node = 'interlayer';
       const styleLbl = mode === 'none' ? '' : nodeStyleLabel(mode);
       node.innerHTML = `<span class="cs-lvl">Interlayer</span>` +
         `<span class="cs-style">${mode === 'none' ? 'skipped' : styleLbl}</span>`;
       const sel = document.createElement('select');
       sel.className = 'cs-tog';
+      sel.id = 'cs-tog-interlayer';
       sel.title = 'None / Tray / U-board — mutually exclusive';
       sel.innerHTML = ['none', 'tray', 'uboard'].map(v =>
         `<option value="${v}"${v === mode ? ' selected' : ''}>${INTERLAYER_LABEL[v]}</option>`).join('');
@@ -1530,12 +1535,14 @@ function renderChainString(){
       node.tabIndex = 0;
       node.setAttribute('role', 'button');
       node.setAttribute('aria-label', `${LEVELS[k].label}${enabled ? '' : ' (disabled)'}`);
+      node.dataset.node = k;
       const styleLbl = nodeStyleLabel(k);
       node.innerHTML = `<span class="cs-lvl">${LEVELS[k].label}</span>` +
         `<span class="cs-style">${enabled ? styleLbl : 'skipped'}</span>`;
       if(CHAIN_OPTIONAL[k]){
         const tog = document.createElement('button');
         tog.className = 'cs-tog';
+        tog.id = 'cs-tog-' + k;
         tog.textContent = enabled ? 'in chain' : 'enable';
         tog.title = enabled ? `Disable ${k}` : `Enable ${k}`;
         tog.addEventListener('click', e => { e.stopPropagation(); toggleTier(k); });
@@ -1557,6 +1564,41 @@ function renderChainString(){
       host.appendChild(arrow);
     }
   });
+  // THE TRAILER IS NOT A CHAIN MEMBER. It CONSUMES the finished pallet stack
+  // and reports fit -- nothing is packed inside it the way a carton is packed
+  // inside a case -- so it carries no style, no enable toggle and no re-point
+  // note, and it sits past a divider rather than another chain arrow. It is
+  // still SELECTABLE, which is the whole reason it belongs on the one strip:
+  // being outside the chain is a reason to draw it differently, not a reason
+  // to make the user find it somewhere else.
+  const div = document.createElement('div');
+  div.className = 'cs-arrow cs-consumer-div';
+  div.innerHTML = `<span class="cs-ar">&#9550;</span>`;
+  host.appendChild(div);
+  const tn = document.createElement('div');
+  tn.className = 'cs-node cs-consumer' + (activeLevel === 'trailer' ? ' active' : '');
+  tn.tabIndex = 0;
+  tn.setAttribute('role', 'button');
+  tn.setAttribute('aria-label', `${LEVELS.trailer.label} (consumes the chain, not part of it)`);
+  tn.dataset.node = 'trailer';
+  tn.innerHTML = `<span class="cs-lvl">${LEVELS.trailer.label}</span>` +
+    `<span class="cs-style">${nodeStyleLabel('trailer')}</span>`;
+  const goTrailer = () => setActiveLevel('trailer');
+  tn.addEventListener('click', goTrailer);
+  tn.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); goTrailer(); } });
+  host.appendChild(tn);
+  // NARROW DENSITY: the strip is one horizontally-scrolling row there, so the
+  // active node can sit outside the visible span -- on first load (the default
+  // level is CASE, five nodes in) as readily as after a click. It is the only
+  // level selector now, so "which level am I on" must be legible without the
+  // user first discovering the row scrolls. Nudged, never animated, and only
+  // when the row actually overflows, so the wide layout is untouched.
+  const act = host.querySelector('.cs-node.active');
+  if(act && host.scrollWidth > host.clientWidth){
+    const l = act.offsetLeft, r = l + act.offsetWidth;
+    if(l < host.scrollLeft) host.scrollLeft = Math.max(0, l - 12);
+    else if(r > host.scrollLeft + host.clientWidth) host.scrollLeft = r - host.clientWidth + 12;
+  }
 }
 
 /** The lock/unlock control for the active level's dimensions. Solved (the
@@ -2116,7 +2158,27 @@ function updatePngButtonsState(){
 }
 
 function setActiveLevel(level){
+  // INTERLAYER EXCLUSIVITY, enforced where selection happens rather than
+  // trusted to every caller. `tray` and `uboard` are two VIEWS of ONE slot --
+  // project.interlayer is an enum precisely so the both-at-once state cannot
+  // be represented -- so selecting either means "view whichever interlayer is
+  // active", and selecting one while the OTHER is active is not a state to
+  // discourage, it is a state with no page behind it. Coercing here makes it
+  // unrepresentable: no path lands on an interlayer that isn't the live one.
+  if(level === 'tray' || level === 'uboard'){
+    const mode = build.project.interlayer;
+    if(mode === 'none') return;                 // nothing in the slot to view
+    level = mode;
+  }
   activeLevel = level;
+  // A fresh depth re-opens the cascade at its own defaults rather than
+  // inheriting an opened-index chosen at some other depth. This used to live
+  // on the 3D depth tabs alone -- the #style selector never did it, so which
+  // of the two controls you reached for decided whether the open channel
+  // carried over. One control now, so one behaviour: the reset (the
+  // trailer rail's own comment already CLAIMED it happened "on a level
+  // switch"; via #style it did not).
+  hierSel = {};
   solidOverride = null;   // each level/depth re-picks its smart Solid/Cutaway default
   const lvl = LEVELS[level];
   el('brandName').textContent = APP_NAME;
@@ -2128,9 +2190,6 @@ function setActiveLevel(level){
   el('msTitle').textContent = `${APP_NAME} · ${lvl.label}`;
   updateExportButtonsState();
   updatePngButtonsState();
-  if(el('style').value !== level) el('style').value = level;
-  // the active level IS the hierarchy depth — keep the 3D depth buttons in sync
-  LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && d === level));
   mountActiveLevel();
   renderChainString();
   refresh2d();
@@ -2385,11 +2444,9 @@ function hudText(bundle, opened, depth){
 
 function applyHierarchy(resetCam){
   el('m3fold').classList.remove('on');
-  LEVEL_ORDER.forEach(d => el('d_' + d).classList.toggle('on', mode3d === 'hier' && activeLevel === d));
   if(view !== '3d') return;
   fold.stopFold(); fold.showBox(false); showWrapArt(false); showNest(false); showProduct(false);
   const bundle = hierarchyBundle();
-  LEVEL_ORDER.forEach(d => el('d_' + d).disabled = !depthAvailable(bundle, d));
   if(!bundle){ hier.show(false); el('hierHud').style.display = 'none'; el('orbithint').textContent = 'configure a chain in Build first'; subjectDims.nest = null; return; }
   // per-pack-type art textures: one composed canvas per level, shared across
   // every instance of that pack by the renderer (art is a pack property, not
@@ -2499,7 +2556,6 @@ function renderLegend(bundle, depth, solid){
 
 function applyFoldMode(){
   el('m3fold').classList.add('on');
-  ['product', 'wrap', 'carton', 'case', 'pallet'].forEach(d => el('d_' + d).classList.remove('on'));
   if(view !== '3d') return;
   hier.show(false); el('hierHud').style.display = 'none'; el('hierLegend').style.display = 'none';
   el('m3viewmode').style.display = 'none';   // Solid/Cutaway is a hierarchy-mode control
@@ -2531,8 +2587,14 @@ function updateCandidateCycle(){
   // parallel list). Both read/step through build.js, both clamp, no wrap.
   const pal = activeLevel === 'pallet';
   const {pos, total, label} = pal ? build.getPatternCycleState() : build.getCycleState();
-  if(!show || total < 1){ seg.style.display = 'none'; return; }
+  // the bar exists to hold this navigator and nothing else now (the level
+  // tabs it used to carry are gone -- the chain strip is the one selector),
+  // so an empty bar is a band of nothing above the canvas. It follows the
+  // navigator exactly, from this single writer.
+  const bar = el('scopeBar');
+  if(!show || total < 1){ seg.style.display = 'none'; bar.style.display = 'none'; return; }
   seg.style.display = 'flex';
+  bar.style.display = 'flex';
   const t = pal ? 'pallet pattern (ranked by cartons/pallet)' : 'build candidate (current sort)';
   el('candPrev').title = `Previous ${t}`;
   el('candNext').title = `Next ${t}`;
@@ -2623,7 +2685,11 @@ function setView(v){
   el('orbithint').style.display = canvas ? 'block' : 'none';
   el('mode3d').style.display    = v === '3d' ? 'flex' : 'none';
   el('modeShelf').style.display = v === 'shelf' ? 'flex' : 'none';
-  el('scopeBar').style.display  = v === '3d' ? 'flex' : 'none';
+  // #scopeBar's own visibility is owned by updateCandidateCycle (its only
+  // remaining content is the navigator) -- called below, after the view state
+  // it reads is settled. Set to none here so a non-3D view is never left
+  // showing it if the update path short-circuits.
+  if(v !== '3d') el('scopeBar').style.display = 'none';
   el('shelfPanel').style.display = v === 'shelf' ? 'block' : 'none';
   if(v === 'shelf') refreshCompareControl();   // slots may have changed since last time
   updateArtPanel();
@@ -2685,13 +2751,9 @@ function setView(v){
 }
 
 /* ---------- wiring ---------- */
-// #style is the always-visible ACTIVE-LEVEL selector: which level of the
-// project the rails edit and every view shows. All five levels, in
-// content->pallet order. It IS the hierarchy depth too (one control).
-const levelSel = el('style');
-levelSel.innerHTML = LEVEL_ORDER.map(k => `<option value="${k}">${LEVELS[k].label}</option>`).join('');
-levelSel.value = activeLevel;
-levelSel.addEventListener('change', () => setActiveLevel(levelSel.value));
+// The CHAIN STRIP is the one active-level selector: which level of the project
+// the rails edit and every view shows. It IS the hierarchy depth too (one
+// control, one writer -- see renderChainString/setActiveLevel).
 
 // pallet fields write straight into project.pallet — the single home for
 // pallet dims (no more copy into a detached object)
@@ -3222,14 +3284,6 @@ el('m3dims').addEventListener('click', () => {
 // inside the viewcube-mount guard — that guard can already be satisfied by the
 // time the 3D view first opens, which would silently drop the registration.
 fold.onFrame(drawDims);
-// the 3D depth buttons ARE active-level buttons — one control, so the rails
-// and the cascade always point at the same level
-LEVEL_ORDER.forEach(d =>
-  el('d_' + d).addEventListener('click', () => {
-    if(el('d_' + d).disabled) return;
-    mode3d = 'hier'; hierSel = {};   // fresh depth resets the open channel to defaults
-    setActiveLevel(d);
-  }));
 
 // click a unit in the hierarchy to open it; the cascade re-opens below it
 (function wireHierPick(){

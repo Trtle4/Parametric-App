@@ -1388,3 +1388,101 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   `uisync.test.html`, which cannot run to completion in this sandbox. Stated
   rather than papered over with a builder-level pin that would pass whether
   or not the app calls it.
+
+- **RESOLVED (merged-strip task): the chain strip and the level rail were
+  never the same LIST, which is why deduplicating them was a correctness fix
+  and not just tidying.** Diagnosis first, because the obvious one is wrong:
+  the STATE was already single (`activeLevel`, one writer) — there was no
+  desync bug to hunt. The defect was in what each control ENUMERATED. The
+  chain strip carried ONE interlayer slot with a None/Tray/U-board mode
+  selector — exclusivity visible in the control itself, which is the whole
+  point of `project.interlayer` being an enum. The rail re-expressed the same
+  slot as two SEPARATE PEERS (Tray, U-board), so it offered a selection the
+  model has no state for: view the U-board while the tray is the live
+  interlayer. And there was a THIRD selector nobody's brief mentioned — a
+  `<select id="style">` in the header — plus the 3D depth tabs (`#d_*`) in
+  `#scopeBar`, four controls onto one fact. The trailer, meanwhile, was in the
+  rail but absent from the strip.
+  **The fix**: ONE strip, the chain strip as the base. `#style`, its wiring,
+  and every `#d_*` tab and its three `LEVEL_ORDER.forEach` sync loops are
+  gone. **Interlayer selection FOLLOWS THE MODE rather than being a second
+  tab**: `setActiveLevel` coerces `tray`/`uboard` to `project.interlayer` at
+  the point of selection (and returns early on `'none'` — nothing in the slot
+  to view), so the nonsense state is unrepresentable rather than merely
+  discouraged. Mutation-tested exactly as specified: restoring a direct
+  `activeLevel = 'uboard'` path lands the app on U-BOARD while the interlayer
+  is TRAY; with the guard it lands on TRAY.
+  **The trailer is a CONSUMER, drawn as one**: appended past a `╎` divider
+  (not a chain arrow), dashed border, quieter key, no style label, no enable
+  toggle, no re-point note — selectable, but visibly not a member. Being
+  outside the chain is a reason to DRAW it differently, not a reason to make
+  the user find it somewhere else. Its pin checks all four: present and
+  selectable, `.cs-consumer`, no toggle, and still absent from the cost
+  roll-up.
+  **ENABLE/DISABLE existed twice** (the strip's `in chain` chip and a "Disable
+  <level>" button in the detail panel) — the strip's chip is the survivor,
+  because membership is READ at a glance on the strip, so it should be CHANGED
+  there. `mountEnableToggle` now empties its host rather than rendering the
+  second control. Asserted BY COUNT (`#cs-tog-<level>` is exactly 1 and
+  `#tierToggleBtn` exactly 0 per level), not by behaviour, so a reintroduced
+  duplicate fails even if both copies happen to agree that day.
+  **Two densities, one element**: the 860px query changes only how a node
+  renders (inactive nodes collapse to the level name; the active one keeps its
+  style sub-label and chip), never which nodes exist — the DENSITY pin asserts
+  the node LIST and every level's operability are identical at 1400 and 430.
+  A second narrow-only defect surfaced from the screenshots, not the pins:
+  the strip is one scrolling row there, so the ACTIVE node can sit off-screen
+  — on first load (the default level is CASE, five nodes in) as readily as
+  after a click. Reachable by click and invisible is not reachable when this
+  is the only level selector, so `renderChainString` nudges it into view
+  (only when the row actually overflows; wide is untouched). Its pin carries
+  a FIXTURE CHECK that the narrow strip overflows at all, or it would be a
+  vacuous pass at any width where the row fits.
+  **Two behaviours had to be RECONCILED, not just deduplicated**, because the
+  two dead controls disagreed. (1) The depth tabs reset `hierSel` (the opened-
+  index cascade) on a level change and `#style` did not, so which control you
+  reached for decided whether a stale open channel carried across depths — the
+  reset moved into `setActiveLevel`, which is the first time the trailer
+  rail's own comment claiming it happens "on a level switch" is actually
+  true. (2) The depth tabs forced `mode3d = 'hier'` and `#style` did not;
+  `#style`'s behaviour won, because Fold-vs-hierarchy is a VIEW setting living
+  in the render rail, and a level pick that silently cancels it makes that
+  toggle un-sticky. Scope and view stay orthogonal.
+  **The vertical budget, honestly**: the brief expected a recovered band above
+  the canvas, and the first measurement showed NONE (1400px: canvas top 298px
+  before and after). Cause: `.depthsel` lived in `#scopeBar`, which still
+  exists for the candidate navigator, and `#style` sat in an already-wrapping
+  header row, so removing both freed nothing. Fixed by making the now-single-
+  purpose bar FOLLOW its only remaining content: `updateCandidateCycle` is its
+  one writer, and it collapses where there is no candidate list. Measured:
+
+  ```
+                    1400px                430px
+    depth      before   after        before   after
+    case         298      298          364      362     (navigator populated)
+    carton       298      243          364      307     (navigator empty)
+  ```
+
+  So the band is 55px, recovered at product/wrap/carton/trailer depth and NOT
+  at case/pallet, where the row is still earning its height. Stated as
+  measured rather than as the brief anticipated. `setView` reaches that writer
+  via `apply3dMode()`; it also sets the bar to `none` directly for a non-3D
+  view so a short-circuit can never leave it up.
+  **A pre-existing crash surfaced** while writing the reachability pins:
+  `mountTray`'s `bindAuto` bound `colDivider` unconditionally although that
+  field is only rendered once the tray has more than one pocket per row, and
+  the resulting throw inside a `forEach` took every binding AFTER it with it.
+  Confirmed identical on baseline via `git stash` (not caused by this task),
+  then guarded. This is the "a pin that drives it the way a user does" rule
+  paying out: no builder-level pin would have reached it.
+  Full regression: `golden.json` 998/998 unchanged (enable/disable round-trips
+  bit-identical — a selector merge touches no geometry), every suite green
+  except the four pre-existing `saveload` `cornerPost` failures and
+  `uisync.test.html`, which fails at import on the BASELINE too in this
+  sandbox (same `pageerror`, confirmed by `git stash`) — its skeleton was
+  migrated off `#style`/`#tierToggleBtn` regardless, per this file's own
+  harness rule.
+  **Sequencing**: this landed BEFORE the render-controls placement work by
+  design, since it changes what "scope controls" means — `#scopeBar` is now
+  the candidate navigator alone, and that prompt should be re-read against
+  this state rather than run against the four-selector one.
