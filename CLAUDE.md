@@ -1278,3 +1278,211 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   the centre seam with the template's own panel text legible and unmirrored.
   Full regression: `golden.json` 998/998 unchanged, every suite green except
   the 4 pre-existing `saveload` `cornerPost` failures documented above.
+- **RESOLVED, WITH A REACHABILITY CAVEAT (flow-wrap end-seal task): the crimp
+  now has a derived girth mapping — but the path it fixes has no live consumer
+  today, and the path users DO see was already correct.** The declaration gap
+  was real: `flowwrap.js` gave each girth band a full template rect and then
+  declared the crimps as EXTENTS only (`ends: [{u0, u1}]`, no `v`), so nothing
+  downstream could map the seal — the information wasn't there. `finPlies`
+  (render/artwork3d.js) fills it by DERIVING, never authoring: it folds the
+  section polyline at the mid-plane of a newly DECLARED `flattenAxis` and reads
+  each half-girth straight off the bands' own `faces[].v` breakpoints. The
+  flatten axis is stated, not inferred, because which way the tube collapses is
+  a machine fact (jaw orientation relative to the fin seal) and a square — or
+  round — section carries no hint of it. Cutting at z=0 folds each SIDE band at
+  its own midpoint, which is what puts one ply on the shopper's face and the
+  other on the rear seam. Hand-verified on the default wrap (L90 W50 H120):
+  cuts at v=95.5 and v=265.5, the shopper ply spanning exactly girth/2 with
+  FRONT's own midpoint (v=180.5) landing on the fin centreline, and the seam
+  landing there too for the far ply. THE FAR PLY IS TWO RUNS, not one: it is
+  contiguous around the tube but the template cuts the girth at the seam, so a
+  consumer that assumes one run per ply drops half of it. IDEALISATION, stated
+  rather than hidden: a half-girth of film is gathered into a flat width of
+  only `fw` — real film pleats at the corners — and each run is stretched
+  uniformly over its share instead of modelling the pleat.
+
+  **CHIRALITY: there is none in v, and that is the finding.** The two crimps
+  mirror in u (the blank's edge is u=0 at one end and u=canvas.w at the other,
+  already in the data) but NOT in v: v is a MATERIAL coordinate, so the film at
+  a given point of the tube carries the same v whichever end you look at. The
+  risk the task flagged is real all the same — it enters if a builder assigns
+  UVs by CORNER ORDER instead of by world position, which silently negates the
+  across-coordinate at the far end. Positions are therefore built from world
+  across-coordinates at both ends, and the mutation (`dir > 0 ? -a : a`) was run
+  against the real renderer: it mirrors the trailing fin and fails both the
+  chirality and continuity pins, exactly as the task predicted.
+
+  **BLEED was doing nothing.** `ends` u-ranges are the SEAL (`bleed`→`sealEnd`),
+  so a fin drawn u0..u1 stops precisely where the bleed starts. Added
+  `printU0/printU1` — the film's full printed extent out to the blank's own edge
+  — and the renderer draws that, so the bleed prints OUTSIDE the seal boundary
+  where bleed belongs. `u0/u1` are untouched, because hierarchy3d.js's pillow
+  reads them.
+
+  **THE CAVEAT, and it is the important part.** `packArtGeometry`'s fin — the
+  thing this task fixes — is UNREACHABLE in the shipped app. Three paths, all
+  checked: the FOLD view is behind `FOLD_VIEW_ENABLED = false` (app.js); the
+  hierarchy's instanced children explicitly exclude wraps
+  (`else if(childKind !== 'wrap')`, hierarchy3d.js); and the shelf always builds
+  a wrap from `closedWrapParts`. Every wrap a user can see is the PILLOW, whose
+  crimp tab already reads the crimp ring's own v via `crimpVLookup` — correct,
+  two-ply, mirror-aware, and carrying the doc comment describing the very bug
+  ("used to stretch the whole canvas height (0..1) across its width") that
+  artwork3d's fin still had. So the symptom the task predicted was real and was
+  exactly where it said, but in dormant code. Verified by rendering
+  `packArtGeometry` standalone with per-band colours: the fin reads
+  side-half → FRONT → side-half, centred on FRONT. NOT rewired into the pillow:
+  `finPlies` gives an idealised FLAT two-ply split while `crimpVLookup`
+  continues the ramp's progressive gather onto the tab — related facts, not the
+  same one, so collapsing them would be wrong rather than DRY. The two-
+  computations smell is noted here deliberately; if the fold view is ever
+  revived, that is the moment to re-examine it.
+- **RESOLVED (display-state render task): three faults from one report — a
+  transparent-looking board, a torn-open pack standing empty, and a girth
+  basis that never followed its product.**
+  1. **Only the OUTER face is printed.** `perfBodyGeometry` put the outer
+     face, the INNER face and the torn edge all in material group 0, so the
+     art material clad the cavity too and a display-state pack read as if the
+     board were transparent — the front panel legible, MIRRORED, on the inside
+     of the far wall. Split: group 0 is the outer face alone; group 1 (board)
+     takes the inner face, the torn edge and the floor. `perfRemovedGeometry`
+     got the same split, for the same reason. The backing material is
+     whatever the caller passes as material 1, so the white-lined board the
+     user asked about later is the same call with a different material, not a
+     new code path.
+  2. **A pack torn to display state is an OPEN pack, so it shows its
+     contents.** `showContents` already read "an OPEN tray or a SHRINK pack
+     reveals its contents in BOTH modes; only a closed box hides them" —
+     display state belongs in that list by the same reasoning (everything
+     above the tear is gone), so it joins the existing rule rather than
+     getting a branch of its own. Carton and case both. FIRST ATTEMPT WAS
+     HALF A FIX and the screenshot proved it: routing to `buildContainer`
+     gained the sleeves and LOST the artwork, which is the very complaint the
+     report made about Cutaway. Cause: `buildContainer` built its shell with
+     `tier.mat` — plain board — and never `tier.art`, which the tier has
+     carried all along for its instanced-on-the-pallet case. The opened shell
+     now clads itself exactly as `soloClosed` does, so a printed pack keeps
+     its print in BOTH modes, and Cutaway gained the graphics it had also
+     been missing.
+  3. **`girthBasis` is AUTO by default and follows the product.** It had only
+     ever been demoted (an explicit 'round' fell back to rectangular when the
+     chain stopped being eligible) and never promoted, so a round on-edge slug
+     kept a rectangular girth unless the user found the control. Added 'auto'
+     as a third choice AND the default, resolved at the one existing site in
+     `solvePrimaryStage` against `resolved.kind` — the fact
+     `resolveWrapContents` already decided. Resolved on the COPY `wp`, so the
+     stored choice stays 'auto' and keeps tracking the product; an explicit
+     pick still wins, which is what keeps this a default and not a forced
+     derivation. Checked first that no consumer builds the wrap from raw
+     params (everything goes through `levelGeometry` → the resolved row), or
+     an 'auto' sentinel reaching `flowwrap()` would have silently computed
+     rectangular — a sentinel leaking into a style is exactly the silent
+     wrong-default this codebase keeps re-learning.
+
+  PINNED vs SEEN: (1) and (3) carry pins with mutations — the cavity-side
+  check reconstructs the one-group arrangement and proves it would fail; the
+  girth pins prove auto fires, that an explicit pick overrides it, and that a
+  non-eligible collation still lands rectangular. (2) is verified by
+  SCREENSHOTS through the real UI, not by a pin: the wiring rule in this file
+  says a rendered-tree read is what tests wiring, and that lives in
+  `uisync.test.html`, which cannot run to completion in this sandbox. Stated
+  rather than papered over with a builder-level pin that would pass whether
+  or not the app calls it.
+
+- **RESOLVED (merged-strip task): the chain strip and the level rail were
+  never the same LIST, which is why deduplicating them was a correctness fix
+  and not just tidying.** Diagnosis first, because the obvious one is wrong:
+  the STATE was already single (`activeLevel`, one writer) — there was no
+  desync bug to hunt. The defect was in what each control ENUMERATED. The
+  chain strip carried ONE interlayer slot with a None/Tray/U-board mode
+  selector — exclusivity visible in the control itself, which is the whole
+  point of `project.interlayer` being an enum. The rail re-expressed the same
+  slot as two SEPARATE PEERS (Tray, U-board), so it offered a selection the
+  model has no state for: view the U-board while the tray is the live
+  interlayer. And there was a THIRD selector nobody's brief mentioned — a
+  `<select id="style">` in the header — plus the 3D depth tabs (`#d_*`) in
+  `#scopeBar`, four controls onto one fact. The trailer, meanwhile, was in the
+  rail but absent from the strip.
+  **The fix**: ONE strip, the chain strip as the base. `#style`, its wiring,
+  and every `#d_*` tab and its three `LEVEL_ORDER.forEach` sync loops are
+  gone. **Interlayer selection FOLLOWS THE MODE rather than being a second
+  tab**: `setActiveLevel` coerces `tray`/`uboard` to `project.interlayer` at
+  the point of selection (and returns early on `'none'` — nothing in the slot
+  to view), so the nonsense state is unrepresentable rather than merely
+  discouraged. Mutation-tested exactly as specified: restoring a direct
+  `activeLevel = 'uboard'` path lands the app on U-BOARD while the interlayer
+  is TRAY; with the guard it lands on TRAY.
+  **The trailer is a CONSUMER, drawn as one**: appended past a `╎` divider
+  (not a chain arrow), dashed border, quieter key, no style label, no enable
+  toggle, no re-point note — selectable, but visibly not a member. Being
+  outside the chain is a reason to DRAW it differently, not a reason to make
+  the user find it somewhere else. Its pin checks all four: present and
+  selectable, `.cs-consumer`, no toggle, and still absent from the cost
+  roll-up.
+  **ENABLE/DISABLE existed twice** (the strip's `in chain` chip and a "Disable
+  <level>" button in the detail panel) — the strip's chip is the survivor,
+  because membership is READ at a glance on the strip, so it should be CHANGED
+  there. `mountEnableToggle` now empties its host rather than rendering the
+  second control. Asserted BY COUNT (`#cs-tog-<level>` is exactly 1 and
+  `#tierToggleBtn` exactly 0 per level), not by behaviour, so a reintroduced
+  duplicate fails even if both copies happen to agree that day.
+  **Two densities, one element**: the 860px query changes only how a node
+  renders (inactive nodes collapse to the level name; the active one keeps its
+  style sub-label and chip), never which nodes exist — the DENSITY pin asserts
+  the node LIST and every level's operability are identical at 1400 and 430.
+  A second narrow-only defect surfaced from the screenshots, not the pins:
+  the strip is one scrolling row there, so the ACTIVE node can sit off-screen
+  — on first load (the default level is CASE, five nodes in) as readily as
+  after a click. Reachable by click and invisible is not reachable when this
+  is the only level selector, so `renderChainString` nudges it into view
+  (only when the row actually overflows; wide is untouched). Its pin carries
+  a FIXTURE CHECK that the narrow strip overflows at all, or it would be a
+  vacuous pass at any width where the row fits.
+  **Two behaviours had to be RECONCILED, not just deduplicated**, because the
+  two dead controls disagreed. (1) The depth tabs reset `hierSel` (the opened-
+  index cascade) on a level change and `#style` did not, so which control you
+  reached for decided whether a stale open channel carried across depths — the
+  reset moved into `setActiveLevel`, which is the first time the trailer
+  rail's own comment claiming it happens "on a level switch" is actually
+  true. (2) The depth tabs forced `mode3d = 'hier'` and `#style` did not;
+  `#style`'s behaviour won, because Fold-vs-hierarchy is a VIEW setting living
+  in the render rail, and a level pick that silently cancels it makes that
+  toggle un-sticky. Scope and view stay orthogonal.
+  **The vertical budget, honestly**: the brief expected a recovered band above
+  the canvas, and the first measurement showed NONE (1400px: canvas top 298px
+  before and after). Cause: `.depthsel` lived in `#scopeBar`, which still
+  exists for the candidate navigator, and `#style` sat in an already-wrapping
+  header row, so removing both freed nothing. Fixed by making the now-single-
+  purpose bar FOLLOW its only remaining content: `updateCandidateCycle` is its
+  one writer, and it collapses where there is no candidate list. Measured:
+
+  ```
+                    1400px                430px
+    depth      before   after        before   after
+    case         298      298          364      362     (navigator populated)
+    carton       298      243          364      307     (navigator empty)
+  ```
+
+  So the band is 55px, recovered at product/wrap/carton/trailer depth and NOT
+  at case/pallet, where the row is still earning its height. Stated as
+  measured rather than as the brief anticipated. `setView` reaches that writer
+  via `apply3dMode()`; it also sets the bar to `none` directly for a non-3D
+  view so a short-circuit can never leave it up.
+  **A pre-existing crash surfaced** while writing the reachability pins:
+  `mountTray`'s `bindAuto` bound `colDivider` unconditionally although that
+  field is only rendered once the tray has more than one pocket per row, and
+  the resulting throw inside a `forEach` took every binding AFTER it with it.
+  Confirmed identical on baseline via `git stash` (not caused by this task),
+  then guarded. This is the "a pin that drives it the way a user does" rule
+  paying out: no builder-level pin would have reached it.
+  Full regression: `golden.json` 998/998 unchanged (enable/disable round-trips
+  bit-identical — a selector merge touches no geometry), every suite green
+  except the four pre-existing `saveload` `cornerPost` failures and
+  `uisync.test.html`, which fails at import on the BASELINE too in this
+  sandbox (same `pageerror`, confirmed by `git stash`) — its skeleton was
+  migrated off `#style`/`#tierToggleBtn` regardless, per this file's own
+  harness rule.
+  **Sequencing**: this landed BEFORE the render-controls placement work by
+  design, since it changes what "scope controls" means — `#scopeBar` is now
+  the candidate navigator alone, and that prompt should be re-read against
+  this state rather than run against the four-selector one.

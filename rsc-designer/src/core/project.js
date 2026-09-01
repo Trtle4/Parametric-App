@@ -120,7 +120,7 @@ export function newProject(){
         // lock checkbox is turned on, instead of reading back `undefined`.
         params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'bottom',
                  lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
-                 girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
+                 girthBasis: 'auto', roundDiameter: 0, gauge: 30, density: 0.92,
                  L: 141, W: 47, H: 24},
         // machine direction is fixed at envelope L (seals at the L-ends, fin
         // on the bottom) — no wrapAxis choice; the collation orientation is
@@ -491,6 +491,12 @@ function solvePrimaryStage(project, resolved){
   // thing), never the bare product inside it. resolveWrapContents() already
   // decided both of those via `kind`, and hands back `diameter` only when
   // kind is 'round'.
+  // AUTO follows the product -- round only when resolveWrapContents actually
+  // resolved a round content (a single on-edge tube along the machine
+  // direction, no interlayer). Resolved on the COPY, so the stored choice
+  // stays 'auto' and keeps tracking the product as it changes; an explicit
+  // 'round' is still demoted when it stops being eligible, exactly as before.
+  if(wp.girthBasis === 'auto') wp.girthBasis = resolved.kind === 'round' ? 'round' : 'rectangular';
   if(wp.girthBasis === 'round'){
     if(resolved.kind === 'round') wp.roundDiameter = resolved.diameter;
     else wp.girthBasis = 'rectangular';

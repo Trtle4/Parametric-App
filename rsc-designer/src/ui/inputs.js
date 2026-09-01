@@ -854,6 +854,14 @@ export function mountTray(project, m){
   const mmv = id => toMM(+el(id).value || 0, unit);
   const bindAuto = key => {
     const inp = el('tr_' + key);
+    // CONDITIONALLY RENDERED. `colDivider` only exists once the tray has more
+    // than one pocket per row (see its own `nCols > 1 || gridOn` guard above),
+    // so binding it unconditionally threw on every default tray -- and because
+    // this runs in a forEach, the throw took every binding AFTER it with it
+    // (the wall/divider/floor inputs, draft angle, long axis): the whole lower
+    // half of the tray rail was inert. The reset button below was already
+    // guarded for exactly this reason; the input itself was not.
+    if(!inp) return;
     inp.addEventListener('input', () => {
       if(inp.value === '') delete ov[key]; else ov[key] = mmv('tr_' + key);
       m.onInput();

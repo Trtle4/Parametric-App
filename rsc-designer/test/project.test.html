@@ -756,6 +756,53 @@ t('the chain resolves round girth with diameter d for an on-edge sleeve (not a r
   const rRect = candidateCases(p, '1mm')[0];
   if(!(rRect.filmAreaM2 > rRound.filmAreaM2)) throw new Error('rectangular girth should use more film than round — round did not resolve');
 });
+/* AUTO girth basis: the default follows the product. An on-edge round slug
+   gets the round girth without the user touching the control; anything else
+   gets the rectangular one; and an EXPLICIT pick still wins either way, which
+   is what keeps this a default rather than a forced derivation. */
+function roundSlugProject(){
+  const p = newProject();
+  p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6}, perStack: 10, stackAxis: 'X', nx: 1, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};
+  p.primary.allowedOrientations = ['LWH'];
+  p.primary.wrap.params = {...p.primary.wrap.params, sealType: 'fin', finTreatment: 'standing', finHeight: 8, finSealBand: 5, endSealWidth: 10, endSealBleed: 3, roundDiameter: 0};
+  p.links[1].count = 1; p.links[1].arrangement = 'auto';
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};
+  return p;
+}
+t('AUTO girth basis: a round on-edge slug resolves to the ROUND girth with no explicit pick', () => {
+  const p = roundSlugProject();
+  eq(p.primary.wrap.params.girthBasis, 'auto', 'fixture assumption: a fresh project must default to auto:');
+  if(!roundGirthEligible(p.primary.collation)) throw new Error('vacuous fixture: this collation must be round-eligible');
+  const auto = candidateCases(p, '1mm')[0];
+  // the SAME hand-computed round figure the explicit-round pin above uses
+  const rampSlant = (50/2)/Math.sin(45*Math.PI/180);
+  const expected = (Math.PI*50 + 2*8 + 5)*(60 + 2*(rampSlant + 10 + 3))/1e6;
+  approx(auto.filmAreaM2, expected, 'auto resolves to the round girth pi*d:');
+  // and it is genuinely the round path, not a rectangular coincidence
+  const q = roundSlugProject(); q.primary.wrap.params.girthBasis = 'rectangular';
+  if(!(candidateCases(q, '1mm')[0].filmAreaM2 > auto.filmAreaM2))
+    throw new Error('rectangular should use more film than round -- auto did not actually resolve round');
+});
+t('AUTO girth basis: an EXPLICIT pick still wins, so this is a default and not a forced derivation', () => {
+  const p = roundSlugProject(); p.primary.wrap.params.girthBasis = 'rectangular';
+  const forced = candidateCases(p, '1mm')[0];
+  const auto = candidateCases(roundSlugProject(), '1mm')[0];
+  if(!(forced.filmAreaM2 > auto.filmAreaM2))
+    throw new Error('an explicit rectangular pick was overridden by eligibility -- the control would be meaningless');
+});
+t('AUTO girth basis: a NON-eligible collation resolves to rectangular, and the stored choice stays auto', () => {
+  const p = roundSlugProject();
+  p.primary.collation = {...p.primary.collation, pieceOrientation: 'flat'};   // no longer a tube along L
+  if(roundGirthEligible(p.primary.collation)) throw new Error('vacuous fixture: this collation must NOT be round-eligible');
+  const r = candidateCases(p, '1mm')[0];
+  const q = roundSlugProject();
+  q.primary.collation = {...q.primary.collation, pieceOrientation: 'flat'};
+  q.primary.wrap.params.girthBasis = 'rectangular';
+  approx(r.filmAreaM2, candidateCases(q, '1mm')[0].filmAreaM2, 'auto on a non-eligible collation matches an explicit rectangular:');
+  // the PROJECT is untouched -- resolution happens on a copy, so the wrap
+  // keeps following the product if the collation changes back
+  eq(p.primary.wrap.params.girthBasis, 'auto', 'the stored choice must still be auto after resolving:');
+});
 t('round girth stays unreachable once U-board is enabled, even for an eligible nx>1 on-edge sleeve (Phase B guarantee)', () => {
   const p = newProject();
   p.primary.collation = {piece: {kind: 'cylinder', diameter: 50, thickness: 6}, perStack: 1, stackAxis: 'X', nx: 3, ny: 1, stackGap: 0, pieceGap: 0, pieceOrientation: 'on-edge'};

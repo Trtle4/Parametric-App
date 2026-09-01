@@ -1339,7 +1339,19 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
   // and a profiled front, so neither a closed box nor a cutaway describes it —
   // it IS the opened shell. Its near walls are not hidden as the camera
   // orbits, and do not need to be: there is no top to see past.
-  const displayShell = isDisplayGeo(geo) ? perfDisplayBody(geo, tier.mat) : null;
+  // A PRINTED container keeps its print when it is the opened shell, too: the
+  // display body is the pack's own outside, so it carries the artwork exactly
+  // as the closed body (soloClosed) does, and by the same call. Without this,
+  // switching a printed pack to Display swapped it for a plain board one --
+  // the graphics vanished at the moment the contents appeared, in BOTH modes.
+  // Group 1 stays `board`, which is what backs the cavity and the torn edge.
+  const tierArt = tier.art && tier.art.am && tier.art.canvas ? tier.art : null;
+  let shellMat = tier.mat;
+  if(isDisplayGeo(geo) && tierArt){
+    shellMat = packArtMaterials(tierArt.canvas, board);
+    artResources.push(shellMat[0]);          // dispose the per-build texture on clear
+  }
+  const displayShell = isDisplayGeo(geo) ? perfDisplayBody(geo, shellMat) : null;
   let shellParts = [];                    // the shell body (+ its tear line, if any) — moves together
   if(isShrinkBundle(geo)){ /* no rigid shell */ }
   else if(displayShell){ g.add(displayShell); shellParts = [displayShell]; }
@@ -1638,15 +1650,21 @@ export function buildHierarchy(bundle, depth, sel, solid, explode){
     const e = bundle.wraps.envelope; span = Math.max(e.L, e.W, e.H);
     const o = bundle.wrapGeo.outer; outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'carton'){
-    // an OPEN tray or a SHRINK pack reveals its contents in BOTH modes (Solid
-    // fills it, Cutaway drills one to product); only a closed box hides them.
-    const showContents = isOpenTop(bundle.cartonGeo) || isShrink(bundle.cartonGeo);
+    // an OPEN tray, a SHRINK pack, or a pack torn to its DISPLAY state reveals
+    // its contents in BOTH modes (Solid fills it, Cutaway drills one to
+    // product); only a closed box hides them. Display state belongs in that
+    // list for the same reason the tray does -- everything above the tear is
+    // gone, so the pack IS open and its contents are visible from outside.
+    // Solid used to show the torn shell standing empty, which read as a bug.
+    const showContents = isOpenTop(bundle.cartonGeo) || isShrink(bundle.cartonGeo)
+                      || isDisplayGeo(bundle.cartonGeo);
     if(solid && !showContents) group.add(soloClosed(bundle.cartonGeo, cartonArt));
     else { group.add(buildContainer(cartonTier, bundle, S, [], {solid, explode})); opened = {wrap: S.wrap}; }
     const o = bundle.cartonGeo.outer; span = Math.max(o.L, o.W, o.H);
     outer = {L: o.L, W: o.W, H: o.H};
   }else if(depth === 'case'){
-    const showContents = isOpenTop(bundle.caseGeo) || isShrink(bundle.caseGeo);
+    const showContents = isOpenTop(bundle.caseGeo) || isShrink(bundle.caseGeo)
+                      || isDisplayGeo(bundle.caseGeo);   // torn open -> contents visible, as above
     if(solid && !showContents) group.add(soloClosed(bundle.caseGeo, caseArt));
     else { group.add(buildContainer(caseTier, bundle, S, [], {solid, explode})); opened = {carton: S.carton, wrap: S.wrap}; }
     const o = bundle.caseGeo.outer; span = Math.max(o.L, o.W, o.H);

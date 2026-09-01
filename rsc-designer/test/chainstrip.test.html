@@ -1,0 +1,301 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>chain strip — the one level selector</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* THE MERGED STRIP. The chain strip is now the ONE level selector: the header
+   <select id="style"> and the 3D depth tabs (.depthsel) are gone, the trailer
+   joins as a visually distinct CONSUMER terminal node, and enable/disable
+   exists once per level (on the strip) instead of twice.
+
+   Everything here drives the REAL app in an iframe, at a REAL width, through
+   the DOM a user touches -- per this repo's own rule that a pin calling a
+   builder proves the builder works and says nothing about whether the app
+   wires it. The awaits live OUT of the pins (an async t() body reports PASS
+   with its assertions unverified), so the whole survey is measured first and
+   the pins are synchronous assertions over the results. */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function ok(c, m){ if(!c) throw new Error(m); }
+function eq(a, e, m = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+const WIDE = 1400, NARROW = 430;
+const settle = (ms = 110) => new Promise(r => setTimeout(r, ms));
+
+function openApp(width){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:900px;border:0`;
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+/** One full survey of the app at a given width. Returns PLAIN DATA, so every
+ *  pin below is a synchronous assertion over an already-measured result. */
+async function survey(width){
+  const f = await openApp(width);
+  await settle(1100);
+  const d = f.contentDocument;
+  const thrown = [];
+  f.contentWindow.addEventListener('error', e => thrown.push(String(e.message)));
+  const q = s => d.querySelector(s);
+  const qa = s => [...d.querySelectorAll(s)];
+  const nodeOf = k => q(`#chainString .cs-node[data-node="${k}"]`);
+  const activeNode = () => { const n = q('#chainString .cs-node.active'); return n ? n.dataset.node : null; };
+  const levelReadout = () => (q('#tbLevel') ? q('#tbLevel').textContent : null);
+  const setInterlayer = async mode => {
+    const sel = q('#cs-tog-interlayer');
+    sel.value = mode; sel.dispatchEvent(new Event('change', {bubbles: true}));
+    await settle(160);
+  };
+  const R = {width, thrown, present: qa('#chainString .cs-node').map(n => n.dataset.node), reach: {}, toggle: {}, excl: {}, trailer: {}, counts: {}, canvas: {}};
+
+  // ---- reachability: click each node, read the app's OWN level readout ----
+  for(const k of ['product', 'wrap', 'carton', 'case', 'pallet', 'trailer']){
+    const n = nodeOf(k); if(!n){ R.reach[k] = {missing: true}; continue; }
+    n.click(); await settle();
+    R.reach[k] = {active: activeNode(), readout: levelReadout()};
+  }
+  // the interlayer slot: whichever of tray/uboard is live is what it views
+  for(const mode of ['tray', 'uboard']){
+    await setInterlayer(mode);
+    nodeOf('interlayer').click(); await settle();
+    R.reach[mode] = {active: activeNode(), readout: levelReadout()};
+  }
+
+  // ---- INTERLAYER EXCLUSIVITY -------------------------------------------
+  // with tray live, is there ANY reachable control that lands on the U-board
+  // view? Enumerate every clickable thing on the strip plus every <option>
+  // anywhere, since an option carrying 'uboard' as a LEVEL would be one.
+  await setInterlayer('tray');
+  R.excl.mode = f.contentWindow.document.querySelector('#cs-tog-interlayer').value;
+  R.excl.interlayerNodes = qa('#chainString .cs-node[data-node="interlayer"]').length;
+  R.excl.trayNodes = qa('#chainString .cs-node[data-node="tray"]').length;
+  R.excl.uboardNodes = qa('#chainString .cs-node[data-node="uboard"]').length;
+  nodeOf('interlayer').click(); await settle();
+  R.excl.landedWithTray = levelReadout();
+  await setInterlayer('uboard');
+  nodeOf('interlayer').click(); await settle();
+  R.excl.landedWithUboard = levelReadout();
+  // and no OTHER surviving control offers a level choice at all
+  const LEVEL_VALUES = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet', 'trailer'];
+  R.excl.levelSelects = qa('select')
+    .filter(s => s.id !== 'cs-tog-interlayer')       // the mode control: tray/uboard are MODES here, legitimately
+    .filter(s => [...s.options].filter(o => LEVEL_VALUES.includes(o.value)).length >= 2)
+    .map(s => s.id || s.className);
+  R.excl.depthTabs = !!q('#d_case');
+  R.excl.styleSelect = !!q('#style');
+  await setInterlayer('none');
+
+  // ---- ONE enable/disable control per level -----------------------------
+  for(const k of ['wrap', 'carton', 'case']) R.counts[k] = qa(`#cs-tog-${k}`).length;
+  R.counts.interlayer = qa('#cs-tog-interlayer').length;
+  R.counts.legacyDetailButton = qa('#tierToggleBtn').length;
+  // nothing anywhere else says "Disable <level>" -- a reintroduced duplicate
+  R.counts.disableTexts = qa('button').filter(b => /^\s*(Disable|Enable)\s+\w+/i.test(b.textContent)).length;
+
+  // ---- enable/disable actually WORKS from the strip ---------------------
+  for(const k of ['wrap', 'carton', 'case']){
+    const before = !nodeOf(k).classList.contains('disabled');
+    q(`#cs-tog-${k}`).click(); await settle();
+    // disabling opens a confirmation; accept it
+    const confirm = [...d.querySelectorAll('#loadNotice button')].find(b => /^Disable/i.test(b.textContent));
+    if(confirm){ confirm.click(); await settle(); }
+    const mid = !nodeOf(k).classList.contains('disabled');
+    q(`#cs-tog-${k}`).click(); await settle();          // back on (no confirm)
+    const after = !nodeOf(k).classList.contains('disabled');
+    R.toggle[k] = {before, mid, after};
+  }
+
+  // ---- the TRAILER is a consumer, not a member --------------------------
+  const tn = nodeOf('trailer');
+  R.trailer.present = !!tn;
+  R.trailer.consumerClass = tn ? tn.classList.contains('cs-consumer') : false;
+  R.trailer.hasToggle = tn ? !!tn.querySelector('.cs-tog') : false;
+  R.trailer.dividerBefore = tn ? !!(tn.previousElementSibling && tn.previousElementSibling.classList.contains('cs-consumer-div')) : false;
+  R.trailer.isLast = tn ? tn === qa('#chainString .cs-node').slice(-1)[0] : false;
+  tn.click(); await settle();
+  R.trailer.selectable = levelReadout();
+  R.trailer.explodedSheetOffered = q('#btnExplodedSheet') ? q('#btnExplodedSheet').style.display !== 'none' : null;
+  // the cost roll-up lists chain levels; the trailer consumes, it does not cost
+  R.trailer.inCostPanel = /trailer/i.test(q('#costPanel') ? q('#costPanel').textContent : '');
+
+  // ---- canvas unobstructed (the standing pin from the mobile work) ------
+  q('#tab3d').click(); await settle(420);
+  const cv = q('#cvWrap canvas');
+  if(cv){
+    const r = cv.getBoundingClientRect();
+    const vcw = q('#viewCubeWrap');
+    const vc = vcw ? vcw.getBoundingClientRect() : {left: NaN, right: NaN, top: NaN, bottom: NaN};
+    const inViewCube = (x, y) => x >= vc.left && x <= vc.right && y >= vc.top && y <= vc.bottom;
+    const misses = []; let sampled = 0;
+    for(let i = 0; i < 5; i++) for(let j = 0; j < 5; j++){
+      const x = r.left + (j + 0.5)*r.width/5, y = r.top + (i + 0.5)*r.height/5;
+      if(inViewCube(x, y)) continue;                 // a deliberate overlay, not an obstruction
+      sampled++;
+      const el = d.elementFromPoint(x, y);
+      if(!(el === cv || cv.contains(el))) misses.push(el ? (el.id || el.tagName) : 'null');
+    }
+    R.canvas.sampled = sampled;
+    R.canvas.misses = misses.length;
+    R.canvas.hits = misses.slice(0, 4);
+    R.canvas.area = Math.round(r.width*r.height);
+    R.canvas.top = Math.round(r.top);
+  }else R.canvas.missing = true;
+
+  // ---- the ACTIVE node is VISIBLE, not merely present -------------------
+  // The narrow density is one scrolling row, so a node can be reachable by
+  // click and still be off-screen. Measured against the strip's own client
+  // box, per level, after selecting it.
+  R.visible = {};
+  R.overflows = q('#chainString').scrollWidth > q('#chainString').clientWidth;
+  for(const k of ['product', 'wrap', 'carton', 'case', 'pallet', 'trailer']){
+    nodeOf(k).click(); await settle(200);
+    const host = q('#chainString'), n = q('#chainString .cs-node.active');
+    if(!n){ R.visible[k] = null; continue; }
+    const hb = host.getBoundingClientRect(), nb = n.getBoundingClientRect();
+    R.visible[k] = {node: n.dataset.node, fullyInside: nb.left >= hb.left - 1 && nb.right <= hb.right + 1};
+  }
+
+  // ---- the SCOPE BAR follows the navigator, its only remaining content ---
+  // Measured at two depths in 3D: 'case' HAS a candidate list (the navigator
+  // is populated, the band is earning its height) and 'carton' has none (the
+  // band would be empty). Read the RENDERED boxes, not the style property, so
+  // a bar that is "shown" but collapsed reads as collapsed.
+  R.scope = {};
+  for(const k of ['case', 'carton']){
+    nodeOf(k).click(); await settle(420);
+    const sb = q('#scopeBar'), cv2 = q('#cvWrap canvas');
+    R.scope[k] = {
+      barH:  sb  ? Math.round(sb.getBoundingClientRect().height) : null,
+      nav:   q('#candCycle') ? f.contentWindow.getComputedStyle(q('#candCycle')).display !== 'none' : null,
+      top:   cv2 ? Math.round(cv2.getBoundingClientRect().top) : null,
+    };
+  }
+  f.remove();
+  return R;
+}
+
+const W = await survey(WIDE);
+const N = await survey(NARROW);
+
+/* ---------------------------------------------------------------- pins -- */
+
+const LEVELS = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet', 'trailer'];
+const LABEL = {product: 'PRODUCT', tray: 'TRAY', uboard: 'U-BOARD', wrap: 'WRAP',
+               carton: 'CARTON', case: 'CASE', pallet: 'PALLET', trailer: 'TRAILER'};
+
+for(const [tag, R] of [['wide', W], ['narrow', N]]){
+  t(`REACHABLE (${tag} ${R.width}px): every level, the trailer included, is selectable from the ONE strip`, () => {
+    const bad = LEVELS.filter(k => !R.reach[k] || R.reach[k].readout !== LABEL[k]);
+    eq(bad, [], `levels that did not become active (readout is the app's own #tbLevel): ${JSON.stringify(R.reach)} —`);
+  });
+
+  t(`REACHABLE (${tag}): selecting a level never throws — a level whose rail crashes is not reachable`, () => {
+    eq(R.thrown, [], 'errors thrown while walking every level:');
+  });
+
+  t(`ONE CONTROL (${tag}): exactly one enable/disable control per level, counted`, () => {
+    for(const k of ['wrap', 'carton', 'case']) eq(R.counts[k], 1, `#cs-tog-${k} count:`);
+    eq(R.counts.interlayer, 1, 'interlayer mode selector count:');
+    eq(R.counts.legacyDetailButton, 0, 'the level panel\'s duplicate "Disable <level>" button must be gone:');
+    eq(R.counts.disableTexts, 0, 'no other button anywhere offers Enable/Disable <level>:');
+  });
+
+  t(`ENABLE/DISABLE (${tag}): works from the strip for every toggleable level`, () => {
+    for(const k of ['wrap', 'carton', 'case']){
+      const r = R.toggle[k];
+      ok(r.before === true, `${k}: fixture assumption — must start enabled`);
+      ok(r.mid === false, `${k}: the strip toggle must actually disable it (got ${r.mid})`);
+      ok(r.after === true, `${k}: and re-enable it (got ${r.after})`);
+    }
+  });
+
+  t(`EXCLUSIVITY (${tag}): tray and U-board are ONE slot — no reachable action selects the inactive one`, () => {
+    eq(R.excl.interlayerNodes, 1, 'exactly one interlayer node:');
+    eq(R.excl.trayNodes, 0, 'no standalone tray node (it is not a peer):');
+    eq(R.excl.uboardNodes, 0, 'no standalone U-board node (it is not a peer):');
+    eq(R.excl.landedWithTray, 'TRAY', 'with tray live, the interlayer node views the TRAY:');
+    eq(R.excl.landedWithUboard, 'U-BOARD', 'with U-board live, it views the U-BOARD:');
+    // and the two deleted rails are really gone — either would reintroduce
+    // the peer listing this pin exists to forbid
+    eq(R.excl.styleSelect, false, 'the header level <select> must be gone:');
+    eq(R.excl.depthTabs, false, 'the 3D depth tabs must be gone:');
+    eq(R.excl.levelSelects, [], 'no other <select> offers a level as a choice:');
+  });
+
+  t(`TRAILER (${tag}): selectable, drawn as a CONSUMER, and not a chain member`, () => {
+    ok(R.trailer.present, 'the trailer must be on the strip');
+    eq(R.trailer.selectable, 'TRAILER', 'it must select:');
+    ok(R.trailer.consumerClass, 'it must be marked as a consumer, visually distinct from members');
+    ok(R.trailer.dividerBefore, 'it must sit past a divider, not another chain arrow');
+    ok(R.trailer.isLast, 'it must be terminal');
+    eq(R.trailer.hasToggle, false, 'it has no enable toggle — chain membership is not a thing it has:');
+    eq(R.trailer.explodedSheetOffered, false, 'it has no exploded rank (the sheet is not offered at trailer):');
+    eq(R.trailer.inCostPanel, false, 'it does not appear in the cost roll-up:');
+  });
+
+  t(`VISIBLE (${tag}): selecting a level brings its node INTO VIEW, not merely into the DOM`, () => {
+    // FIXTURE CHECK: at a width where the strip fits, every node is trivially
+    // inside and this pin can never fail. The NARROW survey is the one that
+    // has to exhibit the condition — assert it does, so a future layout change
+    // that stops the row overflowing turns this into a loud failure rather
+    // than a silent vacuous pass.
+    if(tag === 'narrow') ok(R.overflows, 'fixture: the narrow strip must actually overflow its own box');
+    for(const k of ['product', 'wrap', 'carton', 'case', 'pallet', 'trailer']){
+      ok(R.visible[k], `${k} must resolve to an active node`);
+      ok(R.visible[k].fullyInside,
+         `${k}: the active node must sit fully inside the strip's visible span — it is the ONE level selector, so an off-screen active node is an unreadable one`);
+    }
+  });
+
+  t(`LAYOUT (${tag}): the canvas is unobstructed`, () => {
+    ok(!R.canvas.missing, 'a canvas must exist in the 3D view');
+    ok(R.canvas.sampled >= 10, `vacuous fixture: only ${R.canvas.sampled} non-ViewCube sample points`);
+    eq(R.canvas.misses, 0, `sampled points over the canvas must hit the canvas (hit instead: ${JSON.stringify(R.canvas.hits)}):`);
+  });
+}
+
+t('DENSITY: the SAME levels are present and operable at both widths — one element, two densities', () => {
+  eq(N.present, W.present, 'the strip must carry the same nodes at both widths:');
+  for(const k of LEVELS)
+    eq(N.reach[k].readout, W.reach[k].readout, `${k} must be operable at both widths:`);
+  ok(W.canvas.area > 0 && N.canvas.area > 0, 'both widths must render a canvas');
+});
+
+t('VERTICAL BUDGET: removing the duplicate rails moved the canvas UP, not down', () => {
+  // the recovered band is the point of the merge on desktop, where vertical
+  // space is the scarce axis. Recorded here so a regression that re-adds a
+  // row shows up as a number, not a feeling.
+  ok(W.canvas.top > 0, 'sanity: the canvas must be below the strip');
+  ok(W.canvas.top < 340, `canvas top at ${W.canvas.top}px — a third row above the canvas would push it past this`);
+});
+
+for(const [tag, R] of [['wide', W], ['narrow', N]]){
+  t(`SCOPE BAR (${tag}): the band collapses at a depth with no candidate list, and the canvas takes the space`, () => {
+    // FIXTURE CHECK first, per the house rule: this pin is meaningless unless
+    // the two depths genuinely DIFFER in whether the navigator has anything to
+    // show. If both are populated (or both empty) there is nothing to measure.
+    ok(R.scope.case.nav === true,  'fixture: the CASE depth must show the candidate navigator');
+    ok(R.scope.carton.nav === false, 'fixture: the CARTON depth must NOT show the candidate navigator');
+    ok(R.scope.case.barH > 0, `the bar must be present where the navigator is (got ${R.scope.case.barH}px)`);
+    eq(R.scope.carton.barH, 0, 'an empty scope bar must occupy no height:');
+    ok(R.scope.carton.top < R.scope.case.top,
+       `the canvas must rise into the recovered band: carton top ${R.scope.carton.top}px vs case ${R.scope.case.top}px`);
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

@@ -121,6 +121,14 @@
   }
   .cs-node .cs-tog:hover{border-color:var(--ink-3);color:var(--ink)}
   .cs-node.disabled .cs-tog{border-color:var(--accent);color:var(--accent)}
+  /* The trailer CONSUMES the chain rather than belonging to it, so it is
+     drawn past a divider (not a chain arrow) and in a cooler, quieter key --
+     selectable, but visibly not a member. */
+  .cs-node.cs-consumer{border-style:dashed;background:var(--panel-2)}
+  .cs-node.cs-consumer .cs-lvl{color:var(--ink-2)}
+  .cs-node.cs-consumer.active{background:var(--accent-soft);border-color:var(--accent);border-style:solid}
+  .cs-node.cs-consumer.active .cs-lvl{color:var(--accent-2)}
+  .cs-arrow.cs-consumer-div{opacity:.55;padding:0 7px}
   .cs-arrow{
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     color:var(--ink-3);padding:0 3px;min-width:14px;
@@ -776,8 +784,6 @@
   <div class="header-spacer"></div>
   <div class="actions">
     <span class="statechip" id="stateChip"><span class="dot"></span>Ready to export</span>
-    <label class="eyebrow-inline" for="style">Level</label>
-    <select id="style" class="lvlsel" title="Active level — which level of the project the rails edit and every view shows"></select>
     <button class="btn primary" id="btnDXF">Export DXF</button>
     <!-- tray only: a 3D part, not a dieline. STEP stays in Cookie-Tray. -->
     <button class="btn" id="btnSTL" style="display:none" title="Export the tray mesh as STL (triangles — no CAD kernel needed)">Export STL</button>
@@ -801,20 +807,19 @@
 <div id="loadNotice" class="notice" style="display:none"></div>
 <div id="chainString" class="chainStrip"></div>
 
-<!-- Scope bar: "what am I looking at" — level depth + candidate navigator.
-     A continuation of the chain strip's own navigation immediately above it,
+<!-- Scope bar: "what am I looking at" — the candidate navigator. A
+     continuation of the chain strip's own navigation immediately above it,
      never a view/render setting (those are .mode3d's rail, next to the
      canvas — see its own comment). Docked here, outside <main>/.stage
      entirely, so it sits above the canvas at every breakpoint by DOM
      position alone; no per-breakpoint placement CSS needed for the bar
-     itself, only for what's inside it. Shown only in 3D hierarchy view —
-     setView() in app.js toggles it exactly like #mode3d/#modeShelf. -->
+     itself, only for what's inside it.
+     The LEVEL DEPTH tabs that used to live here are gone: the chain strip IS
+     the one level selector now (one control, one writer). The navigator is
+     all that remains, so the bar FOLLOWS IT exactly — updateCandidateCycle
+     (app.js) is its single writer, and at a depth with no candidate list the
+     whole band collapses rather than sitting empty above the canvas. -->
 <div id="scopeBar" class="scopebar" style="display:none">
-  <div class="seg depthsel">
-    <button id="d_product">Product</button><button id="d_tray">Tray</button><button id="d_uboard">U-board</button><button id="d_wrap">Wrap</button
-    ><button id="d_carton">Carton</button><button id="d_case" class="on">Case</button
-    ><button id="d_pallet">Pallet</button><button id="d_trailer">Trailer</button>
-  </div>
   <!-- ONE pair of cycle arrows, two ranked lists by depth: case depth
        steps the Build table's candidate list (same order + row-select the
        table uses); pallet depth steps the ranked pallet-PATTERN list.
