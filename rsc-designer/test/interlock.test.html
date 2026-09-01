@@ -1,0 +1,205 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>interlock schedule — "every layer above" must ALTERNATE</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* INTERLOCK IS A RELATIVE PROPERTY. `layerFlips[ly]` is an ABSOLUTE
+   orientation — whether layer `ly` takes the 180° turn — but what interlocks
+   a load is CONSECUTIVE LAYERS DIFFERING. The rail's "columnar through layer
+   k, then interlock every layer above" rule used to set every layer from k up
+   to `true`, which reads like "interlock them all" and is exactly wrong: they
+   then all share ONE orientation, so only the k-1/k boundary interlocks and
+   everything above it is a column again — the reported symptom, precisely.
+
+   THE SHAPE OF THE PIN MATTERS MORE THAN USUAL HERE. A pin asserting "every
+   layer above k is flipped" would have PASSED the bug and read as a green
+   confirmation of it, because the buggy array is the maximal version of that
+   statement. So every pin below asserts the RELATIVE property (adjacent
+   layers differ), never the absolute one, and the geometric block proves the
+   two are not the same claim by showing an all-flipped tail producing layers
+   that are position-for-position IDENTICAL.
+
+   Two blocks:
+     GEOMETRY — DOM-free, over palletpatterns.js's own candidates. Establishes
+       what "interlocked" means at the placements level, so the UI block's
+       schedule assertions are anchored to something physical.
+     RAIL — drives the REAL controls in a REAL iframe, per this repo's rule
+       that a pin calling a builder says nothing about whether the app wires
+       it. The awaits live OUT of the pin bodies (an async t() body reports
+       PASS with its assertions unverified). */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function ok(c, m){ if(!c) throw new Error(m); }
+function eq(a, e, m = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+
+const settle = (ms = 140) => new Promise(r => setTimeout(r, ms));
+
+/* ============================================================ GEOMETRY == */
+
+const {palletPatternList} = await import('../src/core/palletpatterns.js');
+
+/** Every placement of one layer, as a comparable signature. Two layers are
+ *  the SAME arrangement iff these match. */
+const layerSig = (placements, z) => placements
+  .filter(p => Math.abs(p.z - z) < 1e-6)
+  .map(p => `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.orientation}`)
+  .sort().join('|');
+
+const layerSigs = built => {
+  const zs = [...new Set(built.placements.map(p => +p.z.toFixed(6)))].sort((a, b) => a - b);
+  return zs.map(z => layerSig(built.placements, z));
+};
+
+// A deliberately NON-SYMMETRIC layer, or the 180° flip is a geometric no-op
+// and every pin here is vacuous. Asserted below before anything relies on it.
+const CASE = {outer: {L: 330, W: 210, H: 180}, allowedOrientations: ['LWH', 'WLH']};
+const DECK = {L: 1219.2, W: 1016, H: 1397};
+const list = palletPatternList(CASE, DECK, {wall: 0, between: 0}, 'optimal');
+// a MIXED/sandwich layer is the interesting one -- an aligned grid is often its
+// own 180° turn, which would make every schedule pin here vacuous
+const cand = list.find(c => c.layers >= 4 && !c.interlock &&
+  layerSigs(c.withSchedule(new Array(c.layers).fill(false)).build())[0] !==
+  layerSigs(c.withSchedule(new Array(c.layers).fill(true)).build())[0]) || list[0];
+
+t('GEOMETRY fixture: the candidate has enough layers, and its layer is NOT its own 180° turn', () => {
+  ok(cand, 'a candidate must be found at all');
+  ok(cand.layers >= 4, `need >= 4 layers to tell alternating from all-flipped, got ${cand.layers}`);
+  // the specimen check: flipping must actually MOVE something, or a schedule
+  // pin cannot fail no matter what it asserts
+  const straight = layerSigs(cand.withSchedule(new Array(cand.layers).fill(false)).build());
+  const flipped  = layerSigs(cand.withSchedule(new Array(cand.layers).fill(true)).build());
+  ok(straight[0] !== flipped[0],
+     'fixture: this layout is its own 180° turn, so no schedule pin here could ever fail');
+});
+
+t('GEOMETRY: an ALL-FLIPPED tail is a COLUMN — every consecutive pair above k is identical', () => {
+  // This is the bug, stated geometrically. It is why "flip every layer above"
+  // is not the same instruction as "interlock every layer above".
+  const n = cand.layers, k = 1;
+  const allFlipped = Array.from({length: n}, (_, ly) => ly >= k);
+  const sigs = layerSigs(cand.withSchedule(allFlipped).build());
+  ok(sigs[k - 1] !== sigs[k], 'the k-1/k boundary should still interlock');
+  for(let ly = k + 1; ly < n; ly++)
+    eq(sigs[ly], sigs[ly - 1], `layers ${ly - 1} and ${ly} are both flipped, so they must be IDENTICAL:`);
+});
+
+t('GEOMETRY: an ALTERNATING tail interlocks — every consecutive pair above k-1 differs', () => {
+  const n = cand.layers, k = 1;
+  const alternating = Array.from({length: n}, (_, ly) => ly >= k && (ly - k) % 2 === 0);
+  const sigs = layerSigs(cand.withSchedule(alternating).build());
+  for(let ly = k; ly < n; ly++)
+    ok(sigs[ly] !== sigs[ly - 1],
+       `layers ${ly - 1} and ${ly} must differ for the load to interlock there (got identical)`);
+});
+
+t('GEOMETRY: alternating changes no COUNT — interlock rearranges layers, it never adds or drops a case', () => {
+  const n = cand.layers;
+  const straight = cand.withSchedule(new Array(n).fill(false)).build();
+  const alt = cand.withSchedule(Array.from({length: n}, (_, ly) => ly % 2 === 1)).build();
+  eq(alt.total, straight.total, 'total cases:');
+  eq(alt.placements.length, straight.placements.length, 'placement count:');
+});
+
+/* ================================================================ RAIL == */
+
+function openApp(width){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:900px;border:0`;
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+/** Drive the REAL rail: select the pallet level, set the rule's two controls,
+ *  and read back the schedule the app COMMITTED and RENDERED (#palScheduleNote
+ *  draws `layerFlips` as `I` / `—`, bottom-first). Returns plain data so the
+ *  pins stay synchronous. */
+const frame = await openApp(1400);
+await settle(1200);
+const d = frame.contentDocument;
+const q = s => d.querySelector(s);
+
+q('#chainString .cs-node[data-node="pallet"]').click();
+await settle(500);
+
+/** Parse the rendered schedule strip back into booleans — the app's own
+ *  drawn claim about the schedule, not a value read out of its internals. */
+function renderedSchedule(){
+  const txt = q('#palScheduleNote') ? q('#palScheduleNote').textContent : '';
+  const m = txt.match(/\(bottom\s*→\s*top\):\s*([^(]*?)\s*\(I =/);
+  if(!m) return null;
+  return m[1].trim().split(/\s+/).map(s => s === 'I');
+}
+
+async function applyRule(k, mode){
+  const up = q('#palColumnUpTo'), sel = q('#palInterlockMode');
+  sel.value = mode; sel.dispatchEvent(new Event('change', {bubbles: true}));
+  await settle(220);
+  up.value = String(k); up.dispatchEvent(new Event('input', {bubbles: true}));
+  await settle(420);
+  return renderedSchedule();
+}
+
+const R = {};
+R.autoAtEntry = renderedSchedule();
+R.tail0 = await applyRule(0, 'tail');
+R.tail1 = await applyRule(1, 'tail');
+R.tail2 = await applyRule(2, 'tail');
+R.single2 = await applyRule(2, 'single');
+q('#palScheduleAuto').click(); await settle(420);
+R.afterReset = renderedSchedule();
+R.resetControls = {k: q('#palColumnUpTo').value, mode: q('#palInterlockMode').value};
+
+t('RAIL fixture: the pallet rail renders a schedule with enough layers to tell the two apart', () => {
+  ok(R.autoAtEntry, 'the schedule note must render at pallet level (is the rail reachable?)');
+  ok(R.autoAtEntry.length >= 4,
+     `need >= 4 layers for "alternating" and "all flipped" to differ, got ${R.autoAtEntry.length}`);
+});
+
+for(const [k, key] of [[0, 'tail0'], [1, 'tail1'], [2, 'tail2']]){
+  t(`RAIL: "columnar through layer ${k}, then interlock every layer above" ALTERNATES above ${k}`, () => {
+    const s = R[key];
+    ok(s, `no schedule rendered for k=${k}`);
+    eq(s.slice(0, k), new Array(k).fill(false), `layers below ${k} must stay columnar:`);
+    // THE ASSERTION THAT CATCHES THE BUG. Not "everything above is flipped"
+    // (the bug satisfies that maximally) but "every adjacent pair differs".
+    for(let ly = k + 1; ly < s.length; ly++)
+      ok(s[ly] !== s[ly - 1],
+         `layers ${ly - 1} and ${ly} carry the SAME orientation (${s.map(f => f ? 'I' : '-').join('')}) ` +
+         `— that is a column, not an interlock`);
+  });
+}
+
+t('RAIL: "then interlock that one layer" still flips exactly one, and columns above it', () => {
+  const s = R.single2;
+  ok(s, 'no schedule rendered');
+  eq(s, Array.from({length: s.length}, (_, ly) => ly === 2),
+     'exactly layer 2 flipped, nothing else:');
+  // and that IS an interlock at that layer: it differs from both neighbours
+  ok(s[2] !== s[1], 'layer 2 must differ from the layer below');
+  if(s.length > 3) ok(s[2] !== s[3], 'layer 2 must differ from the layer above');
+});
+
+t('RAIL: "reset to auto" clears the override and restores the rule controls', () => {
+  ok(R.afterReset, 'a schedule note must still render on auto');
+  eq(R.resetControls, {k: '0', mode: 'tail'}, 'the rule controls return to their defaults:');
+  ok(/Auto schedule/.test(q('#palScheduleNote').textContent),
+     'the note must say AUTO once the override is cleared, not Custom');
+});
+
+frame.remove();
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

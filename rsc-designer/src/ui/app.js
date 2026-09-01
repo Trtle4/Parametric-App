@@ -860,10 +860,22 @@ function renderInterlockScheduleNote(row){
  *  (never storing k+mode themselves; see project.js's own doc on why).
  *  `layers` is the CURRENTLY resolved candidate's own layer count; a
  *  schedule built against a since-changed count degrades safely through
- *  candidate.withSchedule rather than needing to be kept in sync here. */
+ *  candidate.withSchedule rather than needing to be kept in sync here.
+ *
+ *  INTERLOCK IS A RELATIVE PROPERTY, NOT AN ABSOLUTE ONE. `layerFlips[ly]`
+ *  is an absolute orientation — whether layer `ly` takes the 180° turn — but
+ *  what interlocks a load is CONSECUTIVE LAYERS DIFFERING. 'tail' used to
+ *  set every layer from k up to `true`, which reads as "interlock them all"
+ *  and is precisely wrong: they then all share ONE orientation, so only the
+ *  k-1/k boundary interlocks and everything above it is a column again. It
+ *  must ALTERNATE from k — flip, straight, flip, straight — so that every
+ *  adjacent pair above k differs. 'single' is unchanged and was always
+ *  right: one flipped layer differs from BOTH its neighbours, which is
+ *  exactly "interlock that one layer". */
 function layerFlipsFromRule(columnUpTo, mode, layers){
   const k = Math.max(0, Math.min(layers, Math.round(columnUpTo) || 0));
-  return Array.from({length: layers}, (_, ly) => ly < k ? false : (mode === 'single' ? ly === k : true));
+  return Array.from({length: layers}, (_, ly) =>
+    ly < k ? false : (mode === 'single' ? ly === k : (ly - k) % 2 === 0));
 }
 function applyInterlockRule(){
   const row = resolveActiveRow(build.project, build.getRounding(), selKey());
