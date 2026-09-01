@@ -1,0 +1,276 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>artwork template export — real cut outline, real fold lines</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* THE ARTWORK TEMPLATE SVG WAS THE ONLY EXPORT MISSING CUT/CREASE.
+
+   DXF (export/dxf.js) transcribes geo.cut/geo.crease into CUT/CREASE
+   layers 1:1 -- confirmed correct and untouched by this fix; see
+   test/dxf.test.html. The 2D PNG (export/png.js downloadSvgPNG) rasterizes
+   the on-screen dieline SVG (render/dieline2d.js), which draws both
+   unconditionally from the same two arrays -- also confirmed correct and
+   untouched.
+
+   The "Artwork SVG" / "SVG" template (export/artwork.js buildArtworkSVG),
+   the app's ONLY svg-format export, drew neither. Its "blank outline" was
+   a <rect> over geo.bbox -- the BOUNDING BOX, not the die -- and its fold
+   guidance came ONLY from geo.meta.refLines, a field that exists SOLELY
+   because flowwrap's `crease` array is genuinely empty ("film is never
+   scored"). Every rigid style (FEFCO 201, A6120, sealend, the FEFCO 0300
+   tray) has real creases in geo.crease and NOTHING ever read them here --
+   so every one of those templates exported with a rectangle standing in
+   for a die that is not a rectangle, and a legend claiming "dashed = fold
+   reference" fulfilled for exactly one style out of four.
+
+   A6120 is the sharpest case: its back panel has NO top flap at all (a
+   plain cut edge, flush with the body), while the front panel's tuck
+   panel+tab and both side panels' swept dust flaps reach well past it.
+   The bounding rectangle there is not an approximation -- it invites a
+   designer to paint into corners the die does not have.
+
+   Fixed by reading geo.cut for the outline (a <polygon>, the same array
+   DXF and the on-screen dieline draw) and falling back to geo.crease for
+   fold lines whenever refLines is empty -- not a new source, the one that
+   was always there. Both pins below hold this at the render layer (a real
+   <polygon>/<line> count from the real exported string), never by
+   re-deriving geo.cut/geo.crease's own shape, and the reachability pin
+   drives the real button in a real app so a passing unit-level check can
+   never stand in for "does the app actually call this". */
+
+import {styles, styleById} from '../src/core/styles/index.js';
+import {buildArtworkSVG, filmSpecText} from '../src/export/artwork.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const eq = (a, e, m = '') => { if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); };
+
+function defaultParams(style){
+  const p = {};
+  for(const d of style.params) p[d.key] = d.default;
+  return p;
+}
+const geoOf = id => styleById(id).geometry(defaultParams(styleById(id)), {});
+
+/** Extract every <polygon points="..."> and every FOLD-LINE <line> (the
+ *  specific #8593a1 dashed fold colour, never the bleed/seal-zone dashed
+ *  rects which use a different colour) from a buildArtworkSVG string. */
+function parseTemplate(svgText){
+  const polys = [...svgText.matchAll(/<polygon points="([^"]*)"/g)]
+    .map(m => m[1].trim().split(/\s+/).filter(Boolean).map(pt => pt.split(',').map(Number)));
+  const foldLines = [...svgText.matchAll(/<line[^>]*stroke="#8593a1"[^>]*>/g)];
+  return {polys, foldLines};
+}
+
+/** Shoelace-formula polygon area -- a genuinely INDEPENDENT computation
+ *  from anything buildArtworkSVG does (which never computes an area at
+ *  all), used only to confirm a fixture is non-rectangular before trusting
+ *  a pin built on that assumption. */
+function shoelaceArea(pts){
+  let a = 0;
+  for(let i = 0; i < pts.length; i++){
+    const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % pts.length];
+    a += x0*y1 - x1*y0;
+  }
+  return Math.abs(a)/2;
+}
+
+const RIGID = ['fefco201', 'a6120', 'sealend', 'tray'];
+const FILM = ['flowwrap', 'shrinkbundle'];
+
+/* ============================================================ FIXTURE == */
+
+t('FIXTURE: A6120\'s real cut shape is genuinely non-rectangular (an independent area check)', () => {
+  const geo = geoOf('a6120');
+  const bboxArea = geo.bbox.maxX*geo.bbox.maxY;
+  const cutArea = shoelaceArea(geo.cut);
+  ok(cutArea < bboxArea*0.9,
+     `fixture: A6120's die must be meaningfully smaller than its bounding box (die ${cutArea.toFixed(0)} vs ` +
+     `bbox ${bboxArea.toFixed(0)}) or no pin here can distinguish the real outline from a rectangle`);
+});
+
+t('FIXTURE: every rigid style genuinely has creases, and flowwrap genuinely does not', () => {
+  for(const id of RIGID) ok(geoOf(id).crease.length > 0, `${id}: fixture needs real creases to test against`);
+  eq(geoOf('flowwrap').crease.length, 0, 'flowwrap must have no crease array (film is never scored):');
+});
+
+/* ============================================= OUTLINE = THE REAL DIE == */
+
+for(const id of RIGID){
+  t(`OUTLINE (${id}): the exported polygon has EXACTLY geo.cut's own vertex count`, () => {
+    const geo = geoOf(id);
+    const {polys} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+    eq(polys.length, 1, `expected exactly one outline polygon, got ${polys.length}`);
+    eq(polys[0].length, geo.cut.length,
+       `outline vertex count must equal geo.cut's own (${geo.cut.length}):`);
+  });
+
+  t(`OUTLINE (${id}): every vertex is geo.cut's own point under the file's stated transform`, () => {
+    const geo = geoOf(id);
+    const {maxX: W, maxY: H} = geo.bbox;
+    const m = Math.max(W, H)*0.08 + 20;
+    const {polys} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+    geo.cut.forEach((pt, i) => {
+      const [px, py] = polys[0][i];
+      const ex = pt[0] + m, ey = H - pt[1] + m;
+      ok(Math.abs(px - ex) < 0.05 && Math.abs(py - ey) < 0.05,
+         `vertex ${i}: expected (${ex.toFixed(2)},${ey.toFixed(2)}), got (${px},${py})`);
+    });
+  });
+}
+
+t('OUTLINE MUTATION GUARD: A6120\'s exported outline is NOT a 4-point rectangle', () => {
+  // the literal shape of the old bug: a <rect> (or any 4-point axis-aligned
+  // stand-in) is exactly what a regression back to the bounding box would
+  // produce. A6120's real die has far more than 4 vertices (see the cut[]
+  // array in core/styles/a6120.js), so this is a sharp, specific guard.
+  const geo = geoOf('a6120');
+  const {polys} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+  ok(polys[0].length > 4, `A6120's outline collapsed to ${polys[0].length} points -- looks like a bounding box`);
+});
+
+t('OUTLINE (flowwrap): unaffected -- its own cut IS a plain rectangle, so this is bit-identical to before', () => {
+  const geo = geoOf('flowwrap');
+  const {polys} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+  eq(polys[0].length, 4, 'flowwrap\'s blank is a true rectangle:');
+  eq(geo.cut.length, 4, 'and geo.cut itself is exactly 4 points, so the polygon is not silently simplifying anything:');
+});
+
+/* =========================================== FOLD LINES = geo.crease === */
+
+for(const id of RIGID){
+  t(`FOLD LINES (${id}): the template draws every real crease, previously drew ZERO`, () => {
+    const geo = geoOf(id);
+    const {foldLines} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+    eq(foldLines.length, geo.crease.length,
+       `fold-reference line count must equal geo.crease.length (${geo.crease.length}):`);
+    ok(foldLines.length > 0, `${id} must show SOME fold guidance -- this is the reported defect itself`);
+  });
+}
+
+for(const id of FILM){
+  t(`FOLD LINES (${id}): unchanged -- sourced from refLines, never geo.crease (which is empty)`, () => {
+    const geo = geoOf(id);
+    const {foldLines} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+    const refLines = (geo.meta.refLines || []).length;
+    eq(foldLines.length, refLines, `fold-reference line count must equal refLines.length (${refLines}):`);
+  });
+}
+
+/* ===================== SHRINKBUNDLE: a second flexible shape, not flowwrap */
+/* Discovered by the FOLD LINES(shrinkbundle) pin above -- calling
+   buildArtworkSVG on shrinkbundle geometry threw, before its own assertion
+   ever ran. geo.meta.film is truthy for BOTH flowwrap and shrinkbundle, but
+   the two shapes only share filmAreaM2/massPer1000g; a bare truthiness check
+   read shrinkbundle's film as flowwrap's and called fmtLen on its
+   (nonexistent) webWidth, crashing buildArtworkSVG (and, via it,
+   downloadArtworkPNG) and filmSpecText -- the three functions behind
+   "Artwork SVG", the artwork panel's SVG/PNG buttons, and "Copy film spec",
+   all reachable for a shrink-bundle project since btnArt/btnSpec are gated
+   on structure === 'flexible', which both styles satisfy. */
+
+t('FIXTURE: shrinkbundle\'s meta.film is genuinely a DIFFERENT shape than flowwrap\'s', () => {
+  const sb = geoOf('shrinkbundle').meta.film, fw = geoOf('flowwrap').meta.film;
+  ok(sb && fw, 'both styles must publish geo.meta.film for this to be a meaningful mix-up');
+  ok(fw.webWidth !== undefined && sb.webWidth === undefined,
+     'shrinkbundle must genuinely lack webWidth, or the old truthiness bug could never have fired');
+});
+
+t('CRASH FIX: buildArtworkSVG no longer throws on a shrink-bundle project', () => {
+  const svg = buildArtworkSVG(geoOf('shrinkbundle'), 'mm');
+  ok(/SHRINKBUNDLE artwork template/.test(svg),
+     'shrinkbundle must fall through to the generic header, not the flowwrap-shaped one');
+});
+
+t('CRASH FIX: filmSpecText no longer throws on a shrink-bundle project, and states its own fields', () => {
+  const text = filmSpecText(geoOf('shrinkbundle'), 'mm');
+  ok(/Shrink bundle film spec/.test(text), 'must be labelled as a shrink-bundle spec, not "Flow wrap film spec"');
+  ok(/Girth/.test(text) && /Drawdown/.test(text) && /Opacity/.test(text),
+     `must report shrinkbundle's own fields (got:\n${text})`);
+  ok(!/webWidth|undefined|NaN/i.test(text), `must not leak a flowwrap-only field or a formatting failure:\n${text}`);
+});
+
+t('REGRESSION: filmSpecText for flowwrap is unchanged', () => {
+  const text = filmSpecText(geoOf('flowwrap'), 'mm');
+  ok(/Flow wrap film spec/.test(text) && /Web width/.test(text) && /Repeat/.test(text),
+     `flowwrap's own spec text must be untouched:\n${text}`);
+});
+
+/* ============================================= EXHAUSTIVE (every style) */
+
+t('EXHAUSTIVE: no style in the registry silently exports zero fold guidance where it has creases', () => {
+  const bad = [];
+  for(const s of styles){
+    const geo = geoOf(s.id);
+    if(geo.crease.length === 0) continue;      // genuinely nothing to show (film) -- not a defect
+    const {foldLines} = parseTemplate(buildArtworkSVG(geo, 'mm'));
+    if(foldLines.length === 0) bad.push(s.id);
+  }
+  eq(bad, [], 'these styles have real creases but the template shows none:');
+});
+
+/* ================================================== REACHABILITY (DOM) = */
+/* A pin that calls buildArtworkSVG says nothing about whether the app
+   calls it. Drive the real "SVG" button in the real artwork panel and
+   capture the actual Blob it hands the browser -- object URLs are revoked
+   synchronously right after the click, so this intercepts
+   URL.createObjectURL itself rather than racing an async fetch against
+   the revoke. */
+
+const settle = (ms = 200) => new Promise(r => setTimeout(r, ms));
+const frame = await new Promise(resolve => {
+  const f = document.createElement('iframe');
+  f.style.cssText = 'width:1400px;height:900px;border:0';
+  f.src = '../index.html';
+  f.addEventListener('load', () => resolve(f), {once: true});
+  document.getElementById('rig').appendChild(f);
+});
+await settle(1400);
+const w = frame.contentWindow, d = frame.contentDocument;
+
+// switch the case level to A6120 -- the style whose old rectangle outline
+// was most dramatically wrong -- through the real style select
+d.querySelector('.cs-node[data-node="case"]').click();
+await settle(400);
+const styleSel = d.querySelector('.field .inp select');
+styleSel.value = 'a6120';
+styleSel.dispatchEvent(new w.Event('change', {bubbles: true}));
+await settle(500);
+d.getElementById('tab2d').click();
+await settle(300);
+
+const realCreate = w.URL.createObjectURL.bind(w.URL);
+let capturedBlob = null;
+w.URL.createObjectURL = blob => { capturedBlob = blob; return realCreate(blob); };
+d.getElementById('btnArtTplSvg').click();
+w.URL.createObjectURL = realCreate;
+await settle(200);
+
+t('REACHABLE: clicking the real "SVG" button in the real app exports the fix, not just the pure function', () => {
+  ok(capturedBlob, 'the button must hand the browser a Blob to download');
+});
+
+const REACH = {text: null};
+if(capturedBlob) REACH.text = await capturedBlob.text();
+frame.remove();
+
+t('REACHABLE: the downloaded file has the real A6120 outline (not a 4-point rectangle) and real fold lines', () => {
+  ok(REACH.text, 'fixture: the downloaded blob must have real content');
+  const {polys, foldLines} = parseTemplate(REACH.text);
+  ok(polys.length === 1 && polys[0].length > 4,
+     `the exported file's outline must be A6120's real, non-rectangular die (got ${polys[0] ? polys[0].length : 0} points)`);
+  ok(foldLines.length > 0, 'the exported file must show fold-reference lines');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

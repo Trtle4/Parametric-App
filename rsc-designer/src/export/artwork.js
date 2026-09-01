@@ -7,11 +7,13 @@
  * (never crease styling), plus orientation marks (which way is up when folded)
  * and corner registration marks so the reupload aligns 1:1.
  *
- * Every region here is read from `geo.meta` (labels, sealZones, refLines) and
- * `geo.meta.artMap` — the SAME panel decomposition the 2D overlay and the 3D
- * UVs read — so the template can never draw a different picture than the map.
- * Registration marks are geometric (blank corners), not engineer-guessed seal
- * margins, which stay absent by design.
+ * Every region here is read from `geo.cut`/`geo.crease` (the SAME arrays DXF
+ * and the on-screen dieline draw), `geo.meta` (labels, sealZones, refLines)
+ * and `geo.meta.artMap` — the SAME panel decomposition the 2D overlay and the
+ * 3D UVs read — so the template can never draw a different picture than the
+ * map, the dieline, or the die itself. Registration marks are geometric
+ * (blank corners), not engineer-guessed seal margins, which stay absent by
+ * design.
  */
 import {fmtLen} from '../core/units.js';
 import {auxLayerNames, auxLayerStyle, chainSegments} from '../render/auxlayers.js';
@@ -41,11 +43,31 @@ export function buildArtworkSVG(geo, unit){
   for(const f of sz.fin)
     s += `<rect x="${m}" y="${y(f.y1)}" width="${W}" height="${f.y1 - f.y0}" fill="#e5484d22" stroke="#e5484d" stroke-width="${fs/8}"/>`;
 
-  // blank outline
-  s += `<rect x="${m}" y="${m}" width="${W}" height="${H}" fill="none" stroke="#141a1f" stroke-width="${fs/5}"/>`;
+  // BLANK OUTLINE — the real die shape (geo.cut), not its bounding box.
+  // A6120, sealend and the FEFCO 0300 tray all cut material away from the
+  // bbox corners (dust-flap sweeps, a back panel with no top flap at all);
+  // a bounding rectangle there is not a simplification, it is a DIFFERENT,
+  // LARGER shape that invites a designer to paint into a corner the die
+  // does not have. `geo.cut` is the one true outline — the same array DXF
+  // and the on-screen dieline both draw — so this can never show a
+  // different picture than the file it is meant to register against.
+  s += `<polygon points="${geo.cut.map(pt => `${(pt[0] + m).toFixed(2)},${y(pt[1]).toFixed(2)}`).join(' ')}" fill="none" stroke="#141a1f" stroke-width="${fs/5}" stroke-linejoin="round"/>`;
 
-  // fold references: dashed gray, explicitly labeled as references
-  for(const r of geo.meta.refLines || [])
+  // FOLD LINES: dashed gray, explicitly labeled as references — never the
+  // on-screen dieline's crease colour, since this file is a self-contained
+  // print deliverable with its own plain-ink palette throughout.
+  //
+  // refLines exists ONLY because film has no crease array at all (flowwrap:
+  // "crease is EMPTY (no fold lines — film is never scored)"); every rigid
+  // style's fold positions already ARE geo.crease. Falling back to it when
+  // refLines is empty is not a new source, it is reading the one that was
+  // always there — this used to read refLines alone, so every rigid carton
+  // (FEFCO 201, A6120, sealend, the tray) exported a template with NO fold
+  // guidance whatsoever, despite the sheet's own legend claiming "dashed =
+  // fold reference". Both arrays share the same [x0,y0,x1,y1] segment shape,
+  // so one loop below serves both.
+  const foldLines = (geo.meta.refLines && geo.meta.refLines.length) ? geo.meta.refLines : geo.crease;
+  for(const r of foldLines || [])
     s += `<line x1="${r[0] + m}" y1="${y(r[1])}" x2="${r[2] + m}" y2="${y(r[3])}" stroke="#8593a1" stroke-width="${fs/8}" stroke-dasharray="${fs} ${fs/2}"/>`;
 
   // AUX DIE LAYERS AS NON-PRINTING GUIDES. A tear line is not decoration to a
@@ -119,7 +141,13 @@ export function buildArtworkSVG(geo, unit){
   // header line — flow wrap states its film spec; any other style (carton)
   // states its blank. Both note the shared legend so the deliverable is
   // self-describing whatever the style.
-  const f = geo.meta.film;
+  // geo.meta.film is truthy for BOTH flowwrap ({webWidth, cutLength, ...})
+  // and shrinkbundle ({surfaceM2, filmAreaM2, ...}) -- two unrelated shapes.
+  // A bare truthiness check here read shrinkbundle's film as flowwrap's and
+  // called fmtLen on its (nonexistent) webWidth/cutLength, throwing and
+  // silently breaking every export button that builds this template. The
+  // discriminant is the style itself, which both already declare.
+  const f = geo.meta.style === 'flowwrap' ? geo.meta.film : null;
   const lead = f
     ? `flow wrap artwork template · web ${fmtLen(f.webWidth, unit)} ${unit} × repeat ${fmtLen(f.cutLength, unit)} ${unit}`
     : `${(geo.meta.style || 'carton').toUpperCase()} artwork template · blank ${fmtLen(W, unit)} × ${fmtLen(H, unit)} ${unit}`;
@@ -180,15 +208,29 @@ export function downloadArtworkPNG(geo, unit){
   img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
 }
 
-/** Copyable film spec text. */
+/** Copyable film spec text. Both flexible styles carry a truthy geo.meta.film,
+ *  but the two shapes share only filmAreaM2/massPer1000g -- flowwrap has no
+ *  drawdown/opacity/girth, shrinkbundle has no webWidth/cutLength/packsPerMetre.
+ *  Reading the wrong shape threw (fmtLen on an undefined webWidth) for every
+ *  shrink-bundle project; branch on the style itself, the same discriminant
+ *  the header line above uses. */
 export function filmSpecText(geo, unit){
   const f = geo.meta.film;
-  return [
+  if(geo.meta.style === 'flowwrap') return [
     `Flow wrap film spec`,
     `Web width:        ${fmtLen(f.webWidth, unit)} ${unit}`,
     `Repeat (cut len): ${fmtLen(f.cutLength, unit)} ${unit}`,
     `Film area/pack:   ${f.filmAreaM2.toFixed(4)} m²`,
     `Packs/metre web:  ${f.packsPerMetre.toFixed(2)}`,
     `Mass/1000 packs:  ${Math.round(f.massPer1000g)} g`
+  ].join('\n');
+  return [
+    `Shrink bundle film spec`,
+    `Girth (wrap-around): ${fmtLen(f.girth, unit)} ${unit}`,
+    `Film area/pack:      ${f.filmAreaM2.toFixed(4)} m²`,
+    `Surface area/pack:   ${f.surfaceM2.toFixed(4)} m²`,
+    `Drawdown:            ${f.drawdownPct.toFixed(1)}%`,
+    `Opacity:             ${f.opacityPct.toFixed(1)}%`,
+    `Mass/1000 packs:     ${Math.round(f.massPer1000g)} g`
   ].join('\n');
 }
