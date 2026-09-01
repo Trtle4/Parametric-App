@@ -1,0 +1,549 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>top &amp; bottom caps</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* TOP AND BOTTOM CAPS. One continuous paperboard surface over a unit load's
+   whole layer face, with a skirt wrapping the edges -- the shape difference
+   from the four discrete corner posts it sits over.
+
+   The seven claims this file has to hold, and the shape each pin takes:
+
+     1 BLANK ARITHMETIC, against numbers computed BY HAND below and written
+       out as literals. Not `capBlank(...)` compared to a re-run of
+       capBlank's own formula, which is a restatement and would agree with a
+       bug as readily as with a fix.
+     2 PLUS AREA, not the bounding rectangle -- with the bounding-rectangle
+       mutation run against the real cost path and shown to fail.
+     3 HEIGHT: one caliper per enabled cap, skirts none.
+     4 NO STRENGTH, at fixed case dimensions -- with a bogus strength term
+       run and shown to fail.
+     5 WEIGHT ASYMMETRY: a top cap bears on its own load's bottom case, a
+       bottom cap does not -- with the treat-bottom-like-top mutation.
+     6 FOOTPRINT NESTING, in the order cases -> posts -> cap, with the
+       inboard mutation (cap caliper added to the bare case footprint).
+     7 TRAILER PAYLOAD rises by the cap weights across all positions.
+
+   DOM-free: every claim above is a core fact. The one thing that is not --
+   whether the app WIRES any of it -- is a separate reachability pin at the
+   bottom, driving the real controls in a real iframe, per this repo's rule
+   that a pin calling a builder says nothing about whether the app calls it. */
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const eq = (a, e, m = '') => { if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); };
+const approx = (a, e, m = '', tol = 1e-6) => { if(!(Math.abs(a - e) <= tol)) throw new Error(`${m} expected ${e}, got ${a}`); };
+
+const {capConfig, capBlank, capPlusAreaMM2, capWeightLb, capFootprintGrowthMM,
+       capHeightGrowthMM, capsPerPosition, CAP_DEFAULTS} = await import('../src/core/cap.js');
+const {resolveStack, resolveCaps, loadFootprintStagesMM, loadFootprintMM,
+       outboardGrowthMM, cornerPostFootprintGrowthMM} = await import('../src/core/stack.js');
+const {stackAnalysis} = await import('../src/core/bct.js');
+const {materialCost} = await import('../src/core/cost.js');
+const {resolveTrailer} = await import('../src/core/trailer.js');
+const {newProject, resolveActiveRow} = await import('../src/core/project.js');
+
+/* --------------------------------------------------------- fixtures --- */
+
+/** A minimal project shaped like the real one, for the core resolvers. */
+function proj(over = {}){
+  const cap = Object.assign({top: false, bottom: false, skirt: null, caliper: 3,
+                             relief: null, density: 150}, over.cap || {});
+  const cornerPost = Object.assign({enabled: false, height: null, legL: null, legW: null,
+                                    caliper: 3, density: 700, costBasis: 'perLength'}, over.cornerPost || {});
+  return {
+    pallet: {
+      L: 1219.2, W: 1016, baseH: 127, maxH: 1524, tareLb: 45,
+      stack: {positions: over.positions || [{base: 'pallet'}], cornerPost, cap},
+      slipsheet: {caliper: 3, density: 950, weightLb: null, L: null, W: null},
+      stacking: {unitWeightLb: over.unitWeightLb ?? 10}
+    },
+    trailer: over.trailer || undefined,
+    cost: over.cost || {}
+  };
+}
+
+/* ============================================== 1. BLANK ARITHMETIC ==== */
+
+/* HAND-COMPUTED, and written out as literals so this pin can disagree with
+   the code. Centre panel 1000 x 800, skirt 50, caliper 4, relief 4 (auto).
+
+     bounding box  = (1000 + 2*50) x (800 + 2*50)  = 1100 x 900
+     centre area   = 1000*800                      =   800 000 mm^2
+     L-edge flaps  = 2 * 50 * (1000 - 2*4)         =    99 200 mm^2
+     W-edge flaps  = 2 * 50 * ( 800 - 2*4)         =    79 200 mm^2
+     PLUS AREA                                     =   978 400 mm^2
+     bbox area     = 1100*900                      =   990 000 mm^2
+     difference    = 4 corner squares (4*50*50 = 10 000)
+                     + 8 relief slivers (8*50*4  =  1 600)  = 11 600  ✓
+
+   The cut walk's own corner: the bottom flap starts at x = 50 + 4 = 54 and
+   ends at x = 50 + 1000 - 4 = 1046, and reaches out to y = 0. */
+const HAND = {
+  centre: {L: 1000, W: 800}, skirt: 50, caliper: 4, relief: 4,
+  bboxL: 1100, bboxW: 900,
+  plusArea: 978400, bboxArea: 990000
+};
+
+const handCfg = capConfig(proj({cap: {top: true, skirt: HAND.skirt, caliper: HAND.caliper}}));
+
+t('1 BLANK: the auto relief resolves to ONE CALIPER, and an explicit 0 survives as a real choice', () => {
+  approx(handCfg.relief, HAND.caliper, 'auto relief must be one caliper:');
+  const explicitZero = capConfig(proj({cap: {top: true, caliper: 4, relief: 0}}));
+  approx(explicitZero.relief, 0, 'an explicit relief of 0 must NOT be read as absent-means-auto:');
+});
+
+t('1 BLANK: bounding box is (centreL + 2x) x (centreW + 2x) — hand-computed literals', () => {
+  const g = capBlank(HAND.centre, handCfg, 'top');
+  approx(g.bbox.maxX, HAND.bboxL, 'blank bbox L:');
+  approx(g.bbox.maxY, HAND.bboxW, 'blank bbox W:');
+  approx(g.bbox.minX, 0); approx(g.bbox.minY, 0);
+});
+
+t('1 BLANK: the plus outline has the hand-computed corner-relief vertices, and IS a plus', () => {
+  const g = capBlank(HAND.centre, handCfg, 'top');
+  const has = (x, y) => g.cut.some(p => Math.abs(p[0] - x) < 1e-9 && Math.abs(p[1] - y) < 1e-9);
+  // the bottom flap's own two outer corners, straight off the hand walk above
+  ok(has(54, 0), 'bottom flap must start at x = skirt + relief = 54 on the blank edge y=0');
+  ok(has(1046, 0), 'bottom flap must end at x = skirt + centreL - relief = 1046');
+  // the four corner SQUARES are removed: the bbox corners are not on the outline
+  for(const [x, y] of [[0, 0], [HAND.bboxL, 0], [HAND.bboxL, HAND.bboxW], [0, HAND.bboxW]])
+    ok(!has(x, y), `corner (${x},${y}) must be CUT AWAY — a blank that still owns its bbox corners is a rectangle, not a plus`);
+  // with relief, the walk is the full 20 vertices
+  eq(g.cut.length, 20, 'a relieved plus walk has 20 vertices:');
+});
+
+t('1 BLANK: relief 0 collapses the trims and leaves the plain 12-vertex plus', () => {
+  const cfg0 = capConfig(proj({cap: {top: true, skirt: HAND.skirt, caliper: HAND.caliper, relief: 0}}));
+  const g = capBlank(HAND.centre, cfg0, 'top');
+  eq(g.cut.length, 12, 'an unrelieved plus walk has 12 vertices (no zero-length segments):');
+  // and its area is the bbox minus exactly the four corner squares
+  approx(capPlusAreaMM2(HAND.centre, cfg0),
+         HAND.bboxArea - 4*HAND.skirt*HAND.skirt, 'unrelieved plus area:');
+});
+
+t('1 BLANK: four creases, one per centre-panel edge, each the full length of that edge', () => {
+  const g = capBlank(HAND.centre, handCfg, 'top');
+  eq(g.crease.length, 4, 'crease count:');
+  const x0 = HAND.skirt, x1 = HAND.skirt + HAND.centre.L;
+  const y0 = HAND.skirt, y1 = HAND.skirt + HAND.centre.W;
+  const wanted = [[x0, y0, x1, y0], [x0, y1, x1, y1], [x0, y0, x0, y1], [x1, y0, x1, y1]];
+  for(const w of wanted)
+    ok(g.crease.some(c => c.every((v, i) => Math.abs(v - w[i]) < 1e-9)),
+       `missing crease ${JSON.stringify(w)} — creases run the centre panel's own edges`);
+});
+
+/* ================================================ 2. PLUS, NOT BBOX ==== */
+
+t('2 AREA: the plus area is the hand-computed figure, and is STRICTLY LESS than the bounding rectangle', () => {
+  approx(capPlusAreaMM2(HAND.centre, handCfg), HAND.plusArea, 'plus area:');
+  const g = capBlank(HAND.centre, handCfg, 'top');
+  const bbox = g.bbox.maxX*g.bbox.maxY;
+  approx(bbox, HAND.bboxArea, 'bbox area:');
+  ok(HAND.plusArea < HAND.bboxArea, 'the plus must be smaller than its own bounding rectangle');
+  // the geometry CARRIES the plus area, so cost/weight/readout read one number
+  approx(g.meta.plusAreaMM2, HAND.plusArea, 'geo.meta.plusAreaMM2:');
+});
+
+/* THE COST-SIDE AREA IS THE ONE THAT MATTERS, and it is computed in
+   decorateRow, not in cap.js. A pin that calls capPlusAreaMM2 and compares it
+   to capPlusAreaMM2's own formula is a restatement; worse, it leaves the
+   quantity the app actually CHARGES completely unwatched. Measured: a
+   mutation that made decorateRow charge the bounding rectangle passed every
+   pin in this file until this one existed.
+
+   The anchor is the DRAWN blank's own area (capBlank's meta, a different call
+   path reached by the 2D view and the DXF), so the two consumers of one fact
+   -- what is drawn and what is charged -- must agree. */
+const realProj = newProject();
+realProj.pallet.stack.cap = {top: true, bottom: false, skirt: null, caliper: 3, relief: null, density: 150};
+const realRow = resolveActiveRow(realProj, '1mm', null);
+
+t('2 AREA: the area the app CHARGES is the same number the app DRAWS — not the bounding rectangle', () => {
+  ok(realRow, 'fixture: a chain must resolve, or there is no row to read');
+  ok(realRow.capCentreMM, 'fixture: a cap must have resolved a centre panel');
+  ok(realRow.capPlusAreaM2 > 0, 'fixture: the row must carry a real charged area');
+  // what the 2D view and the DXF draw, off the blank itself
+  const drawn = capBlank(realRow.capCentreMM, capConfig(realProj), 'top');
+  approx(realRow.capPlusAreaM2, drawn.meta.plusAreaMM2/1e6,
+         'the charged area and the drawn blank must be ONE number:', 1e-12);
+  // and it is strictly inside the bounding rectangle, so charging the bbox
+  // is a state this pin can actually distinguish
+  const cfg = capConfig(realProj);
+  const bboxM2 = ((realRow.capCentreMM.L + 2*cfg.skirt)*(realRow.capCentreMM.W + 2*cfg.skirt))/1e6;
+  ok(realRow.capPlusAreaM2 < bboxM2 - 1e-9,
+     `the charged area (${realRow.capPlusAreaM2}) must be STRICTLY less than the bounding rectangle ` +
+     `(${bboxM2}) — equal means the corner squares are being charged`);
+});
+
+t('2 AREA: the cap COST rises with the charged area, so a wrong area is a wrong price', () => {
+  ok(realRow.cost && realRow.cost.perUnit.cap > 0,
+     'fixture: the cap must actually be priced on the real chain, or cost cannot detect an area error');
+  const cfg = capConfig(realProj);
+  const bboxM2 = ((realRow.capCentreMM.L + 2*cfg.skirt)*(realRow.capCentreMM.W + 2*cfg.skirt))/1e6;
+  const asDrawn = materialCost({packsPerPallet: realRow.packsPerPallet, capAreaM2: realRow.capAreaM2}, realProj.cost);
+  const asBbox  = materialCost({packsPerPallet: realRow.packsPerPallet, capAreaM2: bboxM2*realRow.capsPerPosition}, realProj.cost);
+  ok(asBbox.perUnit.cap > asDrawn.perUnit.cap,
+     'charging the bounding rectangle must cost more — if not, area is not reaching price at all');
+});
+
+t('2 AREA MUTATION: charging the BOUNDING RECTANGLE changes the cap cost — so the pin can fail', () => {
+  // the real cost path, with the real plus area
+  const q = {packsPerPallet: 1000, capAreaM2: HAND.plusArea/1e6};
+  const real = materialCost(q, {});
+  ok(real.perUnit.cap > 0, 'fixture: the cap must actually be priced, or this measures nothing');
+  // THE MUTATION: the same call charging the bbox instead
+  const mutated = materialCost({...q, capAreaM2: HAND.bboxArea/1e6}, {});
+  ok(mutated.perUnit.cap > real.perUnit.cap,
+     'charging the bounding rectangle must cost MORE than charging the plus — if these are equal the ' +
+     'area distinction is not reaching cost at all');
+  // and by exactly the corner squares + relief slivers, not some other amount
+  const ratio = mutated.perUnit.cap/real.perUnit.cap;
+  approx(ratio, HAND.bboxArea/HAND.plusArea, 'the overcharge must be exactly the cut-away area:', 1e-9);
+});
+
+/* ==================================================== 3. HEIGHT ======== */
+
+t('3 HEIGHT: a top cap adds ONE CALIPER, a bottom cap one, both two — and the SKIRT adds none', () => {
+  const t4 = {caliper: 4, skirt: 200};   // an absurd skirt, to prove it contributes nothing
+  approx(capHeightGrowthMM(proj({cap: {...t4}})), 0, 'no cap:');
+  approx(capHeightGrowthMM(proj({cap: {...t4, top: true}})), 4, 'top only:');
+  approx(capHeightGrowthMM(proj({cap: {...t4, bottom: true}})), 4, 'bottom only:');
+  approx(capHeightGrowthMM(proj({cap: {...t4, top: true, bottom: true}})), 8, 'both:');
+  // the same skirt at a different depth must not move any of those
+  const deep = {caliper: 4, skirt: 999, top: true, bottom: true};
+  approx(capHeightGrowthMM(proj({cap: deep})), 8, 'a 999mm skirt must still add zero height:');
+});
+
+t('3 HEIGHT: resolveStack\'s total stack height rises by one caliper per cap PER POSITION', () => {
+  const fit = {layers: 5, casesPerLayer: 6, loadH: 900, caseFootprint: {L: 1000, W: 800}};
+  const none = resolveStack(proj({positions: [{base: 'pallet'}, {base: 'pallet'}]}), fit);
+  const both = resolveStack(proj({cap: {top: true, bottom: true, caliper: 4},
+                                  positions: [{base: 'pallet'}, {base: 'pallet'}]}), fit);
+  approx(both.totalHeightMM - none.totalHeightMM, 2*(4 + 4),
+         '2 positions x 2 caps x 4mm caliper:');
+});
+
+/* ================================================== 4. NO STRENGTH ===== */
+
+/* Calling stackAnalysis twice with identical arguments proves nothing: it is
+   the same call. The real question is whether anything in the app FEEDS a cap
+   into the strength model, and that is answered two ways below -- structurally
+   (bct.js cannot see cap.js at all) and end-to-end (the rendered BCT readout,
+   in the REACHABILITY block, with a bottom cap that by design adds no
+   compression load either). */
+const bctSource = await fetch('../src/core/bct.js').then(r => r.text());
+
+t('4 STRENGTH: core/bct.js cannot see a cap AT ALL — no import, no parameter, no reference', () => {
+  ok(!/from\s+['"][^'"]*cap\.js['"]/.test(bctSource),
+     'bct.js must not import core/cap.js — a strength model that can reach the cap module is one edit ' +
+     'away from crediting it');
+  // and stackAnalysis's own destructured parameter list names no cap term
+  const sig = bctSource.match(/export function stackAnalysis\(\{([^}]*)\}/);
+  ok(sig, 'fixture: stackAnalysis must be found in the source, or this pin reads nothing');
+  ok(!/cap/i.test(sig[1]),
+     `stackAnalysis takes a cap-shaped parameter: "${sig && sig[1]}" — caps are non-structural, so ` +
+     'the strength model must have no way to receive one');
+});
+
+t('4 STRENGTH MUTATION: a bogus cap strength term DOES move the ratio — so the pin above can fail', () => {
+  const args = {ectLbPerIn: 44, caliperMm: 4, L_mm: 400, W_mm: 300,
+                boxesAbove: 9, tareAboveLb: 0, casesPerLayer: 6,
+                unitWeightLb: 12, targetRatio: 3, isRSC: true};
+  const off = stackAnalysis(args);
+  // THE MUTATION, run for real: a cap that credited strength would show up as
+  // a higher effective BCT. Model it the way a wrong implementation would --
+  // by crediting the cap's own board into the case caliper.
+  const withBogusCredit = stackAnalysis({...args, caliperMm: args.caliperMm + 3});
+  ok(withBogusCredit.bctLb > off.bctLb,
+     'a strength credit must be VISIBLE in bctLb — if adding board does not move BCT, the no-strength ' +
+     'pin above is measuring an instrument that cannot respond and proves nothing');
+  ok(withBogusCredit.ratio > off.ratio, 'and visible in the safety ratio');
+});
+
+/* ============================================== 5. WEIGHT ASYMMETRY ==== */
+
+const FIT = {layers: 5, casesPerLayer: 6, loadH: 900, caseFootprint: {L: 1000, W: 800}};
+
+t('5 WEIGHT: fixture — a cap must actually weigh something, or every asymmetry pin below is vacuous', () => {
+  const caps = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}}));
+  ok(caps.weightEachLb > 0.1, `a cap must have real weight, got ${caps.weightEachLb}`);
+});
+
+t('5 WEIGHT: a TOP cap raises its own load\'s compression load; a BOTTOM cap does NOT', () => {
+  const one = [{base: 'pallet'}];
+  const base = resolveStack(proj({positions: one}), FIT);
+  const top  = resolveStack(proj({cap: {top: true, caliper: 4}, positions: one}), FIT);
+  const bot  = resolveStack(proj({cap: {bottom: true, caliper: 4}, positions: one}), FIT);
+  const each = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}})).weightEachLb;
+
+  approx(top.tareAboveLb - base.tareAboveLb, each,
+         'a top cap sits ON the cases, so its weight bears on the bottom case:');
+  approx(bot.tareAboveLb - base.tareAboveLb, 0,
+         'a bottom cap sits UNDER the cases and bears on nothing within its own load:');
+  // and they are genuinely DIFFERENT, not both zero
+  ok(Math.abs((top.tareAboveLb - base.tareAboveLb) - (bot.tareAboveLb - base.tareAboveLb)) > 0.1,
+     'the two must differ, or "asymmetry" is not being tested');
+});
+
+t('5 WEIGHT: at positions 2..N BOTH caps transmit down, alongside base and post weight', () => {
+  const two = [{base: 'pallet'}, {base: 'pallet'}];
+  const base = resolveStack(proj({positions: two}), FIT);
+  const each = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}})).weightEachLb;
+  const top = resolveStack(proj({cap: {top: true, caliper: 4}, positions: two}), FIT);
+  const bot = resolveStack(proj({cap: {bottom: true, caliper: 4}, positions: two}), FIT);
+  // n=2: top caps count n times (both bear on cases below them), bottom caps n-1
+  approx(top.tareAboveLb - base.tareAboveLb, 2*each, 'two top caps:');
+  approx(bot.tareAboveLb - base.tareAboveLb, 1*each, 'the UPPER position\'s bottom cap only:');
+});
+
+t('5 WEIGHT MUTATION: treating the bottom cap like the top changes tareAbove — so the pin can fail', () => {
+  const one = [{base: 'pallet'}];
+  const p = proj({cap: {bottom: true, caliper: 4}, positions: one});
+  const real = resolveStack(p, FIT);
+  const each = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}})).weightEachLb;
+  // THE MUTATION, as the wrong implementation would compute it: n*each for the
+  // bottom cap too, instead of (n-1)*each
+  const mutated = real.tareAboveLb + 1*each;
+  ok(Math.abs(mutated - real.tareAboveLb) > 0.1,
+     'treating a bottom cap like a top one must move tareAboveLb — if it does not, the asymmetry pin ' +
+     'above cannot distinguish a correct routing from a wrong one');
+  // and the app's real answer is the UNMUTATED one
+  const baseline = resolveStack(proj({positions: one}), FIT);
+  approx(real.tareAboveLb, baseline.tareAboveLb, 'the real bottom-cap routing adds nothing at n=1:');
+});
+
+t('5 WEIGHT: total load weight counts BOTH caps at EVERY position — a different question from compression', () => {
+  const two = [{base: 'pallet'}, {base: 'pallet'}];
+  const base = resolveStack(proj({positions: two}), FIT);
+  const both = resolveStack(proj({cap: {top: true, bottom: true, caliper: 4}, positions: two}), FIT);
+  const each = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}})).weightEachLb;
+  approx(both.totalWeightLb - base.totalWeightLb, 2*2*each,
+         '2 positions x 2 caps — what the trailer carries, regardless of what each cap rests on:');
+});
+
+/* ================================================ 6. FOOTPRINT NEST ==== */
+
+t('6 NESTING: cases -> posts -> cap, each stage growing the PREVIOUS one', () => {
+  const p = proj({cap: {top: true, caliper: 4}, cornerPost: {enabled: true, caliper: 5}});
+  const cases = {L: 1000, W: 800};
+  const s = loadFootprintStagesMM(cases, p);
+  eq(s.cases, cases, 'the cases stage is the rectangle handed in:');
+  approx(s.posts.L, 1000 + 2*5, 'posts stage = cases + 2 x post caliper:');
+  approx(s.posts.W, 800 + 2*5);
+  approx(s.cap.L, 1000 + 2*5 + 2*4, 'cap stage = POSTS stage + 2 x cap caliper:');
+  approx(s.cap.W, 800 + 2*5 + 2*4);
+  // and the outermost stage is what loadFootprintMM returns
+  eq(loadFootprintMM(cases, p), s.cap, 'loadFootprintMM is the outermost stage:');
+});
+
+t('6 NESTING: the CAP\'S CENTRE PANEL is the POST stage — a cap goes OVER the posts', () => {
+  const p = proj({cap: {top: true, caliper: 4}, cornerPost: {enabled: true, caliper: 5}});
+  const cases = {L: 1000, W: 800};
+  const caps = resolveCaps(cases, p);
+  eq(caps.centre, loadFootprintStagesMM(cases, p).posts,
+     'the centre panel must CLEAR the post caliper:');
+  ok(caps.centre.L > cases.L, 'a capped load with posts must have a centre panel wider than the bare cases');
+});
+
+t('6 NESTING MUTATION: adding cap caliper to the BARE CASE footprint gives a different, smaller answer', () => {
+  const p = proj({cap: {top: true, caliper: 4}, cornerPost: {enabled: true, caliper: 5}});
+  const cases = {L: 1000, W: 800};
+  const real = loadFootprintMM(cases, p);
+  // THE MUTATION: the inboard version -- cap caliper added to the cases
+  // directly, ignoring what is already outboard. This is the specific wrong
+  // implementation the pin above exists to rule out.
+  const inboard = {L: cases.L + 2*4, W: cases.W + 2*4};
+  ok(inboard.L < real.L && inboard.W < real.W,
+     'the inboard mutation must give a SMALLER footprint than the correct nesting — if they match, ' +
+     'the nesting order is not being enforced');
+  approx(real.L - inboard.L, 2*5, 'the difference is exactly the post caliper the mutation skipped:');
+  // ... and it is only detectable because BOTH contributors are on: with
+  // posts off the two agree, which is why this pin enables both
+  const noPosts = proj({cap: {top: true, caliper: 4}});
+  eq(loadFootprintMM(cases, noPosts), inboard,
+     'fixture check: with posts OFF the mutation is indistinguishable, so the pin above must enable them:');
+});
+
+t('6 NESTING: outboardGrowthMM is the scalar form of the same nesting — posts + cap, summed once', () => {
+  const p = proj({cap: {top: true, caliper: 4}, cornerPost: {enabled: true, caliper: 5}});
+  approx(outboardGrowthMM(p), 2*5 + 2*4, 'total per-axis growth:');
+  const cases = {L: 1000, W: 800};
+  approx(loadFootprintMM(cases, p).L - cases.L, outboardGrowthMM(p),
+         'the scalar and the rectangle must be the same nesting, not two:');
+});
+
+t('6 NESTING: a cap counts ONCE even with both caps on — two caps do not make a load twice as wide', () => {
+  const one  = proj({cap: {top: true, caliper: 4}});
+  const both = proj({cap: {top: true, bottom: true, caliper: 4}});
+  approx(capFootprintGrowthMM(both), capFootprintGrowthMM(one),
+         'both caps share the same plan rectangle:');
+  approx(capFootprintGrowthMM(proj()), 0, 'no cap, no growth:');
+});
+
+/* ================================================ 7. TRAILER PAYLOAD === */
+
+t('7 TRAILER: payload rises by the cap weights across ALL positions', () => {
+  const two = [{base: 'pallet'}, {base: 'pallet'}];
+  const pNone = proj({positions: two});
+  const pCaps = proj({cap: {top: true, bottom: true, caliper: 4}, positions: two});
+  const sNone = resolveStack(pNone, FIT);
+  const sCaps = resolveStack(pCaps, FIT);
+  const tNone = resolveTrailer(pNone, sNone, FIT.layers*FIT.casesPerLayer);
+  const tCaps = resolveTrailer(pCaps, sCaps, FIT.layers*FIT.casesPerLayer);
+  ok(tNone.stacksPerTrailer > 0, 'fixture: loads must actually fit the trailer, or payload is trivially 0');
+  const each = resolveCaps(FIT.caseFootprint, proj({cap: {top: true, caliper: 4}})).weightEachLb;
+  const perLoad = 2*2*each;                       // 2 positions x 2 caps
+  approx(tCaps.totalWeightLb - tNone.totalWeightLb, perLoad*tCaps.stacksPerTrailer,
+         'trailer payload gains every cap on every load it carries:', 1e-6);
+  ok(tCaps.totalWeightLb > tNone.totalWeightLb, 'and it must RISE, not fall');
+});
+
+t('7 TRAILER: the load footprint the floor is packed on nests the cap too', () => {
+  const p = proj({cap: {top: true, caliper: 20}});   // an exaggerated caliper, to move the floor count
+  const pNone = proj();
+  const s = resolveStack(p, FIT), sNone = resolveStack(pNone, FIT);
+  const withCap = resolveTrailer(p, s, 30), without = resolveTrailer(pNone, sNone, 30);
+  const fp = withCap.provenance.loadFootprintMM, fp0 = without.provenance.loadFootprintMM;
+  approx(fp.L - fp0.L, 2*20, 'the trailer\'s own load footprint must grow by 2 x cap caliper:');
+  approx(fp.W - fp0.W, 2*20);
+});
+
+/* =============================================== DEFAULTS / OFF-STATE == */
+
+t('OFF: with no cap, every cap term is zero and nothing else moves — an old save loads as caps-off', () => {
+  const p = proj();                       // no `cap` key touched beyond the defaults
+  approx(capHeightGrowthMM(p), 0);
+  approx(capFootprintGrowthMM(p), 0);
+  eq(capsPerPosition(p), 0);
+  // a project with NO cap key at all (an older save) reads as all-defaults
+  const legacy = {pallet: {L: 1219.2, W: 1016, stack: {positions: [{base: 'pallet'}]}}};
+  const cfg = capConfig(legacy);
+  eq({top: cfg.top, bottom: cfg.bottom}, {top: false, bottom: false},
+     'a save file with no cap key must load as BOTH CAPS OFF:');
+  approx(capHeightGrowthMM(legacy), 0, 'and contribute no height:');
+  approx(capFootprintGrowthMM(legacy), 0, 'and no footprint:');
+});
+
+t('OFF: a cap weighs what its PLUS area x caliper x density says — the same area cost charges', () => {
+  const cfg = capConfig(proj({cap: {top: true, skirt: HAND.skirt, caliper: HAND.caliper}}));
+  const volM3 = (HAND.plusArea/1e6)*(HAND.caliper/1000);
+  const expectLb = (volM3*CAP_DEFAULTS.density)/0.45359237;
+  approx(capWeightLb(HAND.centre, cfg), expectLb, 'weight from the hand-computed plus area:', 1e-9);
+  // a 48x40 cap is "a pound or two" -- the order of magnitude the design
+  // assumes. A density borrowed from the post board (700) would be ~5x this.
+  const real = capWeightLb({L: 1219.2, W: 1016}, capConfig(proj({cap: {top: true, caliper: 3}})));
+  ok(real > 0.5 && real < 3, `a 48x40in cap should weigh a pound or two, got ${real.toFixed(2)} lb`);
+});
+
+/* ================================================== REACHABILITY ======= */
+/* A pin that calls the builders proves the builders work and says nothing
+   about whether the app wires them. This one starts from a default load and
+   arrives at a drawn cap through the interface, the way a user does. */
+
+const settle = (ms = 160) => new Promise(r => setTimeout(r, ms));
+const frame = await new Promise(resolve => {
+  const f = document.createElement('iframe');
+  f.style.cssText = 'position:fixed;left:-4000px;top:0;width:1400px;height:900px;border:0';
+  f.src = '../index.html';
+  f.addEventListener('load', () => resolve(f), {once: true});
+  document.body.appendChild(f);
+});
+await settle(1300);
+const d = frame.contentDocument;
+const q = s => d.querySelector(s);
+const thrown = [];
+frame.contentWindow.addEventListener('error', e => thrown.push(String(e.message)));
+
+const UI = {};
+q('#chainString .cs-node[data-node="pallet"]').click();
+await settle(500);
+UI.controlsExist = !!(q('#capTop') && q('#capBottom') && q('#capSkirt') && q('#capCaliper') && q('#capRelief'));
+UI.fieldsHiddenWhenOff = q('#capFields') ? frame.contentWindow.getComputedStyle(q('#capFields')).display : null;
+q('#tab2d').click(); await settle(400);
+UI.noCapPolygonBefore = !q('#svg polygon');
+
+// END-TO-END STRENGTH CHECK, through the real app at FIXED case dimensions.
+// A BOTTOM cap is the right probe: by design it adds no compression load
+// either (pin 5), so ANY movement in the rendered BCT or safety ratio is a
+// strength credit that should not exist. A top cap would move the ratio
+// legitimately via tare, and could not distinguish the two.
+const readBCT = () => ({ratio: (q('#bctRatio') || {}).textContent, bct: (q('#bctVal') || {}).textContent,
+                        load: (q('#bctLoad') || {}).textContent});
+UI.bctBefore = readBCT();
+{
+  const c = q('#capBottom'); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true}));
+}
+await settle(700);
+UI.bctBottomCapOn = readBCT();
+{
+  const c = q('#capBottom'); c.checked = false; c.dispatchEvent(new Event('change', {bubbles: true}));
+}
+await settle(500);
+
+for(const id of ['capTop', 'capBottom']){
+  const c = q('#' + id); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true}));
+}
+await settle(700);
+UI.fieldsShownWhenOn = frame.contentWindow.getComputedStyle(q('#capFields')).display;
+UI.notes = {
+  relief: (q('#capReliefNote') || {}).textContent || '',
+  blank:  (q('#capBlankNote') || {}).textContent || '',
+  struct: (q('#capStructNote') || {}).textContent || ''
+};
+q('#tab2d').click(); await settle(500);
+const poly = q('#svg polygon');
+UI.polygonPoints = poly ? poly.getAttribute('points').trim().split(/\s+/).length : 0;
+UI.creaseCount = d.querySelectorAll('#svg [stroke*="crease"], #svg .crease').length;
+UI.dxfEnabled = q('#btnDXF') ? !q('#btnDXF').disabled : null;
+UI.stateChip = (q('#stateChip') || {}).textContent || '';
+UI.stats = (q('#styleStats') || {}).textContent || '';
+frame.remove();
+
+t('4 STRENGTH end-to-end: the RENDERED BCT and safety ratio are unchanged by a bottom cap', () => {
+  // fixture: there must be a real BCT on screen to compare, not two dashes
+  ok(UI.bctBefore.ratio && UI.bctBefore.ratio !== '--',
+     `fixture: the BCT readout must carry a real value (got "${UI.bctBefore.ratio}") — comparing "--" to ` +
+     '"--" would pass whatever the model did');
+  eq(UI.bctBottomCapOn, UI.bctBefore,
+     'a bottom cap adds neither strength nor compression load, so every BCT figure must be identical:');
+});
+
+t('REACHABLE: the cap controls exist on the pallet rail and reveal their fields when enabled', () => {
+  ok(UI.controlsExist, 'the pallet rail must carry top/bottom/skirt/caliper/relief controls');
+  eq(UI.fieldsHiddenWhenOff, 'none', 'the detail fields stay hidden while both caps are off:');
+  eq(UI.fieldsShownWhenOn, 'contents', 'and appear once a cap is enabled:');
+  eq(thrown, [], 'enabling a cap through the real UI must throw nothing:');
+});
+
+t('REACHABLE: enabling a cap DRAWS its plus blank at the pallet level, where there was no dieline before', () => {
+  ok(UI.noCapPolygonBefore, 'fixture: the pallet level must have NO blank drawn before a cap is enabled, ' +
+     'or this pin cannot tell a drawn cap from a pre-existing drawing');
+  ok(UI.polygonPoints >= 12,
+     `the drawn cut must be a plus (>= 12 vertices), got ${UI.polygonPoints}`);
+  ok(UI.dxfEnabled, 'a real rigid blank must be exportable — the generic DXF path takes any Geometry');
+  ok(/Cap blank/i.test(UI.stateChip),
+     `the state chip must stop saying "no dieline here" once a cap is drawn (got "${UI.stateChip}")`);
+});
+
+t('REACHABLE: the rail states the relief convention, the plus-area charge and the non-contribution', () => {
+  ok(/TRIMMING/i.test(UI.notes.relief), 'the relief note must say WHICH convention produced the blank');
+  ok(/PLUS/i.test(UI.notes.blank) && /corner squares/i.test(UI.notes.blank),
+     'the blank note must say the corner squares are excluded from the charged area');
+  ok(/NON-STRUCTURAL/i.test(UI.notes.struct), 'the non-contribution must be stated, not implied');
+  ok(/deckboard/i.test(UI.notes.struct),
+     'the deliberately-unmodelled deckboard-gap distribution must be disclosed with a bottom cap on');
+  ok(/Corner relief/i.test(UI.stats) && /Paperboard/i.test(UI.stats),
+     'the readout must name the relief and the material');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

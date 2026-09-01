@@ -228,7 +228,11 @@ t('v4 -> v5: stacking.doubleStack:true migrates to two pallet-based positions', 
     project: {...base, pallet: {...base.pallet, stacking: {...base.pallet.stacking, doubleStack: true}}}
   };
   const result = deserializeProject(doc);
-  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}, {base: 'pallet'}]}, 'migrated stack:');
+  // ONLY `positions` -- that is what this migration converts. Asserting the
+  // whole `stack` object made this pin fail the moment an unrelated default
+  // was added beside it (cornerPost, then cap), which is a fixture reacting
+  // to a change it does not test.
+  eq(result.project.pallet.stack.positions, [{base: 'pallet'}, {base: 'pallet'}], 'migrated positions:');
   if('doubleStack' in result.project.pallet.stacking) throw new Error('doubleStack should have been dropped by the migration');
   if(!result.migrationsRun.some(m => m.startsWith('v4 -> v5'))) throw new Error('expected a v4->v5 migration step in the log');
 });
@@ -239,7 +243,7 @@ t('v4 -> v5: stacking.doubleStack:false migrates to the single-position default'
     project: {...base, pallet: {...base.pallet, stacking: {...base.pallet.stacking, doubleStack: false}}}
   };
   const result = deserializeProject(doc);
-  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'migrated stack:');
+  eq(result.project.pallet.stack.positions, [{base: 'pallet'}], 'migrated positions:');
   if('doubleStack' in result.project.pallet.stacking) throw new Error('doubleStack should have been dropped by the migration');
 });
 t('v4 -> v5: a v4 file with no pallet.stacking at all migrates to the single-position default', () => {
@@ -247,7 +251,7 @@ t('v4 -> v5: a v4 file with no pallet.stacking at all migrates to the single-pos
   const {stacking, ...palletWithoutStacking} = base.pallet;
   const doc = {schemaVersion: 4, project: {...base, pallet: palletWithoutStacking}};
   const result = deserializeProject(doc);
-  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'no stacking block -> single pallet position, not thrown at:');
+  eq(result.project.pallet.stack.positions, [{base: 'pallet'}], 'no stacking block -> single pallet position, not thrown at:');
 });
 
 /* ---- missing fields: defaulted AND reported ----------------------------- */
@@ -472,13 +476,14 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // null (no override) is its correct default, same "filled, not silently
   // absent" contract as every other entry here.
   eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
-                         'pallet.patternIndex', 'pallet.layerFlips', 'pallet.stacking', 'pallet.tareLb', 'pallet.slipsheet',
+                         'pallet.patternIndex', 'pallet.layerFlips', 'pallet.stacking', 'pallet.tareLb',
+     'pallet.stack.cornerPost', 'pallet.stack.cap', 'pallet.slipsheet',
                          'tray', 'uboard', 'shelf', 'trailer'],
      'the new openTop/perf/pallet.stacking/patternIndex/layerFlips/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
   eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
   eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
   eq(result.project.trailer.L, 16002, 'trailer defaulted to a real, editable 53\' van (not left undefined):');
-  eq(result.project.pallet.stack, {positions: [{base: 'pallet'}]}, 'pallet.stack migrated to the single-pallet-position default (absent doubleStack):');
+  eq(result.project.pallet.stack.positions, [{base: 'pallet'}], 'pallet.stack migrated to the single-pallet-position default (absent doubleStack):');
   eq(result.project.secondary.openTop, false, 'defaulted from a6120\'s own style, closed:');
   eq(result.project.tertiary.openTop, false, 'defaulted from fefco201\'s own style, closed:');
   // THE COMPATIBILITY CLAIM, against a REAL prior save (this fixture is a

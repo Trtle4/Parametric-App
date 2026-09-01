@@ -12,7 +12,8 @@ import {fitInto, parentCandidates, solveParent, orientDims} from './containment.
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
 import {trayParams, trayOuter, isProud, deriveTrayParams, packPitchOf} from './cookietray.js';
 import {materialCost} from './cost.js';
-import {cornerPostCostQuantities, cornerPostConfig} from './stack.js';
+import {cornerPostCostQuantities, outboardGrowthMM, loadFootprintStagesMM} from './stack.js';
+import {capConfig, capPlusAreaMM2, capsPerPosition} from './cap.js';
 import {styleById} from './styles/index.js';
 import {withPerforation} from './perf.js';
 import {collate, orientationLabel, resolvePieceOrientation} from './collation.js';
@@ -256,7 +257,18 @@ export function newProject(){
         // stack height - 1in; 3in each); caliper has no auto concept (its
         // own plain input, like baseH above).
         cornerPost: {enabled: false, height: null, legL: null, legW: null,
-          caliper: 3, density: 700, costBasis: 'perLength'}},
+          caliper: 3, density: 700, costBasis: 'perLength'},
+        // Top/bottom caps: ONE config for the whole stack, same reasoning as
+        // the posts'. top/bottom are independent real off switches (a load
+        // may carry either, both or neither) — opt-in, like posts, not a
+        // value with a sensible nonzero default. `relief: null` is the one
+        // auto field: absence means one caliper (see core/cap.js capConfig,
+        // and its doc for WHY trimming the flaps was chosen over enlarging
+        // the corner cutout). No schema migration: an older file simply has
+        // no `cap` key, and capConfig reads a missing key as all-defaults,
+        // which is both caps off — bit-identical to before caps existed.
+        cap: {top: false, bottom: false, skirt: null, caliper: 3,
+          relief: null, density: 150}},
       // the slipsheet's own material — NEVER carton/case board or the
       // U-board's paperboard (uboard.params.caliper is a distinct number).
       // weightLb/L/W null = auto (derived from footprint x caliper x
@@ -1244,13 +1256,31 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
   // project's stack position count, never re-derived here.
   const positionsCount = (project.pallet.stack && Array.isArray(project.pallet.stack.positions) && project.pallet.stack.positions.length) || 1;
   const cpQ = cornerPostCostQuantities(project, row.loadH, positionsCount);
+  // CAP AREA, for the whole stack: the PLUS area of one blank x caps per
+  // position x positions. The centre panel is the POST stage of the nesting
+  // (a cap goes over the posts), read off the same loadFootprintStagesMM the
+  // trailer and the overhang check use — never a bare case envelope, and
+  // never the bbox (`blankAreaM2` above is bbox area, correct for every
+  // rectangular blank in this app and wrong for a plus by exactly the four
+  // corner squares). Null when no cap is on, so the cost roll-up reports a
+  // NAMED missing term rather than a free cap.
+  const capCfg = capConfig(project);
+  const capEnv = casesFit && casesFit.envelope;
+  const capCentre = (capEnv && capEnv.L > 0 && capEnv.W > 0)
+    ? loadFootprintStagesMM({L: capEnv.L, W: capEnv.W}, project).posts : null;
+  row.capCentreMM = capCentre;
+  row.capPlusAreaM2 = capCentre ? capPlusAreaMM2(capCentre, capCfg)/1e6 : null;
+  row.capsPerPosition = capsPerPosition(project);
+  row.capAreaM2 = (row.capPlusAreaM2 != null && row.capsPerPosition)
+    ? row.capPlusAreaM2*row.capsPerPosition*positionsCount : null;
   row.cost = materialCost({
     cartonBoardM2: row.cartonBoardM2, caseBoardM2: row.caseBoardM2,
     filmKgPerPack: row.filmKgPerPack, traysPerPack: row.traysPerPack,
     uboardAreaM2: row.uboardAreaM2,
     packsPerCarton: row.packsPerCarton, cartonsPerCase: row.cartonsPerCase,
     packsPerPallet: row.packsPerPallet,
-    cornerPostBasis: cpQ.basis, cornerPostLengthM: cpQ.lengthM, cornerPostCount: cpQ.count
+    cornerPostBasis: cpQ.basis, cornerPostLengthM: cpQ.lengthM, cornerPostCount: cpQ.count,
+    capAreaM2: row.capAreaM2
   }, project.cost);
   // retained arrangements (single source of truth; the view reads these)
   const p = project.pallet;
@@ -1339,18 +1369,22 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
   // headline numbers bake in (the Build table ranks candidates by their
   // best pallet); the list rides on the row so applyPatternSelection can
   // re-read list[patternIndex] for the committed chain without re-packing.
-  const cpCfg = cornerPostConfig(project);
+  // Everything standing outboard of the cases, summed ONCE by stack.js --
+  // corner posts and the cap over them. This module never adds a contributor's
+  // caliper itself; a second `2*t` here is precisely the drift the single
+  // nesting function exists to prevent.
+  const outboardMM = outboardGrowthMM(project);
   const patternList = palletPatternList(
     {outer: {...outerGeo.outer, H: stackH}, allowedOrientations: outerLevel.allowedOrientations},
     {L: p.L, W: p.W, H: p.maxH - p.baseH},
     outerLevel.clearance,
     p.pattern,
-    {postCaliperMM: cpCfg.enabled ? cpCfg.caliper : 0}
+    {outboardMM}
   );
   // A held layerFlips OVERRIDE applies to whichever candidate is selected —
   // here, the ranked-best (list[0]) that bakes into this row's headline
   // numbers. withSchedule() returns a NEW candidate sharing the same
-  // layout/orientation/envelope, so postOverhang below is unaffected (it's
+  // layout/orientation/envelope, so loadOverhang below is unaffected (it's
   // geometry-only, computed once per layout, shared across every schedule
   // of that same layout by construction — never a second, divergent copy).
   // No override (the default: null) is bit-identical to before this field
@@ -1359,11 +1393,12 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     ? (p.layerFlips ? patternList[0].withSchedule(p.layerFlips) : patternList[0])
     : null;
   const fit = selected0 ? selected0.build() : emptyArrangement();
-  // Post overhang is a WARNING attached to the chosen candidate, never a
+  // Load overhang is a WARNING attached to the chosen candidate, never a
   // rejection (case overhang above already ran and is untouched) — read off
   // the SAME candidate list() and row.js/app.js surface it through the
-  // existing warning channel. null when posts are off or nothing is proud.
-  const postOverhang = selected0 ? selected0.postOverhang : null;
+  // existing warning channel. null when nothing stands outboard, or nothing
+  // that does is proud.
+  const loadOverhang = selected0 ? selected0.loadOverhang : null;
   const loadH = palletLoadH(fit, stackH);
   // Shrink-wrap FINISH on the tray: the film draws down over the tray footprint
   // AND its proud contents, so its area needs the loaded (proud) height stackH —
@@ -1414,7 +1449,7 @@ function chainMetrics(project, outerKey, cand, cavity, outerParams, outerGeo, ch
     // corner-post overhang: {L,W} mm proud of the deck in each dimension, or
     // null — a WARNING (surfaced through app.js's existing notice channel),
     // never a rejection and never a BCT derating. See palletpatterns.js.
-    postOverhang,
+    loadOverhang,
     // the SELECTED candidate's own per-layer flip schedule and any warning
     // it carries (e.g. an explicit flip requested on a self-symmetric
     // layer) — also on `fit`/`casesFit` (build()'s own return), surfaced
@@ -1467,7 +1502,7 @@ export function applyPatternSelection(row, project){
     cartonsPerPallet,
     coveragePct: deckCoveragePct(fit, row.outer, p),
     loadH,
-    postOverhang: selected.postOverhang,
+    loadOverhang: selected.loadOverhang,
     layerFlips: fit.layerFlips, patternWarnings: fit.warnings,
     cubeUtilPct: palletCubeUtilPct(row.palletUnitVol, cartonsPerPallet, p, loadH),
     piecesPerPallet: row.piecesPerCarton != null ? row.piecesPerCarton*cartonsPerPallet : row.piecesPerPallet,

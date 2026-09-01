@@ -343,7 +343,7 @@ t('family filter flows through the chain (column strips the mixed layouts)', () 
    ================================================================ */
 (() => {
   const POST_CASE = box(400, 300, 250);
-  const baseline = palletPatternList(POST_CASE, DECK, Z, 'optimal', {postCaliperMM: 0});
+  const baseline = palletPatternList(POST_CASE, DECK, Z, 'optimal', {outboardMM: 0});
   const cand0 = baseline[0];
   const marginL = (DECK.L - cand0.envelope.L)/2, marginW = (DECK.W - cand0.envelope.W)/2;
   const marginMin = Math.min(marginL, marginW);
@@ -351,22 +351,22 @@ t('family filter flows through the chain (column strips the mixed layouts)', () 
   const overhangCaliper = marginMin + 5;         // guaranteed to push the post-inflated footprint past the deck
   const clearCaliper = Math.max(0.25, marginMin/2); // guaranteed to stay within the deck
 
-  t('post overhang: caliper past the margin sets postOverhang on the SAME candidate that already passed the deck gate', () => {
-    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {postCaliperMM: overhangCaliper});
+  t('post overhang: caliper past the margin sets loadOverhang on the SAME candidate that already passed the deck gate', () => {
+    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {outboardMM: 2*overhangCaliper});
     ok(l.length, 'vacuous fixture: no candidates at all');
-    ok(l[0].postOverhang, `expected postOverhang to be set at caliper=${overhangCaliper}`);
-    ok(l[0].postOverhang.L > 0 || l[0].postOverhang.W > 0, 'postOverhang must name a positive proud amount in at least one dimension');
+    ok(l[0].loadOverhang, `expected loadOverhang to be set at caliper=${overhangCaliper}`);
+    ok(l[0].loadOverhang.L > 0 || l[0].loadOverhang.W > 0, 'loadOverhang must name a positive proud amount in at least one dimension');
   });
   t('post overhang: the pallet PATTERN VERDICT is UNCHANGED -- same candidate count and same winning total, warn does not reject', () => {
-    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {postCaliperMM: overhangCaliper});
-    eq(l.length, baseline.length, 'candidate list length must be identical to the postCaliperMM:0 baseline');
+    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {outboardMM: 2*overhangCaliper});
+    eq(l.length, baseline.length, 'candidate list length must be identical to the outboardMM:0 baseline');
     eq(l[0].total, cand0.total, 'winning candidate total must be identical');
     eq(l[0].label, cand0.label, 'winning candidate must be the SAME layout, not a different one silently substituted');
   });
   t('post overhang: the BCT derating list is UNCHANGED -- a post standing on the deck is not a cantilever, no strength penalty', () => {
     const beforeJSON = JSON.stringify(DERATINGS);
-    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {postCaliperMM: overhangCaliper});
-    ok(l[0].postOverhang, 'vacuous fixture: this candidate must actually be proud to test derating non-interference');
+    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {outboardMM: 2*overhangCaliper});
+    ok(l[0].loadOverhang, 'vacuous fixture: this candidate must actually be proud to test derating non-interference');
     eq(JSON.stringify(DERATINGS), beforeJSON, 'DERATINGS content must be untouched by exercising the post-overhang path');
     // A candidate carries NO derating field at all -- palletpatterns.js has
     // no mechanism to attach a strength penalty to a candidate, so a caller
@@ -376,16 +376,16 @@ t('family filter flows through the chain (column strips the mixed layouts)', () 
   });
 
   t('post overhang: a caliper WITHIN the margin emits NO warning', () => {
-    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {postCaliperMM: clearCaliper});
+    const l = palletPatternList(POST_CASE, DECK, Z, 'optimal', {outboardMM: 2*clearCaliper});
     ok(l.length, 'vacuous fixture');
-    eq(l[0].postOverhang, null, `expected no postOverhang at caliper=${clearCaliper} (margin=${marginMin.toFixed(3)}mm)`);
+    eq(l[0].loadOverhang, null, `expected no loadOverhang at caliper=${clearCaliper} (margin=${marginMin.toFixed(3)}mm)`);
   });
 
-  t('case overhang is UNTOUCHED by postCaliperMM: a case too big for the deck still yields NO layout regardless of corner posts', () => {
+  t('case overhang is UNTOUCHED by outboardMM: a case too big for the deck still yields NO layout regardless of corner posts', () => {
     const tooBig = box(1500, 1200, 200);
-    for(const postCaliperMM of [0, overhangCaliper]){
-      const l = palletPatternList(tooBig, DECK, Z, 'optimal', {postCaliperMM});
-      eq(l.length, 0, `postCaliperMM=${postCaliperMM}: an oversized case must still be rejected, never accepted because posts happen to be configured`);
+    for(const outboardMM of [0, 2*overhangCaliper]){
+      const l = palletPatternList(tooBig, DECK, Z, 'optimal', {outboardMM});
+      eq(l.length, 0, `outboardMM=${outboardMM}: an oversized case must still be rejected, never accepted because posts or a cap happen to be configured`);
     }
   });
 })();

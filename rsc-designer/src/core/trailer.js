@@ -46,7 +46,7 @@
  * convention throughout core/bct.js and core/stack.js).
  */
 import {palletPatternList, emptyArrangement} from './palletpatterns.js';
-import {cornerPostFootprintGrowthMM} from './stack.js';
+import {loadFootprintMM as outerLoadFootprintMM} from './stack.js';
 
 /** 53' dry van, CPG default — a proposal confirmed with the user, not pulled
  *  from a spec sheet. All lengths in mm (the app's internal unit); the
@@ -137,12 +137,18 @@ export function resolveTrailer(project, stack, casesPerLoad = 0){
   const t = trailerParams(project.trailer);
   const pallet = project.pallet;
 
-  // LOAD FOOTPRINT: the pallet's own footprint, widened by 2x corner-post
-  // caliper in each of L and W when posts are on (zero otherwise -- bit-
-  // identical to before posts existed). See the module doc for why this is
-  // the OPPOSITE of the slipsheet lip exclusion just below.
-  const postGrowthMM = cornerPostFootprintGrowthMM(project);
-  const loadFootprintMM = {L: pallet.L + postGrowthMM, W: pallet.W + postGrowthMM};
+  // LOAD FOOTPRINT: the pallet's own footprint, nested outward through every
+  // contributor that stands proud of the cases -- corner posts, then the cap
+  // over them. core/stack.js's loadFootprintMM is the ONE place that
+  // arithmetic lives; this used to be its own `pallet.L + 2*caliper`, one of
+  // five such copies over three different starting rectangles, which is
+  // exactly how a fourth contributor drifts. See the module doc for why this
+  // is the OPPOSITE of the slipsheet lip exclusion just below.
+  //
+  // The starting rectangle is still the DECK, unchanged: which rectangle to
+  // nest from is a separate question from how to nest, and this module's own
+  // answer (the deck, not the case envelope) predates caps and is untouched.
+  const loadFootprintMM = outerLoadFootprintMM({L: pallet.L, W: pallet.W}, project);
 
   // FLOOR: the load's own footprint -- see the module doc for why a
   // slipsheet position's lipped footprint never reaches this call, and why

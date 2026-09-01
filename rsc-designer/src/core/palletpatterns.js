@@ -367,20 +367,25 @@ const memo = new Map();
  *   Left false, no generated arrangement may extend past the deck (see the
  *   deck-validity block above). Set true and the rejection is skipped —
  *   the caller then owes the BCT an overhang derating.
- * @param {number} [opts.postCaliperMM=0]  corner-post caliper, mm. NOT the
- *   same condition as case overhang above (which REJECTS): this only
- *   attaches `postOverhang` to a candidate that otherwise passed the deck
- *   gate, when its case envelope plus 2x this caliper would stand proud of
- *   the deck. Never rejects, never touches which candidates are returned —
- *   see core/palletpatterns.js's own module doc and the "Overhang" section
- *   of the corner-post task for why this must stay a different code path
- *   from case overhang at a different severity.
+ * @param {number} [opts.outboardMM=0]  TOTAL per-side thickness standing
+ *   outboard of the cases, mm — corner-post caliper plus cap caliper, summed
+ *   ONCE by core/stack.js's outboardGrowthMM and handed in as a scalar (this
+ *   module is pure and has no `project` to read). It was `postCaliperMM`
+ *   while posts were the only contributor; a second contributor is exactly
+ *   when a name that only fits the first one starts to lie. NOT the same
+ *   condition as case overhang above (which REJECTS): this only attaches
+ *   `loadOverhang` to a candidate that otherwise passed the deck gate, when
+ *   its case envelope plus this growth would stand proud of the deck. Never
+ *   rejects, never touches which candidates are returned — see this module's
+ *   own doc and the "Overhang" section of the corner-post task for why this
+ *   must stay a different code path from case overhang at a different
+ *   severity.
  * @param {boolean} [opts.noMemo=false]  skip the result cache. For
  *   hypothetical probes (core/sensitivity.js) whose dimensions never recur:
  *   caching them would only evict the real chain's entries.
  * @returns ranked candidates: {family, layerFlips, interlock, orientation,
  *   perLayer, layers, total, label, envelope, density, utilization,
- *   postOverhang, warnings, build(), withSchedule()}. `layerFlips` is a
+ *   loadOverhang, warnings, build(), withSchedule()}. `layerFlips` is a
  *   frozen per-layer boolean array, bottom first (`interlock` is just
  *   `layerFlips.some(Boolean)`, kept for callers that only need "is
  *   anything flipped"); `withSchedule(schedule)` returns a NEW candidate —
@@ -393,18 +398,19 @@ const memo = new Map();
  *   user request. build() expands the fitInto-compatible Arrangement
  *   (placements included) on demand and caches it. Empty when nothing fits
  *   the deck: an honest "does not fit", never an overhanging fallback.
- *   `postOverhang` is `{L, W}` (mm proud in each dimension, 0 if not proud
- *   in that dimension) when corner posts would stand proud of the deck,
- *   else `null` — a WARNING annotation, never a rejection.
+ *   `loadOverhang` is `{L, W}` (mm proud in each dimension, 0 if not proud
+ *   in that dimension) when what stands outboard of the cases — posts, cap,
+ *   or both — would stand proud of the deck, else `null` — a WARNING
+ *   annotation, never a rejection.
  */
 export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal', opts = {}){
   const allowOverhang = !!opts.allowOverhang, noMemo = !!opts.noMemo;
-  const postCaliperMM = typeof opts.postCaliperMM === 'number' && opts.postCaliperMM > 0 ? opts.postCaliperMM : 0;
+  const outboardMM = typeof opts.outboardMM === 'number' && opts.outboardMM > 0 ? opts.outboardMM : 0;
   const key = noMemo ? null
     : [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
        cavity.L, cavity.W, cavity.H,
        clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
-       family, allowOverhang ? 'oh' : '', postCaliperMM].join('|');
+       family, allowOverhang ? 'oh' : '', outboardMM].join('|');
   if(key !== null){
     const hit = memo.get(key);
     if(hit) return hit;
@@ -463,18 +469,22 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
       const envVol = envelope.L*envelope.W*envelope.H;
       const symmetric = sym180(lay.positions);
 
-      // POST OVERHANG — a DIFFERENT condition from the deck-validity gate
-      // above, checked on a candidate that already passed it. The corner
-      // posts stand outboard of the CASE envelope, so the post-inflated
+      // LOAD OVERHANG — a DIFFERENT condition from the deck-validity gate
+      // above, checked on a candidate that already passed it. Corner posts
+      // and a cap stand outboard of the CASE envelope, so the inflated
       // footprint can stand proud of the deck by a few mm even though the
       // cases themselves fit cleanly — normal practice, not a fault. Never
       // rejects (the gate above already ran); never derates BCT (nothing
-      // here touches it); does feed the trailer's load footprint elsewhere
-      // (core/trailer.js reads postOverhang via the resolved row, not this
-      // module — palletpatterns.js only reports the geometric fact).
-      const ohL = Math.max(0, (envelope.L + 2*postCaliperMM) - cavity.L);
-      const ohW = Math.max(0, (envelope.W + 2*postCaliperMM) - cavity.W);
-      const postOverhang = (ohL > DECK_EPS || ohW > DECK_EPS) ? {L: ohL, W: ohW} : null;
+      // here touches it). `outboardMM` is already the TOTAL per-side growth
+      // (posts + cap), summed by core/stack.js, so this must NOT double it:
+      // it was `2*postCaliperMM` when the argument was one contributor's
+      // half-thickness, and the doubling moved to the summing side along
+      // with the name. core/trailer.js does NOT read this — it nests its own
+      // footprint through the same stack.js function; this module only
+      // reports the geometric fact against the deck.
+      const ohL = Math.max(0, (envelope.L + outboardMM) - cavity.L);
+      const ohW = Math.max(0, (envelope.W + outboardMM) - cavity.W);
+      const loadOverhang = (ohL > DECK_EPS || ohW > DECK_EPS) ? {L: ohL, W: ohW} : null;
 
       const mk = layerFlips => {
         const flips = Object.freeze(layerFlips.slice());
@@ -483,7 +493,7 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
           family: lay.family, layerFlips: flips, interlock, orientation: o,
           perLayer, layers: st.layers, total: st.total,
           label: lay.label + (interlock ? ' · interlocked' : ''),
-          envelope, postOverhang,
+          envelope, loadOverhang,
           density: envVol > 0 ? st.total*childVol/envVol : 0,
           utilization: cavityVol > 0 ? st.total*childVol/cavityVol : 0,
           // populated only by withSchedule() below — the auto-generated

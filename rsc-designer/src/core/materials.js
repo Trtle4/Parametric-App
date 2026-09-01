@@ -71,6 +71,16 @@ export const MATERIAL_REGISTRY = Object.freeze({
     // since weight never depended on cost; the rate stays absent (never
     // priced, exactly like today) until someone actually enters one.
   }),
+  capBoard: Object.freeze({
+    label: 'Cap board', basis: 'perArea',
+    // Its OWN stream and its OWN rate. Deliberately not aliased to
+    // cartonBoard, uboardBoard or the post board: a cap is a different
+    // grade bought on a different line, and sharing a rate key would mean a
+    // user pricing their cases silently repriced every cap on the pallet.
+    // The area it prices is the PLUS, never the bounding rectangle — see
+    // core/cap.js's capPlusAreaMM2 and the scrap assumption stated there.
+    rateKey: 'capBoardPerM2', defaultRate: 0.45
+  }),
   cornerPost: Object.freeze({
     label: 'Corner post',
     // The ONE stream whose basis is a per-PROJECT choice, not fixed on the

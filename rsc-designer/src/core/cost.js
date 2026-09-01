@@ -46,7 +46,8 @@ export const COST_DEFAULTS = Object.freeze({
   uboardBoardPerM2: MATERIAL_REGISTRY.uboardBoard.defaultRate,   // U-board paperboard — its own rate, never the carton/case board rate
   palletPerTrip:   12.00,     // one pallet, one trip
   cornerPostPerLengthM: MATERIAL_REGISTRY.cornerPost.defaultRates.perLength,   // $ per metre of angle-board post, all 4 posts x every position
-  cornerPostPerPiece:   MATERIAL_REGISTRY.cornerPost.defaultRates.perPiece    // $ per post, fixed cut-to-size piece
+  cornerPostPerPiece:   MATERIAL_REGISTRY.cornerPost.defaultRates.perPiece,   // $ per post, fixed cut-to-size piece
+  capBoardPerM2:    MATERIAL_REGISTRY.capBoard.defaultRate   // top/bottom cap board — its own rate, never the carton/case/U-board/post rate
 });
 
 /** The rate vocabulary, in display order. `unit` is the DISPLAY kind, which
@@ -61,7 +62,8 @@ export const RATE_ROWS = Object.freeze([
   {key: 'filmPerKg',        label: 'Film',         unit: 'mass', needs: 'film'},
   {key: 'trayEach',         label: 'Tray',         unit: 'each', needs: 'tray'},
   {key: 'uboardBoardPerM2', label: 'U-board',      unit: 'area', needs: 'uboard'},
-  {key: 'palletPerTrip',    label: 'Pallet',       unit: 'trip', needs: 'pallet'}
+  {key: 'palletPerTrip',    label: 'Pallet',       unit: 'trip', needs: 'pallet'},
+  {key: 'capBoardPerM2',    label: 'Cap board',    unit: 'area', needs: 'cap'}
 ]);
 
 /** ft² in one m² — the ONE conversion factor the rate display uses. */
@@ -171,6 +173,20 @@ export function materialCost(q, cost){
   }
   if(perUnit.cornerPost != null && num(q.packsPerPallet)) perPack.cornerPost = perUnit.cornerPost/q.packsPerPallet;
   else missing.push('cornerPost');
+
+  // Caps: a PER-PALLET quantity like the posts and the pallet trip above --
+  // `capAreaM2` is already the WHOLE stack's cap area (plus area x caps per
+  // position x positions), summed once by the caller in stack/cap terms, so
+  // this multiplies a rate and divides by the pack count and does nothing
+  // else. The area is the PLUS, not the bounding rectangle: the four corner
+  // squares are cut away and are not part of the blank being charged (see
+  // core/cap.js capPlusAreaMM2, which also states the scrap assumption).
+  if(num(q.capAreaM2) && num(q.packsPerPallet)){
+    const total = costForBasis('perArea', R('capBoardPerM2'), {areaM2: q.capAreaM2});
+    if(total != null) perUnit.cap = total;
+  }
+  if(perUnit.cap != null && num(q.packsPerPallet)) perPack.cap = perUnit.cap/q.packsPerPallet;
+  else missing.push('cap');
 
   const terms = Object.keys(perPack);
   const packCost = terms.length ? terms.reduce((s, k) => s + perPack[k], 0) : null;

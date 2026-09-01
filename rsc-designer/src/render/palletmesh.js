@@ -192,6 +192,68 @@ export function buildGmaPallet(pl, pw, deckH = PALLET_HEIGHT){
  * @param {number} caliperMm  sheet thickness, mm
  * @returns {THREE.Group} base at y=0, top face at y=caliperMm
  */
+// Cap: kraft-toned like the slipsheet (both are paperboard) but lighter, so
+// a capped load reads as board-over-cases rather than as another slipsheet
+// that has somehow climbed on top of the stack.
+const capMat = new THREE.MeshStandardMaterial({color: 0xD8BE94, roughness: 0.9, metalness: 0});
+export const CAP_MATERIAL = capMat;
+
+/**
+ * A folded cap: the centre panel plus four skirts turned 90°.
+ *
+ * SIMPLE BY DESIGN, per the brief. Five boxes, no creased sheet and no
+ * corner-relief notches in the mesh — the relief is a fraction of a
+ * millimetre of board at a corner, invisible at load scale, and the 2D blank
+ * is where a converter reads it. What the 3D has to get right is that the
+ * cap is one continuous surface over the WHOLE face with skirts down its
+ * sides, which is what distinguishes it from the four discrete corner posts
+ * it sits over.
+ *
+ * `centre` is the CAP'S CENTRE PANEL — the load footprint including the
+ * posts (core/stack.js loadFootprintStagesMM(...).posts), passed in
+ * resolved. This builder never nests a footprint of its own; that arithmetic
+ * has exactly one home and it is not here.
+ *
+ * ORIENTATION: `dir` is +1 for a TOP cap (skirts hang DOWN from a panel at
+ * the top, local y=0 at the panel's underside) and -1 for a BOTTOM cap
+ * (skirts rise UP from a panel at the bottom, local y=0 at the panel's top
+ * surface). Both put y=0 at the face that touches the cases, so a caller
+ * positions either one at the case boundary without a per-direction offset
+ * of its own.
+ *
+ * @param {{L:number,W:number}} centre  the cap's centre panel, mm
+ * @param {number} skirtMm  skirt depth, mm
+ * @param {number} caliperMm  board caliper, mm
+ * @param {1|-1} dir  +1 top cap (skirts down), -1 bottom cap (skirts up)
+ */
+export function buildCap(centre, skirtMm, caliperMm, dir = 1){
+  const g = new THREE.Group();
+  g.name = dir > 0 ? 'capTop' : 'capBottom';
+  const t = Math.max(0.1, caliperMm);
+  const x = Math.max(0, skirtMm);
+  const L = centre.L, W = centre.W;
+  // the panel sits just clear of the cases: its inner face at y=0, its body
+  // in the +dir direction (a top cap's board is ABOVE the cases it covers)
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(L + 2*t, t, W + 2*t), capMat);
+  panel.position.set(0, dir*t/2, 0);
+  g.add(panel);
+  if(x > 0){
+    // four skirts, hanging back ALONGSIDE the load (opposite the panel), each
+    // one caliper thick and standing outboard of the centre panel — which is
+    // exactly the 2 x caliper of plan growth capFootprintGrowthMM reports
+    const skirtY = -dir*x/2;
+    const along = [[L + 2*t, t, 1], [t, W + 2*t, 0]];
+    for(const [sx, sz, isL] of along){
+      for(const sgn of [1, -1]){
+        const m = new THREE.Mesh(new THREE.BoxGeometry(isL ? sx : t, x, isL ? t : sz), capMat);
+        m.position.set(isL ? 0 : sgn*(L/2 + t/2), skirtY, isL ? sgn*(W/2 + t/2) : 0);
+        g.add(m);
+      }
+    }
+  }
+  return g;
+}
+
 export function buildSlipsheet(l, w, caliperMm){
   const g = new THREE.Group();
   g.name = 'slipsheet';
