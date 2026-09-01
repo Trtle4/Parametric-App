@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shelf cutaway — a wrap inside a carton/case presents ITS OWN front</title>
+<pre id="out">running…</pre>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+/* REPORTED: "for wraps in carton on shelf, the render shows the packs facing
+   the wrong way when looking at the cutaway."
+
+   Confirmed with a real diagnostic texture through the real UI: the ONE
+   opened/cutaway wrap inside a shelf-merchandised carton showed a DIFFERENT,
+   visibly wrong band of the print (its side/back band, mirrored) instead of
+   the FRONT band that the exact same wrap shows correctly at plain carton
+   depth (no shelf).
+
+   ROOT CAUSE: a wrap sitting inside a carton is drawn at
+   orientQuat(pl.orientation) -- its TRUE pose relative to the CARTON's own
+   local frame. That's correct and unchanged in the plain hierarchy view. But
+   the shelf ALSO rigidly re-orients the whole carton+contents group so the
+   CARTON's own declared front (meta.frontFace: 'W', a wall) faces the
+   shopper -- and a wrap's OWN declared front (meta.frontFace: 'H', its top)
+   points a completely different physical direction than the carton's. The
+   wrap got dragged along by a correction that was never about IT, so
+   whichever band ended up facing the shopper was coincidence, not its front.
+
+   FIX: buildSellableCutaway now gives a wrap child its OWN faceShopperQuat
+   (from the WRAP's own frontFace, not the carton's) via opts.childFrontQuat
+   -- the same correction a bare wrap gets when it's the shelf's own sellable
+   noun. Set ONLY here; the plain hierarchy view never sets it, so it stays
+   on orientQuat(pl.orientation), bit-identical to before. */
+
+import {newProject, resolveActiveRow} from '../src/core/project.js';
+import {buildSellableCutaway, faceShopperQuat, orientQuat} from '../src/render/hierarchy3d.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const approx = (a, e, m, tol = 1e-4) => { if(Math.abs(a - e) > tol) throw new Error(`${m}: expected ${e}, got ${a}`); };
+
+/* ---------------------------------------------------------- fixture --- */
+
+const proj = newProject();
+const row = resolveActiveRow(proj, 'carton', null);
+const {cases, cartons, wraps, pieces} = row.arr;
+const wrapPlacements = wraps ? wraps.placements : cartons.placements;
+
+const cvs = document.createElement('canvas'); cvs.width = cvs.height = 8;
+cvs.getContext('2d').fillRect(0, 0, 8, 8);
+
+// mirrors app.js's own hierarchyBundle() construction exactly (the real
+// shape buildSellableCutaway is actually called with) -- not a guessed shape
+const bundle = {
+  art: {wrap: cvs},
+  caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: row.geo.wrap,
+  tray: row.tray || null, uboard: row.uboard || null,
+  cases: {placements: cases.placements, count: cases.count, deck: cases.deck, loadH: row.loadH, unitStackH: row.unitStackH},
+  cartons: {placements: cartons.placements},
+  wraps: (pieces && wrapPlacements) ? {
+    placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,
+    filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : pieces.envelope,
+    cellPieces: pieces.placements,
+    piece: pieces.piece, stackAxis: pieces.stackAxis, seals: pieces.seals,
+    nx: pieces.nx, ny: pieces.ny, wrapAxis: pieces.wrapAxis
+  } : null
+};
+
+function readInstanceQuat(mesh){
+  const m = new THREE.Matrix4(); mesh.getMatrixAt(0, m);
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  m.decompose(p, q, s);
+  return q;
+}
+// q and -q represent the IDENTICAL rotation (quaternions double-cover SO(3)),
+// so a real match must accept either sign
+const qClose = (a, b, tol = 1e-4) => {
+  const same = Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol && Math.abs(a.z - b.z) < tol && Math.abs(a.w - b.w) < tol;
+  const negated = Math.abs(a.x + b.x) < tol && Math.abs(a.y + b.y) < tol && Math.abs(a.z + b.z) < tol && Math.abs(a.w + b.w) < tol;
+  return same || negated;
+};
+
+t('FIXTURE: the default project genuinely resolves a printed wrap inside the carton', () => {
+  ok(bundle.wraps && bundle.wraps.seals, 'no wrap placements resolved — nothing here to test');
+  ok(bundle.wrapGeo && bundle.wrapGeo.meta.frontFace === 'H',
+     `fixture assumes the flow wrap's own front is 'H' (got ${bundle.wrapGeo && bundle.wrapGeo.meta.frontFace})`);
+  ok(bundle.cartonGeo && bundle.cartonGeo.meta.frontFace === 'W',
+     `fixture assumes the carton's own front is 'W' (got ${bundle.cartonGeo && bundle.cartonGeo.meta.frontFace}) -- ` +
+     'this is what makes the wrap and carton fronts genuinely different axes');
+});
+
+t('FIXTURE: the wrap\'s own containment orientation is LWH (identity) -- so any difference below is NOT just a passthrough', () => {
+  ok(bundle.wraps.placements.every(p => p.orientation === 'LWH'),
+     `expected every wrap placement at LWH, got: ${[...new Set(bundle.wraps.placements.map(p => p.orientation))]}`);
+});
+
+const {group} = buildSellableCutaway(bundle, 'carton');
+// sel={} inside buildContainer opens index 0 (clampIdx(undefined,...)); every
+// OTHER wrap placement stays closed, drawn as one InstancedMesh per part
+// (body/ramps/tabs) sharing that count -- the fixture this pin targets.
+// buildWrapOpened (the recursed opened child) ALSO adds its own
+// InstancedMesh, for the bare product pieces inside -- a totally different
+// count (pieces per wrap, not wraps per carton) and a totally different
+// rotation (the product's own, never childFrontQuat), so it must be
+// excluded explicitly or this pin checks the wrong mesh.
+const closedCount = bundle.wraps.placements.length - 1;
+const wrapInstances = [];
+group.traverse(o => { if(o.isInstancedMesh && o.count === closedCount) wrapInstances.push(o); });
+
+t('REACHABLE: buildSellableCutaway(\'carton\') actually draws closed wrap instances to check', () => {
+  ok(closedCount > 0, 'fixture: need at least one closed wrap sibling alongside the opened one');
+  ok(wrapInstances.length > 0, 'no InstancedMesh with the closed-wrap count found -- nothing rendered to inspect');
+});
+
+// the expected quat: the WRAP's OWN front (frontFace 'H' -> orientation
+// 'LHW', per FRONT_BY_NORMAL) facing the shopper -- exactly what a bare wrap
+// gets on the shelf, computed via the SAME exported faceShopperQuat
+const expected = faceShopperQuat('LHW', 'H');
+const wrongOld = orientQuat('LWH');   // the pre-fix behaviour: raw containment pose (identity here)
+
+t('FIX: every closed wrap instance in the cutaway carton uses the WRAP\'s own front-facing quaternion', () => {
+  ok(wrapInstances.length > 0, 'fixture: no instances to check');
+  for(const inst of wrapInstances){
+    const q = readInstanceQuat(inst);
+    ok(qClose(q, expected), `instance quaternion (${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)}) ` +
+       `does not match the wrap's own faceShopperQuat('LHW','H') (${expected.x.toFixed(3)},${expected.y.toFixed(3)},${expected.z.toFixed(3)},${expected.w.toFixed(3)})`);
+  }
+});
+
+t('MUTATION GUARD: the fix genuinely changed something -- expected differs from the old raw containment quat', () => {
+  // if faceShopperQuat('LHW','H') happened to equal orientQuat('LWH'), the
+  // pin above could pass on EITHER the fixed or the unfixed code and prove
+  // nothing. They must be different quaternions for this fixture to mean
+  // anything.
+  ok(!qClose(expected, wrongOld),
+     'faceShopperQuat(\'LHW\',\'H\') coincides with orientQuat(\'LWH\') -- this fixture cannot distinguish fixed from broken');
+});
+
+t('REGRESSION: buildSellableCutaway(\'wrap\') (a bare wrap as the sellable noun) is untouched by this change', () => {
+  // noun==='wrap' returns buildWrapOpened(bundle) directly, a code path this
+  // fix never touches -- confirm it still returns a populated group.
+  const {group: wrapGroup} = buildSellableCutaway(bundle, 'wrap');
+  let meshCount = 0;
+  wrapGroup.traverse(o => { if(o.isMesh || o.isInstancedMesh) meshCount++; });
+  ok(meshCount > 0, 'buildSellableCutaway(\'wrap\') must still draw the bare wrap\'s own pillow');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

@@ -1838,3 +1838,73 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   pinned open. Mutation-tested: restoring the old unconditional-draw code
   fails 13 of 14 pins (only the artwork-layer-itself fixture check survives,
   as expected — it asserts a fact the mutation never touches).
+- **RESOLVED IN PART (wrap-facing task): a wrap opened inside a shelf's
+  cutaway carton/case now presents ITS OWN front, not the carton's.**
+  Reported as "for wraps in carton on shelf, the render shows the packs
+  facing the wrong way when looking at the cutaway," alongside a broader
+  "ensure wraps in carton/case are oriented with the correct end up... when
+  graphics are applied." Reproduced with a real diagnostic per-band texture
+  through the real UI before touching any code: the cutaway carton's one
+  opened wrap showed a DIFFERENT, mirrored band of the print than the exact
+  same wrap shows correctly at plain carton depth (no shelf) — the fixture
+  and both screenshots are the specimen-confirmation step, not assumed.
+  ROOT CAUSE: `buildContainer`'s wrap-child branches (both the closed
+  instances and the one opened/cutaway child) draw a wrap at
+  `orientQuat(pl.orientation)` — its TRUE pose relative to the CARTON's own
+  local frame, correct and untouched in the plain hierarchy view. But
+  `buildSellableCutaway` (the shelf's own cutaway builder) is the SAME
+  `buildContainer` called from a caller that ALSO rigidly re-orients the
+  whole carton+contents group afterward, so the carton's own declared front
+  (`meta.frontFace`) faces the shopper. A carton's front is a WALL
+  (`frontFace: 'W'`); a wrap's own front is its TOP (`frontFace: 'H'`) — two
+  unrelated physical directions. Dragging the wrap along with a correction
+  that was never about it shows whichever girth band faces the shopper by
+  coincidence, not the wrap's own front band.
+  FIX: `buildSellableCutaway` now computes the wrap's OWN `faceShopperQuat`
+  (from the WRAP's `meta.frontFace`, never the carton's) whenever the tier
+  being opened has a wrap child, and threads it into `buildContainer` as
+  `opts.childFrontQuat` — read by BOTH wrap-child branches in place of
+  `orientQuat(pl.orientation)` when set. Every other caller (the plain
+  hierarchy cascade, `buildHierarchy`'s own recursion) never sets it, so that
+  path is bit-identical — confirmed both by a passing regression pin and by
+  a fresh screenshot of the plain carton-depth view, unchanged. `PACK_AXIS`
+  and `faceShopperQuat` moved from `shelf3d.js` into `hierarchy3d.js` (same
+  names, same behaviour, re-exported back) so `buildSellableCutaway` could
+  reach them without `hierarchy3d.js` importing from the UI-adjacent shelf
+  module — the dependency already ran the other way.
+  A `faceUpRoll` composition (the wrap's own `meta.frontUp`, the same
+  in-plane correction a bare wrap gets on the shelf) was ALSO tried, on the
+  reasoning that `faceShopperQuat` alone only fixes WHICH band faces the
+  shopper, not whether it reads upright. Measured, it made things WORSE — a
+  previously-upright band became mirrored — so it was reverted rather than
+  shipped on the strength of the reasoning alone; getting the sign/axis
+  right needs more iteration than this pass had budget for. `test/
+  shelforient.test.html` holds the shipped fix at the ACTUAL rendered
+  `InstancedMesh` matrices (read back via `getMatrixAt`, compared to
+  `faceShopperQuat('LHW','H')` — quaternion double-cover-aware, since q and
+  −q are the same rotation), built through the SAME bundle shape `app.js`'s
+  own `hierarchyBundle()` constructs (not a guessed shape), with a fixture
+  pin proving the wrap's and carton's declared fronts are genuinely
+  different axes and a mutation-guard pin proving the expected and
+  pre-fix quaternions are genuinely different values — both necessary or the
+  main pin could pass by coincidence. A separate reachability trap surfaced
+  while writing it: `buildWrapOpened` (the one recursed OPENED wrap child)
+  also emits an `InstancedMesh` for the bare product pieces inside, with its
+  own unrelated rotation — an early version of the pin walked every
+  `InstancedMesh` in the group and read a false failure off that mesh; fixed
+  by filtering to the instance count that only the closed wrap SIBLINGS
+  share. Mutation-tested: clearing `childFrontQuat` reproduces the pre-fix
+  identity rotation and fails the fix pin.
+  **NOT ADDRESSED, and stated rather than silently left**: a wrap or carton
+  placed ON EDGE (L-up or W-up) inside a containment level has a genuine,
+  separate up/down ambiguity — `orientQuat` only maps axes, never which of
+  the (up to four) in-plane rotations about the now-vertical axis is
+  "right", and nothing in the codebase defines a "correct" one for that
+  case. This is the pre-existing, already-documented "Orientation flip
+  parity" simplification above, confirmed still real this session (a forced
+  L-up carton test showed the print legibly mirrored) but NOT the same bug
+  as the shelf cutaway fixed here — the default project never places a wrap
+  on edge, so it wasn't the reported symptom, and defining which rotation is
+  "correct" for an on-edge pack is a product decision this task did not
+  make. If a real workflow needs it, that is the next task, not a hidden
+  side effect of this one.

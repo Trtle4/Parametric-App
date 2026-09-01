@@ -16,7 +16,7 @@
  */
 import {getPivot, setCamSpan, kraft, onFrame} from './fold3d.js';
 import {packArtGeometry, packArtMaterials} from './artwork3d.js';
-import {buildSellableCutaway, closedWrapParts, orientQuat} from './hierarchy3d.js';
+import {buildSellableCutaway, closedWrapParts, orientQuat, PACK_AXIS, faceShopperQuat} from './hierarchy3d.js';
 import {perfBodyGeometry, perfSurfaceLine} from './perf3d.js';
 import {isDisplayGeo} from '../core/perf.js';
 
@@ -43,34 +43,13 @@ const packMats = [kraft, kraft, kraft, kraft, kraft, frontMat];
 /* The pack's canonical frame: x = L, y = H, z = W (hierarchy3d builds every
  * pack in it). meta.frontFace names the display face by the axis of its
  * outward normal, and the sign is POSITIVE — the flow wrap's printed band and
- * the tray's open top are both +H. */
-const PACK_AXIS = {L: [1, 0, 0], H: [0, 1, 0], W: [0, 0, 1]};
-
-/**
- * The orientation that puts the pack's declared display face where the shopper
- * can see it.
+ * the tray's open top are both +H.
  *
- * orientQuat() maps AXES only — never front/back or up/down parity (orient.js
- * says so, and flips a horizontal column purely to keep the rotation proper).
- * So the declared front normal can land on the BACK, and it did: a wrapped tray
- * pointed its open top at the back wall and showed the shopper the underside of
- * the tray, cookies hidden. Nothing in the axis mapping can catch that, because
- * the axis was right.
- *
- * Here the pack is turned 180° about the VERTICAL when its front normal comes
- * out facing the shelf's back (local +Z) — the opposite face comes forward and
- * "up" is untouched, unlike a flip about the across axis, which would present
- * the face upside down. This also subsumes the art path's old hardcoded 180°:
- * the artMap's FRONT is +Z of ITS frame, which is exactly the declared front
- * axis, so an upright tube carton still gets the same turn it always got.
- */
-function faceShopperQuat(frontO, frontAxis){
-  const q = orientQuat(frontO);
-  const n = new THREE.Vector3(...(PACK_AXIS[frontAxis] || PACK_AXIS.W)).applyQuaternion(q);
-  if(n.z > 0.5)                                       // pointing at the back wall
-    q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
-  return q;
-}
+ * PACK_AXIS and faceShopperQuat itself now live in hierarchy3d.js (imported
+ * above) — buildSellableCutaway needs the identical computation for a wrap
+ * opened inside a carton/case cutaway (see its own note), so it moved to
+ * where both modules can reach it rather than staying a copy here. Behaviour
+ * is unchanged; this is the same function under the same name. */
 
 /**
  * @param {{l:number,w:number,h:number}} od  oriented pack dims (l across, w deep, h up)

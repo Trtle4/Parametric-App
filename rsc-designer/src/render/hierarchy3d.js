@@ -131,6 +131,33 @@ export function orientQuat(o){
   return new THREE.Quaternion().setFromRotationMatrix(m);
 }
 
+// world unit vector for each pack-frame axis (x=L, y=H, z=W) — shelf3d.js's
+// own copy, re-exported here so buildSellableCutaway can compute the SAME
+// front-facing quaternion for a wrap's own declared front (see below)
+// without shelf3d.js importing it back (shelf3d.js already depends on this
+// module, never the reverse).
+export const PACK_AXIS = {L: [1, 0, 0], H: [0, 1, 0], W: [0, 0, 1]};
+
+// mirrors app.js's OWN FRONT_BY_NORMAL — deliberately duplicated rather than
+// imported: app.js is the UI layer and already depends on this render module,
+// so importing the other way would invert that. Three entries, one per pack
+// axis, stable since the shelf's front-panel feature landed — not the kind of
+// fact likely to drift silently.
+const FRONT_BY_NORMAL = {W: 'LWH', L: 'WLH', H: 'LHW'};
+
+/**
+ * The orientation that puts a pack's declared display face (meta.frontFace)
+ * toward the shopper — shelf3d.js's own faceShopperQuat, needed here too (see
+ * buildSellableCutaway's wrap-in-carton/case case below) and kept in ONE
+ * place rather than copied a second time.
+ */
+export function faceShopperQuat(frontO, frontAxis){
+  const q = orientQuat(frontO);
+  const n = new THREE.Vector3(...(PACK_AXIS[frontAxis] || PACK_AXIS.W)).applyQuaternion(q);
+  if(n.z > 0.5) q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
+  return q;
+}
+
 // child centre in the parent's local frame (parent cavity centred; z from floor)
 function childPos(pl, parentInnerH){ return new THREE.Vector3(pl.x, -parentInnerH/2 + pl.z, pl.y); }
 
@@ -1410,11 +1437,18 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
       // closed packs as undersized round tubes inside their tray-sized slots.
       // No tray: w.envelope and the tube profile, exactly as before.
       const partDefs = closedWrapParts(bundle);
+      // opts.childFrontQuat: set ONLY by buildSellableCutaway for the shelf's
+      // cutaway hero pack, when the child being drawn is a printed wrap with
+      // its OWN declared front (meta.frontFace) -- see the note there. Every
+      // other caller (the plain hierarchy view) leaves it unset, so
+      // orientQuat(pl.orientation) -- the TRUE containment pose -- is
+      // unchanged everywhere except this one shelf-display path.
+      const childQuat = opts.childFrontQuat || null;
       for(const pd of partDefs){
         const inst = new THREE.InstancedMesh(pd.geo, pd.mat, closed.length);
         const M = new THREE.Matrix4();
         closed.forEach(({pl}, k) => {
-          M.makeRotationFromQuaternion(orientQuat(pl.orientation));
+          M.makeRotationFromQuaternion(childQuat || orientQuat(pl.orientation));
           const p = childPos(pl, parentInnerH);
           M.setPosition(p.x, p.y, p.z);
           inst.setMatrixAt(k, M);
@@ -1461,7 +1495,7 @@ function buildContainer(tier, bundle, sel, path, opts = {}){
     const pl = exploded[openIdx];
     const childGroup = tier.buildChild(bundle, sel, path.concat(openIdx), opts);
     childGroup.position.copy(childPos(pl, parentInnerH));
-    childGroup.quaternion.copy(orientQuat(pl.orientation));
+    childGroup.quaternion.copy(opts.childFrontQuat || orientQuat(pl.orientation));
     g.add(childGroup);
   }
   // shrink film LAST, so the translucent skin draws over the visible contents —
@@ -1556,8 +1590,37 @@ export function buildSellableCutaway(bundle, noun){
   if(!tier || !tier.geo) return {group: new THREE.Group(), walls: []};
   const walls = [], savedSink = wallSink, savedPick = pickables;
   wallSink = walls; pickables = [];                 // capture walls; don't touch hierarchy pickables
+  // WRAPS INSIDE A CUTAWAY CARTON/CASE, on the shelf, showed the WRONG band
+  // of the print (confirmed: a diagnostic texture's FRONT band, correct at
+  // plain carton depth, was replaced by a SIDE/BACK band once the same
+  // assembly was re-oriented to face the shopper). Root cause: the wrap's
+  // orientQuat(pl.orientation) is its TRUE pose relative to the CARTON's own
+  // local frame — correct engineering fact, and exactly what the plain
+  // hierarchy view (no further reorientation) wants. But the shelf ALSO
+  // rigidly re-orients the whole carton+contents group so the CARTON's own
+  // declared front (meta.frontFace, e.g. a wall) faces the shopper — and a
+  // wrap's declared front (meta.frontFace: 'H', its top) points a completely
+  // different physical direction than the carton's own front. Rigidly
+  // carrying the wrap along with the carton's correction therefore shows
+  // whichever girth band happens to face the shopper by COINCIDENCE, not the
+  // wrap's own front band. The carton/case have no such mismatch (THEY are
+  // the noun; their own front is what faceShopperQuat targets), so this only
+  // ever applies to a 'wrap' child.
+  //
+  // Fix: when the child being drawn here is a printed wrap with its own
+  // declared front, give it its OWN faceShopperQuat (from ITS OWN frontFace,
+  // not the carton's) instead of the raw containment orientation — the exact
+  // same correction a bare wrap gets when IT is the shelf's sellable noun.
+  // childFrontQuat flows into buildContainer's wrap-child branches (both the
+  // closed instances and the one opened/cutaway child) and nowhere else, so
+  // the plain hierarchy view — which never sets it — is bit-identical.
+  let childFrontQuat = null;
+  if(tier.childKind === 'wrap' && bundle.wrapGeo && bundle.wrapGeo.meta.frontFace){
+    const wrapFront = FRONT_BY_NORMAL[bundle.wrapGeo.meta.frontFace] || 'LWH';
+    childFrontQuat = faceShopperQuat(wrapFront, bundle.wrapGeo.meta.frontFace);
+  }
   let g;
-  try { g = buildContainer(tier, bundle, {}, []); }
+  try { g = buildContainer(tier, bundle, {}, [], {childFrontQuat}); }
   finally { wallSink = savedSink; pickables = savedPick; }
   return {group: g, walls};
 }
