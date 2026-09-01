@@ -214,7 +214,7 @@ const activeStyleId = () => {
   return lvl.styleIdOf(build.project);
 };
 const LEVEL_ORDER = ['product', 'tray', 'uboard', 'wrap', 'carton', 'case', 'pallet', 'trailer'];
-let activeLevel = 'case';
+let activeLevel = 'product';
 const isStyleLevel = () => LEVELS[activeLevel].kind === 'style';
 
 const selKey = () => build.getSelectedCandidateKey();
@@ -4164,10 +4164,12 @@ el('candNext').addEventListener('click', () => stepCycle(1));
 // at startup, exactly like every later edit does.
 build.initBuild(inputs.getUnit());
 
-// mount the default active level (case) and its rails — the single source
-// every non-Build view now renders. (Replaces applyStyle(styles[0]).)
+// mount the default active level (product) and its rails — the single
+// source every non-Build view now renders. (Replaces applyStyle(styles[0]).)
+// First thing a first-time visitor should see is the product itself, not
+// three tiers of packaging already wrapped around it.
 writePalletFields();
-setActiveLevel('case');
+setActiveLevel('product');
 
 // Autosave restore: convenience only. A corrupt/unreadable autosave is
 // silently ignored (readAutosave returns null) rather than blocking startup.
