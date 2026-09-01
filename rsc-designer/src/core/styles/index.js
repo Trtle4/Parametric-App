@@ -120,8 +120,14 @@ export const styles = [
         type: 'range', min: SEAL_ANGLES.internal.min, max: SEAL_ANGLES.internal.max, step: 1, default: SEAL_ANGLES.internal.default},
       {key: 'externalAngle', label: 'External angle', hint: 'seal lay · 0 flat … 90 out', group: 'material',
         type: 'range', min: SEAL_ANGLES.external.min, max: SEAL_ANGLES.external.max, step: 1, default: SEAL_ANGLES.external.default},
-      {key: 'girthBasis', label: 'Girth basis', hint: '', group: 'material', type: 'select', default: 'rectangular',
-       choices: [{value: 'rectangular', label: 'Rectangular 2(W+H)'}, {value: 'round', label: 'Round π·d'}]},
+      // AUTO is the default and follows the product: a single on-edge tube
+      // running along the machine direction gets the round girth (pi*d), and
+      // anything else the rectangular one. Explicit picks still win, which is
+      // why this is a third CHOICE rather than a forced derivation -- the same
+      // Auto idiom the Facing and Vertical-axis controls already use.
+      {key: 'girthBasis', label: 'Girth basis', hint: '', group: 'material', type: 'select', default: 'auto',
+       choices: [{value: 'auto', label: 'Auto — follow the product'},
+                 {value: 'rectangular', label: 'Rectangular 2(W+H)'}, {value: 'round', label: 'Round π·d'}]},
       {key: 'roundDiameter', label: 'Round Ø', hint: 'round basis', group: 'material', min: 0, step: 0.5, default: 50},
       // film substance — NOT caliper; fixed units, never mm/in converted
       {key: 'gauge',   label: 'Film gauge', hint: '', group: 'material', min: 1, step: 1,    default: 30,   fixedUnit: 'µm'},

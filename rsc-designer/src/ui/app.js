@@ -1339,7 +1339,7 @@ function newDefaultWrap(){
     styleId: 'flowwrap',
     params: {sealType: 'fin', finHeight: 8, finSealBand: 5, finTreatment: 'folded', finFace: 'bottom',
              lapOverlap: 12, endSealWidth: 10, endSealBleed: 3,
-             girthBasis: 'rectangular', roundDiameter: 0, gauge: 30, density: 0.92,
+             girthBasis: 'auto', roundDiameter: 0, gauge: 30, density: 0.92,
              L: 90, W: 50, H: 120},
     options: styleOptionDefaults('flowwrap'), locked: false   // machine direction fixed at L; no wrapAxis
   };

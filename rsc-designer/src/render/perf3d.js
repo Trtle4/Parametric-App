@@ -95,9 +95,11 @@ export function displayBodyExtentY(geo){
  * The retained body of a pack in display state: four profiled walls and a
  * floor, in the pack's canonical local frame.
  *
- * Material groups follow artwork3d's convention — 0 = the printed walls,
- * 1 = board (the floor) — so `packArtMaterials(canvas, board)` clads it
- * unchanged and an unprinted pack passes board for both.
+ * Material groups follow artwork3d's convention — 0 = the printed OUTER wall
+ * faces, 1 = board (the inner faces, the torn edges and the floor) — so
+ * `packArtMaterials(canvas, board)` clads it unchanged and an unprinted pack
+ * passes board for both. The split matters: with everything in group 0 the
+ * art clad the cavity too and the pack read as transparent from outside.
  *
  * @param {import('../core/types.js').Geometry} geo  carrying `perf.path`
  * @returns {THREE.BufferGeometry|null}
@@ -110,7 +112,15 @@ export function perfBodyGeometry(geo){
   const yBody = -geo.inner.H/2;                 // h = 0 is the body's bottom crease
   const yFloor = -geo.outer.H/2;                // the outside of the base
 
-  const wallP = [], wallU = [], floorP = [], floorU = [];
+  // THREE surfaces, TWO materials. Only the OUTER face is printed; the inner
+  // face and the torn edge are the board's own backing. They used to share
+  // group 0 with the outer face, so the art material clad all three and a
+  // display-state pack read as if the board were transparent -- the print
+  // showed through from inside, mirrored (the tell: a legible, reversed front
+  // panel on the inside of the far wall). Backing material is whatever the
+  // caller passes as material 1 (kraft today; a white-lined board would be
+  // the same call with a different material).
+  const wallP = [], wallU = [], backP = [], backU = [], floorP = [], floorU = [];
   const tri = (P, Q, R, uP, uQ, uR, pA, uA) => { pA.push(...P, ...Q, ...R); uA.push(...uP, ...uQ, ...uR); };
   const quad = (A, B, C, D, uA, uB, uC, uD, pA, uAr) => {
     tri(A, B, C, uA, uB, uC, pA, uAr); tri(A, C, D, uA, uC, uD, pA, uAr);
@@ -137,10 +147,10 @@ export function perfBodyGeometry(geo){
       const u00 = uvAt(s0, 0), u10 = uvAt(s1, 0), u11 = uvAt(s1, h1), u01 = uvAt(s0, h0);
       // outer face, wound CCW seen from +n
       quad(at(s0, 0, t), at(s1, 0, t), at(s1, h1, t), at(s0, h0, t), u00, u10, u11, u01, wallP, wallU);
-      // inner face, the other way round
-      quad(at(s0, 0, 0), at(s0, h0, 0), at(s1, h1, 0), at(s1, 0, 0), u00, u01, u11, u10, wallP, wallU);
+      // inner face, the other way round -- BOARD, not print
+      quad(at(s0, 0, 0), at(s0, h0, 0), at(s1, h1, 0), at(s1, 0, 0), u00, u01, u11, u10, backP, backU);
       // the torn edge itself: the band of board between the two faces
-      quad(at(s0, h0, 0), at(s0, h0, t), at(s1, h1, t), at(s1, h1, 0), u01, u01, u11, u11, wallP, wallU);
+      quad(at(s0, h0, 0), at(s0, h0, t), at(s1, h1, t), at(s1, h1, 0), u01, u01, u11, u11, backP, backU);
     }
   }
 
@@ -153,12 +163,12 @@ export function perfBodyGeometry(geo){
        [0, 0], [0, 1], [1, 1], [1, 0], floorP, floorU);
 
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(wallP.concat(floorP), 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(wallU.concat(floorU), 2));
+  g.setAttribute('position', new THREE.Float32BufferAttribute(wallP.concat(backP, floorP), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(wallU.concat(backU, floorU), 2));
   g.computeVertexNormals();
-  const wallVerts = wallP.length/3, floorVerts = floorP.length/3;
-  g.addGroup(0, wallVerts, 0);
-  if(floorVerts) g.addGroup(wallVerts, floorVerts, 1);
+  const wallVerts = wallP.length/3, boardVerts = backP.length/3 + floorP.length/3;
+  g.addGroup(0, wallVerts, 0);                      // printed OUTER face only
+  if(boardVerts) g.addGroup(wallVerts, boardVerts, 1);   // inner face + torn edge + floor: board
   g.userData.spanMax = Math.max(geo.outer.L, geo.outer.W, geo.outer.H);
   // A RENDER IDENTITY TAG. A pin that calls this builder directly proves the
   // builder works and nothing about whether the app CALLS it — measured: two
@@ -202,7 +212,7 @@ export function perfRemovedGeometry(geo){
   const yBody = -geo.inner.H/2;
   const H = geo.inner.H;                        // the panel's own full, unperforated height
 
-  const wallP = [], wallU = [];
+  const wallP = [], wallU = [], backP = [], backU = [];
   const tri = (P, Q, R, uP, uQ, uR, pA, uA) => { pA.push(...P, ...Q, ...R); uA.push(...uP, ...uQ, ...uR); };
   const quad = (A, B, C, D, uA, uB, uC, uD, pA, uAr) => {
     tri(A, B, C, uA, uB, uC, pA, uAr); tri(A, C, D, uA, uC, uD, pA, uAr);
@@ -224,21 +234,23 @@ export function perfRemovedGeometry(geo){
       const u00 = uvAt(s0, h0), u10 = uvAt(s1, h1), u11 = uvAt(s1, H), u01 = uvAt(s0, H);
       // outer face, same winding convention as perfBodyGeometry's own walls
       quad(at(s0, h0, t), at(s1, h1, t), at(s1, H, t), at(s0, H, t), u00, u10, u11, u01, wallP, wallU);
-      // inner face, the other way round
-      quad(at(s0, h0, 0), at(s0, H, 0), at(s1, H, 0), at(s1, h0, 0), u00, u01, u11, u10, wallP, wallU);
+      // inner face, the other way round -- BOARD, not print (same split the
+      // retained body makes: only the outer face is printed)
+      quad(at(s0, h0, 0), at(s0, H, 0), at(s1, H, 0), at(s1, h0, 0), u00, u01, u11, u10, backP, backU);
       // the torn edge itself — the SAME edge perfBodyGeometry's own torn band
       // shares, wound so its outward normal points AWAY from the retained
       // body (opposite of perfBodyGeometry's version of this same edge)
-      quad(at(s0, h0, t), at(s0, h0, 0), at(s1, h1, 0), at(s1, h1, t), u00, u00, u10, u10, wallP, wallU);
+      quad(at(s0, h0, t), at(s0, h0, 0), at(s1, h1, 0), at(s1, h1, t), u00, u00, u10, u10, backP, backU);
     }
   }
 
   if(!wallP.length) return null;
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(wallP, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(wallU, 2));
+  g.setAttribute('position', new THREE.Float32BufferAttribute(wallP.concat(backP), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(wallU.concat(backU), 2));
   g.computeVertexNormals();
-  g.addGroup(0, wallP.length/3, 0);
+  g.addGroup(0, wallP.length/3, 0);                 // printed OUTER face only
+  if(backP.length) g.addGroup(wallP.length/3, backP.length/3, 1);   // inner + torn edge: board
   g.userData.spanMax = Math.max(geo.outer.L, geo.outer.W, geo.outer.H);
   g.userData.perfRemoved = true;
   return g;

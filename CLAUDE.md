@@ -1337,3 +1337,54 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   same one, so collapsing them would be wrong rather than DRY. The two-
   computations smell is noted here deliberately; if the fold view is ever
   revived, that is the moment to re-examine it.
+- **RESOLVED (display-state render task): three faults from one report — a
+  transparent-looking board, a torn-open pack standing empty, and a girth
+  basis that never followed its product.**
+  1. **Only the OUTER face is printed.** `perfBodyGeometry` put the outer
+     face, the INNER face and the torn edge all in material group 0, so the
+     art material clad the cavity too and a display-state pack read as if the
+     board were transparent — the front panel legible, MIRRORED, on the inside
+     of the far wall. Split: group 0 is the outer face alone; group 1 (board)
+     takes the inner face, the torn edge and the floor. `perfRemovedGeometry`
+     got the same split, for the same reason. The backing material is
+     whatever the caller passes as material 1, so the white-lined board the
+     user asked about later is the same call with a different material, not a
+     new code path.
+  2. **A pack torn to display state is an OPEN pack, so it shows its
+     contents.** `showContents` already read "an OPEN tray or a SHRINK pack
+     reveals its contents in BOTH modes; only a closed box hides them" —
+     display state belongs in that list by the same reasoning (everything
+     above the tear is gone), so it joins the existing rule rather than
+     getting a branch of its own. Carton and case both. FIRST ATTEMPT WAS
+     HALF A FIX and the screenshot proved it: routing to `buildContainer`
+     gained the sleeves and LOST the artwork, which is the very complaint the
+     report made about Cutaway. Cause: `buildContainer` built its shell with
+     `tier.mat` — plain board — and never `tier.art`, which the tier has
+     carried all along for its instanced-on-the-pallet case. The opened shell
+     now clads itself exactly as `soloClosed` does, so a printed pack keeps
+     its print in BOTH modes, and Cutaway gained the graphics it had also
+     been missing.
+  3. **`girthBasis` is AUTO by default and follows the product.** It had only
+     ever been demoted (an explicit 'round' fell back to rectangular when the
+     chain stopped being eligible) and never promoted, so a round on-edge slug
+     kept a rectangular girth unless the user found the control. Added 'auto'
+     as a third choice AND the default, resolved at the one existing site in
+     `solvePrimaryStage` against `resolved.kind` — the fact
+     `resolveWrapContents` already decided. Resolved on the COPY `wp`, so the
+     stored choice stays 'auto' and keeps tracking the product; an explicit
+     pick still wins, which is what keeps this a default and not a forced
+     derivation. Checked first that no consumer builds the wrap from raw
+     params (everything goes through `levelGeometry` → the resolved row), or
+     an 'auto' sentinel reaching `flowwrap()` would have silently computed
+     rectangular — a sentinel leaking into a style is exactly the silent
+     wrong-default this codebase keeps re-learning.
+
+  PINNED vs SEEN: (1) and (3) carry pins with mutations — the cavity-side
+  check reconstructs the one-group arrangement and proves it would fail; the
+  girth pins prove auto fires, that an explicit pick overrides it, and that a
+  non-eligible collation still lands rectangular. (2) is verified by
+  SCREENSHOTS through the real UI, not by a pin: the wiring rule in this file
+  says a rendered-tree read is what tests wiring, and that lives in
+  `uisync.test.html`, which cannot run to completion in this sandbox. Stated
+  rather than papered over with a builder-level pin that would pass whether
+  or not the app calls it.

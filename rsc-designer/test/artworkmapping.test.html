@@ -731,6 +731,55 @@ t('TEXTURE PLACEMENT: MUTATION -- the letterbox path (the shipped bug) leaves th
 });
 
 /* ================================================================
+   DISPLAY-STATE BACKING. Only the OUTER face of a torn-open pack is printed;
+   the cavity side and the torn edge are the board's own backing. They used to
+   share material group 0 with the outer face, so the art clad the inside too
+   and the pack read as if the board were TRANSPARENT -- the front panel
+   legible, mirrored, on the inside of the far wall.
+   ================================================================ */
+
+t('DISPLAY BACKING: the cavity side of a torn-open pack is BOARD, never the print', () => {
+  const geo = bowedFefco();
+  const g = perfBodyGeometry(geo);
+  ok(g, 'the display body must build');
+  ok(g.groups.length >= 2, `printed and board must be separate groups, got ${g.groups.length}`);
+  const groupOf = i => {
+    for(const gr of g.groups) if(i >= gr.start && i < gr.start + gr.count) return gr.materialIndex;
+    return -1;
+  };
+  const pos = g.attributes.position;
+  const iL = geo.inner.L/2, iW = geo.inner.W/2, t = (geo.outer.L - geo.inner.L)/2;
+  // sample only the FRONT/BACK walls' mid-span, well clear of the corners
+  // (where the walls overlap and a vertex cannot be classified by position)
+  let innerPrinted = 0, outerPrinted = 0, innerSeen = 0;
+  for(let i = 0; i < pos.count; i++){
+    const x = pos.getX(i), z = Math.abs(pos.getZ(i));
+    if(Math.abs(x) > iL*0.5) continue;                 // corner region: skip
+    if(Math.abs(z - iW) < 1e-6){ innerSeen++; if(groupOf(i) === 0) innerPrinted++; }
+    else if(Math.abs(z - (iW + t)) < 1e-6 && groupOf(i) === 0) outerPrinted++;
+  }
+  ok(innerSeen > 0, 'fixture must actually have cavity-side vertices to judge');
+  eq(innerPrinted, 0, 'no cavity-side vertex may carry the printed material:');
+  ok(outerPrinted > 0, 'the OUTER face must still be printed -- this pin must not pass by making everything board');
+});
+
+t('DISPLAY BACKING: MUTATION -- putting the cavity side back in the printed group fails the pin', () => {
+  // the shipped defect, reconstructed: one group covering every wall surface.
+  const geo = bowedFefco();
+  const g = perfBodyGeometry(geo);
+  const wallSpan = g.groups[0].count + g.groups[1].count;
+  const groupOf = i => (i < wallSpan ? 0 : -1);        // as if group 0 covered them all
+  const pos = g.attributes.position;
+  const iL = geo.inner.L/2, iW = geo.inner.W/2;
+  let innerPrinted = 0;
+  for(let i = 0; i < pos.count; i++){
+    if(Math.abs(pos.getX(i)) > iL*0.5) continue;
+    if(Math.abs(Math.abs(pos.getZ(i)) - iW) < 1e-6 && groupOf(i) === 0) innerPrinted++;
+  }
+  ok(innerPrinted > 0, 'the one-group arrangement must put cavity vertices in the printed group -- otherwise the pin above proves nothing');
+});
+
+/* ================================================================
    FLOW WRAP -- the END SEAL. The girth bands were already right; the crimp
    was declared as an EXTENT (u only, no v), so nothing downstream could map
    it, and packArtGeometry's fin stretched v 0..1 -- the whole web height,
