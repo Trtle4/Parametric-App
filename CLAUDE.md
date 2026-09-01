@@ -1800,3 +1800,41 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   `git stash`, unrelated to this change, which touches no geometry code at
   all), including `explode.test.html`/`uboard.test.html`, whose identical
   timeout was likewise confirmed pre-existing.
+- **RESOLVED (fragile-text task): "print text" is dead everywhere except one
+  renderer that kept drawing it.** Reported as "Fragile is still shown on the
+  2D dieline view... even though this does not impact the 3D render." The
+  literal word is nowhere in a fresh project — `project.printText`'s default
+  has been `''` since the artwork-mapping task — and the `#txt` control that
+  used to set it is not merely hidden, it is entirely unwired: nothing in
+  `app.js` reads `el('txt')` at all any more. So no live project can type
+  this in today; what the user was seeing is a value carried over from an
+  OLDER SAVE (confirmed against real ground truth: `test/fixtures/v1/
+  full-chain.pkg.json`, a v1 migration fixture predating the empty default,
+  has `project.printText === "FRAGILE"` verbatim). `persistence.js` still
+  round-trips the field on purpose (old saves must still deserialize), and
+  `dieline2d.js`'s `draw2d()` was still drawing it in solid black text
+  whenever present — the one place a value that can no longer be SET through
+  the UI was still visibly showing up. The 3D fold view already reads as
+  effectively dead for this: index.html's own control comment says printed
+  text "doesn't read" there now that materials are translucent, matching the
+  user's observation that 3D was unaffected. Fixed by making `draw2d()`
+  unconditionally never draw print-panel text — not "suppressed when artwork
+  is present" (the first fix attempted, and mutation-tested before being
+  discarded: it would have left `printText` showing on a legacy save with no
+  artwork uploaded, which does not satisfy "gone from all 2D dielines"). 3D
+  is untouched — `buildBox()` still bakes `printText` into the kraft box's
+  material — since the report was explicit that 3D was not the problem.
+  `printText` stays a parameter of `draw2d()` (accepted, now unused) rather
+  than a signature change, so the one production call site (`app.js`) and
+  six pre-existing calls in `uisync.test.html` need no touching for a
+  display-only decision. Verified against the REAL legacy fixture through
+  the real UI, not just the pure function: loading `full-chain.pkg.json` via
+  the actual "Load" button and checking the rendered carton/case 2D `<svg>`
+  for the literal string confirms it is gone (screenshotted). `test/
+  printtext2d.test.html` holds this at the rendered SVG string, per style
+  (fefco201/a6120/sealend/flowwrap — wraps, cartons and cases all share this
+  one renderer) x with/without a real uploaded-artwork image, so the "was it
+  conditional on artwork" question the first fix attempt got wrong stays
+  pinned open. Mutation-tested: restoring the old unconditional-draw code
+  fails 13 of 14 pins (only the artwork-layer-itself fixture check survives,
+  as expected — it asserts a fact the mutation never touches).

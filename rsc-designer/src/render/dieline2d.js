@@ -26,7 +26,9 @@ export function apply2dView(svg){
  * @param {SVGElement} svg
  * @param {import('../core/types.js').Geometry} g
  * @param {'mm'|'in'} unit    display unit for labels only
- * @param {string} printText
+ * @param {string} printText  accepted for signature stability; never drawn
+ *        here (see the note at its one remaining use, below) — kept so
+ *        callers don't need updating for a display-only decision
  * @param {{src:string,fit:string,dx:number,dy:number,scale:number}|null} art
  *        uploaded artwork placed over the blank (under the outlines), or null
  * @returns {{w:number, h:number}} blank extents, mm
@@ -108,18 +110,19 @@ export function draw2d(svg, g, unit, printText, art){
     `<text x="${fx(l.x).toFixed(1)}" y="${fy(l.y).toFixed(1)}" fill="#9aa6b2" font-family="var(--mono)" font-size="${strokeW*11}" text-anchor="middle" dominant-baseline="middle">${esc(l.text)}</text>`
   ).join('');
 
-  // free print text on the style's print panel
-  let printTxt = '';
-  const pr = g.meta.print;
-  if(printText && pr){
-    const cx = fx((pr.x0 + pr.x1)/2);
-    const cy = fy((pr.y0 + pr.y1)/2) + strokeW*16;
-    const maxW = (pr.x1 - pr.x0)*0.86;
-    let fs = Math.min(strokeW*14, (pr.y1 - pr.y0)*0.28);
-    // crude width fit: ~0.62em average glyph width
-    if(printText.length*fs*0.62 > maxW) fs = maxW/(printText.length*0.62);
-    printTxt = `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" fill="var(--ink)" font-family="var(--sans)" font-weight="700" font-size="${fs.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.06em">${esc(printText)}</text>`;
-  }
+  // free print text on the style's print panel: NEVER drawn on the 2D
+  // dieline. The #txt control that used to set it was hidden app-wide (see
+  // index.html: "3D views are translucent now, print text doesn't read") —
+  // the field is a save-compat relic (old saves and legacy defaults, back
+  // when it was 'FRAGILE', still carry a value; readState()/persistence
+  // still round-trip it), not a live feature — yet this renderer kept
+  // drawing it in crisp black text regardless, which is the one place it
+  // was still visibly showing up. 3D is untouched by this: buildBox() still
+  // bakes printText into the kraft box's material there, for whatever that
+  // is worth given the translucency note above. `printText` stays a
+  // parameter (callers still pass it, harmlessly) so this stays a display
+  // decision, not a signature change.
+  const printTxt = '';
 
   // key dimensions: per-panel widths below the blank, flap/height on the right
   const dimFS = strokeW*9, dimC = 'var(--ink-2)', dw = strokeW*0.7, tick = dimFS*0.5;
