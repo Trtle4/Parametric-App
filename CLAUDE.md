@@ -1215,3 +1215,66 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   from data that already existed), every other suite green except the
   pre-existing `saveload.test.html`/`uisync.test.html` limitations already
   documented above (unrelated files, confirmed untouched by this task).
+- **RESOLVED (carton-artwork task): the printed cap generalised from "flaps
+  that tile exactly" to "whatever the flaps reach, board for the rest" — and
+  the bug that made every printed lid look unprinted was in the TEXTURE, not
+  the geometry.** `a6120` and `sealend` were deferred by the artwork-mapping
+  task above on the reasoning that their dominant flap depth is a runtime
+  PARAMETER and "does not, in general, exactly tile the cap... giving them
+  `caps` needs a board-fill for the leftover, deliberately deferred rather
+  than guessed at." Re-examined, that leftover was never a guess: the flaps'
+  own folded footprint determines it exactly, and — the load-bearing point —
+  the leftover is UNPRINTED either way, because the only panels that ever
+  carry outward cap artwork are the dominant ones a style already declares
+  (an RSC's majors, a tuck panel, a seal flap); the dust/minor flaps beneath
+  them are plain board, indistinguishable from the board cap `packArtGeometry`
+  already drew. So "which unprinted panel is in the gap" is a distinction with
+  no visual consequence, and the fill is derivable, not invented.
+  `printedCap` now RETURNS the girth interval each flap actually covers,
+  unions them, and fills any gap with a plain board RECTANGLE (`boardStrip`,
+  group 1) spanning the full extrude-axis width — computed in the renderer
+  from the flaps' own geometry, never declared by the style. A style that
+  tiles exactly produces no residual and is bit-identical to before, which is
+  why `fefco201` needed no change at all. `a6120` declares ONE flap per end
+  (the tuck panel, face 2 at top / face 0 at bottom — the same panel
+  `closure.top` already marks `holdsLid`), depth clamped to `min(T, W)` so a
+  panel deeper than the box cannot overshoot the far wall; the tab is
+  deliberately NOT part of the quad, since it folds DOWN inside the cavity,
+  off the cap plane entirely. `sealend` declares TWO, and the interesting part
+  is that they ALWAYS tile exactly: the seal flap glues down OVER the major,
+  so the major's VISIBLE depth is only `W - sealVisible`, and
+  `sealVisible + majorVisible === W` by construction for every overlap >= 0
+  (pinned, not assumed). Both clamps are exercised by mutation pins — a
+  3x-too-deep tuck clamps to exactly W, and an overlap so large the seal alone
+  reaches the far wall drops the major ENTIRELY (length 1, not a degenerate
+  zero-depth quad).
+
+  **The render bug was `composeArtCanvas`, and it predates all of this.**
+  `defaultFit()` returns `fit: 'stretch'`, and `artRect` reports that to the
+  2D dieline overlay as `preserveAspectRatio="none"` — a stretch. The 3D
+  compositor checked `fit === 'none' || !fit` and so sent 'stretch' down the
+  meet/CONTAIN branch: the dieline stretched while the texture LETTERBOXED,
+  breaking the module's own stated promise that "2D and 3D show one picture."
+  The bars that letterboxing leaves sit at the v EXTREMES — which is exactly
+  where a cap flap samples — so a correctly built, correctly UV'd printed lid
+  rendered as blank white backing, and (on a blank whose aspect differs enough)
+  a wall could too. Invisible until now for the reason such things always are:
+  before caps existed nothing sampled those rows, and `fefco201`'s own caps had
+  never been driven with a real upload, only with pins that read UVs. Fixed by
+  making 'stretch' take the stretch branch. Pinned at the PIXELS rather than
+  the branch — a source image whose aspect deliberately differs from the blank,
+  composed, then sampled at each flap's TIP (its v extreme) and at all four
+  corners; the paired mutation pin runs the REAL letterbox branch (by asking
+  for `fit: 'fit'`) and asserts it leaves that same row blank, so the stretch
+  pin is proven capable of failing rather than merely not obviously trivial.
+  Sampling 2mm from the CREASE end instead read clean under letterboxing
+  (measured — the bars are ~43mm of template on the RSC blank and the crease
+  end sits well inside them), which is the "confirm the specimen" rule again:
+  the first version of the mutation pin was pointed at a row the bug does not
+  touch. VERIFIED IN THE REAL APP, not just in pins: artwork uploaded through
+  the actual file input, at the actual carton level, viewed at real rendered
+  size — a6120's lid prints continuously with its walls once the tuck depth
+  can span the cap, and sealend's shows its major and seal flaps meeting along
+  the centre seam with the template's own panel text legible and unmirrored.
+  Full regression: `golden.json` 998/998 unchanged, every suite green except
+  the 4 pre-existing `saveload` `cornerPost` failures documented above.

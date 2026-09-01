@@ -15,10 +15,14 @@
  * view (buildWrapArt) AND by the hierarchy/shelf InstancedMeshes (so every
  * instance of a pack type carries the same art from one texture). It returns a
  * CLOSED body: the printed faces as material group 0, plus (per end) either
- * printed MAJOR-FLAP quads — when the style declares `am.caps.top`/`.bottom`,
- * e.g. an RSC's two major flaps, folded flat and tiling the cap exactly, so
- * they join material group 0 too — or a plain board cap, as group 1, for a
- * style/end that declares none — so "Solid" looks solid either way.
+ * printed FLAP quads — when the style declares `am.caps.top`/`.bottom`, e.g.
+ * an RSC's two major flaps (which tile the cap exactly, zero leftover) or a
+ * reverse-tuck's single tuck panel (which usually doesn't reach the far
+ * side) — joining material group 0 too, PLUS a plain board rectangle (group
+ * 1) for whatever girth span those flaps don't reach, computed from their
+ * own folded footprint rather than declared by the style — or a plain board
+ * cap fan, entirely group 1, for a style/end that declares no caps at all —
+ * so "Solid" looks solid either way.
  *
  * Verified from the ViewCube: FRONT faces +Z (the shopper), upright, unmirrored
  * (the texture's default flipY cancels artMap's bottom-up v).
@@ -80,20 +84,34 @@ export function packArtGeometry(am){
   }
 
   // caps: close the tube at ±half (a carton's top/bottom flap faces) when the
-  // style has no crimped ends. Two shapes, per end independently:
-  //   - PRINTED major flaps (am.caps.top / .bottom, e.g. an RSC): each flap
-  //     folds flat about an axis parallel to the extrude axis, so its crease
-  //     corners are exactly the wall's own top/bottom edge (V(e, pa/pb), the
-  //     SAME points the printed-faces loop above already places) and its tip
-  //     is that same section point pulled toward the centreline by the
-  //     flap's own depth — folding never moves the extrude-axis coordinate
-  //     (pt[0]), only the girth coordinate (pt[1]) shifts. u is inherited
-  //     unchanged from the flap's own wall face (u never moves either); v
-  //     runs from the crease (the wall's own edge v) to the declared tip.
-  //     Joins the PRINTED group (artP/artU) — this is real artwork, not board.
-  //   - a plain BOARD cap (the previous, only, behaviour), triangle-fanned
-  //     from the section centroid — UVs unused (0,0) — for any end a style
-  //     does not declare `caps` for.
+  // style has no crimped ends. Two shapes, per end independently, and they
+  // can COMBINE on the same end:
+  //   - PRINTED flaps (am.caps.top / .bottom, e.g. an RSC's two majors or a
+  //     reverse-tuck's single tuck panel): each flap folds flat about an
+  //     axis parallel to the extrude axis, so its crease corners are exactly
+  //     the wall's own top/bottom edge (V(e, pa/pb), the SAME points the
+  //     printed-faces loop above already places) and its tip is that same
+  //     section point pulled toward the centreline by the flap's own depth
+  //     — folding never moves the extrude-axis coordinate (pt[0]), only the
+  //     girth coordinate (pt[1]) shifts. u is inherited unchanged from the
+  //     flap's own wall face (u never moves either); v runs from the crease
+  //     (the wall's own edge v) to the declared tip. Joins the PRINTED group
+  //     (artP/artU) — this is real artwork, not board. A style hands this
+  //     builder only VISIBLE depths (e.g. a seal-end's major flap trimmed to
+  //     the portion its own seal flap doesn't glue over) — this function
+  //     draws exactly the rectangles it's given, no style-specific overlap
+  //     reasoning lives here.
+  //   - a plain BOARD residual for whatever girth span the declared flaps
+  //     don't reach (a reverse-tuck's tuck panel alone rarely reaches the
+  //     full W — nothing else on that end carries print, since the dust
+  //     flaps under it are never declared here either, so the honest fill
+  //     is the same unprinted board `boardCap` already draws when an end
+  //     has NO printed flaps at all). Computed generically from the
+  //     declared flaps' own folded footprint — a style that exactly tiles
+  //     (an RSC's two majors, a seal-end's major+seal) produces zero
+  //     residual and this never runs.
+  //   - the ORIGINAL all-board fan (triangulated from the section centroid)
+  //     for any end a style declares NO `caps` for at all.
   if(!am.ends){
     const uniq = sec.slice(0, sec.length - 1);        // drop the repeated closing point
     const cx = uniq.reduce((s, p) => s + p[0], 0)/uniq.length;
@@ -106,16 +124,42 @@ export function packArtGeometry(am){
         else     tri(C0, a, b, [0, 0], [0, 0], [0, 0], capP, capU);
       }
     };
+    // a plain board RECTANGLE, full extrude-axis width, for one leftover
+    // girth sub-range -- the flat-style analogue of boardCap's fan, but for
+    // a partial gap rather than the whole end.
+    const boardStrip = (e, x0, x1, z0, z1) => {
+      const A = V(e, [x0, z0]), B = V(e, [x1, z0]), C = V(e, [x1, z1]), D = V(e, [x0, z1]);
+      quad(A, B, C, D, [0, 0], [0, 0], [0, 0], [0, 0], capP, capU);
+    };
     const printedCap = (e, flaps) => {
+      const covered = [];   // [min,max] girth sub-range each flap actually reaches
       for(const flap of flaps){
-        const pa = sec[flap.face], pb = sec[flap.face + 1];
         const depth = Math.abs(flap.v1 - flap.v0);
+        if(depth <= 0) continue;   // fully trimmed away (e.g. one flap's seal overlap reaches the whole cap) -- nothing to draw
+        const pa = sec[flap.face], pb = sec[flap.face + 1];
         const shift = pt => [pt[0], pt[1] - Math.sign(pt[1])*depth];
         const f = am.faces[flap.face];
         const u0 = f.u0/CW, u1 = f.u1/CW, v0 = flap.v0/CH, v1 = flap.v1/CH;
         const creaseA = V(e, pa), tipA = V(e, shift(pa)), tipB = V(e, shift(pb)), creaseB = V(e, pb);
         quad(creaseA, tipA, tipB, creaseB, [u1, v0], [u1, v1], [u0, v1], [u0, v0], artP, artU);
+        const shifted = pa[1] - Math.sign(pa[1])*depth;
+        covered.push([Math.min(pa[1], shifted), Math.max(pa[1], shifted)]);
       }
+      // fill whatever girth span none of the declared flaps reached
+      const allX = sec.map(p => p[0]), allZ = sec.map(p => p[1]);
+      const minX = Math.min(...allX), maxX = Math.max(...allX);
+      const minZ = Math.min(...allZ), maxZ = Math.max(...allZ);
+      const merged = covered.sort((a, b) => a[0] - b[0]).reduce((acc, [a, b]) => {
+        if(acc.length && a <= acc[acc.length - 1][1] + 1e-6) acc[acc.length - 1][1] = Math.max(acc[acc.length - 1][1], b);
+        else acc.push([a, b]);
+        return acc;
+      }, []);
+      let cursor = minZ;
+      for(const [a, b] of merged){
+        if(a > cursor + 1e-6) boardStrip(e, minX, maxX, cursor, a);
+        cursor = Math.max(cursor, b);
+      }
+      if(maxZ > cursor + 1e-6) boardStrip(e, minX, maxX, cursor, maxZ);
     };
     const capsTop = am.caps && am.caps.top, capsBottom = am.caps && am.caps.bottom;
     if(capsTop && capsTop.length) printedCap(half, capsTop); else boardCap(half, false);

@@ -82,20 +82,20 @@ export function facesMatchDieline(geo){
 }
 
 /**
- * Property 3 coverage: does this style declare printed major-panel caps
+ * Property 3 coverage: does this style declare printed flap caps
  * (`am.caps.top`/`.bottom`, render/artwork3d.js's `printedCap`), or does it
  * fall back to a plain board cap? NOT a pass/fail invariant — a style is
- * free to not declare caps yet (the plain board cap is a valid, if less
+ * free to not declare caps (the plain board cap is a valid, if less
  * complete, rendering) — this is a coverage REPORT so a new style is
- * noticed rather than silently joining the "board cap" set forever. Only
- * `fefco201` declares caps today (RESOLVED, artwork-mapping task): its two
- * major flaps fold flat and tile the L×W cap exactly, so there is nothing
- * left over for a board cap to cover. `a6120`/`sealend` each have a real
- * single dominant visible flap per end too (a6120: the tuck panel; sealend:
- * the seal flap) but their depth is a runtime PARAMETER (tuckDepth/
- * sealFlapDepth) that does not, in general, exactly tile the cap the way
- * the RSC's fixed W/2 majors do — giving them `caps` needs a board-fill
- * for the leftover, deliberately deferred rather than guessed at.
+ * noticed rather than silently joining the "board cap" set forever.
+ * `fefco201`, `a6120`, and `sealend` all declare caps (RESOLVED,
+ * artwork-mapping task + carton follow-up): the RSC's two majors and a
+ * seal-end's major+seal both tile their L×W cap EXACTLY (verified in each
+ * style's own `caps` doc comment); a6120's single tuck panel usually does
+ * NOT reach the full girth (`tuckDepth` is a runtime parameter with no
+ * upper bound), so `packArtGeometry` fills whatever it doesn't reach with
+ * plain board, computed from the declared flap's own folded footprint —
+ * not a style-guessed board shape, a geometric consequence of it.
  *
  * @param {import('./types.js').Geometry} geo
  * @returns {{applicable: boolean, hasCaps: boolean}}

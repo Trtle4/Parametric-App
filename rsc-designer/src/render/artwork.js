@@ -106,7 +106,14 @@ export function composeArtCanvas(artMap, art, imgEl, px){
   // to canvas px (y-down): top of rect is world y = r.y + r.h
   const dx = r.x*k, dw = r.w*k, dh = r.h*k, dy = (CH - (r.y + r.h))*k;
   g.imageSmoothingQuality = 'high';
-  if(art.fit === 'none' || !art.fit){
+  // STRETCH is the default fit (`defaultFit()`), and it is what `artRect`
+  // already reports to the 2D overlay as preserveAspectRatio="none" — so it
+  // must stretch HERE too, or the one picture the module promises ("2D and 3D
+  // show one picture") becomes two: a stretched dieline overlay and a
+  // LETTERBOXED texture. The bars that letterboxing leaves sit at the extremes
+  // of v, which is exactly where a style's cap flaps sample (an RSC's majors,
+  // a tuck panel), so an unprinted-looking lid was the visible symptom.
+  if(art.fit === 'stretch' || art.fit === 'none' || !art.fit){
     g.drawImage(imgEl, dx, dy, dw, dh);                           // stretch
   }else{
     // meet (contain) / slice (cover): fit source aspect into the dest rect

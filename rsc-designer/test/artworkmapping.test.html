@@ -24,6 +24,7 @@ import {glueNeverOutward, facesMatchDieline, capsCoverage, inapplicabilityReason
 import {packArtGeometry} from '../src/render/artwork3d.js';
 import {perfBodyGeometry, perfRemovedGeometry} from '../src/render/perf3d.js';
 import {withPerforation, normalizePerf, applyPerfPreset, PERF_CHORD_TOL} from '../src/core/perf.js';
+import {composeArtCanvas, defaultFit} from '../src/render/artwork.js';
 
 const results = [];
 function t(name, fn){
@@ -549,6 +550,184 @@ t('PROPERTY 4: MUTATION -- substituting a bounding rectangle for the arc fails t
   let threw = false;
   try{ nearestVertexMM(g, fam, target, 2); } catch(e){ threw = true; }
   ok(threw, 'mutation (flat line) did not move the vertex away from the real-arc target -- pin cannot be proven to fail');
+});
+
+/* ================================================================
+   PROPERTY 3, CARTON FOLLOW-UP -- a6120 (reverse tuck) and sealend (glued
+   overlap) also declare printed caps now, per their own DOMINANT flap(s):
+   a6120's single tuck panel (usually short of the full girth -- the
+   leftover is genuine unprinted board, filled by packArtGeometry's own
+   residual computation, never guessed by the style); sealend's major+seal
+   pair (which, like the RSC, ALWAYS sums to exactly W -- verified below,
+   not assumed). Formula-level pins need no THREE geometry at all (the
+   trimming happens in the style file, plain arithmetic); the geometry-level
+   pins confirm packArtGeometry's residual fill actually responds to what
+   it's handed.
+   ================================================================ */
+
+const A6120 = styleById('a6120'), SEALEND = styleById('sealend');
+const ap = defaultParams(A6120), sp = defaultParams(SEALEND);   // a6120: L100 W60 H150 t0.457 T59.543; sealend: L100 W60 H150 t0.457 overlap20
+const ageo = A6120.geometry(ap, {}), am6 = ageo.meta.artMap;
+const sgeo = SEALEND.geometry(sp, {}), sam = sgeo.meta.artMap;
+
+t('CARTON CAPS: capsCoverage reports hasCaps for a6120 and sealend, not just fefco201', () => {
+  ok(capsCoverage(ageo).applicable && capsCoverage(ageo).hasCaps, 'a6120 must declare caps');
+  ok(capsCoverage(sgeo).applicable && capsCoverage(sgeo).hasCaps, 'sealend must declare caps');
+});
+
+t('A6120 FORMULA: the tuck panel\'s declared depth is clamped to the girth it can physically reach', () => {
+  const W = ap.W, T = ap.tuckDepth;
+  ok(T < W, 'fixture assumption: default tuckDepth must be LESS than W, or this pin cannot distinguish clamped from unclamped');
+  approx(am6.caps.top[0].v1 - am6.caps.top[0].v0, T, 'top tuck depth equals tuckDepth when it fits within W:', 1e-9);
+  approx(am6.caps.bottom[0].v0 - am6.caps.bottom[0].v1, T, 'bottom tuck depth equals tuckDepth when it fits within W:', 1e-9);
+});
+
+t('A6120 FORMULA: MUTATION -- a tuckDepth deeper than W clamps to exactly W, never overshoots the far wall', () => {
+  const wideGeo = A6120.geometry({...ap, tuckDepth: ap.W*3}, {});
+  const depth = wideGeo.meta.artMap.caps.top[0].v1 - wideGeo.meta.artMap.caps.top[0].v0;
+  approx(depth, ap.W, 'clamped tuck depth must equal W exactly, not the raw (3x too deep) tuckDepth:', 1e-9);
+});
+
+t('SEALEND FORMULA: major (trimmed) + seal always sum to exactly W -- an exact tile, like the RSC\'s two majors', () => {
+  const W = sp.W;
+  const majorDepth = sam.caps.top[0].v1 - sam.caps.top[0].v0;
+  const sealDepth = sam.caps.top[1].v1 - sam.caps.top[1].v0;
+  ok(majorDepth > 0 && sealDepth > 0, 'fixture assumption: default overlap must leave BOTH flaps with positive depth');
+  approx(majorDepth + sealDepth, W, 'major + seal depths sum to W exactly:', 1e-9);
+  // bottom end mirrors top -- same sum, opposite v direction
+  const majorDepthB = sam.caps.bottom[0].v0 - sam.caps.bottom[0].v1;
+  const sealDepthB = sam.caps.bottom[1].v0 - sam.caps.bottom[1].v1;
+  approx(majorDepthB + sealDepthB, W, 'bottom major + seal depths also sum to W exactly:', 1e-9);
+});
+
+t('SEALEND FORMULA: MUTATION -- an overlap so large the seal alone reaches the far wall clamps major to ZERO, not negative', () => {
+  const hugeGeo = SEALEND.geometry({...sp, overlap: sp.W*10}, {});
+  const hugeAm = hugeGeo.meta.artMap;
+  eq(hugeAm.caps.top.length, 1, 'the major flap must be OMITTED entirely (zero depth), not drawn as a degenerate quad:');
+  const sealDepth = hugeAm.caps.top[0].v1 - hugeAm.caps.top[0].v0;
+  approx(sealDepth, sp.W, 'the seal flap alone clamps to exactly W:', 1e-9);
+});
+
+t('A6120 GEOMETRY: the built mesh has a printed group AND a board residual group for the default (short-of-W) tuck depth', () => {
+  const g = packArtGeometry(am6);
+  eq(g.groups.length, 2, 'printed cap + board residual:');
+  eq(g.groups[0].materialIndex, 0, 'group 0 is printed:');
+  eq(g.groups[1].materialIndex, 1, 'group 1 is board:');
+});
+
+t('A6120 GEOMETRY: MUTATION -- clamping the tuck depth to the full W removes the residual group entirely', () => {
+  const fullAm = {...am6, caps: {
+    top:    [{...am6.caps.top[0], v1: am6.caps.top[0].v0 + ap.W}],
+    bottom: [{...am6.caps.bottom[0], v1: am6.caps.bottom[0].v0 - ap.W}]
+  }};
+  const g = packArtGeometry(fullAm);
+  eq(g.groups.length, 1, 'full-depth tuck panel must leave no residual, proving the group split tracks real coverage, not a fixed shape:');
+});
+
+t('A6120 GEOMETRY: a real, WIDE residual (small tuckDepth) is actually drawn, reaching to the far wall', () => {
+  // a shallow tuck (tuckDepth 20 of W 60) leaves a residual wide enough to
+  // sample precisely -- the default's own residual is under 1mm (T=59.543
+  // of W=60), too thin to target a specific interior point reliably.
+  const shallow = A6120.geometry({...ap, tuckDepth: 20}, {});
+  const g = packArtGeometry(shallow.meta.artMap);
+  eq(g.groups.length, 2, 'a shallow tuck panel must still leave a residual board group:');
+  const half = shallow.meta.artMap.length/2, W = ap.W;
+  // deep in the residual, near a CORNER (board quads are unsubdivided --
+  // see verticesNearMM's own doc comment, vertices exist only at corners)
+  // and near the FAR wall's own crease line -- proves the board strip
+  // spans the full residual width, not just a thin band next to the tuck
+  // panel's own tip.
+  const found = verticesNearMM(g, shallow.meta.artMap, [-ap.L/2 + 3, half, -W/2 + 1], 6);
+  ok(found.length > 0, 'a board vertex must exist near the far wall\'s own crease line');
+});
+
+t('SEALEND GEOMETRY: the default (exact-tile) build has NO board residual group, same as the RSC', () => {
+  const g = packArtGeometry(sam);
+  eq(g.groups.length, 1, 'major + seal tile exactly -- no board group needed:');
+  eq(g.groups[0].materialIndex, 0, 'the one group is printed:');
+});
+
+t('SEALEND GEOMETRY: major and seal each land at their OWN declared depth, not swapped -- sampled near each flap\'s own crease', () => {
+  const g = packArtGeometry(sam);
+  const half = sam.length/2, W = sp.W;
+  const majorDepth = sam.caps.top[0].v1 - sam.caps.top[0].v0;
+  const sealDepth = sam.caps.top[1].v1 - sam.caps.top[1].v0;
+  // major hinges from the BACK wall (world Z = -W/2); sample near ITS OWN
+  // crease, inset a few mm toward the flap's interior (never at the tip,
+  // which meets the seal flap's own tip at a shared, ambiguous position --
+  // see verticesNearMM's own doc comment on shared-corner ties).
+  const majorU0 = sam.faces[0].u0;
+  const majorNear = verticesNearMM(g, sam, [sp.L/2 - 5, half, -W/2 + 3], 8)
+    .find(c => Math.abs(c.u - majorU0) < 2);
+  ok(majorNear, 'no major-flap vertex found near its own crease corner');
+  approx(majorNear.v, sam.caps.top[0].v0, 'major\'s crease-side vertex carries its OWN crease v, not the seal\'s:', 1);
+  // seal hinges from the FRONT wall (world Z = +W/2)
+  const sealU1 = sam.faces[2].u1;
+  const sealNear = verticesNearMM(g, sam, [sp.L/2 - 5, half, W/2 - 3], 8)
+    .find(c => Math.abs(c.u - sealU1) < 2);
+  ok(sealNear, 'no seal-flap vertex found near its own crease corner');
+  approx(sealNear.v, sam.caps.top[1].v0, 'seal\'s crease-side vertex carries its OWN crease v, not the major\'s:', 1);
+  ok(majorDepth > 0 && sealDepth > 0 && majorDepth !== sealDepth, 'vacuous check: the two depths must actually differ');
+});
+
+/* ================================================================
+   THE TEXTURE THE UVs SAMPLE -- composeArtCanvas must place the art the way
+   `artRect` already tells the 2D overlay it is placed. The module's own
+   promise is "2D and 3D show one picture"; the default fit is 'stretch', and
+   `artRect` reports that to the dieline as preserveAspectRatio="none". If the
+   3D compositor letterboxes 'stretch' instead, the two disagree and the bars
+   it leaves sit at the EXTREMES of v -- exactly where a cap flap samples, so
+   a correctly-built, correctly-UV'd printed lid still renders blank. Pinned
+   at the PIXELS, not at the branch: a source image whose aspect deliberately
+   differs from the blank's, and every corner of the composed canvas must
+   carry image, not backing.
+   ================================================================ */
+
+// awaits live OUT here, never inside t() -- an async pin body reports PASS
+// with its assertions unverified (CLAUDE.md, "An ASYNC pin body is unchecked")
+const srcCanvas = document.createElement('canvas');
+srcCanvas.width = 400; srcCanvas.height = 100;          // 4:1 -- nothing like a blank
+{
+  const sg = srcCanvas.getContext('2d');
+  sg.fillStyle = '#ff0000'; sg.fillRect(0, 0, 400, 100);   // solid, so any backing shows up
+}
+const artImgEl = new Image();
+await new Promise(res => { artImgEl.onload = res; artImgEl.src = srcCanvas.toDataURL('image/png'); });
+
+t('TEXTURE PLACEMENT: the default (stretch) fit fills the whole blank -- no backing bars at the v extremes where caps sample', () => {
+  const am = fam;                                        // the RSC's own blank
+  const art = {...defaultFit(), src: artImgEl.src};
+  eq(art.fit, 'stretch', 'fixture assumption: defaultFit must still be stretch:');
+  const srcAspect = srcCanvas.width/srcCanvas.height, blankAspect = am.canvas.w/am.canvas.h;
+  ok(Math.abs(srcAspect - blankAspect) > 1, `fixture assumption: source and blank aspects must differ enough to letterbox (${srcAspect.toFixed(2)} vs ${blankAspect.toFixed(2)})`);
+  const c = composeArtCanvas(am, art, artImgEl, 800);
+  ok(c, 'composeArtCanvas must return a canvas for a decoded image');
+  const ctx = c.getContext('2d');
+  const isArt = (x, y) => { const d = ctx.getImageData(x, y, 1, 1).data; return d[0] > 200 && d[1] < 60 && d[2] < 60; };
+  // the cap's own template row (top flap band) and the mirrored bottom one --
+  // the two rows a letterboxed compose would leave as backing
+  // sampled at each flap's TIP (its v EXTREME -- the row a letterboxed
+  // compose actually leaves as backing; the crease end sits far enough in
+  // that even a letterboxed canvas still covers it, measured)
+  const capRow = Math.round((1 - (fam.caps.top[1].v1 - 2)/am.canvas.h)*c.height);
+  const capRowB = Math.round((1 - (fam.caps.bottom[1].v1 + 2)/am.canvas.h)*c.height);
+  ok(isArt(Math.round(c.width*0.5), capRow), 'the TOP cap band must carry art at its tip, not the white backing');
+  ok(isArt(Math.round(c.width*0.5), capRowB), 'the BOTTOM cap band must carry art at its tip, not the white backing');
+  ok(isArt(2, 2) && isArt(c.width - 3, 2) && isArt(2, c.height - 3) && isArt(c.width - 3, c.height - 3),
+     'every corner of the blank must carry art under a stretch fit');
+});
+
+t('TEXTURE PLACEMENT: MUTATION -- the letterbox path (the shipped bug) leaves the cap bands blank', () => {
+  // the exact stand-in for the old behaviour: 'stretch' falling through to
+  // the meet/contain branch. Reached by asking for 'fit' explicitly, which
+  // IS that branch -- so this runs the real letterbox code, not a copy.
+  const am = fam;
+  const c = composeArtCanvas(am, {...defaultFit(), fit: 'fit', src: artImgEl.src}, artImgEl, 800);
+  const ctx = c.getContext('2d');
+  const isArt = (x, y) => { const d = ctx.getImageData(x, y, 1, 1).data; return d[0] > 200 && d[1] < 60 && d[2] < 60; };
+  const capRow = Math.round((1 - (fam.caps.top[1].v1 - 2)/am.canvas.h)*c.height);
+  ok(!isArt(Math.round(c.width*0.5), capRow),
+     'letterboxing must leave the cap band blank -- if it does not, this pin cannot prove the stretch pin catches the bug');
 });
 
 const fails = results.filter(r => r.startsWith('FAIL')).length;

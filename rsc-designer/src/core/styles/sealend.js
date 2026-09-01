@@ -34,6 +34,19 @@ export function sealend(p){
   const majorFlapDepth = W/2;                    // reaches the centreline, same convention as an RSC's outer flaps
   const F = majorFlapDepth + overlap/2;          // seal flap depth — confirmed convention, see file doc comment
 
+  // CAP COVERAGE — the seal flap glues down OVER the major flap, so the
+  // major's own VISIBLE (unglued-over) depth is only the part the seal
+  // doesn't reach: majorFlapDepth − overlap/2 (both flaps hinge from the
+  // SAME crease line, so this is exactly the girth the seal flap's own
+  // depth doesn't already claim). Clamped at 0 (an overlap ≥ W would let
+  // the seal alone reach the far wall, hiding the major completely) and the
+  // seal itself clamped at the full girth W (the same "can't overshoot the
+  // far wall" clamp a6120's tuck panel uses). By construction these two
+  // ALWAYS sum to exactly W — a seal-end tiles its cap exactly, the same as
+  // an RSC's two majors, just via a glued overlap instead of a taped meet.
+  const sealVisible = Math.min(F, W);
+  const majorVisible = Math.max(0, W - sealVisible);
+
   const x1 = g, x2 = g + L, x3 = g + L + W, x4 = g + 2*L + W, x5 = g + 2*L + 2*W;
   const ext = Math.max(F, D);
   const yb = ext, yt = ext + H;
@@ -148,7 +161,24 @@ export function sealend(p){
           {panel: 'side',  u0: x2, u1: x3, v0: yb, v1: yt},
           {panel: 'front', u0: x3, u1: x4, v0: yb, v1: yt},
           {panel: 'side',  u0: x4, u1: x5, v0: yb, v1: yt}
-        ]
+        ],
+        // TWO printed flaps per end, same pair `closure.top` already marks
+        // `holdsLid` — the major (back, face 0) trimmed to `majorVisible`
+        // (the part the seal flap doesn't glue over) and the seal (front,
+        // face 2) at its full `sealVisible` depth, laid on top. Both hinge
+        // from the SAME crease line (yt/yb), and by construction their
+        // depths sum to exactly W, so packArtGeometry's residual-fill never
+        // runs here — the dust flaps stay uninvolved, same as the RSC.
+        caps: {
+          top: [
+            ...(majorVisible > 0 ? [{face: 0, v0: yt, v1: yt + majorVisible}] : []),
+            {face: 2, v0: yt, v1: yt + sealVisible}
+          ],
+          bottom: [
+            ...(majorVisible > 0 ? [{face: 0, v0: yb, v1: yb - majorVisible}] : []),
+            {face: 2, v0: yb, v1: yb - sealVisible}
+          ]
+        }
       }
     }
   };
