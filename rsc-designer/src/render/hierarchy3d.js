@@ -2209,6 +2209,19 @@ function buildTrailer(bundle, outerTier, S){
   // this same shape) rather than one Group per post, since a full trailer
   // floor can carry hundreds of positions x levels. bundle.cornerPost is
   // null when posts are off.
+  //
+  // ONE geometry pair PER CORNER (4 pairs, not 1), each pre-translated with
+  // that corner's own signed offset baked in — never a per-instance negative
+  // scale. This used to build ONE +x/+z-quadrant geometry and mirror it into
+  // the other 3 corners via `Vector3(-sign(x),1,-sign(z))` as the matrix's
+  // scale component: for the 2 corners where only ONE axis flips (not both),
+  // that is a TRUE reflection of an asymmetric profile (legL != legW, both
+  // independently user-editable), not a rotation — the same defect fixed in
+  // palletmesh.js's own buildCornerPostSet, and the exact "instance nobody
+  // has looked at yet" the det(M)>0 nesting invariant exists to catch: this
+  // is a SEPARATE implementation of the identical shape, so fixing one
+  // never fixed the other. Every instance matrix below is now translation
+  // + identity rotation/scale — det always +1.
   if(bundle.cornerPost){
     const cp = bundle.cornerPost;
     // The CASE STACK's own footprint (row.casesFit.envelope, swapped for
@@ -2217,10 +2230,6 @@ function buildTrailer(bundle, outerTier, S){
     // actual case envelope even when the deck is bigger than the load.
     const postFP = swap(cp.footprint);
     if(cp.height > 0 && cp.caliper > 0){
-      const armXGeo = new THREE.BoxGeometry(Math.max(cp.legL, 0.1), Math.max(cp.height, 0.1), Math.max(cp.caliper, 0.1));
-      armXGeo.translate(cp.legL/2, cp.height/2, cp.caliper/2);
-      const armZGeo = new THREE.BoxGeometry(Math.max(cp.caliper, 0.1), Math.max(cp.height, 0.1), Math.max(cp.legW, 0.1));
-      armZGeo.translate(cp.caliper/2, cp.height/2, cp.legW/2);
       const postSlots = [];
       for(let fi = 0; fi < placements.length; fi++) for(let u = 0; u < N; u++){
         if(fi === detailFloorIdx && u === detailVertIdx) continue;
@@ -2229,24 +2238,29 @@ function buildTrailer(bundle, outerTier, S){
       if(postSlots.length){
         const hx = postFP.L/2 + cp.caliper, hz = postFP.W/2 + cp.caliper;
         const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
-        const armXInst = new THREE.InstancedMesh(armXGeo, CORNER_POST_MATERIAL, postSlots.length*4);
-        const armZInst = new THREE.InstancedMesh(armZGeo, CORNER_POST_MATERIAL, postSlots.length*4);
-        armXInst.name = 'trailerCornerPost'; armZInst.name = 'trailerCornerPost';
-        const MP = new THREE.Matrix4(), Q = new THREE.Quaternion();
-        let k = 0;
-        for(const {fi, u} of postSlots){
-          const pl = placements[fi];
-          const y0 = posOffsets[u] + heights[u];   // this position's own base TOP
-          for(const c of corners){
-            // mirror the +x/+z-quadrant arm shapes into whichever quadrant
-            // this corner needs, so legs point INWARD (see palletmesh.js).
-            MP.compose(new THREE.Vector3(pl.x + c.x, y0, pl.y + c.z), Q, new THREE.Vector3(-Math.sign(c.x), 1, -Math.sign(c.z)));
-            armXInst.setMatrixAt(k, MP);
-            armZInst.setMatrixAt(k, MP);
-            k++;
-          }
+        const M = new THREE.Matrix4();
+        for(const c of corners){
+          // the signed direction that points INWARD for this corner,
+          // baked directly into each arm's own geometry via .translate()
+          // (a pure translation of a positively-sized box is never a
+          // reflection — a box looks identical from either side).
+          const sx = -Math.sign(c.x), sz = -Math.sign(c.z);
+          const armXGeo = new THREE.BoxGeometry(Math.max(cp.legL, 0.1), Math.max(cp.height, 0.1), Math.max(cp.caliper, 0.1));
+          armXGeo.translate(sx*cp.legL/2, cp.height/2, sz*cp.caliper/2);
+          const armZGeo = new THREE.BoxGeometry(Math.max(cp.caliper, 0.1), Math.max(cp.height, 0.1), Math.max(cp.legW, 0.1));
+          armZGeo.translate(sx*cp.caliper/2, cp.height/2, sz*cp.legW/2);
+          const armXInst = new THREE.InstancedMesh(armXGeo, CORNER_POST_MATERIAL, postSlots.length);
+          const armZInst = new THREE.InstancedMesh(armZGeo, CORNER_POST_MATERIAL, postSlots.length);
+          armXInst.name = 'trailerCornerPost'; armZInst.name = 'trailerCornerPost';
+          postSlots.forEach(({fi, u}, k) => {
+            const pl = placements[fi];
+            const y0 = posOffsets[u] + heights[u];   // this position's own base TOP
+            M.identity(); M.setPosition(pl.x + c.x, y0, pl.y + c.z);
+            armXInst.setMatrixAt(k, M);
+            armZInst.setMatrixAt(k, M);
+          });
+          group.add(armXInst); group.add(armZInst);
         }
-        group.add(armXInst); group.add(armZInst);
       }
     }
   }

@@ -735,29 +735,35 @@ for(const lc of LEVEL_CASES){
     });
   }
 
-  if(lc.clearLevel && el('pInWall')){
+  if(lc.clearLevel && el('pInWallL')){
     // BOTH of these used to "reset" the field to a hardcoded 0 — which is not
     // what they found. At case level the real wall clearance is 1.5, so the
     // reset silently zeroed it and every later pin solved a differently-sized
     // case. Snapshot and hand back what was actually there, in a finally so a
     // failure inside doesn't leak either.
-    t(`${lc.level}: clearance wall field reflects project.clearance.wall after edit`, () => {
+    //
+    // Clearance wall is now clearance.clearanceWall = {mode, L, W} (Part 1,
+    // clearance-per-axis task) — mountClearanceControl migrates the legacy
+    // flat `wall` scalar into it, in place, the first time it mounts. In the
+    // default 'uniform' mode the field id is pInWallL (same field, new id;
+    // it drives clearanceWall.L, which both axes read).
+    t(`${lc.level}: clearance wall field reflects project.clearance.clearanceWall.L after edit`, () => {
       const snap = snapProject();
       try{
-        el('pInWall').value = '3.5'; fire(el('pInWall'), 'input');
+        el('pInWallL').value = '3.5'; fire(el('pInWallL'), 'input');
         const clr = lc.clearLevel(build.project);
-        approx(clr.wall, 3.5, 'project value:');
-        approx(+el('pInWall').value, 3.5, 'displayed value:');
+        approx(clr.clearanceWall.L, 3.5, 'project value:');
+        approx(+el('pInWallL').value, 3.5, 'displayed value:');
       } finally { restoreProject(snap); }
     });
 
     t(`${lc.level}: a SIBLING edit (count/arrangement) does not corrupt the clearance field's display`, () => {
       const snap = snapProject();
       try{
-        el('pInWall').value = '2'; fire(el('pInWall'), 'input');
+        el('pInWallL').value = '2'; fire(el('pInWallL'), 'input');
         if(el('pInNx')){ el('pInNx').value = String(+el('pInNx').value); fire(el('pInNx'), 'input'); }
         const clr = lc.clearLevel(build.project);
-        approx(+el('pInWall').value, clr.wall, 'clearance field still matches project after a sibling edit:');
+        approx(+el('pInWallL').value, clr.clearanceWall.L, 'clearance field still matches project after a sibling edit:');
       } finally { restoreProject(snap); }
     });
   }

@@ -37,27 +37,38 @@ export const SLIPSHEET_MATERIAL = kraft;
 
 // Corner post: a distinct grey, visually separate from the pallet/slipsheet
 // colours above and from the case board it stands beside. DoubleSide because
-// buildCornerPostSet mirrors ONE L-shaped mesh into the other 3 corners via
-// negative scale (simpler and less error-prone than four rotation matrices
-// for a profile with no diagonal symmetry) — a negative-scale mirror flips
-// triangle winding, which FrontSide culling would read as facing away.
-const cornerPostMat = new THREE.MeshStandardMaterial({color: 0x6B6F73, roughness: 0.6, metalness: 0.15, side: THREE.DoubleSide});
+// buildCornerPostSet used to mirror ONE L-shaped mesh into the other 3
+// corners via a negative scale on the whole post group. Measured: for a
+// non-square profile (legL != legW, both independently user-editable —
+// #cpLegL/#cpLegW), that is a TRUE reflection at 2 of the 4 corners, not a
+// rotation — a mirror-image L, the same "physically impossible" symptom the
+// det(M)>0 nesting invariant exists to catch. (The other 2 corners flip
+// BOTH axes at once, which IS just a 180 deg rotation; only the single-axis
+// flips were the real defect, which is why it went unnoticed on the common
+// square-leg default and only shows on an asymmetric leg pair.) Fixed by
+// building each arm at its correct SIGNED position directly — pure
+// translation, det always +1 — instead of scaling the whole post. Produces
+// byte-identical vertex positions to the old code for every corner (both
+// are the same signed offset; only the mechanism changed), so DoubleSide
+// (needed for the old flipped winding) is no longer required either.
+const cornerPostMat = new THREE.MeshStandardMaterial({color: 0x6B6F73, roughness: 0.6, metalness: 0.15});
 export const CORNER_POST_MATERIAL = cornerPostMat;
 
 /** One post's own L-profile: two boxes sharing the caliper x caliper corner
  *  square once (matching core/stack.js's cornerPostSectionAreaMM2), bottom
  *  at y=0 (same bottom-origin convention as buildGmaPallet/buildSlipsheet).
- *  Local origin is the post's own OUTER corner; both arms extend into the
- *  +x/+z quadrant — buildCornerPostSet mirrors this into whichever quadrant
- *  a given corner of the load actually needs. */
-function buildCornerPostL(legL, legW, caliper, height){
+ *  Local origin is the post's own OUTER corner; `sx`/`sz` (each +-1) say
+ *  which quadrant the two arms extend into — the caller passes the signed
+ *  direction that points INWARD for a given corner, so this never needs to
+ *  be mirrored after construction. */
+function buildCornerPostL(legL, legW, caliper, height, sx, sz){
   const g = new THREE.Group();
   const h = Math.max(0.1, height);
   const armX = new THREE.Mesh(new THREE.BoxGeometry(Math.max(legL, 0.1), h, Math.max(caliper, 0.1)), cornerPostMat);
-  armX.position.set(legL/2, h/2, caliper/2);
+  armX.position.set(sx*legL/2, h/2, sz*caliper/2);
   g.add(armX);
   const armZ = new THREE.Mesh(new THREE.BoxGeometry(Math.max(caliper, 0.1), h, Math.max(legW, 0.1)), cornerPostMat);
-  armZ.position.set(caliper/2, h/2, legW/2);
+  armZ.position.set(sx*caliper/2, h/2, sz*legW/2);
   g.add(armZ);
   return g;
 }
@@ -83,11 +94,11 @@ export function buildCornerPostSet(fp, height, legL, legW, caliper){
   const hx = fp.L/2 + caliper, hz = fp.W/2 + caliper;   // outer-corner distance from centre
   const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
   for(const c of corners){
-    const post = buildCornerPostL(legL, legW, caliper, height);
-    // mirror the +x/+z-quadrant base shape into whichever quadrant this
-    // corner needs, so the legs always point INWARD (opposite the corner's
-    // own quadrant) toward the load's centre.
-    post.scale.set(-Math.sign(c.x), 1, -Math.sign(c.z));
+    // the signed direction that points INWARD (opposite the corner's own
+    // quadrant) toward the load's centre — passed straight into the arms'
+    // own construction rather than applied as a post-hoc mirror.
+    const sx = -Math.sign(c.x), sz = -Math.sign(c.z);
+    const post = buildCornerPostL(legL, legW, caliper, height, sx, sz);
     post.position.set(c.x, 0, c.z);
     g.add(post);
   }

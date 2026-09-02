@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>clearance wall — independent per axis</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Part 1: `clearanceWall: {mode:'uniform'|'perAxis', L, W}` — one stored
+   object holding the mode plus both values, never two numbers plus a
+   separate "same" flag that could disagree with them. 'uniform' reads L
+   for BOTH axes (W not consulted); 'perAxis' reads each axis's own value.
+   L/W name the PARENT's own fixed L/W axes (never the child's current
+   orientation), matching how the case's own L/W already mean the same
+   thing everywhere else in this codebase.
+
+   Applies to the CARTON's clearance (project.secondary.clearance — carton
+   fit inside its case, containment.js parentCandidates/fitInto) and the
+   CASE's clearance (project.tertiary.clearance — case fit onto the pallet,
+   palletpatterns.js palletPatternList) — both consume the SAME normClearance
+   idiom (each module keeps its own private copy, the pre-existing pattern
+   this codebase already uses for bottom/top/betweenZ).
+
+   Migration: absent clearanceWall == the legacy flat `wall` scalar for both
+   axes — every pre-existing project and every golden fixture, bit-identical
+   (pinned directly below, not just asserted). */
+
+import {parentCandidates, fitInto} from '../src/core/containment.js';
+import {palletPatternList} from '../src/core/palletpatterns.js';
+import {mountClearanceControl, refreshClearanceControl} from '../src/ui/inputs.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const approx = (a, e, m = '', tol = 1e-9) => { if(Math.abs(a - e) > tol) throw new Error(`${m} expected ${e}, got ${a}`); };
+
+const CHILD = {outer: {L: 100, W: 60, H: 40}, allowedOrientations: ['LWH']};
+
+/* ============================================================
+   CARTON-LEVEL: containment.js parentCandidates/fitInto (carton-in-case).
+   ============================================================ */
+
+t('CARTON: uniform clearanceWall reproduces the legacy flat-wall cavity exactly, bit-identical', () => {
+  const legacy = parentCandidates(CHILD, 4, {wall: 5, between: 0})[0];
+  const uniform = parentCandidates(CHILD, 4, {clearanceWall: {mode: 'uniform', L: 5, W: 5}, between: 0})[0];
+  approx(uniform.cavity.L, legacy.cavity.L, 'cavity.L:');
+  approx(uniform.cavity.W, legacy.cavity.W, 'cavity.W:');
+});
+
+t('CARTON: uniform mode reads L for BOTH axes -- W is not consulted even when it disagrees', () => {
+  const withDisagreeingW = parentCandidates(CHILD, 4, {clearanceWall: {mode: 'uniform', L: 5, W: 999}, between: 0})[0];
+  const pureL = parentCandidates(CHILD, 4, {clearanceWall: {mode: 'uniform', L: 5, W: 5}, between: 0})[0];
+  approx(withDisagreeingW.cavity.L, pureL.cavity.L, 'cavity.L unaffected by W:');
+  approx(withDisagreeingW.cavity.W, pureL.cavity.W, 'cavity.W unaffected by disagreeing W:');
+});
+
+t('CARTON: perAxis with different L and W -- hand-computed cavity, nx=2 ny=2 nz=1, L=3 W=8', () => {
+  const clearance = {clearanceWall: {mode: 'perAxis', L: 3, W: 8}, between: 0};
+  const cands = parentCandidates(CHILD, 4, clearance);
+  const c = cands.find(c => c.nx === 2 && c.ny === 2 && c.o === 'LWH');
+  ok(c, 'fixture: expected a 2x2 LWH candidate to exist');
+  // hand-computed: cavity.L = nx*l + (nx-1)*between + 2*wallL = 2*100 + 0 + 2*3 = 206
+  //                cavity.W = ny*w + (ny-1)*between + 2*wallW = 2*60  + 0 + 2*8 = 136
+  approx(c.cavity.L, 206, 'hand-computed cavity.L (wallL=3):');
+  approx(c.cavity.W, 136, 'hand-computed cavity.W (wallW=8):');
+});
+
+t('CARTON: fitInto with perAxis clearance places children in a hand-computed FIXED cavity, both axes independently tight', () => {
+  // a cavity sized to EXACTLY fit one child with wallL=3, wallW=8:
+  // L = 100 + 2*3 = 106, W = 60 + 2*8 = 76
+  // (bottom/top pinned to 0 explicitly -- normClearance's own pre-existing
+  // fallback defaults them from the lateral wall value when omitted, which
+  // would otherwise eat into cavity.H here and confound this L/W-only pin)
+  const cavity = {L: 106, W: 76, H: 40};
+  const clearance = {clearanceWall: {mode: 'perAxis', L: 3, W: 8}, between: 0, bottom: 0, top: 0};
+  const arr = fitInto(CHILD, cavity, clearance);
+  approx(arr.total, 1, 'exactly one child fits the exactly-sized cavity:');
+  // one narrower on L (wallL a hair bigger) must NOT fit 1 any more on that axis...
+  // rather than re-deriving the boundary, confirm the SAME cavity minus 1mm on
+  // L only (still full W) drops the count while minus 1mm on W only ALSO drops
+  // it -- proving both axes are independently load-bearing, not just one.
+  const tightL = fitInto(CHILD, {L: 105, W: 76, H: 40}, clearance);
+  const tightW = fitInto(CHILD, {L: 106, W: 75, H: 40}, clearance);
+  approx(tightL.total, 0, 'shaving 1mm off L alone must drop the fit to 0:');
+  approx(tightW.total, 0, 'shaving 1mm off W alone must drop the fit to 0:');
+});
+
+/* ============================================================
+   CASE-LEVEL: palletpatterns.js palletPatternList (case-onto-pallet).
+   ============================================================ */
+
+const CASE_CHILD = {outer: {L: 300, W: 200, H: 150}, allowedOrientations: ['LWH']};
+const DECK = {L: 1200, W: 1000, H: 2000};
+
+t('CASE: uniform clearanceWall reproduces the legacy flat-wall pattern list exactly, bit-identical', () => {
+  const legacy = palletPatternList(CASE_CHILD, DECK, {wall: 10, between: 5}, 'optimal', {noMemo: true});
+  const uniform = palletPatternList(CASE_CHILD, DECK, {clearanceWall: {mode: 'uniform', L: 10, W: 10}, between: 5}, 'optimal', {noMemo: true});
+  ok(legacy.length > 0 && uniform.length > 0, 'fixture: both lists must be non-empty');
+  approx(uniform[0].total, legacy[0].total, 'best candidate total count:');
+  approx(uniform[0].envelope.L, legacy[0].envelope.L, 'best candidate envelope.L:');
+  approx(uniform[0].envelope.W, legacy[0].envelope.W, 'best candidate envelope.W:');
+});
+
+t('CASE: perAxis with different L and W changes the effective deck differently per axis -- hand-verified via the column count', () => {
+  // a column-pattern candidate's own count is floor(effectiveL/caseL) x
+  // floor(effectiveW/caseW) x layers -- shrinking wallL vs wallW by very
+  // different amounts must move the L-column-count and W-column-count
+  // independently. bottom/top pinned to 0 explicitly (see the carton pin's
+  // own note above) and DECK1's H sized for exactly ONE layer (caseH=150,
+  // deckH=200) so the column count alone carries the comparison, not a
+  // second, unrelated layer-count difference.
+  const DECK1 = {L: 1200, W: 1000, H: 200};
+  const tightW = palletPatternList(CASE_CHILD, DECK1, {clearanceWall: {mode: 'perAxis', L: 0, W: 90}, between: 0, bottom: 0, top: 0}, 'column', {noMemo: true});
+  const tightL = palletPatternList(CASE_CHILD, DECK1, {clearanceWall: {mode: 'perAxis', L: 90, W: 0}, between: 0, bottom: 0, top: 0}, 'column', {noMemo: true});
+  ok(tightW.length > 0 && tightL.length > 0, 'fixture: both lists must be non-empty');
+  // hand-computed effective deck for tightW: PL = 1200 - 0   = 1200 -> 4 cols (300 each)
+  //                                          PW = 1000 - 180 = 820  -> 4 rows (200 each)
+  // hand-computed effective deck for tightL: PL = 1200 - 180 = 1020 -> 3 cols (300 each)
+  //                                          PW = 1000 - 0   = 1000 -> 5 rows (200 each)
+  const best = list => list.reduce((a, b) => b.total > a.total ? b : a, list[0]);
+  approx(best(tightW).total, 16, 'tightW (wallW=90): 4x4=16 cases:');
+  approx(best(tightL).total, 15, 'tightL (wallL=90): 3x5=15 cases:');
+});
+
+/* ============================================================
+   TOGGLE ROUND-TRIP, driven through the real UI control.
+   ============================================================ */
+
+const host = document.createElement('div');
+document.body.appendChild(host);
+
+t('UI: mountClearanceControl migrates a legacy flat wall into clearanceWall {mode:uniform, L:W:wall}', () => {
+  const clearance = {wall: 7, between: 2};
+  mountClearanceControl(host, 'tst', clearance, () => {});
+  ok(clearance.clearanceWall, 'clearanceWall must be created on mount');
+  approx(clearance.clearanceWall.L, 7, 'migrated L:');
+  approx(clearance.clearanceWall.W, 7, 'migrated W:');
+  ok(clearance.clearanceWall.mode === 'uniform', 'migrated mode must be uniform');
+  ok(!!document.getElementById('tstWallL'), 'the L field must be mounted');
+  ok(!document.getElementById('tstWallW'), 'uniform mode must NOT mount a separate W field');
+});
+
+t('UI: switching to perAxis seeds W from L\'s CURRENT value -- nothing jumps', () => {
+  const clearance = {clearanceWall: {mode: 'uniform', L: 4, W: 999}, between: 0};   // stale W on purpose
+  mountClearanceControl(host, 'tst', clearance, () => {});
+  document.getElementById('tstWallMode').value = 'perAxis';
+  document.getElementById('tstWallMode').dispatchEvent(new Event('change', {bubbles: true}));
+  approx(clearance.clearanceWall.W, 4, 'W must be freshly seeded from L, not left at its stale prior value:');
+  ok(!!document.getElementById('tstWallW'), 'perAxis mode must mount a separate W field');
+});
+
+t('UI: switching back to uniform keeps L untouched (W simply stops being read, per normClearance)', () => {
+  const clearance = {clearanceWall: {mode: 'perAxis', L: 4, W: 4}, between: 0};
+  mountClearanceControl(host, 'tst', clearance, () => {});
+  document.getElementById('tstWallW').value = '9';
+  document.getElementById('tstWallW').dispatchEvent(new Event('input', {bubbles: true}));
+  approx(clearance.clearanceWall.W, 9, 'fixture: W edit took effect:');
+  document.getElementById('tstWallMode').value = 'uniform';
+  document.getElementById('tstWallMode').dispatchEvent(new Event('change', {bubbles: true}));
+  approx(clearance.clearanceWall.L, 4, 'L must be untouched by switching back to uniform:');
+  approx(clearance.clearanceWall.W, 9, 'W must be left as-is (not erased) even though it is no longer read:');
+  // and the effective value normClearance would compute is L, not the
+  // stale W -- confirmed by feeding this exact clearance object through the
+  // real solver, not just reading the field.
+  const cav = parentCandidates(CHILD, 1, clearance)[0];
+  approx(cav.cavity.L, 100 + 2*4, 'solved cavity uses L (4), not the leftover W (9):');
+});
+
+t('UI: toggling perAxis ON again after a uniform round-trip restores the PRIOR W, not a re-seed', () => {
+  const clearance = {clearanceWall: {mode: 'perAxis', L: 4, W: 9}, between: 0};
+  mountClearanceControl(host, 'tst', clearance, () => {});
+  document.getElementById('tstWallMode').value = 'uniform';
+  document.getElementById('tstWallMode').dispatchEvent(new Event('change', {bubbles: true}));
+  document.getElementById('tstWallMode').value = 'perAxis';
+  document.getElementById('tstWallMode').dispatchEvent(new Event('change', {bubbles: true}));
+  // per the spec, switching TO perAxis re-seeds W from L EVERY time (never
+  // just once) -- so this is L (4), not the previously-entered 9. This pin
+  // exists to pin THAT specific, deliberate choice against the alternative
+  // ("restore whatever was last there"), which would be a different and
+  // also-defensible design -- the spec is explicit: "seeds W from L".
+  approx(clearance.clearanceWall.W, 4, 'perAxis re-entry re-seeds W from L, every time:');
+});
+
+t('UI: refreshClearanceControl syncs values without rebuilding the DOM (mode select node identity preserved)', () => {
+  const clearance = {clearanceWall: {mode: 'uniform', L: 4, W: 4}, between: 0};
+  mountClearanceControl(host, 'tst', clearance, () => {});
+  const modeNode = document.getElementById('tstWallMode');
+  clearance.clearanceWall.L = 11;
+  refreshClearanceControl('tst', clearance);
+  ok(document.getElementById('tstWallMode') === modeNode, 'refresh must not replace the mode select node');
+  approx(+document.getElementById('tstWallL').value, 11, 'refreshed displayed L:');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

@@ -43,11 +43,20 @@ import {stack} from './pack.js';
 const transpose = o => o[1] + o[0] + o[2];
 
 /** Same normalization containment.js applies (private there): vertical
- *  clearances default to the legacy uniform shape when omitted. */
+ *  clearances default to the legacy uniform shape when omitted, and the
+ *  lateral wall clearance may be split per axis via `clearanceWall`
+ *  ({mode:'uniform'|'perAxis', L, W} — 'uniform' reads L for both axes,
+ *  W not consulted). Absent entirely, falls back to the flat `wall` scalar
+ *  for both axes — every pre-existing project, bit-identical. */
 function normClearance(c){
-  const wall = c.wall || 0, between = c.between || 0;
+  const cw = c.clearanceWall;
+  let wallL, wallW;
+  if(cw && cw.mode === 'perAxis'){ wallL = cw.L || 0; wallW = cw.W || 0; }
+  else if(cw){ wallL = wallW = cw.L || 0; }
+  else { wallL = wallW = c.wall || 0; }
+  const wall = wallL, between = c.between || 0;
   return {
-    wall, between,
+    wall, wallL, wallW, between,
     bottom:   c.bottom   !== undefined ? c.bottom   : wall,
     top:      c.top      !== undefined ? c.top      : wall,
     betweenZ: c.betweenZ !== undefined ? c.betweenZ : between
@@ -353,7 +362,7 @@ const memo = new Map();
 /**
  * @param {{outer: {L,W,H}, allowedOrientations: string[]}} child  the tier riding the pallet
  * @param {{L, W, H}} cavity   usable deck L×W and the load height budget (maxH − baseH)
- * @param {{wall, between, bottom?, top?, betweenZ?}} [clearance]
+ * @param {{wall, clearanceWall?, between, bottom?, top?, betweenZ?}} [clearance]
  * @param {'optimal'|'column'|'interlock'} [family='optimal']
  *   optimal  — every construction, straight-stacked, plus interlocked
  *              variants where the flip is physically distinct
@@ -406,18 +415,20 @@ const memo = new Map();
 export function palletPatternList(child, cavity, clearance = {wall: 0, between: 0}, family = 'optimal', opts = {}){
   const allowOverhang = !!opts.allowOverhang, noMemo = !!opts.noMemo;
   const outboardMM = typeof opts.outboardMM === 'number' && opts.outboardMM > 0 ? opts.outboardMM : 0;
+  const cw = clearance.clearanceWall;
   const key = noMemo ? null
     : [child.outer.L, child.outer.W, child.outer.H, child.allowedOrientations.join(','),
        cavity.L, cavity.W, cavity.H,
-       clearance.wall || 0, clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
+       clearance.wall || 0, cw ? cw.mode : '', cw ? cw.L : '', cw ? cw.W : '',
+       clearance.between || 0, clearance.bottom, clearance.top, clearance.betweenZ,
        family, allowOverhang ? 'oh' : '', outboardMM].join('|');
   if(key !== null){
     const hit = memo.get(key);
     if(hit) return hit;
   }
 
-  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
-  const PL = cavity.L - 2*wall + between, PW = cavity.W - 2*wall + between;
+  const {wallL, wallW, between, bottom, top, betweenZ} = normClearance(clearance);
+  const PL = cavity.L - 2*wallL + between, PW = cavity.W - 2*wallW + between;
   const childVol = child.outer.L*child.outer.W*child.outer.H;
   const cavityVol = cavity.L*cavity.W*cavity.H;
 
