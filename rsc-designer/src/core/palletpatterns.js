@@ -507,6 +507,12 @@ export function palletPatternList(child, cavity, clearance = {wall: 0, between: 
           envelope, loadOverhang,
           density: envVol > 0 ? st.total*childVol/envVol : 0,
           utilization: cavityVol > 0 ? st.total*childVol/cavityVol : 0,
+          // is this layer its own 180deg turn? Then an interlock flip on it
+          // is a no-op -- the SAME check withSchedule() already runs
+          // internally to decide whether to warn, exposed here so a
+          // candidate-comparison view can show it directly rather than
+          // re-deriving the symmetry test a second time.
+          interlockable: !symmetric,
           // populated only by withSchedule() below — the auto-generated
           // straight/alternating candidates never warn (their flip, if any,
           // is the app's own long-standing "flip every odd layer" default,

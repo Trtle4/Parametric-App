@@ -2153,3 +2153,98 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   in the code, is presumably what let the report read as current. No code
   change was made — `core/project.js` is untouched by this task; only the
   new regression pin was added.
+- **RESOLVED IN PART (pallet-pattern-table task): Build's pallet-level tab
+  gets a real comparison table for pallet-layer PATTERNS — the piece that
+  directly answers "Build shows one pattern out of 24."** A companion task
+  in a sibling branch/PR diagnosed the reported patternIndex-propagation
+  bug and found it does not exist: `resolveActiveRow` already wraps every
+  branch in `applyPatternSelection`, which already reads and clamps
+  `project.pallet.patternIndex`. What genuinely was missing, confirmed by
+  reading the code: at pallet depth, Build never enumerated pallet
+  patterns at all — `build.js`'s table has only ever shown CASE/carton
+  candidate rows (`candidateCases`), regardless of `activeLevel`, which is
+  the real, literal reason the tab read as "one row" — the case chain had
+  one candidate; the 24 PATTERNS for that case had nowhere to be browsed
+  except the pre-existing cycle arrows.
+
+  **Reused the existing table mechanism, not a second one**, per the
+  task's own instruction: `build.js`'s row/header/click DOM-building logic
+  was extracted into `renderCandidateTable(tbl, cols, displayRows, opts)` —
+  a pure function taking rows/columns/callbacks, owning no state itself —
+  and the pre-existing case-candidate `renderTable()` now calls it (a
+  mechanical, behavior-preserving refactor: same markup, same click
+  wiring, confirmed bit-identical by the untouched suites still passing).
+  A new `renderPatternTable()` calls the SAME function with pallet-pattern
+  columns/rows. `build.setMode('case'|'pattern')`, called from
+  `app.js`'s `setActiveLevel` (`level === 'pallet' ? 'pattern' : 'case'`),
+  toggles which of two panels (`#bCasePanel`/`#bPatternPanel`, both built
+  by `initBuild()`) is visible — build.js owns no notion of "active
+  level" itself, so the caller decides when to switch.
+
+  **Rows are `palletPatternList` candidates, one each, in that module's
+  own ranked order — never a cross product with interlock schedules**
+  (a schedule changes stability, not count/efficiency/footprint, so it
+  would read identically down every row): the `#` column IS the row's
+  position, so this table does not re-sort (re-sorting would make that
+  column lie). **Selecting a row writes `project.pallet.patternIndex`
+  directly** — the exact field the pre-existing cycle arrows
+  (`stepPattern`) already write and `applyPatternSelection` already
+  reads — never a second, view-local "which pattern is picked."
+  Verified live end-to-end through the real app: selecting a
+  different-total row changes the rendered pallet count, the cycle
+  arrows' "N of M," the deck coverage %, and (for an interlocked
+  candidate) the BCT interlock-strength warning, together.
+
+  **Columns**, each already computed on the candidate or one arithmetic
+  step away — no second solver: `#`, `Family`, `Per layer`, `Layers`,
+  `Cases/pallet` (`total`), `Cartons/pallet` (`total × perPalletMultiplier`,
+  reading whether `project.secondary.enabled` at all rather than
+  re-deriving it — shows **"—"**, never a computed number, when the carton
+  tier isn't in the chain), `Area eff. %` (imports `deckCoveragePct` from
+  `project.js`, now exported specifically so this column and the committed
+  chain's own `coveragePct` can never disagree), `Cube eff. %`
+  (`candidate.utilization`), `Length/Width unused` (deck minus
+  `candidate.envelope`, per axis), `Overhang` (`candidate.loadOverhang`,
+  already on the candidate), and `Interlockable`. **The efficiency
+  denominator is stated, not silently chosen**: `utilization` is volumetric
+  fill against the pallet's MAX LOAD HEIGHT budget (`maxH - baseH`), not
+  each candidate's own achieved stack height — named in the column's hint
+  text, and pinned with a fixture where the two conventions provably give
+  different numbers (an 1mm gap between the cavity height and this
+  candidate's own envelope height), so the pin can't have passed by
+  coincidence either way.
+
+  **Interlockable** (`sym180`, the "is this layer its own 180° turn"
+  check palletpatterns.js's own `withSchedule` already runs internally to
+  decide whether to warn) is now also exposed as a field on the candidate
+  object (`interlockable: !symmetric`) — reading it off the existing
+  helper, never a second symmetry test. Verified against an INDEPENDENT
+  reconstruction in the test file (negate every placement's x/y and check
+  the resulting set matches), not by calling `sym180` a second time, which
+  would only prove the function agrees with itself.
+
+  **DEFERRED, explicitly, not silently dropped**: thumbnails (the capture-
+  sheet composer pointed at the candidate list instead of the chain),
+  the render inset ("Layer plan" view toggle alongside Solid/Cutaway),
+  and extracting the pallet-PDF's own layer-plan drawing as a shared
+  component used by all three. These are a separate, visual-rendering-
+  heavy body of work — this task ships the table (the part that directly
+  answers the original confusion and needed no new geometry) and stops
+  there; no pins exist yet for the deferred pieces because there is
+  nothing built to pin. `index.html`'s `#bTable`-scoped CSS rules were
+  widened to also match `#bPatternTable` (the two tables share one visual
+  language by construction, not by copy) — except the header `cursor:
+  pointer`, which stays case-table-only since the pattern table's headers
+  are deliberately not sortable.
+
+  Pinned in `test/patterntable.test.html`: row content read directly off
+  each candidate (never against another row), both efficiency columns
+  hand-computed with the denominator stated, interlockable verified
+  independently for both a symmetric and an asymmetric candidate, the
+  carton-skipped "—" behaviour driven through the real chain-strip
+  disable-carton confirmation dialog (not a project field poked directly),
+  and full DOM reachability/wiring at both 1400px and 390px via a real
+  iframe survey — panel toggling, row count, and a row click's live
+  propagation into the rendered 3D readout text. Full regression: every
+  suite this task's files touch (`chainstrip`, `project`, `palletpatterns`,
+  `containment`, `saveload`, `trailer`, `sensitivity`) green, unchanged.

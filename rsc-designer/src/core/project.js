@@ -1371,7 +1371,11 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
  * what the pallet render now reads for its stacking height, so a drift here
  * would move pixels as well as readouts. */
 const palletLoadH   = (fit, stackH) => fit.layers*stackH;
-const deckCoveragePct = (fit, outer, pallet) =>
+// exported: the pallet-pattern comparison table (build.js) reads this SAME
+// expression for its own "Area eff. %" column, per-candidate — never a
+// second area-efficiency formula that could disagree with the committed
+// chain's own coveragePct.
+export const deckCoveragePct = (fit, outer, pallet) =>
   Math.round(fit.perLayer*outer.L*outer.W/(pallet.L*pallet.W)*100);
 const palletCubeUtilPct = (unitVol, unitCount, pallet, loadH) =>
   loadH > 0 ? Math.round(unitVol*unitCount/(pallet.L*pallet.W*loadH)*100) : 0;
