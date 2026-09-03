@@ -12,7 +12,7 @@
  * things: the rounding setting, and which candidate is currently selected.
  */
 import {newProject, candidateCases, checkLockedCase, resolveChainShape, describeChain,
-        linkFor, defaultCandidate, ROUNDING} from '../core/project.js';
+        linkFor, defaultCandidate, ROUNDING, deckCoveragePct} from '../core/project.js';
 import {fmtMoney} from '../core/cost.js';
 import {fmtLen} from '../core/units.js';
 import {el} from './inputs.js';
@@ -141,12 +141,16 @@ function columns(){
 export function initBuild(startUnit){
   unit = startUnit || 'mm';
   el('buildWrap').innerHTML =
-    `<div class="bpanel">
+    `<div class="bpanel" id="bCasePanel">
       <div class="brow"><label>Round cavities up to</label>
         <select id="bRound">${Object.keys(ROUNDING).map(k => `<option${k === rounding ? ' selected' : ''}>${k}</option>`).join('')}</select></div>
       <div id="bStatus" class="bnote"></div>
       <div class="btablewrap"><table id="bTable"></table></div>
       <div class="brow"><button class="btn bapply" id="bUse" disabled>View selected</button></div>
+    </div>
+    <div class="bpanel" id="bPatternPanel" style="display:none">
+      <div id="bPatternStatus" class="bnote"></div>
+      <div class="btablewrap"><table id="bPatternTable"></table></div>
     </div>`;
   el('bRound').addEventListener('change', () => { rounding = el('bRound').value; recompute(); });
   recompute();
@@ -229,6 +233,7 @@ export function recompute(preserveKey){
   }
   renderTable();
   reselectByKey(key);
+  renderPatternTable();   // stays fresh even while hidden, so switching setMode('pattern') never shows a stale list
   refreshAll();
 }
 
@@ -252,6 +257,42 @@ function sortedRows(){
   })};
 }
 
+/**
+ * Generic candidate-comparison table DOM builder — thead/tbody markup,
+ * header-click sort wiring, row-click select wiring. Shared by the case/
+ * carton candidate table (renderTable, below) and the pallet-pattern table
+ * (renderPatternTable, further below) so the app has ONE table-rendering
+ * mechanism, not two that can drift apart. Each caller supplies its own
+ * rows/columns/selection state and is called back on sort/select; this
+ * function owns none of it.
+ * @param {HTMLTableElement} tbl
+ * @param {Object[]} cols  {key, label, txt(row)}
+ * @param {Object[]} displayRows  rows in the order to render (pre-sorted by the caller)
+ * @param {Object} opts
+ * @param {string} [opts.sortKey]  the column key currently sorted (indicator arrow); omit for none
+ * @param {number} [opts.sortDir]
+ * @param {(row)=>boolean} [opts.isSelected]
+ * @param {(row)=>boolean} [opts.isMisfit]
+ * @param {(row, col)=>boolean} [opts.isWinner]  star-badges a cell
+ * @param {(key)=>void} [opts.onHeaderClick]  omit to make headers unclickable (no re-sort)
+ * @param {(row, index)=>void} opts.onRowClick
+ */
+function renderCandidateTable(tbl, cols, displayRows, opts){
+  const {sortKey, sortDir = -1, isSelected = () => false, isMisfit = () => false,
+         isWinner = () => false, onHeaderClick, onRowClick} = opts;
+  tbl.innerHTML =
+    `<thead><tr>${cols.map(c =>
+      `<th${onHeaderClick ? ` data-k="${c.key}"` : ''}${c.hint ? ` title="${c.hint}"` : ''}>${c.label}${c.key === sortKey ? (sortDir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>` +
+    `<tbody>${displayRows.map((r, i) =>
+      `<tr data-i="${i}" class="${isSelected(r) ? 'bsel' : ''}${isMisfit(r) ? ' bmisfit' : ''}">${
+        cols.map(c => {
+          const isWin = isWinner(r, c);
+          return `<td${isWin ? ' class="bwin"' : ''}>${isWin ? '★ ' : ''}${c.txt(r, i)}</td>`;
+        }).join('')}</tr>`).join('')}</tbody>`;
+  if(onHeaderClick) tbl.querySelectorAll('th').forEach(th => th.addEventListener('click', () => onHeaderClick(th.dataset.k)));
+  tbl.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => onRowClick(displayRows[+tr.dataset.i], +tr.dataset.i)));
+}
+
 function renderTable(){
   const cols = columns();
   const tbl = el('bTable');
@@ -260,30 +301,26 @@ function renderTable(){
   // that should be obvious; when four different rows win, that's the
   // tradeoff the table exists to surface, not a single number to hand over.
   const best = bestRows(rows);
-  tbl.innerHTML =
-    `<thead><tr>${cols.map(c =>
-      `<th data-k="${c.key}">${c.label}${c.key === effectiveSortKey ? (sortDir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>` +
-    `<tbody>${sorted.map(r =>
-      `<tr data-i="${rows.indexOf(r)}" class="${r === selected ? 'bsel' : ''}${r.primaryFits === false ? ' bmisfit' : ''}">${
-        cols.map(c => {
-          const isWin = BADGE_COLUMNS[c.key] && best[c.key] === r;
-          return `<td${isWin ? ' class="bwin"' : ''}>${isWin ? '★ ' : ''}${c.txt(r)}</td>`;
-        }).join('')}</tr>`).join('')}</tbody>`;
-  tbl.querySelectorAll('th').forEach(th => th.addEventListener('click', () => {
-    const k = th.dataset.k;
-    if(sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = -1; }
-    renderTable();
-  }));
-  tbl.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
-    selected = rows[+tr.dataset.i];
-    el('bUse').disabled = false;
-    renderTable();
-    // the rows themselves didn't change, just which one is picked — no
-    // need to re-enumerate, but every display bound to "the selected
-    // candidate" (the rails' dims boxes, the 2D/3D views, the DXF export)
-    // still needs to hear about it
-    refreshAll();
-  }));
+  renderCandidateTable(tbl, cols, sorted, {
+    sortKey: effectiveSortKey, sortDir,
+    isSelected: r => r === selected,
+    isMisfit: r => r.primaryFits === false,
+    isWinner: (r, c) => !!(BADGE_COLUMNS[c.key] && best[c.key] === r),
+    onHeaderClick: k => {
+      if(sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = -1; }
+      renderTable();
+    },
+    onRowClick: r => {
+      selected = r;
+      el('bUse').disabled = false;
+      renderTable();
+      // the rows themselves didn't change, just which one is picked — no
+      // need to re-enumerate, but every display bound to "the selected
+      // candidate" (the rails' dims boxes, the 2D/3D views, the DXF export)
+      // still needs to hear about it
+      refreshAll();
+    }
+  });
   // the 3D cycle arrows' "N of M" + enable state track the table's live order
   // and selection — renderTable() is the one choke point for both (recompute,
   // re-sort, row-click, reselect, step all end here), so one call keeps them in
@@ -355,6 +392,14 @@ function patternState(){
   return {list, index: Math.max(0, Math.min(list.length - 1, raw))};
 }
 
+/** Test hook: the pallet-pattern table's own data, read the same way
+ *  renderPatternTable() does — the active row's ranked pattern list and
+ *  the clamped current index into it. Lets a pin assert the RENDERED
+ *  table's row content against the exact same source the renderer reads,
+ *  without re-deriving palletPatternList a second time. */
+export function getPatternRows(){ return patternState().list; }
+export function getPatternIndex(){ return patternState().index; }
+
 /** {pos, total, label} for the arrows at pallet depth: the selected
  *  pattern's 1-based rank, the family-filtered list size, and its identity
  *  ("60 · 5 × 2 grid"). Count leads, like the case-cycle label. */
@@ -376,6 +421,104 @@ export function stepPattern(delta){
   if(cycleListener) cycleListener();               // arrows' N-of-M updates even before the refresh lands
   refreshAll();                                    // commits: readout/BCT/3D/dims follow
 }
+
+/* ---- pallet-pattern COMPARISON TABLE ---------------------------------
+ * Build's pallet-level counterpart to the case/carton candidate table
+ * above — same table mechanism (renderCandidateTable), same "click a row
+ * to select" idiom, but ONE row per palletpatterns.js candidate, in that
+ * module's own ranked order (no re-sort: the '#' column IS the row's
+ * position, so re-sorting would make that column lie). Selecting a row
+ * writes project.pallet.patternIndex directly — the SAME field
+ * stepPattern() above already writes and applyPatternSelection() already
+ * reads (see project.js) — never a second, view-local "which pattern is
+ * picked" that could disagree with the one the cycle arrows/BCT/3D/trailer
+ * already follow. */
+
+/** Efficiency denominator, stated once, read everywhere this column is
+ *  labelled: `utilization` (palletpatterns.js) is volumetric fill against
+ *  the FULL max-load-height cavity (project.pallet.maxH - baseH), not
+ *  against each candidate's own achieved stack height — a shorter stack
+ *  in a taller budget reads as LOWER cube efficiency here, on purpose,
+ *  since the deck is committed to the max height regardless of how full a
+ *  given pattern happens to leave it. The header/hint below is the one
+ *  place that convention is named. */
+const CUBE_EFF_HINT = 'against the max load height budget, not the achieved stack height';
+
+function patternColumns(){
+  const row = shownRow();
+  const outer = row ? row.outer : null;
+  const perPalletMultiplier = row ? row.perPalletMultiplier : 1;
+  // "cartons per pallet" only means something when a carton actually sits
+  // in this chain — a wrap feeding the case directly has none to count.
+  // Reads the SAME fact the case table's own column label switches on
+  // (outerKey/childNoun), never re-derives whether a carton exists.
+  const cartonInChain = project.secondary.enabled !== false;
+  return [
+    {key: 'index', label: '#', txt: (r, i) => i + 1},
+    {key: 'family', label: 'Family', txt: r => r.family},
+    {key: 'perLayer', label: 'Per layer', txt: r => r.perLayer},
+    {key: 'layers', label: 'Layers', txt: r => r.layers},
+    {key: 'total', label: 'Cases/pallet', txt: r => r.total},
+    {key: 'cartonsPerPallet', label: 'Cartons/pallet',
+     txt: r => cartonInChain ? r.total*perPalletMultiplier : '—'},
+    {key: 'areaEff', label: `Area eff. %`, hint: 'top-layer footprint against the whole deck area',
+     txt: r => outer ? `${deckCoveragePct(r, outer, project.pallet)}%` : '—'},
+    {key: 'cubeEff', label: `Cube eff. %`, hint: CUBE_EFF_HINT,
+     txt: r => `${Math.round(r.utilization*100)}%`},
+    {key: 'lenUnused', label: 'Length unused',
+     txt: r => fmtLen(Math.max(0, project.pallet.L - r.envelope.L), unit)},
+    {key: 'widUnused', label: 'Width unused',
+     txt: r => fmtLen(Math.max(0, project.pallet.W - r.envelope.W), unit)},
+    {key: 'overhang', label: 'Overhang',
+     txt: r => r.loadOverhang ? `${fmtLen(r.loadOverhang.L, unit)} × ${fmtLen(r.loadOverhang.W, unit)}` : '—'},
+    {key: 'interlockable', label: 'Interlockable',
+     txt: r => r.interlockable ? 'yes' : 'no'}
+  ];
+}
+
+function renderPatternTable(){
+  const tbl = el('bPatternTable');
+  if(!tbl) return;
+  const status = el('bPatternStatus');
+  const {list, index} = patternState();
+  if(!list.length){
+    tbl.innerHTML = '';
+    if(status){ status.textContent = 'No pallet pattern fits the active case.'; status.className = 'bnote bbad'; }
+    return;
+  }
+  if(status){
+    status.textContent = `${list.length} pallet pattern${list.length === 1 ? '' : 's'} for the active case — click a row to select`;
+    status.className = 'bnote';
+  }
+  const cols = patternColumns();
+  const selectedCand = list[index];
+  renderCandidateTable(tbl, cols, list, {
+    isSelected: r => r === selectedCand,
+    onRowClick: (r, i) => {
+      project.pallet.patternIndex = i;
+      renderPatternTable();
+      if(cycleListener) cycleListener();
+      refreshAll();
+    }
+  });
+}
+
+let mode = 'case';   // 'case' | 'pattern' — which comparison table Build shows
+
+/** Switch which comparison table Build shows. build.js owns no notion of
+ *  "active level" itself (that's app.js's concept) — the caller decides
+ *  when to call this (entering Build, or changing level while Build is
+ *  already the visible tab). A no-op when already in that mode, so
+ *  re-entering the SAME mode never re-renders needlessly. */
+export function setMode(next){
+  if(mode === next) return;
+  mode = next;
+  const caseEl = el('bCasePanel'), patEl = el('bPatternPanel');
+  if(caseEl) caseEl.style.display = mode === 'case' ? '' : 'none';
+  if(patEl) patEl.style.display = mode === 'pattern' ? '' : 'none';
+  if(mode === 'pattern') renderPatternTable();
+}
+export const getMode = () => mode;
 
 /** A stable, re-derivable identifier for the currently-selected candidate
  *  row (nx/ny/nz/orientation) — never the row itself, which carries

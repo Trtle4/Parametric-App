@@ -2335,6 +2335,12 @@ function setActiveLevel(level){
   el('msTitle').textContent = `${APP_NAME} · ${lvl.label}`;
   updateExportButtonsState();
   updatePngButtonsState();
+  // Build's own comparison table is level-aware: the pallet level compares
+  // pallet-layer PATTERNS for the active case, every other level compares
+  // the outermost tier's own CANDIDATE grid — the same distinction that
+  // used to leave Build showing a one-row case table at pallet depth, with
+  // nowhere to browse the 24 pallet patterns cycling actually reaches.
+  build.setMode(level === 'pallet' ? 'pattern' : 'case');
   mountActiveLevel();
   renderChainString();
   refresh2d();

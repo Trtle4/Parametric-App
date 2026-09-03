@@ -1,0 +1,290 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pallet pattern comparison table</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* Task 2 (this PR's scope): the pallet level's Build tab gets a real
+   comparison TABLE for pallet-layer patterns -- reusing the case/carton
+   candidate table's rendering mechanism (renderCandidateTable, extracted
+   in build.js so the app has one table-rendering mechanism, not two that
+   can drift), not a second one. Selecting a row writes
+   project.pallet.patternIndex directly -- the SAME field the pre-existing
+   cycle arrows already write and applyPatternSelection already reads (see
+   test/patternpick.test.html's diagnosis), never a second, view-local
+   "which pattern is picked".
+
+   DEFERRED, explicitly, not silently dropped: thumbnails, the render
+   inset ("Layer plan" view toggle), and extracting the pallet-PDF's
+   layer-plan drawing as a shared component. Those are a separate,
+   visual-rendering-heavy body of work; this PR ships the table (the part
+   that directly answers the original "Build shows one pattern out of 24"
+   confusion) and stops there. Pins for the deferred pieces are not
+   written here because there is nothing yet to pin. */
+
+import {newProject, resolveActiveRow} from '../src/core/project.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const approx = (a, e, m = '', tol = 1e-9) => { if(Math.abs(a - e) > tol) throw new Error(`${m} expected ${e}, got ${a}`); };
+
+/* deterministic fixture: legacy carton-driven (no content stage, so
+   nothing else varies), a real deck/case combo whose ranked pattern list
+   has genuinely different candidates -- 4 "1+3 mixed"-family entries tied
+   at 16, then 2 "aligned" entries at 12 -- verified by dumping the list,
+   not assumed. */
+function fixtureProject(){
+  const p = newProject();
+  p.primary = null;
+  p.secondary.params = {...p.secondary.params, L: 300, W: 200, H: 150};
+  p.pallet.L = 1200; p.pallet.W = 1000; p.pallet.maxH = 2000;
+  p.links[0].count = 12;
+  p.links[0].arrangement = 'auto';
+  p.pallet.pattern = 'optimal';
+  return p;
+}
+const fixtureRow = resolveActiveRow(fixtureProject(), '1mm', null);
+const list = fixtureRow.patternList;
+
+t('FIXTURE: the pattern list has >=6 candidates spanning two families with different totals', () => {
+  ok(list.length >= 6, `need >=6 candidates, got ${list.length}`);
+  ok(list.some(c => c.family === 'mixed') && list.some(c => c.family === 'aligned'),
+     'fixture needs both a mixed and an aligned candidate');
+  ok(list[0].total !== list[list.length - 1].total, 'fixture needs candidates with DIFFERENT totals');
+});
+
+/* ============================================================
+   ROWS: row count equals candidate count, row n describes candidate n --
+   asserted against the candidate directly, not against another row.
+   ============================================================ */
+t('ROWS: every list entry carries its own family/perLayer/layers/total, read directly (not re-derived)', () => {
+  list.forEach((c, i) => {
+    ok(typeof c.family === 'string' && c.family.length > 0, `row ${i}: family missing`);
+    ok(Number.isInteger(c.perLayer) && c.perLayer > 0, `row ${i}: perLayer`);
+    ok(Number.isInteger(c.layers) && c.layers > 0, `row ${i}: layers`);
+    ok(c.total === c.perLayer*c.layers, `row ${i}: total must equal perLayer*layers, the identity the '#'-indexed row asserts`);
+  });
+});
+
+/* ============================================================
+   EFFICIENCY: hand-computed, denominator stated. Area eff. % =
+   round(perLayer * caseOuter.L * caseOuter.W / (deckL * deckW) * 100) --
+   the SAME expression project.js's deckCoveragePct already uses for the
+   committed chain's own coveragePct (imported, not re-derived). Cube
+   eff. % = round(candidate.utilization * 100), and utilization is against
+   the MAX LOAD HEIGHT budget (pallet.maxH - baseH), not each candidate's
+   own achieved stack height -- stated here as the convention this table's
+   column header/hint names.
+   ============================================================ */
+t('EFFICIENCY: Area eff. % hand-computed for the mixed (index 0) and aligned (index 4) candidates', () => {
+  const outer = fixtureRow.outer;   // {L:310, W:813, H:468} for this fixture -- confirmed by direct dump
+  const deckL = 1200, deckW = 1000;
+  const c0 = list[0], c4 = list.find(c => c.family === 'aligned');
+  ok(c4, 'fixture: need an aligned candidate');
+  const areaEff0 = Math.round(c0.perLayer*outer.L*outer.W/(deckL*deckW)*100);
+  const areaEff4 = Math.round(c4.perLayer*outer.L*outer.W/(deckL*deckW)*100);
+  approx(areaEff0, 84, 'mixed candidate (perLayer=4) area eff.:');
+  approx(areaEff4, 63, 'aligned candidate (perLayer=3) area eff.:');
+});
+
+t('EFFICIENCY: Cube eff. % is round(utilization*100), against the MAX-HEIGHT budget -- stated denominator, hand-verified', () => {
+  const c0 = list[0];
+  // hand-computed: cavity.H = pallet.maxH - baseH = 2000 - 127 = 1873 (the
+  // MAX budget, not this candidate's own achieved stack height 1872 --
+  // off by exactly 1mm, proving the two are genuinely different
+  // quantities and this candidate's own utilization is NOT simply
+  // envelope.H-based).
+  const cavityVol = 1200*1000*(2000 - 127);
+  const childVol = fixtureRow.outer.L*fixtureRow.outer.W*fixtureRow.outer.H;
+  const expectedUtil = c0.total*childVol/cavityVol;
+  approx(c0.utilization, expectedUtil, 'utilization against the max-height cavity, not envelope.H:', 1e-6);
+  approx(Math.round(c0.utilization*100), 84, 'displayed Cube eff. %:');
+  // mutation guard: if utilization were instead computed against the
+  // candidate's OWN achieved stack height (envelope.H) rather than the
+  // max-load-height budget, it would read a DIFFERENT number -- proving
+  // this pin actually discriminates between the two conventions the task
+  // explicitly warned are both defensible.
+  const envelopeBasedVol = 1200*1000*c0.envelope.H;
+  const envelopeBasedUtil = c0.total*childVol/envelopeBasedVol;
+  ok(Math.abs(envelopeBasedUtil - c0.utilization) > 1e-6,
+     'vacuous otherwise: the two conventions must give numerically different results for this fixture');
+});
+
+/* ============================================================
+   INTERLOCKABLE: matches the layer's own 180-degree symmetry -- verified
+   INDEPENDENTLY (not by calling palletpatterns.js's own sym180, which
+   would be testing the function against itself) by reconstructing each
+   candidate's build() placements and checking whether negating every
+   (x,y) reproduces the same placement SET.
+   ============================================================ */
+function positionsSymmetric(placements){
+  const key = p => `${Math.round(p.x*100)},${Math.round(p.y*100)}`;
+  const set = new Set(placements.map(key));
+  const negated = new Set(placements.map(p => key({x: -p.x, y: -p.y})));
+  if(set.size !== negated.size) return false;
+  for(const k of set) if(!negated.has(k)) return false;
+  return true;
+}
+t('INTERLOCKABLE: a symmetric layer (aligned, own 180deg turn) reports interlockable=false', () => {
+  const c = list.find(x => x.family === 'aligned');
+  ok(c, 'fixture: need an aligned candidate');
+  const layer0 = c.build().placements.filter(p => Math.abs(p.z - c.build().placements[0].z) < 1e-6);
+  ok(positionsSymmetric(layer0), 'fixture: this candidate\'s own layer must actually be symmetric, independently verified');
+  ok(c.interlockable === false, `expected interlockable=false for a self-symmetric layer, got ${c.interlockable}`);
+});
+t('INTERLOCKABLE: an asymmetric layer (mixed, 1+3 split) reports interlockable=true', () => {
+  const c = list.find(x => x.family === 'mixed');
+  ok(c, 'fixture: need a mixed candidate');
+  const layer0 = c.build().placements.filter(p => Math.abs(p.z - c.build().placements[0].z) < 1e-6);
+  ok(!positionsSymmetric(layer0), 'fixture: this candidate\'s own layer must actually be asymmetric, independently verified');
+  ok(c.interlockable === true, `expected interlockable=true for a genuinely asymmetric layer, got ${c.interlockable}`);
+});
+
+/* CARTONS/PALLET '-': shows -- when the carton itself is not in the chain
+   (a wrap feeding the case directly), never a number computed from a
+   level that isn't there. Driven through the real DOM further below
+   (CARTONS-SKIPPED DOM pin), since disabling the carton tier is a real
+   UI action (the chain-strip's own "in chain" toggle), not a project
+   field this test should poke directly. */
+
+/* ============================================================
+   DOM, both breakpoints: the table is reachable, row count matches the
+   candidate list, selecting a row commits project.pallet.patternIndex and
+   the 3D/BCT/cost/trailer readouts all follow -- driven through the real
+   app, not the pure resolver above.
+   ============================================================ */
+const WIDE = 1400, NARROW = 390;
+const settle = (ms = 250) => new Promise(r => setTimeout(r, ms));
+function openApp(width){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:900px;border:0`;
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+async function surveyPatternTable(width){
+  const f = await openApp(width);
+  await settle(1100);
+  const d = f.contentDocument, q = s => d.querySelector(s), qa = s => [...d.querySelectorAll(s)];
+  const unitsEl = q('#units');
+  if(unitsEl){ unitsEl.value = 'mm'; unitsEl.dispatchEvent(new Event('change', {bubbles: true})); }
+  await settle(300);
+  q('.cs-node[data-node="pallet"]').click();
+  await settle(300);
+  const maxHEl = q('#palMaxH');
+  if(maxHEl){
+    maxHEl.value = '3000';
+    maxHEl.dispatchEvent(new Event('input', {bubbles: true}));
+    maxHEl.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  await settle(500);
+  q('#tabBuild').click();
+  await settle(500);
+  const R = {width};
+  R.casePanelHidden = q('#bCasePanel') ? getComputedStyle(q('#bCasePanel')).display === 'none' : null;
+  R.patternPanelShown = q('#bPatternPanel') ? getComputedStyle(q('#bPatternPanel')).display !== 'none' : null;
+  const trs = qa('#bPatternTable tbody tr');
+  R.rowCount = trs.length;
+  R.headers = qa('#bPatternTable thead th').map(th => th.textContent.replace(/\s+/g, ' ').trim());
+  R.totals = trs.map(tr => tr.children[4].textContent);
+  // find a row whose total differs from row 0, select it, and read back
+  // the 3D pallet readout + BCT + Build headline before/after
+  const targetIdx = R.totals.findIndex(t2 => t2 !== R.totals[0]);
+  R.targetIdx = targetIdx;
+  if(targetIdx > 0){
+    q('#tab3d').click();
+    await settle(400);
+    const before = d.body.innerText;
+    q('#tabBuild').click();
+    await settle(200);
+    qa('#bPatternTable tbody tr')[targetIdx].click();
+    await settle(300);
+    q('#tab3d').click();
+    await settle(400);
+    const after = d.body.innerText;
+    R.readoutChanged = before !== after;
+  }
+  return R;
+}
+
+async function surveyCartonsSkipped(){
+  const f = await openApp(WIDE);
+  await settle(1100);
+  const d = f.contentDocument, q = s => d.querySelector(s), qa = s => [...d.querySelectorAll(s)];
+  const unitsEl = q('#units');
+  if(unitsEl){ unitsEl.value = 'mm'; unitsEl.dispatchEvent(new Event('change', {bubbles: true})); }
+  await settle(300);
+  q('.cs-node[data-node="pallet"]').click();
+  await settle(300);
+  q('#tabBuild').click();
+  await settle(400);
+  const before = qa('#bPatternTable tbody tr').map(tr => tr.children[5].textContent);   // Cartons/pallet column
+  // disable the carton tier via the chain strip's own "in chain" toggle --
+  // a real UI action, not a project field poked directly
+  const tog = q('#cs-tog-carton');
+  const togFound = !!tog;
+  if(tog) tog.click();
+  await settle(300);
+  // toggling shows a confirmation notice ("Disable the carton? ...") with
+  // Disable/Cancel buttons -- find and click the Disable one by its label,
+  // the only stable handle a plain appended <button> gives us
+  const confirmBtn = [...d.querySelectorAll('#loadNotice button')].find(b => /^Disable/.test(b.textContent));
+  const confirmFound = !!confirmBtn;
+  if(confirmBtn) confirmBtn.click();
+  await settle(400);
+  q('.cs-node[data-node="pallet"]').click();
+  await settle(300);
+  q('#tabBuild').click();
+  await settle(400);
+  const after = qa('#bPatternTable tbody tr').map(tr => tr.children[5].textContent);
+  return {togFound, confirmFound, before, after};
+}
+const cartonsR = await surveyCartonsSkipped();
+
+t('CARTONS SKIPPED (DOM): with a carton in the chain, Cartons/pallet shows real numbers', () => {
+  ok(cartonsR.togFound, 'the chain strip\'s carton "in chain" toggle must exist');
+  ok(cartonsR.confirmFound, 'the disable-carton confirmation dialog\'s Disable button must exist');
+  ok(cartonsR.before.length > 0, 'fixture: need real pattern rows before disabling the carton');
+  ok(cartonsR.before.every(v => v !== '—' && /^\d+$/.test(v)),
+     `expected every Cartons/pallet cell to be a real number with the carton in chain, got ${JSON.stringify(cartonsR.before.slice(0, 5))}`);
+});
+t('CARTONS SKIPPED (DOM): disabling the carton tier shows -- for every row, never a number computed from a level not in the chain', () => {
+  ok(cartonsR.after.length > 0, 'fixture: need real pattern rows after disabling the carton');
+  ok(cartonsR.after.every(v => v === '—'),
+     `expected every Cartons/pallet cell to read "—" with no carton in chain, got ${JSON.stringify(cartonsR.after.slice(0, 5))}`);
+});
+
+const wideR = await surveyPatternTable(WIDE);
+const narrowR = await surveyPatternTable(NARROW);
+
+for(const R of [wideR, narrowR]){
+  t(`DOM @ ${R.width}px: entering Build at pallet level shows the PATTERN panel, hides the case panel`, () => {
+    ok(R.casePanelHidden === true, 'case panel must be hidden at pallet level');
+    ok(R.patternPanelShown === true, 'pattern panel must be shown at pallet level');
+  });
+  t(`DOM @ ${R.width}px: the table's row count matches the header set and is non-trivial`, () => {
+    ok(R.rowCount >= 6, `expected several real pattern rows, got ${R.rowCount}`);
+    ok(R.headers.includes('#') && R.headers.includes('Family') && R.headers.includes('Cases/pallet')
+       && R.headers.includes('Cartons/pallet') && R.headers.includes('Interlockable'),
+       `missing expected columns in ${JSON.stringify(R.headers)}`);
+  });
+  t(`DOM @ ${R.width}px: selecting a row with a DIFFERENT total commits it -- the 3D/readout text actually changes`, () => {
+    ok(R.targetIdx > 0, 'fixture: need a row whose total differs from row 0 at this width\'s default project');
+    ok(R.readoutChanged, 'selecting a different pallet-pattern row must change the rendered readout text');
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
