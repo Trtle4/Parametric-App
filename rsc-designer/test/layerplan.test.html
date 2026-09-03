@@ -3,20 +3,31 @@
 <title>layer-plan tests</title>
 <pre id="out">running…</pre>
 <script type="module">
-/* The Task-2 follow-up: a shared "layer plan" top-down schematic used in
-   three places — the pattern-table thumbnail grid, a 3D render inset, and
-   the Pallet PDF. All three read core/layerplan.js's layerPlanGeometry()
-   (built once per candidate) and draw it; none re-derives case positions.
+/* The Task-2 follow-up: a shared "layer plan" top-down schematic, drawn
+   from core/layerplan.js's layerPlanGeometry() (built once per candidate).
+   It now has TWO consumers, not three: the pattern-table thumbnail grid
+   and a 3D render inset.
 
-   NOTE ON "bit-identical after extraction": the original task framing
-   assumed the Pallet PDF already drew a layer-plan diagram that this work
-   would extract. Reading the real palletpdf.js found no such thing — the
-   PDF only ever embedded three CAMERA screenshots (iso/top/cut), never a
-   vector schematic. So there was nothing to extract; the closest honest
-   analog is pinned instead: a spec with no `layerPlan` key produces BYTE-
-   IDENTICAL output to a frozen pre-task copy of the module
-   (fixtures/palletpdf-baseline.js), and adding `layerPlan` only ever ADDS
-   drawing ops, never alters the pre-existing ones. */
+   REMOVED (thumbnail-in-PDF task): the Pallet PDF used to draw a small
+   vector inset of this SAME geometry in a corner of its own top-view photo
+   cell. Reported as visually redundant/overlapping — the top-view CAMERA
+   capture (Im2) already shows the layer pattern, so a second, differently-
+   scaled vector drawing on top of it added confusion, not information (a
+   real exported sheet showed the inset's white backing card and teal case
+   outlines sitting across the corner of the photo, looking like two
+   disagreeing drawings even though they were never meant to be compared
+   pixel-for-pixel). `buildPalletPdf` no longer reads `spec.layerPlan` at
+   all — the key is accepted and silently ignored, same as any other
+   unrecognized field, so a caller that still builds one (there is none)
+   would not break. `app.js`'s `exportPalletPdf` no longer computes it.
+   The render inset and the thumbnail grid are UNCHANGED — this was a
+   PDF-only removal.
+
+   NOTE ON "bit-identical after extraction" (retained from the original
+   task framing, still true): the Pallet PDF's own three images were
+   always camera screenshots (iso/top/cut), never a vector schematic —
+   there was never anything here to "extract" from a pre-existing
+   drawing. */
 import {newProject, checkLockedCase} from '../src/core/project.js';
 import {layerPlanGeometry} from '../src/core/layerplan.js';
 import {layerPlanSVG} from '../src/render/layerplan2d.js';
@@ -85,7 +96,7 @@ t('layerPlanGeometry: hand-computed transform — a fixed geometry\'s SVG rect l
 
 /* ---------- 2. cross-consumer agreement ---------- */
 
-t('the render inset, the thumbnail grid and the Pallet PDF all call the SAME layerPlanGeometry — no re-derived source', async () => {
+await tAsync('the render inset and the thumbnail grid call the SAME layerPlanGeometry — no re-derived source', async () => {
   const [buildSrc, appSrc] = await Promise.all([
     fetch('../src/ui/build.js').then(r => r.text()),
     fetch('../src/ui/app.js').then(r => r.text())
@@ -95,12 +106,15 @@ t('the render inset, the thumbnail grid and the Pallet PDF all call the SAME lay
   if(!buildSrc.includes('layerPlanGeometry(cand.build()'))
     throw new Error('build.js\'s thumbnail cache does not call layerPlanGeometry');
   if(!appSrc.includes("import {layerPlanGeometry} from '../core/layerplan.js';"))
-    throw new Error('app.js (render inset + PDF) does not import the shared geometry function');
+    throw new Error('app.js (render inset) does not import the shared geometry function');
+  // ONE call now, not two — the Pallet PDF no longer has a consumer of its
+  // own (removed: see this file's own header). Asserting the EXACT count,
+  // not merely >=1, so a re-added second call site is caught either way.
   const calls = (appSrc.match(/layerPlanGeometry\(/g) || []).length;
-  if(calls < 2) throw new Error(`app.js should call layerPlanGeometry twice (render inset, PDF spec) — found ${calls}`);
+  eq(calls, 1, 'app.js should call layerPlanGeometry exactly once (render inset only, PDF removed):');
 });
 
-t('cross-consumer agreement: SVG and PDF drawn from the SAME geometry object show the SAME case count', () => {
+t('SVG draws exactly geometry.cases.length rects, and the root reports the same count', () => {
   const geometry = {
     cases: [{x: -100, y: -50, w: 200, h: 100}, {x: 100, y: 50, w: 200, h: 100}, {x: 100, y: -50, w: 200, h: 100}],
     envelope: {L: 400, W: 200}
@@ -111,64 +125,40 @@ t('cross-consumer agreement: SVG and PDF drawn from the SAME geometry object sho
   const svgCaseCount = doc.querySelectorAll('rect[data-case]').length;
   eq(svgCaseCount, geometry.cases.length, 'SVG draws exactly geometry.cases.length rects:');
   eq(+doc.documentElement.getAttribute('data-cases'), geometry.cases.length, 'SVG root reports the same count:');
-
-  // Build a minimal PDF spec WITH this exact geometry and count the new
-  // stroked rects the layer-plan inset adds (baseline has none) — must equal
-  // geometry.cases.length + 1 (the deck outline), proving the PDF's own
-  // hand-written vector ops are driven by the SAME array, not a re-derived
-  // count.
-  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
-  const baseSpec = {
-    dateStr: '2026-01-01', unit: 'mm',
-    images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
-    captions: {iso: 'x', top: 'y', cut: 'z'},
-    sections: [{label: 'Pallet', rows: [['Overall', '1 x 1 x 1 mm']]}]
-  };
-  const without = buildPdfNew(baseSpec);
-  const withLP = buildPdfNew({...baseSpec, layerPlan: {geometry, pallet}});
-  const textOf = bytes => { let s = ''; for(const b of bytes) s += String.fromCharCode(b); return s; };
-  const countReS = s => (s.match(/ re\nS\n/g) || []).length;
-  const strokedRectDelta = countReS(textOf(withLP)) - countReS(textOf(without));
-  // deck outline + the inset card's own border frame() + one stroked rect
-  // per case — the "+2" is the inset's own chrome, not case data, so the
-  // CASE-dependent part of this count (cases.length) is what actually
-  // proves the correspondence to the SVG's own data-cases count.
-  eq(strokedRectDelta, geometry.cases.length + 2, 'new stroked rects = cases + deck outline + card border, matching the SVG\'s own case count:');
 });
 
-/* ---------- 3. Pallet PDF: no pre-existing content altered ---------- */
+/* ---------- 3. Pallet PDF: the layer-plan inset is REMOVED, verifiably ---------- */
 
-t('Pallet PDF: a spec with no layerPlan key is BYTE-IDENTICAL to the frozen pre-task module', () => {
-  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
-  const spec = {
+const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+function pdfSpec(extra = {}){
+  return {
     dateStr: '2026-01-01', unit: 'mm',
     images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
     captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan', cut: 'case cutaway'},
     sections: [
       {label: 'Case', rows: [['Outside dimensions', '306 × 206 × 162 mm'], ['Per pallet', '16']]},
       {label: 'Pallet', rows: [['Load (on deck)', '1200 × 1000 × 900 mm'], ['Overall (incl. deck)', '1200 × 1000 × 1027 mm']]}
-    ]
+    ],
+    ...extra
   };
+}
+
+t('Pallet PDF: output is BYTE-IDENTICAL to the frozen pre-feature module (no layerPlan key)', () => {
+  const spec = pdfSpec();
   const a = buildPdfBaseline(spec), b = buildPdfNew(spec);
   eq(a.length, b.length, 'byte length:');
   for(let i = 0; i < a.length; i++)
     if(a[i] !== b[i]) throw new Error(`byte ${i} differs: baseline ${a[i]} vs current ${b[i]}`);
 });
 
-t('MUTATION CONTEXT: the frozen baseline genuinely predates this feature (no layerPlan support at all)', () => {
-  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
-  const spec = {
-    dateStr: '2026-01-01', unit: 'mm',
-    images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
-    captions: {iso: 'x', top: 'y', cut: 'z'}, sections: [],
+t('Pallet PDF: a layerPlan key is now INERT — same bytes with or without it (the inset is really gone, not just usually skipped)', () => {
+  const withKey = buildPdfNew(pdfSpec({
     layerPlan: {geometry: {cases: [{x: 0, y: 0, w: 100, h: 100}], envelope: {L: 100, W: 100}}, pallet: {L: 500, W: 500}}
-  };
-  // the baseline module has no idea what `layerPlan` means — proving the two
-  // modules are genuinely different code, not the same file imported twice
-  const withLPCurrent = buildPdfNew(spec);
-  const ignoredByBaseline = buildPdfBaseline(spec);
-  if(withLPCurrent.length === ignoredByBaseline.length)
-    throw new Error('current module did not draw anything extra for layerPlan — pins above would be vacuous');
+  }));
+  const withoutKey = buildPdfNew(pdfSpec());
+  eq(withKey.length, withoutKey.length, 'byte length:');
+  for(let i = 0; i < withKey.length; i++)
+    if(withKey[i] !== withoutKey[i]) throw new Error(`byte ${i} differs — a layerPlan key still changes PDF output`);
 });
 
 /* ---------- 4. DOM-driven: reachability, defaults, no-modal, both breakpoints ---------- */

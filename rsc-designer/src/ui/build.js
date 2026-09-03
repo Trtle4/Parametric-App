@@ -16,7 +16,7 @@ import {newProject, candidateCases, checkLockedCase, resolveChainShape, describe
 import {fmtMoney} from '../core/cost.js';
 import {fmtLen} from '../core/units.js';
 import {layerPlanGeometry} from '../core/layerplan.js';
-import {layerPlanSVG} from '../render/layerplan2d.js';
+import {layerPlanSVG, layerPlanTileSize} from '../render/layerplan2d.js';
 import {el} from './inputs.js';
 import {refreshAll} from './notify.js';
 
@@ -516,7 +516,13 @@ function thumbSVGFor(cand, outer){
   let svg = thumbCache.get(cand);
   if(svg == null){
     const geo = layerPlanGeometry(cand.build(), outer);
-    svg = layerPlanSVG(geo, project.pallet, {width: 168, height: 128});
+    // Tile size TRACKS the deck's own aspect (layerplan2d.js's own clamp) —
+    // every candidate here shares the SAME deck, so this is one size for
+    // the whole grid, not a per-candidate guess; layerPlanSVG still does
+    // its own contain-fit inside that tile for whatever aspect the clamp
+    // couldn't fully absorb.
+    const {width, height} = layerPlanTileSize(project.pallet);
+    svg = layerPlanSVG(geo, project.pallet, {width, height});
     thumbCache.set(cand, svg);
   }
   return svg;

@@ -73,18 +73,20 @@ let solidOverride = null;
 // EXPLODED VIEW — a transform on the placements the current depth already
 // solved (render/explode.js), never a re-solve. Which levels support it, and
 // each level's own axis, remembered per level so switching depth and back
-// keeps the knob — 'all' spreads the plan arrangement apart on every axis;
-// the pallet defaults to 'y' (vertical) — spreading cases sideways just
-// widens the footprint, pulling layers apart vertically is the point.
-// 'wrap' joins the set for the U-board: at wrap depth, exploding pulls the
-// product and the U-board apart (rather than spreading N siblings — there's
-// only ever one of each), using the SAME rank/gap math (explode.js's
-// axisOffsets), applied vertically since that IS how they're layered; it
-// defaults to 'y' for the same reason the pallet does, and degrades to a
-// no-op with no U-board in the chain (a single rank, offset 0).
+// keeps the knob. EVERY level now defaults to 'y' (vertical): loading is
+// vertical at every level in this chain (contents are LOWERED into a case,
+// a case is LOWERED onto a pallet — never slid in sideways), so that is the
+// reading that matches how the pack is actually built; 'all' (spreading the
+// plan arrangement apart on every axis too) stays selectable, it is simply
+// no longer the first thing a user sees. 'wrap' joins the set for the
+// U-board: at wrap depth, exploding pulls the product and the U-board apart
+// (rather than spreading N siblings — there's only ever one of each), using
+// the SAME rank/gap math (explode.js's axisOffsets, one-sided-up since the
+// two are stacked, never side by side) and degrades to a no-op with no
+// U-board in the chain (a single rank, offset 0).
 const EXPLODE_LEVELS = ['carton', 'case', 'pallet', 'wrap'];
 let explodeOn = false;                                    // the toggle; factor 0 still reads as off
-let explodeAxis = {carton: 'all', case: 'all', pallet: 'y', wrap: 'y'};
+let explodeAxis = {carton: 'y', case: 'y', pallet: 'y', wrap: 'y'};
 let explodeFactor = 0.6;   // 0..1 — the slider's live value while explodeOn
 
 // Dims overlay: L×W×H callouts on the active component, off by default. Each
@@ -3860,24 +3862,11 @@ function exportPalletPdf(){
     ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(stack.totalHeightMM)} ${u}`]
   ]});
 
-  // LAYER PLAN — the SAME shared geometry (core/layerplan.js) the render
-  // inset and the pattern-table thumbnails draw, computed once here and
-  // handed to buildPalletPdf as pure data; the PDF module itself resolves
-  // nothing (see its own doc comment on why). Omitted (not merely null)
-  // when there is no pattern list to draw from, so an unpalletizable chain
-  // draws no inset rather than an empty box.
-  const patternList = build.getPatternRows(), patternIndex = build.getPatternIndex();
-  const patternCand = patternList[patternIndex];
-  const layerPlan = (patternCand && row.outer)
-    ? {geometry: layerPlanGeometry(patternCand.build(), row.outer), pallet: {L: pal.L, W: pal.W}}
-    : null;
-
   const bytes = buildPalletPdf({
     dateStr: dateStamp(), unit: u, images,
     captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan',
                cut: `${outerNoun} cutaway`},
-    sections,
-    ...(layerPlan ? {layerPlan} : {})
+    sections
   });
   const filename = `PALLET_${f(pal.L)}x${f(pal.W)}_${u}_summary.pdf`;
   // cancelable so a test can read the exported bytes instead of downloading

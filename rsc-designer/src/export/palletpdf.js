@@ -82,17 +82,7 @@ const n2 = v => +v.toFixed(2);
  *   {dateStr, unit,
  *    images: {iso, top, cut} — each {data (JPEG dataURL), w, h} px,
  *    captions: {iso, top, cut},
- *    sections: [{label, rows: [[key, value], ...]}],
- *    layerPlan?: {geometry, pallet}} — OPTIONAL. `geometry` is
- *      core/layerplan.js's layerPlanGeometry() result and `pallet` is
- *      {L,W} — the SAME shared geometry the render inset and the pattern-
- *      table thumbnails draw, never a second computation. Composition only,
- *      same rule as the rest of this file: nothing here resolves a case
- *      position, it only draws the ones the caller already resolved.
- *      Drawn as a small vector inset in a corner of the existing top-view
- *      image cell — it never touches Im1/Im2/Im3's own pixels or position,
- *      so a spec built with no `layerPlan` key produces the EXACT same
- *      bytes this function always has.
+ *    sections: [{label, rows: [[key, value], ...]}]}
  * @returns {Uint8Array} the PDF file
  */
 /** Greedy word wrap to a pixel width, using the sheet's own text metrics. A
@@ -135,17 +125,6 @@ export function buildPalletPdf(spec){
   };
   const frame = (x, yTop, w, h) => {
     c.push(`${col(LINE)} RG`, '0.7 w', `${n2(x)} ${n2(ty(yTop + h))} ${n2(w)} ${n2(h)} re`, 'S');
-  };
-  // generalised rect primitives (frame() above is the pre-existing LINE-only
-  // stroke, untouched so its own byte output can never move) — added for the
-  // optional layer-plan inset below: a filled backing card and a coloured,
-  // thin-stroke case rect, both following frame()'s own x/yTop/w/h (top-down)
-  // convention and its same re/S(/f) content-stream shape.
-  const rectFill = (x, yTop, w, h, fill) => {
-    c.push(`${col(fill)} rg`, `${n2(x)} ${n2(ty(yTop + h))} ${n2(w)} ${n2(h)} re`, 'f');
-  };
-  const rectStroke = (x, yTop, w, h, color, strokeW) => {
-    c.push(`${col(color)} RG`, `${n2(strokeW)} w`, `${n2(x)} ${n2(ty(yTop + h))} ${n2(w)} ${n2(h)} re`, 'S');
   };
   const image = (name, x, yTop, w, h) => {
     c.push('q', `${n2(w)} 0 0 ${n2(h)} ${n2(x)} ${n2(ty(yTop + h))} cm`, `/${name} Do`, 'Q');
@@ -233,27 +212,6 @@ export function buildPalletPdf(spec){
   frame(M + pw + 16, y, pw, ph);
   eyebrow(M + pw + 16, y + ph + 13, spec.captions.cut, {align: 'center', width: pw});
 
-  // ---- optional LAYER PLAN inset — a small vector schematic in the
-  // bottom-right corner of the top-view cell (Im2), same "inset in a
-  // corner, never covering the main content" convention the 3D render's
-  // own layer-plan overlay uses. Absent key -> nothing drawn, page 1 is
-  // otherwise byte-identical. ----
-  if(spec.layerPlan){
-    const {geometry, pallet} = spec.layerPlan;
-    const lpW = 108, lpH = 84, lpPad = 6;
-    const lpX = M + pw - lpW - lpPad, lpYTop = y + ph - lpH - lpPad;
-    rectFill(lpX, lpYTop, lpW, lpH, [1, 1, 1]);
-    frame(lpX, lpYTop, lpW, lpH);
-    const innerPad = 5, availW = lpW - 2*innerPad, availH = lpH - 2*innerPad;
-    const scale = Math.min(availW/pallet.L, availH/pallet.W);
-    const cx = lpX + lpW/2, cyTop = lpYTop + lpH/2;
-    const deckW = pallet.L*scale, deckH = pallet.W*scale;
-    rectStroke(cx - deckW/2, cyTop - deckH/2, deckW, deckH, LINE, 0.5);
-    for(const cs of geometry.cases){
-      const cw = cs.w*scale, ch = cs.h*scale;
-      rectStroke(cx + cs.x*scale - cw/2, cyTop + cs.y*scale - ch/2, cw, ch, ACCENT, 0.4);
-    }
-  }
   y += ph + 30;
 
   // ---- footer ----

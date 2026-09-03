@@ -8,8 +8,24 @@
    page tests the TRANSFORM in isolation from any scene. Render-level pins
    (does the rendered tree actually move, does the shell clear a REAL case,
    does explosion leave the solved candidate/count alone) live in
-   test/uisync.test.html, which drives the real app. */
-import {rankOffsets, axisOffsets, shellOffset, explodeTier, EXPLODE_GAP_K} from '../src/render/explode.js';
+   test/uisync.test.html, which drives the real app.
+
+   VERTICAL EXPLODE, ONE-SIDED (this task): X/Z stay centred (rankOffsets,
+   unchanged); Y is one-sided upward (rankOffsetsUp) — contents lift OUT of
+   their container the way they were loaded IN, never spreading below their
+   solved position, and the SHELL stays put on Y (contents rise out of it)
+   instead of chasing the outermost rank the way it does on X/Z. See
+   explode.js's own header/shellOffset doc comments for the full rationale
+   and the re-derived Y clearance proof.
+
+   SECOND-WRITER CHECK (reported, not assumed): the "Exploded sheet" export
+   (ui/app.js `explodedSheet()`) does NOT own a second copy of this
+   convention — it sets `explodeOn`/`explodeFactor` and calls the SAME
+   `applyHierarchy()` the live 3D toggle calls, which is the one and only
+   caller of `explodeTier`/`axisOffsets` in the render path. Pinned below
+   by reading app.js's own source, the same "read what the app actually
+   calls" idiom this codebase already uses for pick-propagation checks. */
+import {rankOffsets, rankOffsetsUp, axisOffsets, shellOffset, explodeTier, EXPLODE_GAP_K} from '../src/render/explode.js';
 
 const results = [];
 function t(name, fn){
@@ -43,6 +59,21 @@ t('rankOffsets: values within tolerance share a rank', () => {
   eq(rankOffsets([10, 10.1, 20], 1e-3), [-1, 0, 1], 'not clustered:');
 });
 
+t('rankOffsetsUp: ranks numbered 0..n-1 from the LOWEST value, never negative', () => {
+  eq(rankOffsetsUp([10, 20, 30]), [0, 1, 2], '3-way:');
+  eq(rankOffsetsUp([10, 20]), [0, 1], '2-way:');
+  eq(rankOffsetsUp([10]), [0], '1-way:');
+  eq(rankOffsetsUp([]), [], 'empty:');
+  // order of the ranks follows the VALUE (ascending), not the input order —
+  // the LOWEST value always lands on rank 0 regardless of where it sits in
+  // the input array
+  eq(rankOffsetsUp([30, 10, 20]), [2, 0, 1], 'input-order independence:');
+});
+t('rankOffsetsUp: values within tolerance share a rank, same clustering as rankOffsets', () => {
+  eq(rankOffsetsUp([10, 10.0001, 20], 1e-3), [0, 0, 1], 'clustered:');
+  eq(rankOffsetsUp([10, 10.1, 20], 1e-3), [0, 1, 2], 'not clustered:');
+});
+
 /* ================================================================ factor */
 
 // FACTOR ZERO IS IDENTITY. This is what makes "transform, not re-layout"
@@ -60,6 +91,10 @@ t('factor 0 is identity — offsets and shell both exactly zero', () => {
   const r = explodeTier(positions, extents, shellExtent, 'all', 0);
   ok(r.offsets.every(o => o.x === 0 && o.y === 0 && o.z === 0), 'every offset exactly zero:');
   eq(r.shell, {x: 0, y: 0, z: 0}, 'shell exactly zero:');
+  // factor 0 identity holds for Y (one-sided) too — same short-circuit,
+  // never a special case for the axis shape
+  eq(axisOffsets([-150, -50, 50, 150], 100, 0, true), [0, 0, 0, 0], 'axisOffsets, Y one-sided:');
+  eq(shellOffset(rankOffsetsUp([-150, -50, 50, 150]), 100, 500, 0, true), 0, 'shellOffset, Y one-sided:');
 });
 
 /* ================================================================== gaps */
@@ -93,6 +128,14 @@ t('even gaps hold for 5 ranks too, not just 3-4', () => {
   const gaps = off.slice(1).map((v, i) => v - off[i]);
   for(let i = 1; i < gaps.length; i++) near(gaps[i], gaps[0], 1e-9, `gap ${i}:`);
 });
+t('even gaps hold on Y too (one-sided) — same K*unit step, just anchored at the bottom', () => {
+  const vals = [-400, -180, 0, 90, 260];
+  const off = axisOffsets(vals, 25, 1, true);
+  eq(off[0], 0, 'lowest rank stays at 0:');
+  const gaps = off.slice(1).map((v, i) => v - off[i]);
+  for(let i = 1; i < gaps.length; i++) near(gaps[i], gaps[0], 1e-9, `gap ${i}:`);
+  eq(gaps[0], EXPLODE_GAP_K*25, 'step size is exactly K*unit, same as X/Z:');
+});
 
 /* ============================================================= all-move */
 
@@ -113,12 +156,12 @@ t('every instance gets its own nonzero offset when ranked apart', () => {
 
 /* =============================================================== shell */
 
-// SHELL CLEARS. At factor 1 the shell's own bounding box must not intersect
-// ANY content instance's bounding box, regardless of rank count — proven
-// here against an artificially large rank count (12) so the additive (not
-// multiplicative) gap formula is actually exercised, not just the 2-4 rank
-// cases the other pins use.
-t('shell clears every content instance at factor 1, many ranks', () => {
+// SHELL CLEARS (X/Z). At factor 1 the shell's own bounding box must not
+// intersect ANY content instance's bounding box, regardless of rank count —
+// proven here against an artificially large rank count (12) so the additive
+// (not multiplicative) gap formula is actually exercised, not just the 2-4
+// rank cases the other pins use.
+t('shell clears every content instance at factor 1, many ranks (X)', () => {
   const n = 12, contentUnit = 40;
   const positions = Array.from({length: n}, (_, i) => ({x: (i - (n - 1)/2)*contentUnit, y: 0, z: 0}));
   const extents = positions.map(() => ({x: contentUnit, y: 30, z: 30}));
@@ -151,7 +194,119 @@ t('shell offset does not blow up with rank count (additive gap, not multiplicati
   eq(fewGapBeyondContent, EXPLODE_GAP_K*300, 'and equal to exactly one K*shellDim step:');
 });
 
-/* ================================================================= axes */
+// X AND Z BIT-IDENTICAL TO THE PRE-REFACTOR FORMULA. This task changes the
+// VERTICAL axis only — hand-hardcoded expected numbers (not a second call
+// into the formula under test), so a regression on X/Z would actually be
+// caught rather than the pin quietly re-deriving whatever the code now does.
+t('X/Z axisOffsets and shellOffset are bit-identical to the pre-refactor centred formula, hand-computed', () => {
+  // values [-100,-20,60] -> centred 3-way ranks [-1,0,1]; unit=25, K=1.5
+  // offsets = rank * K * unit = [-1*37.5, 0, 1*37.5] = [-37.5, 0, 37.5]
+  eq(axisOffsets([-100, -20, 60], 25, 1), [-37.5, 0, 37.5], 'x/z axisOffsets, default oneSidedUp:');
+  eq(axisOffsets([-100, -20, 60], 25, 1, false), [-37.5, 0, 37.5], 'x/z axisOffsets, explicit false:');
+  // shellOffset: maxRank=1, topContentOffset = 1.5*1*25 = 37.5;
+  // shell = topContentOffset + K*shellDim = 37.5 + 1.5*300 = 37.5 + 450 = 487.5
+  eq(shellOffset(rankOffsets([-100, -20, 60]), 25, 300, 1), 487.5, 'x/z shellOffset:');
+  eq(shellOffset(rankOffsets([-100, -20, 60]), 25, 300, 1, false), 487.5, 'x/z shellOffset, explicit false:');
+});
+
+/* ============================================================ Y one-sided */
+
+// Y OFFSETS ARE ALL >= 0 AND MONOTONIC WITH HEIGHT — the reported symptom's
+// fix, pinned directly. MUTATION: restoring centre-relative ranking on Y
+// (the OLD, symmetric behaviour) must fail this — proven inline by running
+// the centred formula against the same input and confirming it produces a
+// negative offset, so the "mutation" is a real code path this file can
+// exercise, not a hypothetical.
+t('Y offsets are all >= 0 and increase monotonically with height', () => {
+  const vals = [-40, -10, 5, 60];   // arbitrary, unsorted heights
+  const off = axisOffsets(vals, 20, 1, true);
+  ok(off.every(o => o >= 0), 'every Y offset must be >= 0:');
+  const paired = vals.map((v, i) => ({v, o: off[i]})).sort((a, b) => a.v - b.v);
+  for(let i = 1; i < paired.length; i++)
+    ok(paired[i].o >= paired[i - 1].o, `offset must not decrease as height increases (index ${i}):`);
+  // MUTATION: the OLD centred formula on the SAME input produces a negative
+  // offset (content below its solved position) — proving this pin is
+  // capable of failing, and that restoring centred ranking on Y is exactly
+  // the regression this pin exists to catch.
+  const centred = axisOffsets(vals, 20, 1, false);
+  ok(centred.some(o => o < 0), 'the centred (pre-fix) formula should have produced a negative Y offset here, or this mutation check is vacuous');
+});
+t('no content ever moves below its solved Y position, at any explode factor', () => {
+  const vals = [-30, 0, 45, 90];
+  for(const factor of [0, 0.1, 0.25, 0.5, 0.85, 1]){
+    const off = axisOffsets(vals, 15, factor, true);
+    off.forEach((o, i) => ok(o >= 0, `factor ${factor}, value ${vals[i]}: offset ${o} must be >= 0`));
+  }
+});
+t('the lowest Y rank never moves at all (anchored, not merely non-negative)', () => {
+  // the LOWEST value should get offset exactly 0 at every factor, not just
+  // "close to zero" or "the smallest offset" — it is the anchor everything
+  // else lifts away from.
+  const vals = [5, 55, 105, 200];
+  for(const factor of [0.1, 0.5, 1]) eq(axisOffsets(vals, 30, factor, true)[0], 0, `factor ${factor}:`);
+});
+
+// SHELL STAYS PUT ON Y. Contents rise out of it — see explode.js's own
+// header/shellOffset doc comment for why this is provably enough, and its
+// one honest, disclosed limitation (openTop headroom).
+t('shell offset is exactly 0 on Y at every factor — contents rise out of it, it never steps down', () => {
+  for(const factor of [0.001, 0.3, 0.7, 1])
+    eq(shellOffset(rankOffsetsUp([10, 20, 30]), 15, 200, factor, true), 0, `factor ${factor}:`);
+});
+t('Y clearance, hand-computed: the topmost content rank clears the shell rim at K=1.5 when content fills the shell (the closed-style case)', () => {
+  // matches explode.js's own header derivation exactly: 3 ranks (r=0,1,2),
+  // contentUnit=40mm, shell fills to capacity along this axis:
+  // shellDim = (r+1)*contentUnit = 3*40 = 120 (the tightest/hardest case —
+  // zero slack above the top rank).
+  const contentUnit = 40, shellDim = 120, r = 2, K = EXPLODE_GAP_K;
+  // worst-case original position of the topmost content (content fits
+  // inside the shell, the same general bound the X/Z proof uses):
+  const pTop = -shellDim/2 + contentUnit/2;
+  // hand-applied offset — NOT calling axisOffsets/rankOffsetsUp here, so
+  // this is a genuine hand computation, not the formula checking itself
+  const offset = K*r*contentUnit;
+  const farEdge = pTop + offset + contentUnit/2;
+  ok(farEdge > shellDim/2, `far edge ${farEdge} must clear the shell rim at ${shellDim/2} (K=${K}):`);
+  // and confirm the MODULE's own output agrees with this hand build, for a
+  // 3-rank input whose lowest value is (pTop - 2*contentUnit) so the
+  // topmost rank lands exactly at pTop
+  const values = [pTop - 2*contentUnit, pTop - contentUnit, pTop];
+  const off = axisOffsets(values, contentUnit, 1, true);
+  near(off[2], offset, 1e-9, 'module output matches the hand-computed topmost offset:');
+});
+t('Y clearance proof: K=1 is exactly the no-clearance boundary (sanity check on the derivation itself)', () => {
+  // at K=1 the derivation's own algebra reduces to farEdge === shellDim/2
+  // exactly (no clearance) — confirms the "K>1" threshold isn't an
+  // arbitrary read of the inequality
+  const contentUnit = 40, shellDim = 120, r = 2, K = 1;
+  const pTop = -shellDim/2 + contentUnit/2;
+  const farEdge = pTop + K*r*contentUnit + contentUnit/2;
+  near(farEdge, shellDim/2, 1e-9, 'K=1 lands exactly on the rim, no margin:');
+});
+
+// THE SAME PROPERTIES, THROUGH explodeTier ITSELF — not just axisOffsets/
+// shellOffset called directly. explodeTier is what actually decides, per
+// axis, whether to rank one-sided or centred (`oneSidedUp = ax === 'y'`),
+// so a mutation that breaks THAT decision (while leaving axisOffsets/
+// shellOffset themselves correct) would slip past every pin above but not
+// this one — mirrors the X-axis "shell clears"/"gap doesn't blow up" pins
+// one section up, on the y axis instead of x.
+t("explodeTier on axis 'y': every offset >= 0, shell stays at 0, many ranks", () => {
+  const n = 8, contentUnit = 30;
+  const positions = Array.from({length: n}, (_, i) => ({x: 0, y: i*contentUnit, z: 0}));
+  const extents = positions.map(() => ({x: 20, y: contentUnit, z: 20}));
+  const shellExtent = {x: 100, y: n*contentUnit, z: 100};
+  const r = explodeTier(positions, extents, shellExtent, 'y', 1);
+  ok(r.offsets.every(o => o.y >= 0), 'every instance offset.y >= 0, via explodeTier:');
+  eq(r.offsets[0].y, 0, 'the lowest instance (index 0, lowest y) is the anchor, via explodeTier:');
+  ok(r.offsets[n - 1].y > r.offsets[0].y, 'the highest instance actually lifted higher than the anchor:');
+  eq(r.shell.y, 0, 'shell.y is exactly 0 via explodeTier — it does not chase the content:');
+  // and offsets are monotonic with the instances' own input order (already
+  // sorted by y here, by construction of the fixture)
+  for(let i = 1; i < n; i++) ok(r.offsets[i].y >= r.offsets[i - 1].y, `offset.y must not decrease at index ${i}:`);
+});
+
+/* =========================================================== axis modes */
 
 // AXIS MODES. 'all' separates on x, y AND z; a single-axis mode leaves the
 // OTHER two bit-identical to assembled (zero offset) — a pin that only
@@ -162,7 +317,16 @@ t("axis 'all' separates on three axes; a single axis leaves the other two untouc
   const extents = positions.map(() => ({x: 30, y: 30, z: 30}));
   const shellExtent = {x: 200, y: 200, z: 200};
   const all = explodeTier(positions, extents, shellExtent, 'all', 1);
-  ok(all.offsets.every(o => o.x !== 0 && o.y !== 0 && o.z !== 0), "'all': every axis moved on every instance");
+  // x/z: centred, so BOTH instances move on both axes (a 2-way split has no
+  // rank at offset 0). y: one-sided, so the LOWER instance (y=-40, rank 0)
+  // is the anchor and correctly does NOT move — only the higher one lifts.
+  ok(all.offsets.every(o => o.x !== 0 && o.z !== 0), "'all': x and z moved on every instance");
+  eq(all.offsets[0].y, 0, "'all': the lower instance is the Y anchor, offset exactly 0:");
+  ok(all.offsets[1].y > 0, "'all': the higher instance lifted on y:");
+  // 'all' still respects Y one-sidedness: neither instance moves BELOW its
+  // own solved y (unlike a purely centred 'all' which would move the lower
+  // one down further)
+  ok(all.offsets[0].y >= 0 && all.offsets[1].y >= 0, "'all': y offsets still >= 0 even when every axis is exploding");
 
   for(const axis of ['x', 'y', 'z']){
     const r = explodeTier(positions, extents, shellExtent, axis, 1);
@@ -197,6 +361,54 @@ t('same inputs give byte-identical output across repeated calls', () => {
   eq(a, b, 'two calls with identical inputs:');
 });
 
+/* ================================================= second-writer / wiring */
+
+// SECOND-WRITER CHECK. The U-board/product split (hierarchy3d.js) and the
+// pallet-level explode (hierarchy3d.js buildPallet) both call INTO this
+// module rather than reimplementing rank math — read directly off their own
+// source, so a future edit that reintroduces a bespoke gap formula is
+// caught here, not just by eyeballing a diff.
+const hier3dSrc = await (await fetch('../src/render/hierarchy3d.js')).text();
+t('hierarchy3d.js\'s U-board/product Y split calls explode.js\'s own axisOffsets, one-sided', () => {
+  ok(hier3dSrc.includes("import {explodeTier, axisOffsets} from './explode.js';"),
+     'hierarchy3d.js imports explode.js\'s shared functions:');
+  ok(/axisOffsets\(\[uboardCenterY, productCenterY\], unit, explode\.factor, true\)/.test(hier3dSrc),
+     'the U-board/product split passes oneSidedUp=true — Y is one-sided there too:');
+});
+t('hierarchy3d.js\'s pallet-level explode calls explodeTier — no bespoke offset formula of its own', () => {
+  ok(/explodeTier\(positions, extents, \{x: 0, y: 0, z: 0\}, palEx\.axis \|\| 'y', palEx\.factor\)/.test(hier3dSrc),
+     'buildPallet calls the shared explodeTier, not a second implementation:');
+});
+
+// THE EXPORTED SHEET REUSES THE LIVE PIPELINE — no second writer. Read
+// directly off app.js's own source: `explodedSheet()` must set the SAME
+// `explodeOn`/`explodeFactor` state and call `applyHierarchy`, the SAME
+// function the live 3D toggle calls (which is what builds the scene via
+// `hier.buildHierarchy` -> `tierExplode` -> `explodeTier`, this module's own
+// export) — never a standalone axis/gap calculation of its own.
+const appSrc = await (await fetch('../src/ui/app.js')).text();
+t('the Exploded sheet export reuses applyHierarchy (the live 3D toggle\'s own pipeline) — no second writer', () => {
+  const bodyStart = appSrc.indexOf('export async function explodedSheet()');
+  ok(bodyStart >= 0, 'explodedSheet() exists:');
+  const bodyEnd = appSrc.indexOf('\nel(\'btnExplodedSheet\')', bodyStart);
+  const body = appSrc.slice(bodyStart, bodyEnd > 0 ? bodyEnd : bodyStart + 3000);
+  ok(/explodeOn = on;\s*explodeFactor = EXPLODE_SHEET_FACTOR;/.test(body),
+     'explodedSheet writes the SAME explodeOn/explodeFactor state the live toggle writes:');
+  ok(/applyHierarchy\(false\);/.test(body),
+     'explodedSheet calls applyHierarchy — the live pipeline — never a standalone offset computation:');
+  // and it must NOT import or call axisOffsets/rankOffsets/explodeTier
+  // directly itself — that would be the second writer this task asked to
+  // check for
+  ok(!/\b(axisOffsets|rankOffsets|rankOffsetsUp|explodeTier)\s*\(/.test(body),
+     'explodedSheet() does not call any explode.js function directly — it only drives applyHierarchy:');
+});
+t('the axis default is Y at every explodable level (source), replacing the old "all" default for carton/case', () => {
+  ok(/let explodeAxis = \{carton: 'y', case: 'y', pallet: 'y', wrap: 'y'\};/.test(appSrc),
+     'explodeAxis defaults every level to y:');
+});
+
 document.getElementById('out').textContent =
   results.join('\n') + `\n\n${results.filter(r => r.startsWith('PASS')).length}/${results.length} passed`;
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+window.__tests = {total: results.length, fails, results};
 </script>

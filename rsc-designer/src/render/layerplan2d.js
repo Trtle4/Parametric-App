@@ -19,6 +19,22 @@ export const LAYERPLAN_DECK_COLOR = 'var(--line)';
 export const LAYERPLAN_CASE_COLOR = 'var(--accent)';
 
 /**
+ * Pick a tile size that TRACKS the deck's own aspect ratio, clamped to a
+ * PRACTICAL range so one extreme deck cannot blow a thumbnail grid's row
+ * height out for every tile beside it (a 10:1 deck renders at the clamp's
+ * own aspect, still letterboxed some, rather than a 10x-tall tile). A deck
+ * whose aspect already falls inside the clamp gets a tile of EXACTLY that
+ * aspect, so `layerPlanSVG`'s own contain-fit (below) has nothing left to
+ * letterbox — the two are meant to be used together, this picks the canvas,
+ * that fits the drawing into it.
+ */
+export function layerPlanTileSize(pallet, opts = {}){
+  const {baseWidth = 168, minAspect = 0.6, maxAspect = 1.8} = opts;
+  const aspect = Math.min(maxAspect, Math.max(minAspect, pallet.L/pallet.W));
+  return {width: baseWidth, height: Math.round(baseWidth/aspect)};
+}
+
+/**
  * @param {{cases: Array<{x:number,y:number,w:number,h:number}>, envelope:{L:number,W:number}}} geometry
  *        core/layerplan.js's layerPlanGeometry() result
  * @param {{L:number,W:number}} pallet  the deck's own L/W (mm) — the frame
@@ -27,6 +43,15 @@ export const LAYERPLAN_CASE_COLOR = 'var(--accent)';
  *        show that, not crop to the cases alone)
  * @param {{width?:number, height?:number, margin?:number, showDims?:boolean}} [opts]
  * @returns {string} a standalone `<svg>...</svg>` string
+ *
+ * CONTAIN, not cover: `scale` is the MIN of the two axis ratios, so the
+ * whole deck — and everything drawn against it, both here — fits inside
+ * the canvas with room to spare on whichever axis has slack, rather than
+ * filling one axis and cropping the other. `Math.max` here would be a
+ * fit-to-width/cover transform and would crop; do not change this to `max`.
+ * ONE `scale`/`sx`/`sy` for BOTH the deck outline and every case rect below
+ * — they cannot disagree on where a point in deck-mm lands, because there
+ * is only one transform to disagree with.
  */
 export function layerPlanSVG(geometry, pallet, opts = {}){
   const {width = 220, height = 170, margin = 14, showDims = false} = opts;

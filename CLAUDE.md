@@ -2459,3 +2459,272 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   both breakpoints). Full regression: `layerplan`, `patterntable`,
   `project`, `containment`, `saveload`, `palletpatterns`, `chainstrip`,
   `trailer`, `bct`, `stack`, `sensitivity` all green.
+- **RESOLVED (explode-vertical-lift task, Part 1 of 2): exploded view is
+  one-sided and upward on Y — contents lift OUT of their container, they no
+  longer spread symmetrically THROUGH its floor.** `render/explode.js`'s
+  rank-based spread (clusters positions into ranks, each rank steps by
+  `factor × EXPLODE_GAP_K × rank × unit`) was CENTRED on every axis —
+  correct on X/Z (a horizontal spread has no "up" or "down" to respect) but
+  wrong on Y, where centring sends the bottom half of a tier's contents
+  below the container floor: nothing was ever loaded through the floor, so
+  nothing should explode through it either. This was consistent across
+  every containment level (carton/case/pallet/wrap all route through the
+  same `explodeTier`), matching the reported symptom exactly — one fix, not
+  one per level.
+  **The fix**: a second ranking function, `rankOffsetsUp` (0..n-1 from the
+  LOWEST value upward, never negative — rank 0 is the anchor and never
+  moves), sits alongside the existing centred `rankOffsets`. `axisOffsets`
+  and `shellOffset` both gained a 4th `oneSidedUp` parameter selecting
+  between them; `explodeTier` computes `oneSidedUp = ax === 'y'` once per
+  axis in its own loop and threads it through, so every caller of
+  `explodeTier` — carton/case/pallet's own tiers, and the pallet-level
+  corner-post/trailer paths — gets the one-sided behavior for free with no
+  call-site change. The one call site that bypasses `explodeTier`
+  (hierarchy3d.js's wrap-depth U-board/product Y split, which uses
+  `axisOffsets` directly since a U-board/product pair is a two-value rank
+  on a synthetic centre rather than a real placement list) was updated to
+  pass `oneSidedUp: true` explicitly — found by grepping every direct
+  `axisOffsets`/`shellOffset` caller rather than assuming `explodeTier` was
+  the only entry point.
+  **The shell does not move on Y at all** (`shellOffset` returns `0`
+  unconditionally when `oneSidedUp`) — it stays at its solved position
+  while contents rise out of it, rather than stepping downward to chase
+  them the way the X/Z shell steps outward from its outermost content rank.
+  **The proof had to be RE-DERIVED, not reused**, per the task's own
+  explicit warning that `EXPLODE_GAP_K = 1.5`'s `K > 1` guarantee (the
+  shell clears the outermost content rank) rests on the X/Z geometry — an
+  outermost rank at `±(n-1)/2` from a shell CENTRE that itself steps
+  outward — which a one-sided Y explode with a FIXED shell does not share.
+  Re-derived from scratch (full derivation lives in `shellOffset`'s own doc
+  comment): with the shell fixed, "does the topmost lifted content clear
+  the shell's own open rim" reduces to `K·r·contentUnit > shellDim −
+  contentUnit`, which — UNLIKE the X/Z case — is not bounded by "one
+  content unit fits inside the shell" alone for a fixed K (shellDim can
+  exceed contentUnit by an arbitrary ratio in a tall stack). It IS bounded
+  by "content fills the shell along this axis" — true for every CLOSED
+  style in this app, since the outer H is solved FROM the stacked content
+  (`shellDim = (r+1)·contentUnit` at the tightest, zero-slack case) —
+  substituting that in reduces the inequality to exactly `K > 1`, the SAME
+  threshold X/Z needs, reached by a different argument. `EXPLODE_GAP_K`
+  stays 1.5 for both axes: a finding, confirmed by derivation, not an
+  assumption carried over because it was already there. **The one honest,
+  disclosed gap**: an `openTop` level (a tray, or any style with
+  `defaultOpenTop`) sizes H independently of stacked content — an
+  established, pre-existing simplification in this codebase — so its
+  shellDim is not bounded by `(r+1)·contentUnit`, and enough headroom slack
+  could leave the topmost content short of the rim at factor 1. Stated in
+  the header rather than silently promised away.
+  **Axis default**: every explodable level's `explodeAxis` now defaults to
+  `'y'` (was `'all'` for carton/case, already `'y'` for pallet/wrap) —
+  loading is vertical at every level in this chain, so that is the reading
+  that matches how the pack was actually built. `'all'` stays selectable in
+  the `<select>`, just no longer the first thing shown.
+  **No second writer, confirmed by reading, not assumed**: the "Exploded
+  sheet" export (`app.js`'s `explodedSheet()`) reuses `applyHierarchy()`
+  through its own `setExplode()` helper, which sets the SAME module-level
+  `explodeOn`/`explodeFactor` state the live 3D toggle uses — there is no
+  second, independently-maintained copy of the spread convention to fall
+  out of sync. Pinned as a source-read assertion (the function body
+  contains none of `axisOffsets`/`rankOffsets`/`rankOffsetsUp`/
+  `explodeTier` itself — it has no rank logic of its own to disagree with
+  the module's).
+  **`test/explode.test.html` had never actually been running its logic
+  in this sandbox, and the fix was one line.** Prior sessions' documented
+  "sandbox timeout" for this file was itself a misdiagnosis: the file wrote
+  its results to a `#out` DOM node but never set `window.__tests = {...}`,
+  the global this repo's Playwright harness (`runone.mjs`) polls for to
+  detect completion — a file that never sets it times out regardless of
+  whether its own logic runs correctly, and explode.js has zero DOM/THREE
+  dependency, so there was never a genuine hang to have. Confirmed via
+  `git stash` that the identical timeout reproduces on the unmodified
+  baseline, then found the missing assignment and added it; the file now
+  reports real pass/fail immediately. Worth re-checking other files
+  carrying an inherited "sandbox timeout" note against this same root
+  cause before trusting that label again.
+  **Mutation-tested, four separate mutations against the real source, each
+  restored and diffed byte-identical afterward**: (1) `explodeTier`'s own
+  `oneSidedUp = ax === 'y'` forced to `false` — caught only after adding a
+  dedicated `explodeTier`-level Y pin, since every other Y pin called
+  `axisOffsets`/`shellOffset` directly with an explicit `true` and so never
+  exercised `explodeTier`'s own axis-detection branch; the "axis 'all'"
+  pin caught it too, incidentally. (2) `shellOffset`'s `if(oneSidedUp)
+  return 0` removed — caught immediately. (3) the hierarchy3d.js U-board
+  call site reverted to omit the 4th argument — caught immediately by its
+  dedicated source-read pin. (4) `app.js`'s `explodeAxis` default reverted
+  to `{carton:'all', case:'all', ...}` — caught immediately by the
+  axis-default source pin. A pre-existing pin ("axis 'all' separates on
+  three axes... every instance moves on every axis") needed correcting,
+  not just re-passing: with the one-sided Y convention the LOWER of two
+  test instances correctly gets offset 0 (it's the anchor) — a deliberate
+  behavior change, not a regression, so the assertion was split into an
+  x/z `every(...)` check (unchanged) and an explicit anchor/lift check on
+  y. `render/explode.js` is render-time only, never imported from
+  `src/core/` (confirmed by grep) — X/Z golden bit-identity holds by
+  construction, since golden.json's fixtures never pass through this
+  module at all. Full regression run separately: `nestingdet`,
+  `wraporientcase`, `shelforient`, `layerplan`, `patterntable`,
+  `chainstrip`, `containment`, `project`, `saveload`, `trailer`, `stack`
+  all green (35/35 on `saveload` — the four `cornerPost` failures a much
+  earlier entry in this file called pre-existing were themselves already
+  fixed by the top-and-bottom-caps task; nothing here needed to re-fix
+  them).
+- **DIAGNOSED, NO DEFECT FOUND, THEN A REAL FIT IMPROVEMENT (explode-
+  vertical-lift task, Part 2 of 2): the two reported thumbnail faults do
+  not reproduce — but the fixed-aspect canvas they were reported against
+  was real, and is fixed.** Reported as "clipping" (a wide tile fits the
+  drawing to width and crops the height) and "scale mismatch" (case
+  rects drawn beyond the dashed deck outline, which cannot be a real
+  overhanging layout since `deckFootprint` rejects those). Diagnosed
+  BEFORE touching any layout code, per the task's own instruction, three
+  ways: (1) source reading — `render/layerplan2d.js`'s `layerPlanSVG`
+  computes ONE `scale`/`sx`/`sy`, `Math.min(availW/deckL, availH/deckW)`
+  (CONTAIN, not cover), and draws the deck outline and every case rect
+  through that SAME closure, so a scale mismatch has no code path to
+  come from; (2) a live DOM measurement of the real thumbnail grid
+  (Chromium, both 390px and a 1800px "much wider tile" viewport) found
+  the deck rect and every case rect fully contained, symmetric margins,
+  no crop; (3) a synthetic sweep across four deck aspects — 1:1, the
+  default 1.2:1, an extreme 3.33:1, an extreme 0.3:1 — at both viewports
+  found the same: `svgWithinCard`, `deckWithinSvg`, `caseUnionWithinDeck`
+  all true, always. Neither fault reproduces as literally reported.
+
+  **What WAS real**: every thumbnail used a FIXED 168×128 canvas
+  (aspect 1.3125) regardless of the candidate's own deck shape, so a
+  deck whose aspect diverges from that wasted far more of the tile to
+  letterboxing than necessary — not a defect, but not "letterboxing is
+  minimal" either, which the task's own requirements section demands
+  unconditionally. `render/layerplan2d.js` gained `layerPlanTileSize
+  (pallet, opts)`: the tile WIDTH stays fixed (168, matching the grid's
+  own `minmax(168px,…)` track) and the HEIGHT tracks the deck's own
+  aspect, clamped to a practical `[0.6, 1.8]` range so one extreme deck
+  cannot blow a grid row's height out for every tile beside it — a deck
+  inside the clamp gets a tile of (to integer rounding) exactly its own
+  aspect, so `layerPlanSVG`'s contain-fit has nothing left to letterbox;
+  a deck outside it still letterboxes LESS than the old fixed canvas did
+  (hand-verified: the 3.33:1 synthetic deck's vertical margin drops from
+  29px to a smaller, clamp-bounded value). `build.js`'s `thumbSVGFor` is
+  the only caller changed — it computes `{width, height}` from
+  `layerPlanTileSize(project.pallet)` once per grid (one deck, shared by
+  every candidate) instead of the old literal `{width:168, height:128}`.
+  The render inset (`#layerPlanInset`, a single fixed-width card, not a
+  grid of tiles competing for a uniform look) and the Pallet PDF (a
+  full-page layout, not a tile) were deliberately left untouched — the
+  letterboxing-minimization problem is specific to a GRID of tiles that
+  need to look consistent size, which only the thumbnail grid is.
+
+  **A mutation found a gap in the pin suite's own coverage, before it
+  shipped.** The first version of the "deck and case rects agree" pin
+  and the DOM "bounding box wholly within tile" pin were both blind to a
+  real `Math.min`→`Math.max` (contain→cover) mutation on `layerPlanSVG`,
+  because — for a deck whose aspect already falls inside the new tile
+  helper's clamp — the tile's aspect now EQUALS the deck's aspect, which
+  makes `availW/deckL` and `availH/deckW` identical, so `min` and `max`
+  compute the SAME scale. The fix that minimizes letterboxing also
+  quietly disarmed the pin meant to catch a regression in the letterbox
+  logic itself. Added a THIRD, deliberately-mismatched-aspect pin
+  (canvas 220×170/margin10 against a 1000×800mm deck, where the two
+  ratios genuinely differ) asserting the drawn deck box fits inside the
+  margin box — confirmed by mutation to fail exactly this way pre-fix,
+  restored, then reconfirmed the whole suite passes clean. The general
+  lesson (this file's own "confirm the specimen" rule, one layer deeper):
+  a fix that makes two quantities agree can retroactively make the PIN
+  built to distinguish them unable to, even though neither the pin nor
+  the fix is individually wrong.
+
+  **A second, unrelated harness bug surfaced while building the DOM
+  pins and was root-caused, not worked around.** `surveyThumbFit`
+  clicked the Build tab, THEN the pallet chain-strip node — the reverse
+  of `layerplan.test.html`'s own established, working order. Clicking
+  the level node while the Build tab is already showing lands the level
+  switch while `#buildWrap` is still `display:none` (still owned by
+  whichever of the 2D/3D/Shelf tabs was previously active), so every
+  descendant — including the eventual thumbnail `<svg>` — reports a
+  real, but PERMANENTLY 0×0, `getBoundingClientRect()`: not a transient
+  layout race (raising the poll timeout from 8s to 20s made no
+  difference), and not something `requestAnimationFrame`/a forced
+  screenshot could unstick. Traced by walking the ancestor chain from
+  the thumbnail host up to `<body>`, computed-style by computed-style,
+  until the `display:none` ancestor was found. Fixed by matching the
+  order every other passing DOM survey in this suite already uses —
+  chain-strip node first, Build tab second — which is not a workaround,
+  it is the interaction order this app's own tab-switching logic
+  actually requires (a real quirk of that logic, not of the fixture, but
+  out of THIS task's scope to change). A second, genuine but unrelated
+  bug was caught in the same pass: the "build.js sizes its canvas from
+  layerPlanTileSize" pin was written with an `async` body inside the
+  synchronous `t()` instead of `tAsync()` — this file's own established
+  convention, and the exact failure shape a much earlier CLAUDE.md entry
+  already named ("t() runs the body synchronously… an async pin's throw
+  becomes an unhandled rejection and the runner reports PASS"): a real
+  mutation (reverting `build.js` to the hardcoded canvas) produced a
+  `PAGEERR` and a false "15/15 passed" simultaneously. Fixed by switching
+  to `tAsync`, which then correctly reported 14/15 with the mutation
+  applied.
+
+  **Mutation-tested, three separate mutations against the real source,
+  each restored and diffed byte-identical afterward**: (1)
+  `layerPlanSVG`'s `Math.min`→`Math.max` — caught by the new
+  mismatched-aspect pin AND the "separately-scaled outline" pin (13/15,
+  the exact two expected; the DOM/real-project pin stayed green, as
+  explained above — that gap is what the new pin exists to close); (2)
+  `layerPlanTileSize`'s clamp removed entirely — caught immediately by
+  both clamp-boundary pins (13/15: WIDE deck reports height 11 instead
+  of the clamped 93, TALL deck reports 2520 instead of 280); (3)
+  `build.js`'s tile-size call reverted to the literal `{width:168,
+  height:128}` — caught immediately once the `t`→`tAsync` fix above
+  landed (14/15). Full regression: `layerplan`, `patterntable`,
+  `chainstrip`, `project`, `containment`, `saveload` all green,
+  unchanged.
+- **RESOLVED (thumbnail-in-PDF task, a follow-up to the layer-plan work
+  above): the Pallet PDF's own vector layer-plan inset is REMOVED — the
+  top-view CAMERA capture it sat on top of already shows the pattern, and
+  a user-supplied screenshot of a real exported sheet showed the two
+  visually disagreeing (the inset's white backing card and teal case
+  outlines crossing the corner of the photo like a second, differently-
+  scaled drawing pasted over the first).** `buildPalletPdf`'s
+  `if(spec.layerPlan){...}` block — the deck-outline + case-rect vector
+  draw introduced by the pattern-table thumbnails task — is deleted along
+  with the two primitives added only to serve it (`rectFill`/`rectStroke`;
+  `frame()`, the pre-existing LINE-only stroke every other frame in the
+  sheet uses, is untouched). `spec.layerPlan` is no longer read at all —
+  a caller that still builds one would see it silently ignored, same as
+  any other unrecognized key, rather than the module needing a version
+  bump. `app.js`'s `exportPalletPdf` no longer computes the `layerPlan`
+  object (`patternList`/`patternIndex`/`patternCand` were local to that
+  computation and are gone with it) or spreads it into the PDF spec.
+  **The OTHER TWO consumers of this shared geometry are untouched, on
+  purpose**: the 3D render inset (`#layerPlanInset`, toggled at pallet
+  depth) and the pattern-table thumbnail grid (`build.js`) were never the
+  complaint — the report was specifically about the exported PDF, where a
+  static page has no toggle to turn the inset off if it gets in the way of
+  the photo it sits on. `core/layerplan.js`'s `layerPlanGeometry` and
+  `render/layerplan2d.js`'s `layerPlanSVG`/`layerPlanTileSize` are
+  unchanged; only the PDF's own drawing call site is gone.
+  **`test/layerplan.test.html` needed real updates, not just fewer
+  passing pins**: its cross-consumer pin asserted app.js calls
+  `layerPlanGeometry` at least twice (render inset + PDF spec) — now
+  exactly once, asserted as an EXACT count so a re-added second call site
+  is still caught either way. Its PDF section is rebuilt around the new
+  invariant: a spec is byte-identical to the frozen pre-feature baseline
+  regardless of whether a `layerPlan` key is present at all (the two
+  former pins — "no key is byte-identical" and "the baseline predates the
+  feature, so the comparison isn't vacuous" — collapsed into one direct
+  "the key is now INERT" pin, since there's no longer a feature for the
+  baseline-predates-it framing to distinguish). **A real, pre-existing bug
+  surfaced while editing that pin**: the cross-consumer call-count pin's
+  body was `async` inside the file's synchronous `t()` instead of
+  `tAsync()` — this file's own established convention, and the exact
+  failure shape a much earlier CLAUDE.md entry already named (an async
+  pin's throw becomes an unhandled rejection and the runner reports PASS).
+  It had been silently passing throughout the entire layer-plan/pattern-
+  table/thumbnail-fit arc of tasks; caught only because removing the PDF
+  branch made its assertion's expected count change from `>= 2` to `=== 1`
+  and the mismatch needed to actually surface. Switched to `tAsync`.
+  Mutation-tested against the real source, both restored byte-identical
+  afterward: (1) a `spec.layerPlan` branch re-added to `palletpdf.js`
+  using only the pre-existing `frame()` (no throw, so the mutation tests
+  the BYTE COMPARISON itself, not just "an exception fails the pin") —
+  caught by the byte-length mismatch (4159 vs 4117); (2) the `layerPlan`
+  computation re-added to `app.js`'s `exportPalletPdf` — caught by the
+  call-count pin (`expected 1, got 2`). Full regression: `layerplan`
+  (12/12), `patterntable` (14/14) both green.
