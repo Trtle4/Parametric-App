@@ -44,6 +44,8 @@ import {loadArtworkFile, defaultFit, composeArtCanvas, artImage} from '../render
 import {buildWrapArt, showWrapArt, clearWrapArt} from '../render/artwork3d.js';
 import {downloadSvgPNG, savePNG, saveBlob} from '../export/png.js';
 import {buildPalletPdf} from '../export/palletpdf.js';
+import {layerPlanGeometry} from '../core/layerplan.js';
+import {layerPlanSVG} from '../render/layerplan2d.js';
 import * as build from './build.js';
 import * as save from './save.js';
 import * as notify from './notify.js';
@@ -91,6 +93,10 @@ let explodeFactor = 0.6;   // 0..1 — the slider's live value while explodeOn
 // the current view and reprojects it every frame so the numbers track the orbit.
 let showDims = false;
 const subjectDims = {fold: null, nest: null};
+
+// LAYER PLAN inset toggle — pallet depth only, off by default like every
+// other render toggle here (see index.html's own comment on this control).
+let layerPlanOn = false;
 
 // Retail shelf BAY state — width/depth/height/facings/stack/deep/cutaway are
 // a visualization config, not a design parameter, so they live here (like
@@ -2700,6 +2706,30 @@ function applyHierarchy(resetCam){
   el('hierHud').textContent = hudText(bundle, res.opened, depth);
   renderLegend(bundle, depth, solid);
   drawDims();
+  // LAYER PLAN — pallet depth only, same "hidden at any other depth"
+  // convention #m3explode already uses above.
+  const showLayerPlanToggle = depth === 'pallet';
+  el('m3layerplanSeg').style.display = showLayerPlanToggle ? '' : 'none';
+  if(showLayerPlanToggle) el('m3layerplan').classList.toggle('on', layerPlanOn);
+  renderLayerPlanInset(depth);
+}
+
+/** The layer-plan render inset — pallet depth + the toggle on, or hidden.
+ *  Reads build.js's OWN clamped pattern list/index (the same the table and
+ *  the thumbnail grid read) and the active row's own case outer, so this
+ *  inset can never show a different candidate than what Build/BCT/the
+ *  cycle arrows already agree on. */
+function renderLayerPlanInset(depth){
+  const host = el('layerPlanInset');
+  if(!host) return;
+  if(depth !== 'pallet' || !layerPlanOn){ host.style.display = 'none'; host.innerHTML = ''; return; }
+  const list = build.getPatternRows(), index = build.getPatternIndex();
+  const cand = list[index];
+  const row = resolveActiveRow(build.project, build.getRounding(), selKey());
+  if(!cand || !row || !row.outer){ host.style.display = 'none'; host.innerHTML = ''; return; }
+  const geo = layerPlanGeometry(cand.build(), row.outer);
+  host.innerHTML = layerPlanSVG(geo, build.project.pallet, {width: 180, height: 140, showDims: true});
+  host.style.display = '';
 }
 
 /** Legend naming every coloured element, plus (at wrap depth) the seal
@@ -3538,6 +3568,10 @@ el('m3dims').addEventListener('click', () => {
   el('m3dims').classList.toggle('on', showDims);
   drawDims();
 });
+el('m3layerplan').addEventListener('click', () => {
+  layerPlanOn = !layerPlanOn;
+  if(view === '3d' && mode3d === 'hier') applyHierarchy(false);
+});
 // Reproject the Dims callouts every frame so they track the orbit. Registered
 // once here (fold3d's frame-callback Set exists from import, before init3d), NOT
 // inside the viewcube-mount guard — that guard can already be satisfied by the
@@ -3826,11 +3860,24 @@ function exportPalletPdf(){
     ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(stack.totalHeightMM)} ${u}`]
   ]});
 
+  // LAYER PLAN — the SAME shared geometry (core/layerplan.js) the render
+  // inset and the pattern-table thumbnails draw, computed once here and
+  // handed to buildPalletPdf as pure data; the PDF module itself resolves
+  // nothing (see its own doc comment on why). Omitted (not merely null)
+  // when there is no pattern list to draw from, so an unpalletizable chain
+  // draws no inset rather than an empty box.
+  const patternList = build.getPatternRows(), patternIndex = build.getPatternIndex();
+  const patternCand = patternList[patternIndex];
+  const layerPlan = (patternCand && row.outer)
+    ? {geometry: layerPlanGeometry(patternCand.build(), row.outer), pallet: {L: pal.L, W: pal.W}}
+    : null;
+
   const bytes = buildPalletPdf({
     dateStr: dateStamp(), unit: u, images,
     captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan',
                cut: `${outerNoun} cutaway`},
-    sections
+    sections,
+    ...(layerPlan ? {layerPlan} : {})
   });
   const filename = `PALLET_${f(pal.L)}x${f(pal.W)}_${u}_summary.pdf`;
   // cancelable so a test can read the exported bytes instead of downloading

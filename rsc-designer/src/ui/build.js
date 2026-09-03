@@ -15,6 +15,8 @@ import {newProject, candidateCases, checkLockedCase, resolveChainShape, describe
         linkFor, defaultCandidate, ROUNDING, deckCoveragePct} from '../core/project.js';
 import {fmtMoney} from '../core/cost.js';
 import {fmtLen} from '../core/units.js';
+import {layerPlanGeometry} from '../core/layerplan.js';
+import {layerPlanSVG} from '../render/layerplan2d.js';
 import {el} from './inputs.js';
 import {refreshAll} from './notify.js';
 
@@ -149,10 +151,20 @@ export function initBuild(startUnit){
       <div class="brow"><button class="btn bapply" id="bUse" disabled>View selected</button></div>
     </div>
     <div class="bpanel" id="bPatternPanel" style="display:none">
+      <div class="brow bpviewrow">
+        <label>View</label>
+        <div class="seg bpviewtoggle" id="bPatternViewToggle">
+          <button type="button" class="on" data-view="table">Table</button>
+          <button type="button" data-view="thumbs">Thumbnails</button>
+        </div>
+      </div>
       <div id="bPatternStatus" class="bnote"></div>
-      <div class="btablewrap"><table id="bPatternTable"></table></div>
+      <div class="btablewrap" id="bPatternTableWrap"><table id="bPatternTable"></table></div>
+      <div class="bpthumbgrid" id="bPatternThumbs" style="display:none"></div>
     </div>`;
   el('bRound').addEventListener('change', () => { rounding = el('bRound').value; recompute(); });
+  for(const btn of el('bPatternViewToggle').querySelectorAll('button'))
+    btn.addEventListener('click', () => setPatternView(btn.dataset.view));
   recompute();
 }
 
@@ -233,7 +245,7 @@ export function recompute(preserveKey){
   }
   renderTable();
   reselectByKey(key);
-  renderPatternTable();   // stays fresh even while hidden, so switching setMode('pattern') never shows a stale list
+  renderPatternPanel();   // stays fresh even while hidden, so switching setMode('pattern') never shows a stale list
   refreshAll();
 }
 
@@ -261,7 +273,7 @@ function sortedRows(){
  * Generic candidate-comparison table DOM builder — thead/tbody markup,
  * header-click sort wiring, row-click select wiring. Shared by the case/
  * carton candidate table (renderTable, below) and the pallet-pattern table
- * (renderPatternTable, further below) so the app has ONE table-rendering
+ * (renderPatternPanel, further below) so the app has ONE table-rendering
  * mechanism, not two that can drift apart. Each caller supplies its own
  * rows/columns/selection state and is called back on sort/select; this
  * function owns none of it.
@@ -393,7 +405,7 @@ function patternState(){
 }
 
 /** Test hook: the pallet-pattern table's own data, read the same way
- *  renderPatternTable() does — the active row's ranked pattern list and
+ *  renderPatternPanel() does — the active row's ranked pattern list and
  *  the clamped current index into it. Lets a pin assert the RENDERED
  *  table's row content against the exact same source the renderer reads,
  *  without re-deriving palletPatternList a second time. */
@@ -476,31 +488,109 @@ function patternColumns(){
   ];
 }
 
-function renderPatternTable(){
+/** ONE writer for "which pattern is selected", called from BOTH the table's
+ *  row click and the thumbnail grid's card click — never two independent
+ *  click handlers that both happen to write project.pallet.patternIndex,
+ *  which is exactly the kind of duplication CLAUDE.md warns diverges. */
+function selectPattern(i){
+  project.pallet.patternIndex = i;
+  renderPatternPanel();
+  if(cycleListener) cycleListener();
+  refreshAll();
+}
+
+/** THUMBNAILS. A cache keyed by the CANDIDATE OBJECT itself, not its index —
+ *  a fresh solve (case dims, deck size, clearance... anything that changes
+ *  the pattern list) hands back brand-new candidate objects, so a WeakMap
+ *  invalidates itself by construction: an old list's entries are simply
+ *  unreachable once nothing still references those objects, never a stale
+ *  hit keyed by a recycled index. Built LAZILY relative to the view the
+ *  panel is actually showing — nothing here runs while the table is up;
+ *  the first switch to Thumbnails builds every visible candidate's SVG in
+ *  one pass (each one is a few KB of pure vector math, no 3D capture, so
+ *  that pass is cheap even at this list's usual size), and reselecting a
+ *  candidate afterward reuses the cached markup instead of rebuilding it. */
+const thumbCache = new WeakMap();
+
+function thumbSVGFor(cand, outer){
+  let svg = thumbCache.get(cand);
+  if(svg == null){
+    const geo = layerPlanGeometry(cand.build(), outer);
+    svg = layerPlanSVG(geo, project.pallet, {width: 168, height: 128});
+    thumbCache.set(cand, svg);
+  }
+  return svg;
+}
+
+function renderPatternThumbs(list, index, outer){
+  const host = el('bPatternThumbs');
+  if(!host) return;
+  if(!outer){ host.innerHTML = ''; return; }
+  host.innerHTML = list.map((cand, i) =>
+    `<div class="bpthumb${i === index ? ' bpthumb-sel' : ''}" data-i="${i}" tabindex="0" role="button" ` +
+      `aria-label="Pattern ${i + 1}: ${cand.label}, ${cand.total} cases">` +
+      thumbSVGFor(cand, outer) +
+      `<div class="bpthumb-cap">#${i + 1} · ${cand.total}</div></div>`
+  ).join('');
+  for(const card of host.querySelectorAll('.bpthumb')){
+    const i = +card.dataset.i;
+    const pick = () => selectPattern(i);
+    card.addEventListener('click', pick);
+    card.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); pick(); } });
+  }
+}
+
+/** 'table' | 'thumbs' — an inline view toggle INSIDE the pattern panel,
+ *  never a modal: no overlay, no focus trap, no scroll lock, and the 3D
+ *  canvas is untouched by either state (see CLAUDE.md's own note on why
+ *  this repo's convention for a secondary view is always an in-place panel
+ *  swap, matching build.js's own case/pattern setMode() one level up). */
+let patternView = 'table';
+
+function setPatternView(next){
+  if(patternView === next) return;
+  patternView = next;
+  const toggle = el('bPatternViewToggle');
+  if(toggle) for(const btn of toggle.querySelectorAll('button'))
+    btn.classList.toggle('on', btn.dataset.view === next);
+  renderPatternPanel();
+}
+export const getPatternView = () => patternView;
+
+/** Renders whichever of table/thumbnails is active, from ONE status line and
+ *  ONE read of the pattern list/index/case-outer — table and thumbnails can
+ *  never show a different candidate SET or a different SELECTED one, since
+ *  both branches read the same `list`/`index`/`outer` computed once here. */
+function renderPatternPanel(){
+  const tableWrap = el('bPatternTableWrap'), thumbHost = el('bPatternThumbs');
   const tbl = el('bPatternTable');
-  if(!tbl) return;
   const status = el('bPatternStatus');
+  if(!tbl) return;
   const {list, index} = patternState();
+  if(tableWrap) tableWrap.style.display = patternView === 'table' ? '' : 'none';
+  if(thumbHost) thumbHost.style.display = patternView === 'thumbs' ? '' : 'none';
   if(!list.length){
     tbl.innerHTML = '';
+    if(thumbHost) thumbHost.innerHTML = '';
     if(status){ status.textContent = 'No pallet pattern fits the active case.'; status.className = 'bnote bbad'; }
     return;
   }
   if(status){
-    status.textContent = `${list.length} pallet pattern${list.length === 1 ? '' : 's'} for the active case — click a row to select`;
+    status.textContent = `${list.length} pallet pattern${list.length === 1 ? '' : 's'} for the active case — ` +
+      (patternView === 'table' ? 'click a row to select' : 'click a thumbnail to select');
     status.className = 'bnote';
   }
-  const cols = patternColumns();
   const selectedCand = list[index];
-  renderCandidateTable(tbl, cols, list, {
-    isSelected: r => r === selectedCand,
-    onRowClick: (r, i) => {
-      project.pallet.patternIndex = i;
-      renderPatternTable();
-      if(cycleListener) cycleListener();
-      refreshAll();
-    }
-  });
+  if(patternView === 'table'){
+    const cols = patternColumns();
+    renderCandidateTable(tbl, cols, list, {
+      isSelected: r => r === selectedCand,
+      onRowClick: (r, i) => selectPattern(i)
+    });
+  }else{
+    const row = shownRow();
+    renderPatternThumbs(list, index, row ? row.outer : null);
+  }
 }
 
 let mode = 'case';   // 'case' | 'pattern' — which comparison table Build shows
@@ -516,7 +606,7 @@ export function setMode(next){
   const caseEl = el('bCasePanel'), patEl = el('bPatternPanel');
   if(caseEl) caseEl.style.display = mode === 'case' ? '' : 'none';
   if(patEl) patEl.style.display = mode === 'pattern' ? '' : 'none';
-  if(mode === 'pattern') renderPatternTable();
+  if(mode === 'pattern') renderPatternPanel();
 }
 export const getMode = () => mode;
 
