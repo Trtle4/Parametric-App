@@ -2675,3 +2675,56 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   landed (14/15). Full regression: `layerplan`, `patterntable`,
   `chainstrip`, `project`, `containment`, `saveload` all green,
   unchanged.
+- **RESOLVED (thumbnail-in-PDF task, a follow-up to the layer-plan work
+  above): the Pallet PDF's own vector layer-plan inset is REMOVED — the
+  top-view CAMERA capture it sat on top of already shows the pattern, and
+  a user-supplied screenshot of a real exported sheet showed the two
+  visually disagreeing (the inset's white backing card and teal case
+  outlines crossing the corner of the photo like a second, differently-
+  scaled drawing pasted over the first).** `buildPalletPdf`'s
+  `if(spec.layerPlan){...}` block — the deck-outline + case-rect vector
+  draw introduced by the pattern-table thumbnails task — is deleted along
+  with the two primitives added only to serve it (`rectFill`/`rectStroke`;
+  `frame()`, the pre-existing LINE-only stroke every other frame in the
+  sheet uses, is untouched). `spec.layerPlan` is no longer read at all —
+  a caller that still builds one would see it silently ignored, same as
+  any other unrecognized key, rather than the module needing a version
+  bump. `app.js`'s `exportPalletPdf` no longer computes the `layerPlan`
+  object (`patternList`/`patternIndex`/`patternCand` were local to that
+  computation and are gone with it) or spreads it into the PDF spec.
+  **The OTHER TWO consumers of this shared geometry are untouched, on
+  purpose**: the 3D render inset (`#layerPlanInset`, toggled at pallet
+  depth) and the pattern-table thumbnail grid (`build.js`) were never the
+  complaint — the report was specifically about the exported PDF, where a
+  static page has no toggle to turn the inset off if it gets in the way of
+  the photo it sits on. `core/layerplan.js`'s `layerPlanGeometry` and
+  `render/layerplan2d.js`'s `layerPlanSVG`/`layerPlanTileSize` are
+  unchanged; only the PDF's own drawing call site is gone.
+  **`test/layerplan.test.html` needed real updates, not just fewer
+  passing pins**: its cross-consumer pin asserted app.js calls
+  `layerPlanGeometry` at least twice (render inset + PDF spec) — now
+  exactly once, asserted as an EXACT count so a re-added second call site
+  is still caught either way. Its PDF section is rebuilt around the new
+  invariant: a spec is byte-identical to the frozen pre-feature baseline
+  regardless of whether a `layerPlan` key is present at all (the two
+  former pins — "no key is byte-identical" and "the baseline predates the
+  feature, so the comparison isn't vacuous" — collapsed into one direct
+  "the key is now INERT" pin, since there's no longer a feature for the
+  baseline-predates-it framing to distinguish). **A real, pre-existing bug
+  surfaced while editing that pin**: the cross-consumer call-count pin's
+  body was `async` inside the file's synchronous `t()` instead of
+  `tAsync()` — this file's own established convention, and the exact
+  failure shape a much earlier CLAUDE.md entry already named (an async
+  pin's throw becomes an unhandled rejection and the runner reports PASS).
+  It had been silently passing throughout the entire layer-plan/pattern-
+  table/thumbnail-fit arc of tasks; caught only because removing the PDF
+  branch made its assertion's expected count change from `>= 2` to `=== 1`
+  and the mismatch needed to actually surface. Switched to `tAsync`.
+  Mutation-tested against the real source, both restored byte-identical
+  afterward: (1) a `spec.layerPlan` branch re-added to `palletpdf.js`
+  using only the pre-existing `frame()` (no throw, so the mutation tests
+  the BYTE COMPARISON itself, not just "an exception fails the pin") —
+  caught by the byte-length mismatch (4159 vs 4117); (2) the `layerPlan`
+  computation re-added to `app.js`'s `exportPalletPdf` — caught by the
+  call-count pin (`expected 1, got 2`). Full regression: `layerplan`
+  (12/12), `patterntable` (14/14) both green.

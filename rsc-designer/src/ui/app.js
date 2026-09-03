@@ -3862,24 +3862,11 @@ function exportPalletPdf(){
     ['Overall (incl. deck)', `${f(pal.L)} × ${f(pal.W)} × ${f(stack.totalHeightMM)} ${u}`]
   ]});
 
-  // LAYER PLAN — the SAME shared geometry (core/layerplan.js) the render
-  // inset and the pattern-table thumbnails draw, computed once here and
-  // handed to buildPalletPdf as pure data; the PDF module itself resolves
-  // nothing (see its own doc comment on why). Omitted (not merely null)
-  // when there is no pattern list to draw from, so an unpalletizable chain
-  // draws no inset rather than an empty box.
-  const patternList = build.getPatternRows(), patternIndex = build.getPatternIndex();
-  const patternCand = patternList[patternIndex];
-  const layerPlan = (patternCand && row.outer)
-    ? {geometry: layerPlanGeometry(patternCand.build(), row.outer), pallet: {L: pal.L, W: pal.W}}
-    : null;
-
   const bytes = buildPalletPdf({
     dateStr: dateStamp(), unit: u, images,
     captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan',
                cut: `${outerNoun} cutaway`},
-    sections,
-    ...(layerPlan ? {layerPlan} : {})
+    sections
   });
   const filename = `PALLET_${f(pal.L)}x${f(pal.W)}_${u}_summary.pdf`;
   // cancelable so a test can read the exported bytes instead of downloading
