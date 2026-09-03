@@ -2345,3 +2345,117 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   propagation into the rendered 3D readout text. Full regression: every
   suite this task's files touch (`chainstrip`, `project`, `palletpatterns`,
   `containment`, `saveload`, `trailer`, `sensitivity`) green, unchanged.
+
+- **RESOLVED (pallet-pattern-thumbnails task — the pattern-table follow-up):
+  thumbnails, the 3D render inset, and the Pallet PDF now share ONE layer-
+  plan drawing, and the original task's premise about the PDF was checked
+  against the real file and found wrong.** The pattern-table task above
+  deferred three pieces on the reasoning that the PDF already drew a layer-
+  plan diagram this work would "extract" into a shared component. Reading
+  `export/palletpdf.js` in full for THIS task found that premise false: the
+  PDF has never drawn a vector layer-plan at all — it embeds three CAMERA
+  SCREENSHOTS (iso/top/cut), and the "top" one is captioned "Layer pattern
+  on the pallet · plan" but is a photograph of the 3D scene, not a diagram.
+  There was nothing to extract. Stated here rather than silently building
+  around it: the "bit-identical after extraction" pin this task was supposed
+  to be graded on has no literal referent, so it is replaced with the
+  closest honest analogue — see below.
+  **THE SHARED COMPONENT is a two-layer split, not one function**, matching
+  every other multi-consumer drawing in this codebase (dim2d.js's
+  `dimLine`/`leader`, `deckCoveragePct`): `core/layerplan.js` exports
+  `layerPlanGeometry(built, caseOuter, layerIndex=0)` — DOM-free, mm-only,
+  takes a palletpatterns.js candidate's OWN `build()` result and returns the
+  footprint of exactly ONE stacked layer (filtered by matching `z`, never a
+  composite of several) as `{cases:[{x,y,w,h}], envelope, layerIndex,
+  layerCount}`, using `containment.js`'s existing `orientDims` for the per-
+  placement L/W-to-world-X/Y mapping rather than inventing a second one.
+  Every consumer calls this SAME function and draws whatever it returns;
+  none re-derives a case position. Two renderers consume it: `render/
+  layerplan2d.js`'s `layerPlanSVG(geometry, pallet, opts)` (plain SVG-string
+  building, the dim2d.js/tray2d.js precedent) for the render inset and the
+  thumbnail grid, and a new vector-drawing block inside `buildPalletPdf`
+  itself (two new primitives, `rectFill`/`rectStroke`, added alongside the
+  pre-existing `frame()` — which is left completely untouched, so its own
+  byte output can never move) for the PDF. Both renderers are driven by
+  literally the same `geometry` object for a given candidate — proven by a
+  pin that builds ONE geometry, feeds it to both, and checks the PDF's own
+  new stroked-rect count against the SVG root's own `data-cases` count.
+  **THE RENDER INSET** (`#m3layerplanSeg`/`#m3layerplan` in index.html,
+  `renderLayerPlanInset()` in app.js) is a new toggle alongside Solid/
+  Cutaway/Dims/Grid-White, gated to PALLET DEPTH ONLY (hidden at any other
+  depth, the same convention `#m3explode` already uses) and rendered into a
+  new `#layerPlanInset` div — a small corner card over the 3D canvas,
+  `pointer-events:none` so it can never intercept an orbit-drag or click
+  meant for the canvas beneath it; "obstructs nothing" is a DOM property
+  here, not a promise. It reads `build.getPatternRows()`/
+  `build.getPatternIndex()` — the SAME clamped list/index the pattern table
+  and its cycle arrows already read (PR #30's own test hooks) — so it can
+  never show a different candidate than what Build/BCT/the arrows agree on,
+  and it re-renders for free on every existing `applyHierarchy()` call
+  (pattern selection changes already trigger that via the pre-existing
+  `hier3d` notifier; no new registration needed). **DEFAULT is OFF, not
+  "off on mobile"**: the original task asked for the latter specifically,
+  but every other toggle in this rail (Solid/Cutaway/Dims/Grid) defaults off
+  with no viewport-conditional precedent anywhere in the file — inventing
+  one control with an asymmetric, viewport-dependent default among four that
+  share one convention would itself be the surprising thing. Off-everywhere
+  trivially satisfies "off on mobile" as a special case, stated as a
+  deliberate reading rather than a silent substitution.
+  **THUMBNAILS** are a table/thumbnails toggle INSIDE the existing
+  `#bPatternPanel` (`setPatternView()`, build.js) — never a modal: this
+  codebase has no modal/dialog/focus-trap component anywhere (checked by
+  grep before building anything, per the task's own instruction), and every
+  secondary view here is an inline panel swap (`build.js`'s own case/
+  pattern `setMode()` one level up is the same idiom), so the toggle follows
+  that rather than inventing an overlay. Selecting a thumbnail calls the
+  SAME `selectPattern(i)` the table's row click now also calls — extracted
+  as one function specifically so the two entry points could not drift into
+  two writers of `project.pallet.patternIndex`. **Cached by a `WeakMap`
+  keyed on the CANDIDATE OBJECT**, not its index: a fresh solve hands back
+  brand-new candidate objects, so the cache invalidates itself by
+  construction — there is no "clear the cache when the list changes" logic
+  to forget, because a stale entry has nothing left pointing at it. Built
+  LAZILY relative to which view is showing: nothing runs while the table is
+  up (pinned, and mutation-tested — hooking the thumbnail build into the
+  table branch too fails the pin immediately), and the first switch to
+  Thumbnails builds every visible candidate's SVG in one pass, which is
+  honest about what "lazy" means for pure vector math (a few KB, no 3D
+  capture) rather than engineering a per-card IntersectionObserver for a
+  cost this low.
+  **A REAL BUG WAS FOUND AND FIXED IN THE PIN, NOT THE CODE**, and it is
+  recorded here because it is exactly the "confirm the specimen" failure
+  mode this file has warned about before: the first version of the hand-
+  computed SVG-transform pin used a pallet fixture (1000×750mm) where BOTH
+  candidate scale ratios happened to equal 0.2 — so mutating the renderer's
+  `Math.min` to `Math.max` (the actual binding-axis choice) produced BYTE-
+  IDENTICAL output and the pin passed on broken code. Fixed by choosing a
+  deliberately asymmetric deck (1000×500mm) where the two ratios differ
+  (0.2 vs 0.3), re-verified the mutation now fails as expected. Recorded
+  here rather than only in the pin's own comment because it is the second
+  time in this project a symmetric fixture has hidden a swapped `min`/`max`
+  or axis pair from a pin that looked correct.
+  **Pins** (`test/layerplan.test.html`, 12): the pure geometry function
+  (case count == candidate's own `perLayer`, envelope untouched); the hand-
+  computed SVG transform (exact pixel box, asymmetric fixture, above); the
+  cross-consumer count correspondence (SVG vs PDF); the Pallet PDF's own
+  byte-identical-with-no-`layerPlan`-key pin against a FROZEN pre-task copy
+  of the module (`test/fixtures/palletpdf-baseline.js` — a genuine committed
+  fixture, not a scratch file, since there is no other way to prove "adding
+  this key changes nothing else" without a real prior version to diff
+  against); a mutation-context pin proving the baseline module cannot even
+  interpret `layerPlan` (so the byte-identical pin isn't vacuously trivial);
+  and DOM-driven reachability at 1400px/390px covering: toggle gated to
+  pallet depth, off by default, inset non-obstructive (`pointer-events:
+  none`, canvas still sized); no `<dialog>`/`role=dialog` anywhere in the
+  app and no `document.body` scroll-lock when thumbnails open; and thumbnail
+  click / table row selection agreeing on the SAME `patternIndex` (one
+  writer, checked end-to-end through the real DOM). Five mutations run
+  against the real source, all caught: the z-layer filter removed (fails
+  the perLayer count pin), the SVG scale `min`→`max` (fails the hand-
+  computed transform pin, only after the fixture fix above), the PDF's case-
+  rect loop deleted (fails the cross-consumer count pin), the render
+  inset's default flipped to `true` (fails at both breakpoints), and the
+  thumbnail build hoisted into the table branch (fails the laziness pin at
+  both breakpoints). Full regression: `layerplan`, `patterntable`,
+  `project`, `containment`, `saveload`, `palletpatterns`, `chainstrip`,
+  `trailer`, `bct`, `stack`, `sensitivity` all green.

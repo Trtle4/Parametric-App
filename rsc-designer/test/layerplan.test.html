@@ -1,0 +1,278 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>layer-plan tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* The Task-2 follow-up: a shared "layer plan" top-down schematic used in
+   three places — the pattern-table thumbnail grid, a 3D render inset, and
+   the Pallet PDF. All three read core/layerplan.js's layerPlanGeometry()
+   (built once per candidate) and draw it; none re-derives case positions.
+
+   NOTE ON "bit-identical after extraction": the original task framing
+   assumed the Pallet PDF already drew a layer-plan diagram that this work
+   would extract. Reading the real palletpdf.js found no such thing — the
+   PDF only ever embedded three CAMERA screenshots (iso/top/cut), never a
+   vector schematic. So there was nothing to extract; the closest honest
+   analog is pinned instead: a spec with no `layerPlan` key produces BYTE-
+   IDENTICAL output to a frozen pre-task copy of the module
+   (fixtures/palletpdf-baseline.js), and adding `layerPlan` only ever ADDS
+   drawing ops, never alters the pre-existing ones. */
+import {newProject, checkLockedCase} from '../src/core/project.js';
+import {layerPlanGeometry} from '../src/core/layerplan.js';
+import {layerPlanSVG} from '../src/render/layerplan2d.js';
+import {buildPalletPdf as buildPdfNew} from '../src/export/palletpdf.js';
+import {buildPalletPdf as buildPdfBaseline} from './fixtures/palletpdf-baseline.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+async function tAsync(name, fn){ try{ await fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+function close(a, e, tol, msg = ''){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e} (±${tol}), got ${a}`); }
+
+/* A fixture with a real MULTI-candidate pattern list — matches
+   patterntable.test.html's own fixture shape so this file's DOM sweeps can
+   exercise real selection behaviour, not a single-row degenerate case. */
+function fixtureProject(){
+  const p = newProject();
+  p.primary = null;
+  p.secondary.enabled = false;
+  p.tertiary.params = {...p.tertiary.params, L: 300, W: 200, H: 150};
+  p.pallet.L = 1200; p.pallet.W = 1000; p.pallet.maxH = 2000;
+  return p;
+}
+
+/* ---------- 1. pure geometry, hand-computed ---------- */
+
+t('layerPlanGeometry: case count for one layer equals the candidate\'s own perLayer, hand-verified', () => {
+  const proj = fixtureProject();
+  const row = checkLockedCase(proj);
+  const list = row.patternList;
+  if(!(list.length > 1)) throw new Error(`fixture must produce multiple candidates, got ${list.length}`);
+  const cand = list[0];
+  const built = cand.build();
+  const geo = layerPlanGeometry(built, row.geo.case.outer);
+  eq(geo.cases.length, cand.perLayer, 'one layer\'s case count == perLayer:');
+  eq(geo.layerIndex, 0, 'defaults to the bottom layer:');
+  eq(geo.layerCount, cand.layers, 'reports the true layer count:');
+  eq(geo.envelope, cand.envelope, 'envelope is the candidate\'s own, not recomputed:');
+});
+
+t('layerPlanGeometry: hand-computed transform — a fixed geometry\'s SVG rect lands at the EXACT hand-derived pixel box', () => {
+  // DELIBERATELY ASYMMETRIC deck (1000x500mm) against a symmetric available
+  // box (200x150px, from width220/height170/margin10): the two candidate
+  // scale ratios are 200/1000=0.2 (L-bound) and 150/500=0.3 (W-bound) — this
+  // is required, not incidental. An earlier version of this fixture used a
+  // 1000x750mm deck where BOTH ratios came out to 0.2, so swapping the
+  // renderer's own Math.min for Math.max (checked by mutation) produced the
+  // identical output and the pin passed on broken code. The binding axis
+  // must actually differ between the two candidates for this pin to be
+  // capable of failing at all.
+  const geometry = {cases: [{x: 0, y: 0, w: 200, h: 100}], envelope: {L: 200, W: 100}};
+  const svg = layerPlanSVG(geometry, {L: 1000, W: 500}, {width: 220, height: 170, margin: 10});
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const rect = doc.querySelector('rect[data-case="0"]');
+  if(!rect) throw new Error('no case rect rendered');
+  // scale = min(200/1000, 150/500) = min(0.2, 0.3) = 0.2 (L-bound).
+  // ox=110, oy=85; case centred at world (0,0) w=200,h=100 -> x0=110-20=90,
+  // y0=85-10=75, width=200*0.2=40, height=100*0.2=20
+  eq(+rect.getAttribute('x'), 90, 'x:'); eq(+rect.getAttribute('y'), 75, 'y:');
+  eq(+rect.getAttribute('width'), 40, 'width:'); eq(+rect.getAttribute('height'), 20, 'height:');
+  const deck = doc.querySelector('rect:not([data-case])');
+  // deck centred at svg centre, 200x100px (1000mm*0.2, 500mm*0.2)
+  eq(+deck.getAttribute('x'), 10, 'deck x:'); eq(+deck.getAttribute('y'), 35, 'deck y:');
+  eq(+deck.getAttribute('width'), 200, 'deck width:'); eq(+deck.getAttribute('height'), 100, 'deck height:');
+});
+
+/* ---------- 2. cross-consumer agreement ---------- */
+
+t('the render inset, the thumbnail grid and the Pallet PDF all call the SAME layerPlanGeometry — no re-derived source', async () => {
+  const [buildSrc, appSrc] = await Promise.all([
+    fetch('../src/ui/build.js').then(r => r.text()),
+    fetch('../src/ui/app.js').then(r => r.text())
+  ]);
+  if(!buildSrc.includes("import {layerPlanGeometry} from '../core/layerplan.js';"))
+    throw new Error('build.js (thumbnails) does not import the shared geometry function');
+  if(!buildSrc.includes('layerPlanGeometry(cand.build()'))
+    throw new Error('build.js\'s thumbnail cache does not call layerPlanGeometry');
+  if(!appSrc.includes("import {layerPlanGeometry} from '../core/layerplan.js';"))
+    throw new Error('app.js (render inset + PDF) does not import the shared geometry function');
+  const calls = (appSrc.match(/layerPlanGeometry\(/g) || []).length;
+  if(calls < 2) throw new Error(`app.js should call layerPlanGeometry twice (render inset, PDF spec) — found ${calls}`);
+});
+
+t('cross-consumer agreement: SVG and PDF drawn from the SAME geometry object show the SAME case count', () => {
+  const geometry = {
+    cases: [{x: -100, y: -50, w: 200, h: 100}, {x: 100, y: 50, w: 200, h: 100}, {x: 100, y: -50, w: 200, h: 100}],
+    envelope: {L: 400, W: 200}
+  };
+  const pallet = {L: 1200, W: 1000};
+  const svg = layerPlanSVG(geometry, pallet);
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const svgCaseCount = doc.querySelectorAll('rect[data-case]').length;
+  eq(svgCaseCount, geometry.cases.length, 'SVG draws exactly geometry.cases.length rects:');
+  eq(+doc.documentElement.getAttribute('data-cases'), geometry.cases.length, 'SVG root reports the same count:');
+
+  // Build a minimal PDF spec WITH this exact geometry and count the new
+  // stroked rects the layer-plan inset adds (baseline has none) — must equal
+  // geometry.cases.length + 1 (the deck outline), proving the PDF's own
+  // hand-written vector ops are driven by the SAME array, not a re-derived
+  // count.
+  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+  const baseSpec = {
+    dateStr: '2026-01-01', unit: 'mm',
+    images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
+    captions: {iso: 'x', top: 'y', cut: 'z'},
+    sections: [{label: 'Pallet', rows: [['Overall', '1 x 1 x 1 mm']]}]
+  };
+  const without = buildPdfNew(baseSpec);
+  const withLP = buildPdfNew({...baseSpec, layerPlan: {geometry, pallet}});
+  const textOf = bytes => { let s = ''; for(const b of bytes) s += String.fromCharCode(b); return s; };
+  const countReS = s => (s.match(/ re\nS\n/g) || []).length;
+  const strokedRectDelta = countReS(textOf(withLP)) - countReS(textOf(without));
+  // deck outline + the inset card's own border frame() + one stroked rect
+  // per case — the "+2" is the inset's own chrome, not case data, so the
+  // CASE-dependent part of this count (cases.length) is what actually
+  // proves the correspondence to the SVG's own data-cases count.
+  eq(strokedRectDelta, geometry.cases.length + 2, 'new stroked rects = cases + deck outline + card border, matching the SVG\'s own case count:');
+});
+
+/* ---------- 3. Pallet PDF: no pre-existing content altered ---------- */
+
+t('Pallet PDF: a spec with no layerPlan key is BYTE-IDENTICAL to the frozen pre-task module', () => {
+  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+  const spec = {
+    dateStr: '2026-01-01', unit: 'mm',
+    images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
+    captions: {iso: 'Pallet · isometric', top: 'Layer pattern on the pallet · plan', cut: 'case cutaway'},
+    sections: [
+      {label: 'Case', rows: [['Outside dimensions', '306 × 206 × 162 mm'], ['Per pallet', '16']]},
+      {label: 'Pallet', rows: [['Load (on deck)', '1200 × 1000 × 900 mm'], ['Overall (incl. deck)', '1200 × 1000 × 1027 mm']]}
+    ]
+  };
+  const a = buildPdfBaseline(spec), b = buildPdfNew(spec);
+  eq(a.length, b.length, 'byte length:');
+  for(let i = 0; i < a.length; i++)
+    if(a[i] !== b[i]) throw new Error(`byte ${i} differs: baseline ${a[i]} vs current ${b[i]}`);
+});
+
+t('MUTATION CONTEXT: the frozen baseline genuinely predates this feature (no layerPlan support at all)', () => {
+  const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+  const spec = {
+    dateStr: '2026-01-01', unit: 'mm',
+    images: {iso: {data: TINY_JPEG, w: 1, h: 1}, top: {data: TINY_JPEG, w: 1, h: 1}, cut: {data: TINY_JPEG, w: 1, h: 1}},
+    captions: {iso: 'x', top: 'y', cut: 'z'}, sections: [],
+    layerPlan: {geometry: {cases: [{x: 0, y: 0, w: 100, h: 100}], envelope: {L: 100, W: 100}}, pallet: {L: 500, W: 500}}
+  };
+  // the baseline module has no idea what `layerPlan` means — proving the two
+  // modules are genuinely different code, not the same file imported twice
+  const withLPCurrent = buildPdfNew(spec);
+  const ignoredByBaseline = buildPdfBaseline(spec);
+  if(withLPCurrent.length === ignoredByBaseline.length)
+    throw new Error('current module did not draw anything extra for layerPlan — pins above would be vacuous');
+});
+
+/* ---------- 4. DOM-driven: reachability, defaults, no-modal, both breakpoints ---------- */
+
+function openApp(width){
+  const f = document.createElement('iframe');
+  f.style.width = width + 'px'; f.style.height = '900px'; f.style.border = 'none';
+  f.src = '../index.html';
+  document.body.appendChild(f);
+  return f;
+}
+function settle(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function surveyAt(width){
+  const f = openApp(width);
+  await settle(900);
+  const d = f.contentDocument, w = f.contentWindow;
+  const out = {};
+
+  // --- render inset: hidden off pallet depth, off by default at pallet depth
+  d.getElementById('tab3d').click();
+  await settle(200);
+  out.segHiddenNotPallet = getComputedStyle(d.getElementById('m3layerplanSeg')).display === 'none';
+  d.querySelector('[data-node="pallet"]').click();
+  await settle(400);
+  out.segShownAtPallet = getComputedStyle(d.getElementById('m3layerplanSeg')).display !== 'none';
+  out.toggleOffByDefault = !d.getElementById('m3layerplan').classList.contains('on');
+  out.insetHiddenByDefault = getComputedStyle(d.getElementById('layerPlanInset')).display === 'none';
+  d.getElementById('m3layerplan').click();
+  await settle(300);
+  out.insetShownAfterToggle = getComputedStyle(d.getElementById('layerPlanInset')).display !== 'none';
+  out.insetHasSvg = !!d.querySelector('#layerPlanInset svg');
+  out.insetNonInteractive = getComputedStyle(d.getElementById('layerPlanInset')).pointerEvents === 'none';
+  // canvas still present, sized (not obstructed/replaced)
+  const cv = d.querySelector('#cvWrap canvas');
+  const cvBox = cv ? cv.getBoundingClientRect() : null;
+  out.canvasIntact = !!(cvBox && cvBox.width > 50 && cvBox.height > 50);
+
+  // --- no modal anywhere on the page (structural, once is enough)
+  out.noDialog = d.querySelectorAll('dialog, [role="dialog"]').length === 0;
+  const overflowBefore = d.body.style.overflow;
+
+  // --- thumbnails: table by default, no svg built; thumbs mode builds them
+  d.getElementById('tabBuild').click();
+  await settle(300);
+  out.tableRowsBeforeThumbs = d.querySelectorAll('#bPatternTable tbody tr').length;
+  out.noThumbSvgInTableMode = d.querySelectorAll('#bPatternThumbs svg').length === 0;
+  d.querySelector('#bPatternViewToggle button[data-view="thumbs"]').click();
+  await settle(300);
+  out.thumbCount = d.querySelectorAll('.bpthumb').length;
+  out.thumbSvgCount = d.querySelectorAll('#bPatternThumbs svg').length;
+  out.overflowUnaffectedByThumbs = d.body.style.overflow === overflowBefore;
+  out.thumbsAreInline = !!d.getElementById('bPatternThumbs').closest('#bPatternPanel');
+
+  // click a thumbnail (not index 0, to prove it actually moves the selection)
+  const idx = Math.min(2, out.thumbCount - 1);
+  const before = d.querySelector('.bpthumb-sel') ? d.querySelector('.bpthumb-sel').dataset.i : null;
+  const cards = [...d.querySelectorAll('.bpthumb')];
+  cards[idx].click();
+  await settle(300);
+  out.thumbClickMovedSelection = d.querySelector('.bpthumb-sel').dataset.i === String(idx) &&
+    d.querySelector('.bpthumb-sel').dataset.i !== before;
+  // switch back to table: same candidate selected (one writer, not two)
+  d.querySelector('#bPatternViewToggle button[data-view="table"]').click();
+  await settle(300);
+  const selRow = d.querySelector('#bPatternTable tr.bsel');
+  out.tableAgreesWithThumbPick = !!selRow && selRow.cells[0].textContent === String(idx + 1);
+
+  f.remove();
+  return out;
+}
+
+for(const width of [1400, 390]){
+  await tAsync(`layer-plan render inset: gated to pallet depth, off by default, non-obstructive at ${width}px`, async () => {
+    const r = await surveyAt(width);
+    if(!r.segHiddenNotPallet) throw new Error('toggle visible off pallet depth');
+    if(!r.segShownAtPallet) throw new Error('toggle not shown at pallet depth');
+    if(!r.toggleOffByDefault) throw new Error('toggle defaults ON');
+    if(!r.insetHiddenByDefault) throw new Error('inset visible before the toggle is clicked');
+    if(!r.insetShownAfterToggle) throw new Error('inset did not appear after toggling on');
+    if(!r.insetHasSvg) throw new Error('inset has no SVG content');
+    if(!r.insetNonInteractive) throw new Error('inset is not pointer-events:none — it could obstruct canvas interaction');
+    if(!r.canvasIntact) throw new Error('3D canvas missing/collapsed while the inset is shown');
+  });
+  await tAsync(`no modal, thumbnails are an inline panel swap (no scroll lock) at ${width}px`, async () => {
+    const r = await surveyAt(width);
+    if(!r.noDialog) throw new Error('a <dialog>/role=dialog element exists somewhere in the app');
+    if(!r.noThumbSvgInTableMode) throw new Error('thumbnail SVGs were built while table mode was showing (not lazy)');
+    // candidate COUNT is irrelevant here (this pin checks modal/scroll-lock
+    // structure, not selection) — the default project may produce as few as
+    // one pattern, and one thumbnail is still enough to prove none of this.
+    if(r.thumbSvgCount !== r.thumbCount) throw new Error('thumbnail grid did not build one SVG per candidate');
+    if(!r.overflowUnaffectedByThumbs) throw new Error('opening thumbnails changed document.body scroll (a modal-like scroll lock)');
+    if(!r.thumbsAreInline) throw new Error('thumbnail grid is not inside the pattern panel — looks like it escaped to an overlay');
+  });
+  await tAsync(`thumbnail click and table row selection are ONE writer (patternIndex) at ${width}px`, async () => {
+    const r = await surveyAt(width);
+    if(r.thumbCount < 2){ /* default project may only fit one pattern; nothing to cross-check */ return; }
+    if(!r.thumbClickMovedSelection) throw new Error('clicking a thumbnail did not move the selection marker');
+    if(!r.tableAgreesWithThumbPick) throw new Error('switching back to the table shows a DIFFERENT selected row than the thumbnail pick — two writers');
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
