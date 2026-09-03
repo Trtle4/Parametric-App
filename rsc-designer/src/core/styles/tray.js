@@ -39,6 +39,19 @@
  * All lengths mm. Implements the Geometry contract in core/types.js.
  */
 
+/** Outside dims MINUS inside dims — the board this style adds per axis, as a
+ *  function of caliper alone. L and W each gain one wall thickness per side
+ *  (+2t, the left/right and bottom/top walls). H gains only ONE board layer:
+ *  the base is a single flat sheet the walls rise from, and the top is open
+ *  (+t — not the RSC's +4t; see the comment on `outer` below). The ONE place
+ *  this relation is defined — geometry() below builds `outer` from it, and
+ *  core/styles/index.js's dimension-basis conversion (inside <-> outside
+ *  manual entry) inverts it — so the two can never disagree. */
+export function trayOuterGrowth(p){
+  const t = p.caliper;
+  return {L: 2*t, W: 2*t, H: t};
+}
+
 /**
  * @param {Object} p  {L, W, H, caliper, cornerGap}
  * @returns {import('../types.js').Geometry}

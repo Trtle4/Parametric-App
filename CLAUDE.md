@@ -1933,3 +1933,100 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   call site back to `'case'` (the module-scope default alone was not
   re-tested in isolation, since `setActiveLevel` always runs after it at
   boot and would silently correct it) fails both new pins immediately.
+
+- **RESOLVED (dimension-basis task): manually-entered carton/case dims can
+  now be read as OUTSIDE (the erected part's own footprint) as well as
+  INSIDE (the cavity, this app's only convention until now) — and the fix
+  is entirely a DISPLAY-layer conversion, never a second stored value.**
+  Reported worked example, confirmed against CAPE and reproduced through the
+  real chain: a 443×198×235mm case at 3mm caliper on a 48×40in pallet reads
+  10 cases/layer if those numbers are (mis)taken as inside, 12 if correctly
+  taken as outside — a 20% difference with, until now, nothing on screen to
+  say which one the app was doing.
+  **The single architectural decision, stated because the task explicitly
+  demanded one:** `level.params.L/W/H` remains ALWAYS the canonical INSIDE
+  value — every existing internal reader (`geometry()`, `checkLockedCase`'s
+  cavity at project.js:1084, `solveSecondaryInner`'s locked-branch `fitInto`
+  call at :876, the openTop `fixedH` read at :1006) is UNCHANGED, reads
+  unchanged, needed no edits at all. The new `dimBasis: 'inside'|'outside'`
+  field (on `project.secondary`/`project.tertiary` only — the two levels
+  that can be `locked`, i.e. manually dimensioned) governs nothing but how
+  the RAIL FIELD interprets the next keystroke and what it currently shows:
+  entering an outside value converts it to inside via the style's own
+  `outerGrowth(params)` BEFORE it ever reaches `params.L/W/H`, and the
+  outside figure is always RE-DERIVED from that inside value for the
+  counterpart readout, never itself stored. This is what makes the round-
+  trip stable BY CONSTRUCTION rather than merely tested-and-hoped: there is
+  exactly one number on record, so a bare toggle sequence (no re-entry in
+  between) has nothing to drift — pinned across 20 repeated toggles under a
+  fractional caliper (a6120's own 0.457mm default) landing bit-identical,
+  not merely "close."
+  **The relation is STYLE-OWNED, per the task's explicit instruction not to
+  hardcode `+2t` anywhere in input handling.** Each of the four manually-
+  dimensioned styles (fefco201, a6120, sealend, tray — the ones whose
+  `dimsLabel` is `'Inside dimensions'`; flowwrap/shrinkbundle are correctly
+  excluded, since a content envelope or a bundle envelope was never an
+  "inside" to begin with) exports its own `<style>OuterGrowth(p)` function
+  — `{L: 2t, W: 2t, H: 4t}` for fefco201 and a6120 (numerically identical
+  totals, genuinely different flap stacks, per each file's own existing
+  comment), `{L: 2t, W: 2t, H: 6t}` for sealend's three-layer seal-over-
+  major-over-dust stack, `{L: 2t, W: 2t, H: t}` for the tray's single open-
+  top board layer — and `geometry()` builds `outer` FROM it (`const growth =
+  <style>OuterGrowth(p); outer: {L: L+growth.L, ...}`), replacing what used
+  to be an inline `L + 2*t` literal in each file. `core/styles/index.js`
+  attaches each as `outerGrowth` on the matching registry entry and exports
+  two generic functions, `insideDimsFromOutside`/`outsideDimsFromInside`,
+  that do nothing but call whichever style's own `outerGrowth` and add or
+  subtract it — so there is no second, independently-maintained conversion
+  formula anywhere in the app; a style's relation can only ever be defined
+  once. EXHAUSTIVENESS runs at module load, the same idiom as the
+  interlayer/stack-base checks elsewhere in this file: every style whose
+  `dimsLabel` is `'Inside dimensions'` is filtered into
+  `DIM_BASIS_ELIGIBLE_STYLES` and asserted to carry a function-typed
+  `outerGrowth`, or the module throws immediately naming the offending
+  style — mutation-tested by stripping `tray`'s `outerGrowth: trayOuterGrowth`
+  registry line and confirming the real app hard-crashes at import with
+  exactly that message, not a silent fallback.
+  **The UI**: `mountDimBasisControl()` (app.js), sibling to the existing
+  lock control, renders an Inside/Outside `<select>` into a new
+  `#levelDimBasis` host — shown only for a LOCKED level whose style declares
+  `outerGrowth` (never for a solved/derived level, never for a flow wrap or
+  shrink bundle). `inputs.js`'s `lengthField` grew a `dimBasisEligibleFor`
+  gate: under `'outside'`, the field displays `inside + growth` and converts
+  back on input (`raw - growth`); under the default `'inside'` it is
+  untouched, bit-identical to every project before this field existed. BOTH
+  values are always visible, per the task's explicit requirement — a new
+  `.dimcounterpart` readout beside each L/W/H box always shows the OTHER
+  basis, computed fresh (`growthNow()`, never captured once) because growth
+  depends on caliper, a sibling MATERIAL-group field that can change without
+  remounting the dims fields; a dedicated `refreshDimCounterparts`/
+  `'dimCounterparts'` notifier keeps it live across such an edit without
+  touching the locked field's own value (the same guarantee `refreshDims`
+  already makes for the unlocked/solved case, extended to the one case it
+  had always explicitly excluded). The pre-existing L>=W convention
+  (`normalizeLW`) had to be made basis-aware too — it swaps the two
+  CANONICAL INSIDE values (unchanged) but had been redisplaying the raw
+  inside numbers into the input boxes regardless of basis; fixed to
+  redisplay through the same outside conversion the fields themselves use.
+  Verified live through the real UI, including the swap interaction
+  specifically: typing an outside L smaller than the current inside W
+  triggers the swap, and both the outside display and the inside
+  counterpart come out correct on both sides of it (hand-traced against the
+  real DOM, not assumed from the code).
+  **Pins** (`test/dimensionbasis.test.html`, 19, plus a fix to one
+  `saveload.test.html` migration-report pin whose exact expected key list
+  needed the two new `dimBasis` defaults added in their real newProject()
+  key order): the worked instance both ways through the real chain
+  (`checkLockedCase`, not a hand re-derivation); a style-owned-conversion
+  mutation applying tray's growth to fefco201's own outside dims and
+  confirming a visibly different, wrong H; round-trip exactness including
+  the 20-toggle fractional-caliper sweep; the derived readout checked
+  against `levelGeometry(...).outer` — the REAL built geometry, never the
+  conversion helper called a second time on itself; migration defaults
+  ('inside' for both a fresh project and an old v1 fixture with no
+  `dimBasis` key at all); exhaustiveness (both the positive four-style list
+  and the two correctly-excluded flexible styles); DOM-driven reachability
+  for carton AND case at 1400px and 390px; and a pin confirming the toggle
+  is absent entirely on a solved (unlocked) level. Full regression:
+  `saveload`/`project`/`containment`/`a6120`/`sealend`/`tray`/
+  `lockinvariant`/`singlesource`/`sensitivity`/`chainstrip` all green.

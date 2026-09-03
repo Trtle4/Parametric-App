@@ -10,11 +10,11 @@
  * Option descriptor (style-specific view options, not dimensions):
  *                   { key, label, hint, choices: [{value,label}], default }
  */
-import {fefco201} from './fefco201.js';
-import {a6120} from './a6120.js';
+import {fefco201, fefco201OuterGrowth} from './fefco201.js';
+import {a6120, a6120OuterGrowth} from './a6120.js';
 import {flowwrap, SEAL_ANGLES} from './flowwrap.js';
-import {trayGeometry} from './tray.js';
-import {sealend} from './sealend.js';
+import {trayGeometry, trayOuterGrowth} from './tray.js';
+import {sealend, sealendOuterGrowth} from './sealend.js';
 import {shrinkBundle, FILM_OPACITY_DEFAULT_PCT} from './shrinkbundle.js';
 
 const trayReadouts = geo => [
@@ -49,6 +49,9 @@ export const styles = [
        choices: [{value: 'L', label: 'Length panels (major)'}, {value: 'W', label: 'Width panels (minor)'}]}
     ],
     geometry: fefco201,
+    // manual-entry dimension-basis conversion (inside <-> outside) — see
+    // fefco201.js's own doc comment on this function for the derivation.
+    outerGrowth: fefco201OuterGrowth,
     readouts: geo => [{label: 'Flap depth (W/2)', len: geo.meta.flapDepth}],
     defaultOrientations: ['LWH', 'WLH'],        // cases rotate about vertical only
     defaultClearance: {wall: 0, between: 0}
@@ -75,6 +78,7 @@ export const styles = [
     ],
     options: [],
     geometry: a6120,
+    outerGrowth: a6120OuterGrowth,
     readouts: geo => [
       {label: 'Tuck depth', len: geo.meta.tuckDepth},
       {label: 'Dust flap depth', len: geo.meta.dustDepth}
@@ -170,6 +174,7 @@ export const styles = [
       {key: 'shrink', label: 'Shrink-wrap this tray', hint: 'film over tray + contents', type: 'bool', default: false}
     ],
     geometry: trayGeometry,
+    outerGrowth: trayOuterGrowth,
     readouts: trayReadouts,
     defaultOrientations: ['LWH', 'WLH'],
     defaultClearance: {wall: 0, between: 0},
@@ -200,6 +205,7 @@ export const styles = [
     ],
     options: [],
     geometry: sealend,
+    outerGrowth: sealendOuterGrowth,
     readouts: geo => [
       {label: 'Major flap depth (W/2)', len: geo.meta.majorFlapDepth},
       {label: 'Seal flap depth (W/2 + overlap/2)', len: geo.meta.sealFlapDepth},
@@ -260,3 +266,46 @@ export const styles = [
 ];
 
 export const styleById = id => styles.find(s => s.id === id);
+
+// --- manual-entry dimension basis (inside <-> outside) ---------------------
+// A style's own `outerGrowth(params, options)` (declared alongside its
+// geometry() above) is the ONE place the inside<->outside relation is
+// defined — these two functions just apply it forward or backward, so there
+// is never a second, independently-maintained conversion formula anywhere
+// in the app. Scoped to manual entry only (a locked secondary/tertiary
+// level, core/project.js's `dimBasis` field) — the solve-from-contents path
+// never calls these.
+export function insideDimsFromOutside(style, outsideLWH, params, options){
+  if(typeof style.outerGrowth !== 'function')
+    throw new Error(`style "${style.id}" has no outerGrowth — cannot convert manual outside dims`);
+  const growth = style.outerGrowth(params, options);
+  return {
+    L: outsideLWH.L - growth.L,
+    W: outsideLWH.W - growth.W,
+    H: outsideLWH.H - growth.H
+  };
+}
+
+export function outsideDimsFromInside(style, insideLWH, params, options){
+  if(typeof style.outerGrowth !== 'function')
+    throw new Error(`style "${style.id}" has no outerGrowth — cannot convert manual outside dims`);
+  const growth = style.outerGrowth(params, options);
+  return {
+    L: insideLWH.L + growth.L,
+    W: insideLWH.W + growth.W,
+    H: insideLWH.H + growth.H
+  };
+}
+
+// EXHAUSTIVENESS: every style a user can manually dimension (dimsLabel ===
+// 'Inside dimensions' — fefco201/a6120/tray/sealend today) must declare
+// outerGrowth, or a future style added without it would silently make
+// dimBasis:'outside' either wrong or unconvertable rather than loudly
+// unsupported. Same idiom as the interlayer/stack-base exhaustiveness
+// checks elsewhere in this codebase — run at module load, not deferred to
+// first use.
+export const DIM_BASIS_ELIGIBLE_STYLES = styles.filter(s => s.dimsLabel === 'Inside dimensions');
+for(const s of DIM_BASIS_ELIGIBLE_STYLES){
+  if(typeof s.outerGrowth !== 'function')
+    throw new Error(`style "${s.id}" declares dimsLabel:'Inside dimensions' but has no outerGrowth — dimension-basis conversion cannot cover it`);
+}

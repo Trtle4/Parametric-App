@@ -1,0 +1,281 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>dimension-basis tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Manual entry of carton/case L/W/H has always been read as INSIDE (cavity)
+   dims with no UI indication — a user who types a known OUTSIDE size (a spec
+   sheet, a competitor's box) gets a silently wrong pack. `project.secondary.
+   dimBasis`/`project.tertiary.dimBasis` ('inside'|'outside', default
+   'inside') lets a locked level say which one it's typing. The single
+   architectural decision this file exists to pin: `params.L/W/H` is ALWAYS
+   the canonical INSIDE value — core/project.js never reads anything else,
+   unchanged by this feature — and the OUTSIDE figure is always RE-DERIVED
+   from it via the style's own `outerGrowth(params)`, never itself stored.
+   That is what makes the round-trip stable BY CONSTRUCTION: there is only
+   ever one number on record, so toggling the basis has nothing to drift.
+
+   Scope: MANUAL ENTRY ONLY (a locked secondary/tertiary level). The
+   solve-from-contents path never reads dimBasis — there is no ambiguity to
+   resolve there, geometry() always receives whatever L/W/H containment
+   already solved to, treated as inside exactly as it always has been. */
+import {newProject, linkFor, levelGeometry, checkLockedCase} from '../src/core/project.js';
+import {styleById, styles, insideDimsFromOutside, outsideDimsFromInside, DIM_BASIS_ELIGIBLE_STYLES} from '../src/core/styles/index.js';
+import {deserializeProject} from '../src/core/persistence.js';
+
+const results = [];
+function t(name, fn){
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+async function tAsync(name, fn){
+  try{ await fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+function close(a, e, tol, msg = ''){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e} (±${tol}), got ${a}`); }
+
+function lockedCaseProject(L, W, H, cal){
+  const p = newProject();
+  p.secondary.enabled = false;         // content packs directly into the case — the worked example's own shape
+  linkFor(p, 'tertiary').locked = true;
+  p.tertiary.params = {...p.tertiary.params, L, W, H, caliper: cal};
+  p.pallet.L = 48*25.4; p.pallet.W = 40*25.4;   // the worked example's own 48x40in deck
+  return p;
+}
+
+/* ---------- 1. the worked instance, both ways (hand-computed) ---------- */
+
+t('worked example: 443x198x235 misread as INSIDE gives 10 cases/layer on a 48x40 deck', () => {
+  // legacy behaviour, unchanged: nothing converts, the typed numbers land in
+  // params.L/W/H directly, exactly as they always have for dimBasis:'inside'
+  const p = lockedCaseProject(443, 198, 235, 3);
+  const row = checkLockedCase(p);
+  eq(row.geo.case.outer, {L: 449, W: 204, H: 247}, 'outer grows a further +2t/+2t/+4t past the typed (misread) numbers:');
+  eq(row.casesPerLayer, 10, 'hand-verified against CAPE: misreading an outside size as inside undercounts:');
+});
+
+t('worked example: 443x198x235 correctly read as OUTSIDE gives 12 cases/layer, matching CAPE', () => {
+  const style = styleById('fefco201');
+  const inside = insideDimsFromOutside(style, {L: 443, W: 198, H: 235}, {caliper: 3});
+  eq(inside, {L: 437, W: 192, H: 223}, 'fefco201 growth at 3mm caliper is +6/+6/+12 (2t/2t/4t):');
+  const p = lockedCaseProject(inside.L, inside.W, inside.H, 3);
+  const row = checkLockedCase(p);
+  eq(row.geo.case.outer, {L: 443, W: 198, H: 235}, 'outer reproduces exactly the entered outside numbers:');
+  eq(row.casesPerLayer, 12, 'hand-verified against CAPE: the correct reading:');
+});
+
+/* ---------- 2. style-owned conversion — mutation test ---------- */
+
+t('the inside<->outside relation is OWNED by the style — applying the wrong style\'s growth is detectably wrong', () => {
+  const fefco = styleById('fefco201'), tray = styleById('tray');
+  const outside = {L: 300, W: 200, H: 120};
+  const params = {caliper: 3};
+  const correctInside = insideDimsFromOutside(fefco, outside, params);
+  // MUTATION: apply tray's growth (H: +t, not fefco201's +4t) to fefco201's
+  // own outside dims — a stand-in for "the conversion isn't reading each
+  // style's own relation" — and confirm it disagrees with the real one.
+  const wrongInside = insideDimsFromOutside(tray, outside, params);
+  if(JSON.stringify(correctInside) === JSON.stringify(wrongInside))
+    throw new Error('tray\'s growth formula produced the same result as fefco201\'s — the mutation is not exercising a real difference');
+  eq(correctInside, {L: 294, W: 194, H: 108}, 'fefco201: H shrinks by 4t = 12:');
+  eq(wrongInside,   {L: 294, W: 194, H: 117}, 'tray: H shrinks by only 1t = 3 — a visibly different, wrong H if misapplied:');
+});
+
+t('every eligible style\'s outerGrowth is genuinely ITS OWN function, not a shared default silently reused', () => {
+  // if two styles' outerGrowth happened to be literally the SAME function
+  // reference, a future edit to one would silently move the other too —
+  // confirm each eligible style declares its own.
+  const fns = DIM_BASIS_ELIGIBLE_STYLES.map(s => s.outerGrowth);
+  const unique = new Set(fns);
+  eq(unique.size, fns.length, 'no two eligible styles share one outerGrowth function reference:');
+});
+
+/* ---------- 3. round-trip stability (incl. fractional caliper) ---------- */
+
+t('round-trip is exact: outside -> inside -> outside reproduces the original, integer caliper', () => {
+  const style = styleById('fefco201');
+  const outside0 = {L: 250.5, W: 175.25, H: 90};
+  const params = {caliper: 3};
+  const inside = insideDimsFromOutside(style, outside0, params);
+  const outside1 = outsideDimsFromInside(style, inside, params);
+  eq(outside1, outside0, 'inside is authoritative and outside is re-derived — nothing to drift out of sync:');
+});
+
+t('round-trip is exact under a FRACTIONAL caliper (a6120\'s own 0.457mm default)', () => {
+  const style = styleById('a6120');
+  const outside0 = {L: 180.914, W: 76.914, H: 195.828};
+  const params = {caliper: 0.457};
+  const inside = insideDimsFromOutside(style, outside0, params);
+  const outside1 = outsideDimsFromInside(style, inside, params);
+  close(outside1.L, outside0.L, 1e-9, 'L round-trips to machine precision:');
+  close(outside1.W, outside0.W, 1e-9, 'W round-trips to machine precision:');
+  close(outside1.H, outside0.H, 1e-9, 'H round-trips to machine precision:');
+});
+
+t('round-trip holds across 20 repeated inside<->outside<->inside toggles, fractional caliper', () => {
+  // this is the specific drift risk the task named: repeated TOGGLING with a
+  // fractional caliper. Because params.L/W/H is the single stored number and
+  // outside is only ever COMPUTED for display (never written back), a bare
+  // toggle sequence with no re-entry in between cannot move it at all —
+  // pinned here as 20 round trips producing bit-identical results each time,
+  // never merely "close enough".
+  const style = styleById('a6120');
+  const params = {caliper: 0.457};
+  let inside = {L: 100.333, W: 60.111, H: 150.777};
+  const insideStart = {...inside};
+  for(let i = 0; i < 20; i++){
+    const outside = outsideDimsFromInside(style, inside, params);
+    inside = insideDimsFromOutside(style, outside, params);
+  }
+  eq(inside, insideStart, 'inside value bit-identical after 20 round trips — nothing was ever stored FROM the derived side:');
+});
+
+/* ---------- 4. derived readout matches the BUILT geometry ---------- */
+
+t('the outside readout equals the geometry\'s OWN built outer dims — not a restated conversion expression', () => {
+  // deliberately reads geo.outer (what levelGeometry/DXF/3D actually build),
+  // never re-deriving via insideDimsFromOutside/outsideDimsFromInside a
+  // second time — a bug in geometry()'s own outer construction (e.g. a
+  // hardcoded +2t that drifted from outerGrowth) would still pass a pin
+  // that only checked the conversion helpers against themselves.
+  const style = styleById('sealend');
+  const outside = {L: 220, W: 140, H: 300};
+  const params = {caliper: 0.457, glueTab: 15, dustDepth: 37.5, overlap: 20};
+  const inside = insideDimsFromOutside(style, outside, {...params});
+  const p = newProject();
+  p.secondary.styleId = 'sealend';
+  p.secondary.params = {...params, L: inside.L, W: inside.W, H: inside.H};
+  linkFor(p, 'secondary').locked = true;
+  const g = levelGeometry(p, 'carton');
+  close(g.outer.L, outside.L, 1e-6, 'built outer.L matches the entered outside L:');
+  close(g.outer.W, outside.W, 1e-6, 'built outer.W matches the entered outside W:');
+  close(g.outer.H, outside.H, 1e-6, 'built outer.H matches the entered outside H:');
+});
+
+/* ---------- 5. migration / defaults ---------- */
+
+t('a fresh project defaults both carton and case to inside — bit-identical to every project before this field existed', () => {
+  const p = newProject();
+  eq(p.secondary.dimBasis, 'inside', 'carton defaults to inside:');
+  eq(p.tertiary.dimBasis, 'inside', 'case defaults to inside:');
+});
+
+await tAsync('an old save with no dimBasis key deserializes to inside for both levels (additive, no schema bump)', async () => {
+  const raw = await (await fetch('fixtures/v1/full-chain.pkg.json')).text();
+  const result = deserializeProject(JSON.parse(raw));
+  eq(result.project.secondary.dimBasis, 'inside', 'migrated carton dimBasis:');
+  eq(result.project.tertiary.dimBasis, 'inside', 'migrated case dimBasis:');
+});
+
+/* ---------- 6. exhaustiveness over styles ---------- */
+
+t('every manually-dimensioned style declares outerGrowth — exhaustiveness holds today', () => {
+  const eligibleIds = DIM_BASIS_ELIGIBLE_STYLES.map(s => s.id).sort();
+  eq(eligibleIds, ['a6120', 'fefco201', 'sealend', 'tray'], 'exactly the four "Inside dimensions" styles:');
+  for(const s of DIM_BASIS_ELIGIBLE_STYLES)
+    if(typeof s.outerGrowth !== 'function') throw new Error(`${s.id} is eligible but has no outerGrowth`);
+});
+
+t('a style declaring dimsLabel other than "Inside dimensions" is correctly EXCLUDED (flowwrap/shrinkbundle have no inside)', () => {
+  const excluded = styles.filter(s => s.dimsLabel !== 'Inside dimensions').map(s => s.id).sort();
+  eq(excluded, ['flowwrap', 'shrinkbundle'], 'the two film/flexible styles never had an "inside" to begin with:');
+  for(const id of excluded) eq(typeof styleById(id).outerGrowth, 'undefined', `${id} declares no outerGrowth (correctly — the exhaustiveness check never asks it to):`);
+});
+
+t('the exhaustiveness guard actually THROWS when a style claims "Inside dimensions" with no outerGrowth (reconstructed, not the live registry)', () => {
+  // a live in-module throw at import time can't be re-triggered without a
+  // second module instance — reconstruct the exact guard against a
+  // deliberately-broken stand-in registry to prove IT would have caught the
+  // gap this feature closes, mirroring the real one in core/styles/index.js
+  // line for line.
+  const brokenRegistry = [{id: 'fefco201', dimsLabel: 'Inside dimensions'}]; // no outerGrowth
+  let threw = false;
+  try{
+    for(const s of brokenRegistry.filter(s => s.dimsLabel === 'Inside dimensions'))
+      if(typeof s.outerGrowth !== 'function')
+        throw new Error(`style "${s.id}" declares dimsLabel:'Inside dimensions' but has no outerGrowth`);
+  }catch(e){ threw = true; }
+  if(!threw) throw new Error('the reconstructed guard did not throw on a style missing outerGrowth');
+});
+
+/* ---------- 7. DOM-driven: both levels, both breakpoints ---------- */
+
+function openApp(width){
+  const f = document.createElement('iframe');
+  f.style.width = width + 'px'; f.style.height = '900px'; f.style.border = 'none';
+  f.src = '../index.html';
+  document.body.appendChild(f);
+  return f;
+}
+function settle(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function driveDimBasis(width, nodeKey){
+  const f = openApp(width);
+  await settle(900);
+  const d = f.contentDocument, w = f.contentWindow;
+  const node = d.querySelector(`[data-node="${nodeKey}"]`);
+  if(!node) throw new Error(`chain node "${nodeKey}" not found in the DOM at ${width}px`);
+  node.click();
+  await settle(250);
+  const lockBtn = d.getElementById('levelLockBtn');
+  if(!lockBtn) throw new Error('lock button not found');
+  const wasLocked = lockBtn.textContent.startsWith('Solve');
+  if(!wasLocked) lockBtn.click();                 // ensure locked (manual entry) — dimBasis only applies then
+  await settle(250);
+  const sel = d.getElementById('dimBasisSel');
+  if(!sel) throw new Error(`dimension-basis selector not reachable for "${nodeKey}" at ${width}px`);
+  const pL = d.getElementById('p_L');
+  const insideVal = parseFloat(pL.value);
+  sel.value = 'outside'; sel.dispatchEvent(new Event('change', {bubbles: true}));
+  await settle(250);
+  const pL2 = d.getElementById('p_L');   // re-query: the toggle remounted the field
+  const outsideVal = parseFloat(pL2.value);
+  const counterpart = d.querySelector('#dimFields .dimcounterpart');
+  const counterpartText = counterpart ? counterpart.textContent : null;
+  f.remove();
+  return {insideVal, outsideVal, counterpartText};
+}
+
+for(const width of [1400, 390]){
+  await tAsync(`case: dimension-basis toggle is reachable and converts correctly at ${width}px`, async () => {
+    const r = await driveDimBasis(width, 'case');
+    if(!(r.outsideVal > r.insideVal)) throw new Error(`outside (${r.outsideVal}) should exceed inside (${r.insideVal})`);
+    if(!/^inside /.test(r.counterpartText)) throw new Error(`counterpart should read the inside figure while outside is shown, got "${r.counterpartText}"`);
+  });
+  await tAsync(`carton: dimension-basis toggle is reachable and converts correctly at ${width}px`, async () => {
+    const r = await driveDimBasis(width, 'carton');
+    if(!(r.outsideVal > r.insideVal)) throw new Error(`outside (${r.outsideVal}) should exceed inside (${r.insideVal})`);
+    if(!/^inside /.test(r.counterpartText)) throw new Error(`counterpart should read the inside figure while outside is shown, got "${r.counterpartText}"`);
+  });
+}
+
+await tAsync('the toggle is ABSENT for an unlocked (solved) level — dimBasis only ever applies to manual entry', async () => {
+  const f = openApp(1400);
+  await settle(900);
+  const d = f.contentDocument;
+  d.querySelector('[data-node="case"]').click();
+  await settle(250);
+  const lockBtn = d.getElementById('levelLockBtn');
+  // default project loads unlocked (solved) at the case level
+  if(lockBtn.textContent.startsWith('Unlock')){
+    // confirm no dimBasis selector while solved
+    if(d.getElementById('dimBasisSel')) throw new Error('dimBasis selector present on a solved (unlocked) level');
+  }
+  f.remove();
+});
+
+await tAsync('MUTATION CONTEXT: no golden/default project ever sets dimBasis to "outside" (the feature is opt-in)', async () => {
+  const p = newProject();
+  // every candidate/goldens path resolves through the default project's own
+  // dimBasis, which is 'inside' — the same value every pre-existing pin and
+  // golden fixture was already implicitly assuming before this field existed
+  if(p.secondary.dimBasis !== 'inside' || p.tertiary.dimBasis !== 'inside')
+    throw new Error('a fresh project no longer defaults to inside — every existing golden would silently change meaning');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

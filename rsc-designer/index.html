@@ -286,6 +286,10 @@
     padding:0 10px;border-left:1px solid var(--line-2);align-self:stretch;
     display:flex;align-items:center;
   }
+  /* dimension-basis counterpart: the OTHER of inside/outside, re-derived and
+     shown beside whichever one the field is currently accepting — never a
+     second editable box, so it can never itself go stale/independent. */
+  .field .dimcounterpart{font-family:var(--sans);font-size:11px;color:var(--ink-3);margin-top:-2px}
   /* slider + synced number (end-seal angles): the range grows, the number is
      a fixed narrow box for a typed spec, the unit chip stays at the end */
   .field .inp.rangeinp{gap:8px;padding-left:10px}
@@ -859,6 +863,7 @@
     <div id="levelEnable" style="display:contents"></div>
     <div id="levelStyle" style="display:contents"></div>
     <div id="levelLock" style="display:contents"></div>
+    <div id="levelDimBasis" style="display:contents"></div>
     <div id="dimFields" style="display:contents"></div>
     <!-- control removed (3D views are translucent now, print text doesn't read) —
          the #txt element and its value are still live: readState()/geometry/artwork

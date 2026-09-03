@@ -63,9 +63,18 @@ function normalizeLW(params, m){
     return;
   }
   [params.L, params.W] = [params.W, params.L];
+  // params.L/W are always the canonical INSIDE values (see dimBasisEligibleFor's
+  // doc comment) — redisplay through the same outside conversion the fields
+  // themselves use, or a swap under 'outside' basis would silently redisplay
+  // the wrong (inside) numbers.
+  const basisEligible = m.locked && typeof m.style.outerGrowth === 'function';
+  const usesOutsideBasis = basisEligible && m.dimBasis === 'outside';
+  const growth = basisEligible ? m.style.outerGrowth(params, m.options) : null;
+  const displayMM = key => usesOutsideBasis ? params[key] + growth[key] : params[key];
   const lIn = el('p_L'), wIn = el('p_W');
-  if(lIn && !isFocused(lIn)) lIn.value = fmtInputValue(fromMM(params.L, unit), unit);
-  if(wIn && !isFocused(wIn)) wIn.value = fmtInputValue(fromMM(params.W, unit), unit);
+  if(lIn && !isFocused(lIn)) lIn.value = fmtInputValue(fromMM(displayMM('L'), unit), unit);
+  if(wIn && !isFocused(wIn)) wIn.value = fmtInputValue(fromMM(displayMM('W'), unit), unit);
+  for(const refresh of m.counterpartRefreshers || []) refresh();
   showLWSwapNotice(m.hasArt);
   m.onInput({key: 'L', group: 'dims'});
 }
@@ -99,6 +108,23 @@ function showLWSwapNotice(hasArt){
  *  level is deliberately unlocked (the lock control in app.js). There is no
  *  "type to lock" any more: a read-only field cannot be typed into, so the
  *  underlying value and the displayed value can never disagree. */
+/** MANUAL DIMENSION BASIS (Task 3): a locked L/W/H field for a style that
+ *  declares `outerGrowth` (fefco201/a6120/sealend/tray — the manually-
+ *  dimensioned styles) can be entered as either the cavity (INSIDE, this
+ *  app's long-standing convention) or the erected part's own footprint
+ *  (OUTSIDE, what a spec sheet usually states). `params[d.key]` is ALWAYS
+ *  the canonical inside value — core/project.js never reads anything else —
+ *  so entering an outside value converts it to inside via the style's own
+ *  growth function BEFORE writing it here, and the outside figure is always
+ *  RE-DERIVED from that inside value for display, never itself stored:
+ *  inside is authoritative, outside can never drift from it because there
+ *  is nothing for it to drift out of sync WITH. growth is recomputed live
+ *  (never captured once) because it depends on caliper, a sibling material
+ *  field that can change independently of L/W/H without remounting this one. */
+function dimBasisEligibleFor(d, m){
+  return d.group === 'dims' && !d.fixedUnit && m.locked && typeof m.style.outerGrowth === 'function';
+}
+
 function lengthField(d, params, m){
   const wrap = document.createElement('div');
   wrap.className = 'field';
@@ -113,14 +139,32 @@ function lengthField(d, params, m){
   // any one dim) freezes exactly what is on screen, not a stale default the
   // solve never wrote back
   if(showingDerived) params[d.key] = mmVal;
-  wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}${readOnly ? ' · derived' : ''}</span></label>
-    <div class="inp"><input id="p_${d.key}" type="number" min="${d.min}" step="${d.step}"${readOnly ? ' readonly' : ''}><span class="unit">${chip}</span></div>`;
+
+  const basisEligible = dimBasisEligibleFor(d, m);
+  const usesOutsideBasis = basisEligible && m.dimBasis === 'outside';
+  const growthNow = () => m.style.outerGrowth(params, m.options);
+  const displayMM = usesOutsideBasis ? mmVal + growthNow()[d.key] : mmVal;
+
+  const basisSuffix = readOnly ? ' · derived' : usesOutsideBasis ? ' · outside' : '';
+  wrap.innerHTML = `<label>${d.label} <span class="hint">${d.hint || ''}${basisSuffix}</span></label>
+    <div class="inp"><input id="p_${d.key}" type="number" min="${d.min}" step="${d.step}"${readOnly ? ' readonly' : ''}><span class="unit">${chip}</span></div>${
+      basisEligible ? '<div class="dimcounterpart"></div>' : ''}`;
   const input = wrap.querySelector('input');
-  input.value = d.fixedUnit ? mmVal : fmtInputValue(fromMM(mmVal, unit), unit);
+  input.value = d.fixedUnit ? displayMM : fmtInputValue(fromMM(displayMM, unit), unit);
+  const counterpart = basisEligible ? wrap.querySelector('.dimcounterpart') : null;
+  const refreshCounterpart = () => {
+    if(!counterpart) return;
+    const g = growthNow()[d.key];
+    const otherMM = usesOutsideBasis ? params[d.key] : params[d.key] + g;
+    const otherLabel = usesOutsideBasis ? 'inside' : 'outside';
+    counterpart.textContent = `${otherLabel} ${fmtInputValue(fromMM(otherMM, unit), unit)} ${unit}`;
+  };
   if(readOnly){ input.style.opacity = '0.6'; input.style.cursor = 'not-allowed'; }
   else{
     input.addEventListener('input', () => {
-      params[d.key] = d.fixedUnit ? (+input.value || 0) : toMM(+input.value || 0, unit);
+      const raw = d.fixedUnit ? (+input.value || 0) : toMM(+input.value || 0, unit);
+      params[d.key] = usesOutsideBasis ? raw - growthNow()[d.key] : raw;
+      refreshCounterpart();
       m.onInput({key: d.key, group: d.group});
     });
     // normalize on COMMIT (blur/Enter), never mid-keystroke — swapping the
@@ -128,6 +172,10 @@ function lengthField(d, params, m){
     // would scatter the cursor across a box that just changed under it.
     if((d.key === 'L' || d.key === 'W') && appliesLWConvention(m.style))
       input.addEventListener('change', () => normalizeLW(params, m));
+  }
+  if(basisEligible){
+    refreshCounterpart();
+    (m.counterpartRefreshers || (m.counterpartRefreshers = [])).push(refreshCounterpart);
   }
   return wrap;
 }
@@ -208,7 +256,7 @@ function boolField(d, obj){
  * @param {Object} m       {effectiveDims, locked, onInput({key,group})}
  */
 export function mountLevel(style, params, options, m){
-  mounted = {style, params, options, ...m};
+  mounted = {style, params, options, ...m, counterpartRefreshers: []};
   const dims = el('dimFields'), mat = el('matFields'), opt = el('optFields');
   dims.innerHTML = ''; mat.innerHTML = ''; opt.innerHTML = '';
   for(const d of style.params){
@@ -242,6 +290,17 @@ export function refreshDims(effectiveDims){
     if(effectiveDims && effectiveDims[d.key] != null) mounted.params[d.key] = mmVal;
     input.value = d.fixedUnit ? mmVal : fmtInputValue(fromMM(mmVal, unit), unit);
   }
+}
+
+/** Resync a LOCKED level's dimension-basis COUNTERPART readouts — never the
+ *  input boxes themselves (those are the user's own fixed values, untouched
+ *  here, same guarantee refreshDims makes for the unlocked case). Needed
+ *  because the counterpart depends on caliper, a sibling material field
+ *  that can change without remounting the dims fields — see app.js's
+ *  'dimCounterparts' refresher, which calls this only while locked. */
+export function refreshDimCounterparts(){
+  if(!mounted || !mounted.locked) return;
+  for(const refresh of mounted.counterpartRefreshers || []) refresh();
 }
 
 /**

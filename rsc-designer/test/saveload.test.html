@@ -475,11 +475,19 @@ await tAsync('v1 fixture "full-chain": loads, migrates to current, reproduces it
   // field too, right after patternIndex in newProject()'s own key order —
   // null (no override) is its correct default, same "filled, not silently
   // absent" contract as every other entry here.
-  eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'tertiary.perf', 'tertiary.openTop',
+  // secondary.dimBasis / tertiary.dimBasis (Task 3, dimension-basis): two
+  // more genuinely new fields, each landing right after its level's own
+  // openTop/perf pair in newProject()'s own key order — same "filled, not
+  // silently absent" contract, default 'inside' (this app's long-standing,
+  // only-ever convention until now).
+  eq(result.defaulted, ['secondary.openTop', 'secondary.perf', 'secondary.dimBasis',
+                         'tertiary.perf', 'tertiary.openTop', 'tertiary.dimBasis',
                          'pallet.patternIndex', 'pallet.layerFlips', 'pallet.stacking', 'pallet.tareLb',
      'pallet.stack.cornerPost', 'pallet.stack.cap', 'pallet.slipsheet',
                          'tray', 'uboard', 'shelf', 'trailer'],
-     'the new openTop/perf/pallet.stacking/patternIndex/layerFlips/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
+     'the new openTop/perf/dimBasis/pallet.stacking/patternIndex/layerFlips/tareLb/slipsheet/tray/uboard/shelf/trailer fields are filled:');
+  eq(result.project.secondary.dimBasis, 'inside', 'secondary dimBasis defaults to inside:');
+  eq(result.project.tertiary.dimBasis, 'inside', 'tertiary dimBasis defaults to inside:');
   eq(result.project.tray.nCells, 2, 'tray defaulted to a real, editable object (not left undefined):');
   eq(result.project.uboard.params.caliper, 0.9, 'uboard defaulted to a real, editable object (not left undefined):');
   eq(result.project.trailer.L, 16002, 'trailer defaulted to a real, editable 53\' van (not left undefined):');
