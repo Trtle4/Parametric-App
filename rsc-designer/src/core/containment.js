@@ -39,7 +39,17 @@ export const ORIENTATIONS = ['LWH', 'WLH', 'LHW', 'HLW', 'WHL', 'HWL'];
 
 /**
  * @typedef {Object} Clearance       // mm, per level
- * @property {number} wall           // child to parent inner wall, LATERAL faces
+ * @property {number} wall           // child to parent inner wall, LATERAL faces, both axes (legacy)
+ * @property {{mode:'uniform'|'perAxis', L:number, W:number}} [clearanceWall]
+ *        the per-axis lateral wall clearance. `mode:'uniform'` reads L for
+ *        BOTH axes (W is not consulted); `mode:'perAxis'` reads each axis's
+ *        own value. L/W name the PARENT's own fixed L/W axes, never the
+ *        child's current orientation — a child that rotates in-plane still
+ *        clears the same physical wall by the same amount. Absent entirely
+ *        (the overwhelming common case, and every pre-existing project):
+ *        falls back to the legacy flat `wall` scalar for both axes, which is
+ *        why every consumer must read the NORMALIZED wallL/wallW below, never
+ *        `clearanceWall` directly.
  * @property {number} between        // child to child, in plane
  * @property {number} [bottom]       // under the first layer (default: wall — legacy uniform)
  * @property {number} [top]          // headspace above the last layer (default: wall)
@@ -51,9 +61,14 @@ export const ORIENTATIONS = ['LWH', 'WLH', 'LHW', 'HLW', 'WHL', 'HWL'];
  * every axis) is preserved when the vertical fields are omitted.
  */
 function normClearance(c){
-  const wall = c.wall || 0, between = c.between || 0;
+  const cw = c.clearanceWall;
+  let wallL, wallW;
+  if(cw && cw.mode === 'perAxis'){ wallL = cw.L || 0; wallW = cw.W || 0; }
+  else if(cw){ wallL = wallW = cw.L || 0; }               // uniform: W is not consulted
+  else { wallL = wallW = c.wall || 0; }                   // legacy: no clearanceWall at all
+  const wall = wallL, between = c.between || 0;
   return {
-    wall, between,
+    wall, wallL, wallW, between,
     bottom:   c.bottom   !== undefined ? c.bottom   : wall,
     top:      c.top      !== undefined ? c.top      : wall,
     betweenZ: c.betweenZ !== undefined ? c.betweenZ : between
@@ -141,14 +156,14 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
   // here like any other; it simply stops constraining how many children fit.
   if(cavity.H == null)
     throw new Error('fitInto needs a bounded cavity height; use solveParent to size a parent');
-  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
+  const {wallL, wallW, between, bottom, top, betweenZ} = normClearance(clearance);
 
   // try each vertical-axis group; keep the best total (first group wins ties)
   let best = null;
   for(const grp of orientationGroups(child.allowedOrientations)){
     const {l, w, h} = orientDims(child.outer, grp.base);
     const layer = packLayer({childL: l, childW: w, parentL: cavity.L, parentW: cavity.W,
-                             pattern, wall, between, allowRotate: grp.allowRotate});
+                             pattern, wallL, wallW, between, allowRotate: grp.allowRotate});
     const wantLayers = layer.perLayer > 0 ? Math.ceil((opts.wantCount ?? layer.perLayer)/layer.perLayer) : 0;
     const st = stack({perLayer: layer.perLayer, childH: h, parentMaxH: cavity.H, baseH: 0,
                       between: betweenZ, gapBelow: bottom, gapAbove: top,
@@ -232,7 +247,7 @@ export function fitInto(child, cavity, clearance = {wall: 0, between: 0}, patter
 export function parentCandidates(child, count, clearance = {wall: 0, between: 0}, opts = {}){
   validateOrientations(child.allowedOrientations);
   if(!(count >= 1)) throw new Error('parentCandidates needs count >= 1');
-  const {wall, between, bottom, top, betweenZ} = normClearance(clearance);
+  const {wallL, wallW, between, bottom, top, betweenZ} = normClearance(clearance);
   const openTop = !!opts.openTop;
   if(openTop && typeof opts.fixedH !== 'number')
     throw new Error('parentCandidates needs opts.fixedH for an open-top parent — its H is an independent input, not solved from the child stack');
@@ -255,8 +270,8 @@ export function parentCandidates(child, count, clearance = {wall: 0, between: 0}
         const ny = Math.ceil(perLayer/nx);
         out.push({
           cavity: {
-            L: nx*l + (nx - 1)*between + 2*wall,
-            W: ny*w + (ny - 1)*between + 2*wall,
+            L: nx*l + (nx - 1)*between + 2*wallL,
+            W: ny*w + (ny - 1)*between + 2*wallW,
             H: openTop ? opts.fixedH : layers*h + (layers - 1)*betweenZ + bottom + top
           },
           nx, ny, layers, oi, o: orientations[oi], l, w, h

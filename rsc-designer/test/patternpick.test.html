@@ -1,0 +1,265 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pallet pattern pick — diagnosis, not a fix</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* REPORTED: "Build shows one pattern out of 24" -- diagnosed as
+   `core/project.js`'s `selected0 = patternList[0]` (inside chainMetrics)
+   ignoring `project.pallet.patternIndex`, with the fix being to read the
+   project's pick instead.
+
+   DIAGNOSIS (per the report's own instructions, run BEFORE touching
+   anything): all three of the report's own questions were checked directly
+   against the running resolver, not assumed.
+
+   1. The pallet cycle navigator (build.js stepPattern) writes
+      `project.pallet.patternIndex = next` -- a real project field, not a
+      view-local index. Confirmed by reading its source (below) and by
+      driving the real arrows through the DOM (this file's UI section).
+   2. `applyPatternSelection(row, project)` (project.js) ALREADY exists,
+      ALREADY reads `project.pallet.patternIndex`, and is ALREADY called by
+      `resolveActiveRow` in all three of its branches (locked / matched
+      candidate / default) -- so the "committed chain" this report is
+      worried about already resolves through the pick, not through
+      `patternList[0]` alone. `chainMetrics`'s own `selected0 =
+      patternList[0]` is NOT the committed chain's final answer -- it is the
+      candidate's OWN baseline (list[0] is what a Build-table ROW shows
+      before any pallet-pattern pick narrows it, correct for a comparison
+      table), and `applyPatternSelection` is the documented SECOND step that
+      corrects it for the actually-selected pattern.
+   3. Clamping already exists, exactly as the report guessed:
+      `Math.max(0, Math.min(list.length - 1, ...))`, both in
+      `applyPatternSelection` and in `build.js`'s own `patternState()`.
+
+   CONCLUSION: the specific defect described (a hardcoded `patternList[0]`
+   that ignores `patternIndex`) is NOT present in the current code. Cycling
+   `project.pallet.patternIndex` measurably changes casesPerPallet,
+   cartonsPerPallet, coveragePct, the interlock schedule, and everything
+   downstream of them (trailer fit), both through the pure resolver and
+   through the real running app. No fix is needed; this file exists to PIN
+   the propagation so it cannot silently regress, and to close the report's
+   own "worth a note" observation: a THIRD claim-versus-code mismatch was
+   looked for here and not found -- this time the comments matched the
+   code. */
+
+import {newProject, resolveActiveRow} from '../src/core/project.js';
+import {resolveStack} from '../src/core/stack.js';
+import {resolveTrailer} from '../src/core/trailer.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const approx = (a, e, m = '', tol = 1e-9) => { if(Math.abs(a - e) > tol) throw new Error(`${m} expected ${e}, got ${a}`); };
+
+/* fixture: a case/deck combo whose ranked pattern list genuinely varies in
+   TOTAL (not all ties) at several indices -- verified by dumping the list,
+   not assumed. index 0 -> 16 cases, index 4 -> 12 cases. */
+function fixtureProject(){
+  const p = newProject();
+  p.primary = null;
+  p.secondary.params = {...p.secondary.params, L: 300, W: 200, H: 150};
+  p.pallet.L = 1200; p.pallet.W = 1000; p.pallet.maxH = 2000;
+  p.links[0].count = 12;
+  p.links[0].arrangement = 'auto';
+  p.pallet.pattern = 'optimal';
+  return p;
+}
+
+const fixtureRow0 = resolveActiveRow(fixtureProject(), '1mm', null);
+
+t('FIXTURE: the pattern list genuinely has multiple DIFFERENT totals, not just ties', () => {
+  ok(fixtureRow0.patternList.length >= 5, `need >=5 candidates, got ${fixtureRow0.patternList.length}`);
+  const totals = new Set(fixtureRow0.patternList.map(c => c.total));
+  ok(totals.size >= 2, `vacuous fixture: every candidate ties at the same total (${[...totals]}) -- cannot distinguish "pick honoured" from "pick ignored"`);
+});
+
+t('PROPAGATION: casesPerPallet/cartonsPerPallet/coveragePct follow patternIndex, not index 0', () => {
+  const p = fixtureProject();
+  const list = fixtureRow0.patternList;
+  const targetIdx = list.findIndex(c => c.total !== list[0].total);
+  ok(targetIdx > 0, 'fixture: need an index whose total differs from index 0');
+  p.pallet.patternIndex = targetIdx;
+  const row = resolveActiveRow(p, '1mm', null);
+  approx(row.casesPerPallet, list[targetIdx].total, 'casesPerPallet must equal the SELECTED candidate, not list[0]:');
+  ok(row.casesPerPallet !== list[0].total, 'vacuous otherwise -- selected total must differ from index 0');
+  approx(row.cartonsPerPallet, list[targetIdx].total*row.perPalletMultiplier, 'cartonsPerPallet scales with the selected total:');
+});
+
+t('IDENTITY: the rendered pallet and the committed chain report the SAME candidate (not merely both non-empty)', () => {
+  const p = fixtureProject();
+  const list = fixtureRow0.patternList;
+  const targetIdx = list.findIndex(c => c.total !== list[0].total);
+  p.pallet.patternIndex = targetIdx;
+  const row = resolveActiveRow(p, '1mm', null);
+  // the row IS what the 3D pallet view and every readout render (hierarchyBundle
+  // reads this same resolveActiveRow/applyPatternSelection output) -- assert its
+  // own casesPerPallet is EXACTLY the selected list entry's total, the identity
+  // this whole defect report turns on.
+  approx(row.casesPerPallet, list[targetIdx].total, '');
+});
+
+t('DOWNSTREAM: trailer fit changes when casesPerPallet changes with the pick (resolveTrailer is a pure function of it)', () => {
+  const p = fixtureProject();
+  const list = fixtureRow0.patternList;
+  const targetIdx = list.findIndex(c => c.total !== list[0].total);
+  const stack0 = resolveStack(p, {layers: 1, casesPerLayer: 1, loadH: fixtureRow0.loadH});
+  const trailer0 = resolveTrailer(p, stack0, fixtureRow0.casesPerPallet);
+  p.pallet.patternIndex = targetIdx;
+  const rowT = resolveActiveRow(p, '1mm', null);
+  const stackT = resolveStack(p, {layers: 1, casesPerLayer: 1, loadH: rowT.loadH});
+  const trailerT = resolveTrailer(p, stackT, rowT.casesPerPallet);
+  ok(trailer0.casesPerTrailer !== trailerT.casesPerTrailer,
+     `trailer casesPerTrailer must move with casesPerPallet (${fixtureRow0.casesPerPallet} vs ${rowT.casesPerPallet}) -- got ${trailer0.casesPerTrailer} both times`);
+});
+
+t('LAYERFLIPS: an interlock override applies to the SELECTED candidate, not to candidate 0', () => {
+  const p = fixtureProject();
+  const list = fixtureRow0.patternList;
+  const interlockIdx = list.findIndex((c, i) => i > 0 && /interlock/i.test(c.label));
+  ok(interlockIdx > 0, 'fixture: need a real interlocked candidate past index 0 in this list');
+  p.pallet.patternIndex = interlockIdx;
+  const row = resolveActiveRow(p, '1mm', null);
+  ok(row.layerFlips && row.layerFlips.some(f => f === true),
+     `selecting an interlocked candidate must produce a real layerFlips schedule with at least one flip, got ${JSON.stringify(row.layerFlips)}`);
+});
+
+t('CLAMPING: an out-of-range patternIndex resolves to the LAST valid candidate, never vanishes or throws', () => {
+  const p = fixtureProject();
+  p.pallet.patternIndex = 99999;
+  const row = resolveActiveRow(p, '1mm', null);
+  approx(row.casesPerPallet, fixtureRow0.patternList[fixtureRow0.patternList.length - 1].total,
+         'out-of-range index clamps to the LAST candidate:');
+});
+
+t('DEFAULT: patternIndex 0 (or absent) is bit-identical to the unselected row -- this fix changes nothing for anyone who never cycled', () => {
+  const p = fixtureProject();
+  const rowDefault = resolveActiveRow(p, '1mm', null);
+  approx(rowDefault.casesPerPallet, fixtureRow0.casesPerPallet, '');
+  approx(rowDefault.cartonsPerPallet, fixtureRow0.cartonsPerPallet, '');
+  approx(rowDefault.coveragePct, fixtureRow0.coveragePct, '');
+});
+
+/* MUTATION (run against the REAL source, not an inline stand-in -- a
+   stand-in here would only prove "row !== row" and test nothing about the
+   actual resolveActiveRow): resolveActiveRow's three `applyPatternSelection(
+   ...)` wrappers were temporarily reverted to their bare argument (the
+   reported bug shape -- patternIndex never read) and this file re-run.
+   Result: the PROPAGATION, IDENTITY, DOWNSTREAM and LAYERFLIPS pins above
+   all failed immediately (casesPerPallet/cartonsPerPallet stuck at index
+   0's values regardless of patternIndex); CLAMPING and DEFAULT stayed
+   green (index 0 is untouched by the mutation, exactly as expected). The
+   existing suites this task's fix must not disturb (containment,
+   palletpatterns, project, sensitivity, saveload, trailer) were re-run
+   under the SAME mutation and stayed fully green -- confirming they could
+   not have caught this defect, matching the report's own "specimen
+   problem" framing. The mutation was then reverted; project.js is
+   unchanged by this task. */
+
+const goldenChainsPass = await (async () => {
+  // does the reported bug shape (always list[0]) still satisfy every
+  // EXISTING golden chain fixture? All of them run at the default pick
+  // (patternIndex never set in golden.json's chain configs), so list[0] IS
+  // what they expect -- the mutation is invisible to the existing suite,
+  // exactly the "specimen problem" this report itself named.
+  const golden = await (await fetch('golden.json')).json();
+  let sawPatternIndex = false;
+  for(const ch of Object.values(golden.chains || {}))
+    if(ch.config && 'patternIndex' in ch.config) sawPatternIndex = true;
+  return {checked: Object.keys(golden.chains || {}).length, sawPatternIndex};
+})();
+
+t('MUTATION CONTEXT: no existing golden chain fixture ever sets patternIndex -- confirms the suite could not have caught this', () => {
+  ok(goldenChainsPass.checked > 0, 'fixture: golden.json must have chain fixtures to check');
+  ok(!goldenChainsPass.sawPatternIndex,
+     `expected NO golden chain to exercise patternIndex (that is the whole point) -- found one, so this claim needs revisiting`);
+});
+
+/* ============================================================
+   SOURCE CHECK: the navigator writes the real project field, not a
+   view-local index (diagnosis question 1, pinned at the source the way
+   this file's own sibling pins already do for normalizeLW/index.html CSS).
+   ============================================================ */
+const buildSrc = await (await fetch('../src/ui/build.js')).text();   // fetched BEFORE any t() call
+t('SOURCE: build.js stepPattern writes project.pallet.patternIndex directly (not a view-local variable)', () => {
+  const m = buildSrc.match(/export function stepPattern\([^)]*\)\{[\s\S]*?\n\}/);
+  ok(m, 'stepPattern function body not found');
+  ok(/project\.pallet\.patternIndex\s*=/.test(m[0]),
+     `stepPattern must assign project.pallet.patternIndex directly:\n${m[0]}`);
+});
+
+/* ============================================================
+   DOM: the real navigator, real BCT panel, driven through the app --
+   proves the wiring reaches the actual UI, not just the pure resolver.
+   ============================================================ */
+const settle = (ms = 250) => new Promise(r => setTimeout(r, ms));
+function openApp(width){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:900px;border:0`;
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+async function surveyPatternCycle(){
+  const f = await openApp(1400);
+  await settle(1100);
+  const d = f.contentDocument, q = s => d.querySelector(s);
+  const unitsEl = q('#units');
+  if(unitsEl){ unitsEl.value = 'mm'; unitsEl.dispatchEvent(new Event('change', {bubbles: true})); }
+  await settle(300);
+  q('.cs-node[data-node="pallet"]').click();
+  await settle(300);
+  const maxHEl = q('#palMaxH');
+  const maxHFoundBefore = !!maxHEl;
+  if(maxHEl){
+    maxHEl.value = '3000';
+    maxHEl.dispatchEvent(new Event('input', {bubbles: true}));
+    maxHEl.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  await settle(500);
+  q('#tab3d').click();
+  await settle(500);
+  const R = {maxHFoundBefore, unitsFound: !!unitsEl,
+             maxHValueAfter: q('#palMaxH') ? q('#palMaxH').value : null};
+  R.candPos0 = q('#candPos') ? q('#candPos').textContent.trim() : null;
+  R.candKey0 = q('#candKey') ? q('#candKey').textContent.trim() : null;
+  const steps = [];
+  for(let i = 0; i < 15; i++){
+    const btn = q('#candNext');
+    if(!btn || btn.disabled) break;
+    btn.click();
+    await settle(200);
+    steps.push({pos: q('#candPos').textContent.trim(), key: q('#candKey').textContent.trim()});
+  }
+  R.steps = steps;
+  return R;
+}
+
+const domR = await surveyPatternCycle();
+
+t('DOM: the pattern navigator is reachable at pallet depth and starts at position 1', () => {
+  ok(domR.candPos0, 'no #candPos found -- navigator not reachable');
+  ok(domR.candPos0.startsWith('1 of'), `expected to start at "1 of N", got "${domR.candPos0}"`);
+});
+
+t('DOM: cycling the REAL navigator changes the REAL rendered candidate label, more than once', () => {
+  ok(domR.steps.length >= 5, `fixture: need several real steps to click through, got ${domR.steps.length}`);
+  const labels = new Set(domR.steps.map(s => s.key));
+  ok(labels.size >= 2, `expected the candidate label to change across steps, got only: ${[...labels]}`);
+  const positions = domR.steps.map(s => s.pos);
+  ok(new Set(positions).size === positions.length, 'every step must land on a genuinely new position, never repeat');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

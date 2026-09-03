@@ -2030,3 +2030,318 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   is absent entirely on a solved (unlocked) level. Full regression:
   `saveload`/`project`/`containment`/`a6120`/`sealend`/`tray`/
   `lockinvariant`/`singlesource`/`sensitivity`/`chainstrip` all green.
+- **RESOLVED (clearance-per-axis / wrap-orientation / underspecified-
+  arrangement task): three independent items, one genuine modelling defect
+  among them.**
+  1. **Clearance wall is now per-axis.** `clearance.clearanceWall =
+     {mode:'uniform'|'perAxis', L, W}` — the mode plus BOTH values, never a
+     separate L/W pair plus a "same" boolean that could disagree with them
+     (this codebase's own established idiom: `project.uboard`/`cap`'s
+     absence-is-auto shape, never an `isAuto` flag). `uniform` reads L for
+     BOTH axes (W not consulted); `perAxis` reads each axis's own value.
+     Applies to the CARTON's own clearance (`project.secondary.clearance` —
+     carton-into-case fit) and the CASE's own clearance
+     (`project.tertiary.clearance` — case-onto-pallet fit), since
+     `mountClearanceControl` is the ONE UI mount both "Inside the case" and
+     "Case onto the pallet" panels use. `normClearance` (containment.js AND
+     palletpatterns.js — the pre-existing duplicated-but-independent copy,
+     same precedent as `bottom`/`top`/`betweenZ`) derives `wallL`/`wallW`
+     from `clearanceWall` when present, else falls back to the legacy flat
+     `wall` scalar for both axes — additive, no schema-version bump, every
+     existing project and golden fixture bit-identical (containment.js's
+     `parentCandidates` cavity build and palletpatterns.js's own effective-
+     parent `PL`/`PW` both split `2*wall` into `2*wallL`/`2*wallW`; `pack.js`'s
+     `packLayer` gained `wallL`/`wallW` params defaulting from its existing
+     `wall` param, so its one other caller is untouched). UI: switching
+     `uniform` -> `perAxis` seeds `W := L` EVERY time (not just once), so
+     flipping back and forth can never leave a stale W that makes the
+     effective width clearance jump the instant perAxis is chosen; switching
+     back to `uniform` keeps L and leaves W as-is (not erased) so a later
+     perAxis re-entry restores it, not a fresh seed — a deliberate choice
+     pinned against the equally-defensible alternative. Migration happens
+     once, in place, the first time `mountClearanceControl` mounts (same
+     "migrate on mount" idiom as nothing new — see the palletpatterns
+     duplication note above for why this file already tolerates that
+     pattern), mirroring the existing split between `mountClearanceControl`
+     (rebuilds the DOM, only on a mode click or a fresh `setActiveLevel`
+     mount) and `refreshClearanceControl` (values only, in place, never a
+     structural rebuild — since every field on this control round-trips
+     through `onInput -> recompute -> refresh` on its OWN keystrokes, a
+     rebuild there would steal focus mid-type). **FLAGGED, not decided
+     silently, per the task's own explicit instruction:** "Clearance
+     between" (child-to-child, in-plane) has the IDENTICAL axis ambiguity —
+     a pack might want a different gap along X than along Y — but it was
+     not asked for in this task and was deliberately left as one value, both
+     axes. Whether it should get the same per-axis treatment is an open
+     product question, not resolved here either way.
+  2. **Wrap-in-case orientation: diagnosed, not "fixed" as reported, and
+     that diagnosis surfaced two REAL, unrelated reflection bugs elsewhere.**
+     The requested differential (wrap alone / case Solid / case Cutaway,
+     driven through the real app with a diagnostic texture) found: Solid
+     mode at case depth is VACUOUS for this question — a closed,
+     non-open-top case takes `buildHierarchy`'s `soloClosed()` shortcut
+     (`if(solid && !showContents)`), which draws ONLY the case's own opaque
+     exterior; no wrap, no carton, no child instance renders at all, so
+     "still correct in Solid?" has nothing to check (pinned as its own
+     finding — `test/wraporientcase.test.html`'s FINDING A — rather than
+     silently working around it). The wrap only becomes visible "inside the
+     case" in Cutaway, and there every closed wrap sibling is posed at
+     EXACTLY `orientQuat(placement.orientation)` — the correct containment
+     pose, bit-identical to what a bare wrap at wrap depth uses for the same
+     orientation string (FINDING B, same file). So per the task's own
+     branching rule, this is the "only wrong in cutaway" case: optics (the
+     far side of a wrap through a transparent case; flowwrap's own 5-band
+     girth walk — back/side/front/side/back — means the visible band
+     depends entirely on which side faces the camera), not a transform
+     defect. Reported and stopped, exactly as instructed. The mandated
+     `det(M) > 0` sweep, run anyway as the task required ("that single
+     assertion catches the whole class, including the instances nobody has
+     looked at yet") — `test/nestingdet.test.html`, covering case→wrap,
+     case→carton, pallet→case and trailer→pallet through the REAL render
+     pipeline (`fold3d.init3d` against a bare container div, `hierarchy3d.js`
+     `buildHierarchy` called exactly as `app.js` calls it, not a
+     hand-mocked shape) — found the sweep WAS worth running: TWO independent
+     negative-scale reflection bugs, both in corner-post L-bracket
+     construction, both invisible on the common square-leg default and only
+     showing on an asymmetric leg pair (`legL != legW`, both independently
+     user-editable — `#cpLegL`/`#cpLegW`). `palletmesh.js`'s
+     `buildCornerPostSet` mirrored ONE +x/+z-quadrant post into the other 3
+     corners via `post.scale.set(-sign(x), 1, -sign(z))`: of the 4 corners,
+     2 flip a SINGLE axis (a TRUE reflection — det -1) and 2 flip BOTH axes
+     (which is just a 180° rotation — det +1), so the bug was invisible
+     whenever the mirrored shape happened to look right by coincidence
+     (visually harmless does not mean det > 0 — a square-leg profile still
+     reflects, it just happens to look congruent to a valid rotation, which
+     is a fact about the SHAPE's symmetry, not about the matrix; pinned
+     directly, since the naive "square legs never reflect" restatement is
+     FALSE and would have been a vacuous mutation guard). `hierarchy3d.js`
+     had an INDEPENDENT SECOND instance of the identical pattern in its own
+     trailer-corner-post INSTANCING path (one shared geometry pair, mirrored
+     per-instance via the matrix's own scale component) — a separate
+     implementation of the same shape, so fixing one never fixed the other,
+     exactly the "instances nobody has looked at yet" the det(M) invariant
+     exists to catch. Both fixed by building each arm at its own SIGNED,
+     INWARD-pointing offset directly (pure translation/pre-translated
+     geometry, det always +1) instead of a post-hoc negative scale —
+     verified by hand vertex-algebra to be byte-identical in rendered
+     position to the old code, so `DoubleSide` (needed only to hide the old
+     flipped winding) is no longer required either. Mutation-tested against
+     the REAL source (not just an inline stand-in): stashing the fix and
+     re-running `nestingdet.test.html` fails exactly 3 of 15 pins, at
+     exactly the two corners this predicts, in the two independent
+     implementations.
+  3. **The real modelling defect: a manual grid never fixed orientation, so
+     it never fixed the layout.** `link.arrangement` was `'auto' |
+     {nx,ny,nz}` — counts only. Pack orientation (which product axis lands
+     on which cavity axis) is a second, independent degree of freedom that
+     kept floating even with a manual grid pinned, because BOTH manual-grid
+     callers of `parentCandidates` (`candidateCases`, governing whichever
+     tier — carton or case — is currently outermost, and
+     `solveSecondaryInner`, governing the carton's own inner count-of-
+     primary-units link) passed the child's WHOLE `allowedOrientations` list
+     through unrestricted: one candidate PER matching orientation for the
+     same (nx,ny), not one. A manual "4×3×1" with 2 allowed orientations
+     produced 2 candidates, reachable only by cycling the candidate
+     navigator — a control the task correctly says should not exist in
+     manual mode at all. Fixed: `arrangement: 'auto' | {nx,ny,nz,orient}`.
+     `orient` (one of the 6 `Orientation` strings) pins the ONE orientation
+     both callers pass into `parentCandidates`'s `opts.orientations`; absent
+     (every arrangement stored before this field existed) defaults to
+     `allowedOrientations[0]` — same one-candidate guarantee, just an
+     unpinned engineer's choice rather than an explicit one, so old saves
+     are never left showing a list either. Applies to BOTH tiers by
+     construction, since `candidateCases` is the one function either
+     "cartons in a case" or "cases on the pallet" resolves through — a
+     second fixture in `test/arrangementorient.test.html` exercises the
+     carton-outermost path (case disabled) explicitly, not just the more
+     commonly-hit case-outermost one. Manual axes are respected VERBATIM:
+     `nx` along the parent's own L, `ny` along W, exactly as entered — no
+     normalization runs on a manual arrangement, and none ever did:
+     `normalizeLW` (the standing L>=W convention) was already, structurally,
+     scoped to a level's raw `params.L`/`params.W` only and has never taken
+     an arrangement as an argument — confirmed by a SOURCE pin reading
+     `normalizeLW`'s own function body text and asserting it never mentions
+     `arrangement` at all, the same "argue with an allowlist" idiom
+     `typography.test.html` already established for index.html's CSS. Auto
+     mode is completely unchanged (its own branch never sets
+     `opts.orientations`, pinned directly, plus golden.json's own two
+     manual-grid chain fixtures — `carton12_4x3x1_upright` and
+     `carton12_4x3x1_tray_case`, both pre-dating this task and both
+     carrying no `orient` field — re-verified bit-identical against the
+     live `candidateCases()` directly, now returning exactly ONE row each
+     instead of two, at the identical numeric result). UI: a new
+     Orientation `<select>` is a PEER of the Nx/Ny/Nz grid in
+     `mountCountArrangement` (inputs.js), reachable at both the desktop and
+     mobile width `chainstrip.test.html` already establishes as this
+     codebase's own breakpoint pair — sourced from the SAME `childLevel.
+     allowedOrientations` the Facing control already reads, so widening the
+     Vertical-axis/Facing choice widens the Orientation dropdown's options
+     too, while Facing itself now has NO EFFECT on a manual arrangement
+     (confirmed live through the real UI: switching the Orientation select
+     alone moved the resolved case outer dims 733×576×63 -> 765×552×63 and
+     cascaded through cost/BCT, with the candidate navigator staying "1 of 1"
+     throughout) — which is what makes `inputs.js:495`'s claim TRUE for the
+     first time; the copy itself was reworded from "the grid already fixes
+     the layout" (false; only counts, never orientation) to naming where
+     orientation is actually set now. The Nx/Ny/Nz `input` handlers used to
+     rebuild `link.arrangement` from scratch on every keystroke
+     (`{nx,ny,nz}`, no spread) — which would have silently dropped `orient`
+     on the very next grid edit; fixed to spread the existing arrangement
+     first. Mutation-tested against the real `candidateCases`: reverting to
+     the pre-fix unrestricted `parentCandidates` call fails exactly the 3
+     pins that exercise the fixed function (both tiers' one-candidate
+     guarantee, and the orient-changes-geometry pin), while the pins built
+     on inline stand-ins for "what the old un-pinned call returns" and "what
+     a normalizer-on-manual would do" stay green throughout — proving those
+     stand-ins are faithful reconstructions, not just plausible-looking
+     code.
+  Full regression: every runnable suite green (`golden.json`'s own
+  `chains.*` entries re-verified directly against `candidateCases` per
+  above, since `verify.html` itself times out in this sandbox — a
+  pre-existing, already-documented environment limitation, not something
+  this task's changes caused), including the two new corner-post/nesting
+  and clearance/arrangement suites; `explode.test.html`/`uboard.test.html`
+  hit their own already-documented pre-existing timeout, confirmed
+  unrelated (this task never touches either module).
+- **DIAGNOSED, NO DEFECT FOUND (pallet-pattern-pick task): the reported
+  "Build shows one pattern out of 24" does not trace to the code shape the
+  report hypothesized.** Reported as `chainMetrics`'s `selected0 =
+  patternList[0]` (project.js) ignoring `project.pallet.patternIndex`, with
+  two comments elsewhere in the file asserting the opposite. Diagnosed
+  per the report's own three questions, against the RUNNING resolver, not
+  assumed: (1) `build.js`'s `stepPattern` already writes
+  `project.pallet.patternIndex = next` directly — a real project field, not
+  a view-local index, confirmed both by reading its source and by driving
+  the real cycle arrows through a live iframe. (2) `applyPatternSelection`
+  (project.js) already exists, already reads and clamps `patternIndex`, and
+  is already called by `resolveActiveRow` in all three of its branches
+  (locked / matched-selection / default) — the committed chain's own final
+  numbers, not `chainMetrics`'s `selected0`, which is only that candidate's
+  OWN baseline (correct for what a Build-table row shows before any pattern
+  pick narrows it, same as the case-candidate table). (3) Clamping already
+  exists exactly as the report guessed. Verified numerically, not just
+  read: a fixture whose pattern list has GENUINELY DIFFERENT totals (not
+  ties — the earlier default-project probe tied at every candidate, which
+  would have made this diagnosis inconclusive) shows `casesPerPallet`,
+  `cartonsPerPallet`, `coveragePct`, the interlock schedule (`layerFlips`
+  applies to the SELECTED candidate, not candidate 0), and downstream
+  trailer fit all following `patternIndex` correctly, both through the pure
+  resolver and through the real running app (cycle arrows, BCT interlock
+  warning, opened-instance index all update live). `test/
+  patternpick.test.html` pins this as a REGRESSION GUARD, not a fix: the
+  propagation identity, the interlock-schedule-follows-selection property,
+  out-of-range clamping, and index-0 bit-identity are all pinned, plus a
+  source check that `stepPattern` writes the real field and a live DOM
+  survey that cycles the actual navigator. Mutation-tested against the
+  REAL source (not an inline stand-in, which would only prove "row !==
+  row" and test nothing): temporarily reverting `resolveActiveRow`'s three
+  `applyPatternSelection(...)` wrappers to their bare argument — the
+  reported bug shape, patternIndex never read — failed exactly the five
+  pins that exercise propagation (PROPAGATION, IDENTITY, DOWNSTREAM,
+  LAYERFLIPS, CLAMPING) while DEFAULT/SOURCE/DOM/MUTATION-CONTEXT stayed
+  green, and the existing suites this task must not disturb (containment,
+  palletpatterns, project, sensitivity, saveload, trailer) stayed FULLY
+  GREEN under that same mutation — confirming the report's own "specimen
+  problem" framing: no existing golden chain fixture ever sets
+  `patternIndex` (pinned directly, `MUTATION CONTEXT`), so a fixture that
+  never varies the pick could never have caught a pick that was never
+  read. This mechanism was evidently built in an earlier session not
+  captured by a prior entry in this file; that gap in the log, not a gap
+  in the code, is presumably what let the report read as current. No code
+  change was made — `core/project.js` is untouched by this task; only the
+  new regression pin was added.
+- **RESOLVED IN PART (pallet-pattern-table task): Build's pallet-level tab
+  gets a real comparison table for pallet-layer PATTERNS — the piece that
+  directly answers "Build shows one pattern out of 24."** A companion task
+  in a sibling branch/PR diagnosed the reported patternIndex-propagation
+  bug and found it does not exist: `resolveActiveRow` already wraps every
+  branch in `applyPatternSelection`, which already reads and clamps
+  `project.pallet.patternIndex`. What genuinely was missing, confirmed by
+  reading the code: at pallet depth, Build never enumerated pallet
+  patterns at all — `build.js`'s table has only ever shown CASE/carton
+  candidate rows (`candidateCases`), regardless of `activeLevel`, which is
+  the real, literal reason the tab read as "one row" — the case chain had
+  one candidate; the 24 PATTERNS for that case had nowhere to be browsed
+  except the pre-existing cycle arrows.
+
+  **Reused the existing table mechanism, not a second one**, per the
+  task's own instruction: `build.js`'s row/header/click DOM-building logic
+  was extracted into `renderCandidateTable(tbl, cols, displayRows, opts)` —
+  a pure function taking rows/columns/callbacks, owning no state itself —
+  and the pre-existing case-candidate `renderTable()` now calls it (a
+  mechanical, behavior-preserving refactor: same markup, same click
+  wiring, confirmed bit-identical by the untouched suites still passing).
+  A new `renderPatternTable()` calls the SAME function with pallet-pattern
+  columns/rows. `build.setMode('case'|'pattern')`, called from
+  `app.js`'s `setActiveLevel` (`level === 'pallet' ? 'pattern' : 'case'`),
+  toggles which of two panels (`#bCasePanel`/`#bPatternPanel`, both built
+  by `initBuild()`) is visible — build.js owns no notion of "active
+  level" itself, so the caller decides when to switch.
+
+  **Rows are `palletPatternList` candidates, one each, in that module's
+  own ranked order — never a cross product with interlock schedules**
+  (a schedule changes stability, not count/efficiency/footprint, so it
+  would read identically down every row): the `#` column IS the row's
+  position, so this table does not re-sort (re-sorting would make that
+  column lie). **Selecting a row writes `project.pallet.patternIndex`
+  directly** — the exact field the pre-existing cycle arrows
+  (`stepPattern`) already write and `applyPatternSelection` already
+  reads — never a second, view-local "which pattern is picked."
+  Verified live end-to-end through the real app: selecting a
+  different-total row changes the rendered pallet count, the cycle
+  arrows' "N of M," the deck coverage %, and (for an interlocked
+  candidate) the BCT interlock-strength warning, together.
+
+  **Columns**, each already computed on the candidate or one arithmetic
+  step away — no second solver: `#`, `Family`, `Per layer`, `Layers`,
+  `Cases/pallet` (`total`), `Cartons/pallet` (`total × perPalletMultiplier`,
+  reading whether `project.secondary.enabled` at all rather than
+  re-deriving it — shows **"—"**, never a computed number, when the carton
+  tier isn't in the chain), `Area eff. %` (imports `deckCoveragePct` from
+  `project.js`, now exported specifically so this column and the committed
+  chain's own `coveragePct` can never disagree), `Cube eff. %`
+  (`candidate.utilization`), `Length/Width unused` (deck minus
+  `candidate.envelope`, per axis), `Overhang` (`candidate.loadOverhang`,
+  already on the candidate), and `Interlockable`. **The efficiency
+  denominator is stated, not silently chosen**: `utilization` is volumetric
+  fill against the pallet's MAX LOAD HEIGHT budget (`maxH - baseH`), not
+  each candidate's own achieved stack height — named in the column's hint
+  text, and pinned with a fixture where the two conventions provably give
+  different numbers (an 1mm gap between the cavity height and this
+  candidate's own envelope height), so the pin can't have passed by
+  coincidence either way.
+
+  **Interlockable** (`sym180`, the "is this layer its own 180° turn"
+  check palletpatterns.js's own `withSchedule` already runs internally to
+  decide whether to warn) is now also exposed as a field on the candidate
+  object (`interlockable: !symmetric`) — reading it off the existing
+  helper, never a second symmetry test. Verified against an INDEPENDENT
+  reconstruction in the test file (negate every placement's x/y and check
+  the resulting set matches), not by calling `sym180` a second time, which
+  would only prove the function agrees with itself.
+
+  **DEFERRED, explicitly, not silently dropped**: thumbnails (the capture-
+  sheet composer pointed at the candidate list instead of the chain),
+  the render inset ("Layer plan" view toggle alongside Solid/Cutaway),
+  and extracting the pallet-PDF's own layer-plan drawing as a shared
+  component used by all three. These are a separate, visual-rendering-
+  heavy body of work — this task ships the table (the part that directly
+  answers the original confusion and needed no new geometry) and stops
+  there; no pins exist yet for the deferred pieces because there is
+  nothing built to pin. `index.html`'s `#bTable`-scoped CSS rules were
+  widened to also match `#bPatternTable` (the two tables share one visual
+  language by construction, not by copy) — except the header `cursor:
+  pointer`, which stays case-table-only since the pattern table's headers
+  are deliberately not sortable.
+
+  Pinned in `test/patterntable.test.html`: row content read directly off
+  each candidate (never against another row), both efficiency columns
+  hand-computed with the denominator stated, interlockable verified
+  independently for both a symmetric and an asymmetric candidate, the
+  carton-skipped "—" behaviour driven through the real chain-strip
+  disable-carton confirmation dialog (not a project field poked directly),
+  and full DOM reachability/wiring at both 1400px and 390px via a real
+  iframe survey — panel toggling, row count, and a row click's live
+  propagation into the rendered 3D readout text. Full regression: every
+  suite this task's files touch (`chainstrip`, `project`, `palletpatterns`,
+  `containment`, `saveload`, `trailer`, `sensitivity`) green, unchanged.

@@ -635,16 +635,17 @@
   .bapply{width:100%}
   .bapply:disabled{opacity:.5;cursor:default}
   .btablewrap{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:auto;max-height:52vh}
-  #bTable{width:100%;border-collapse:collapse;font-family:var(--sans);font-size:12.5px;font-variant-numeric:tabular-nums}
-  #bTable th{position:sticky;top:0;background:var(--panel);text-align:left;padding:9px 12px;font-size:10px;
-    letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
-  #bTable td{padding:7px 12px;border-bottom:1px solid var(--line-2);white-space:nowrap}
-  #bTable tbody tr{cursor:pointer}
-  #bTable tbody tr:hover{background:var(--panel-2)}
-  #bTable tr.bsel{background:var(--accent-soft)}
-  #bTable tr.bsel td{font-weight:600}
-  #bTable tr.bmisfit td{color:var(--danger)}
-  #bTable td.bwin{background:rgba(47,125,91,.12);font-weight:700;color:var(--valid)}
+  #bTable,#bPatternTable{width:100%;border-collapse:collapse;font-family:var(--sans);font-size:12.5px;font-variant-numeric:tabular-nums}
+  #bTable th,#bPatternTable th{position:sticky;top:0;background:var(--panel);text-align:left;padding:9px 12px;font-size:10px;
+    letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line);user-select:none;white-space:nowrap}
+  #bTable th{cursor:pointer}
+  #bTable td,#bPatternTable td{padding:7px 12px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+  #bTable tbody tr,#bPatternTable tbody tr{cursor:pointer}
+  #bTable tbody tr:hover,#bPatternTable tbody tr:hover{background:var(--panel-2)}
+  #bTable tr.bsel,#bPatternTable tr.bsel{background:var(--accent-soft)}
+  #bTable tr.bsel td,#bPatternTable tr.bsel td{font-weight:600}
+  #bTable tr.bmisfit td,#bPatternTable tr.bmisfit td{color:var(--danger)}
+  #bTable td.bwin,#bPatternTable td.bwin{background:rgba(47,125,91,.12);font-weight:700;color:var(--valid)}
   .bcode{font-family:var(--sans);font-size:11px;color:var(--ink-3);margin-left:4px}
   .bunit{font-family:var(--sans);font-size:11px;color:var(--ink-3)}
 

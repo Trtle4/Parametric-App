@@ -1879,7 +1879,7 @@ function mountPlacement(){
        <div id="plInCount" style="display:contents"></div>`;
     inputs.mountVertControl(el('plInVert'), 'pIn', proj.primary, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', proj.primary.clearance, projectChanged);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), 2, 1, 1, primaryNoun, projectChanged);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'secondary'), 2, 1, 1, primaryNoun, projectChanged, false, proj.primary);
     syncRotInert('pIn', linkFor(proj, 'secondary'));
     return;
   }
@@ -1898,7 +1898,7 @@ function mountPlacement(){
        <div id="plOutClear" style="display:contents"></div>`;
     inputs.mountVertControl(el('plInVert'), 'pIn', childLevel, {}, projectChanged);
     inputs.mountClearanceControl(el('plInClear'), 'pIn', childLevel.clearance, projectChanged);
-    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged, true);
+    inputs.mountCountArrangement(el('plInCount'), 'pIn', linkFor(proj, 'tertiary'), 4, 3, 1, childNoun, projectChanged, true, childLevel);
     syncRotInert('pIn', linkFor(proj, 'tertiary'));
     inputs.mountVertControl(el('plOutVert'), 'pOut', proj.tertiary,
       {disabledAxes: ['L', 'W'], disabledReason: 'A shipper does not go on the pallet on its side — say so explicitly if you genuinely need this'},
@@ -2376,6 +2376,12 @@ function setActiveLevel(level){
   el('msTitle').textContent = `${APP_NAME} · ${lvl.label}`;
   updateExportButtonsState();
   updatePngButtonsState();
+  // Build's own comparison table is level-aware: the pallet level compares
+  // pallet-layer PATTERNS for the active case, every other level compares
+  // the outermost tier's own CANDIDATE grid — the same distinction that
+  // used to leave Build showing a one-row case table at pallet depth, with
+  // nowhere to browse the 24 pallet patterns cycling actually reaches.
+  build.setMode(level === 'pallet' ? 'pattern' : 'case');
   mountActiveLevel();
   renderChainString();
   refresh2d();

@@ -1,0 +1,244 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nesting transforms — a rotation, never a reflection</title>
+<pre id="out">running…</pre>
+<div id="rig" style="position:fixed;left:-4000px;top:0;width:10px;height:10px"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+/* REQUEST: "A nesting transform must be a rotation, never a reflection.
+   Physical packs can be turned any way; they cannot be mirrored. A negative
+   scale factor used to 'flip' an instance cheaply produces exactly this
+   symptom and is geometrically impossible in the real world." Pinned as
+   det(M) > 0 for every instance transform in the nesting path -- case->wrap,
+   case->carton, pallet->case, trailer->pallet -- plus the corner-post mesh
+   itself, which sits alongside those relationships at every one of them.
+
+   FOUND, by running exactly this sweep: TWO independent negative-scale
+   reflection bugs, both in corner-post construction (an L-shaped profile with
+   legL != legW is CHIRAL -- its mirror image is a different, physically
+   impossible object, not a rotation of itself).
+     1. palletmesh.js buildCornerPostSet mirrored ONE +x/+z-quadrant post into
+        the other 3 corners via `post.scale.set(-sign(x), 1, -sign(z))`. Of
+        the 4 corners, 2 flip a SINGLE axis (a true reflection) and 2 flip
+        BOTH axes at once (which is just a 180deg rotation) -- so the bug was
+        invisible on the common square-leg default and only showed on an
+        asymmetric leg pair.
+     2. hierarchy3d.js's trailer corner-post INSTANCING (a separate
+        implementation of the identical shape) had the identical pattern:
+        one pre-built geometry pair, mirrored per-instance via the matrix's
+        own scale component.
+   Both are fixed: every arm is now built (or its geometry pre-translated)
+   at its own SIGNED, INWARD-pointing offset directly -- pure translation,
+   det always +1 -- rather than negatively scaling a shared shape.
+
+   Every OTHER instance transform in the nesting path (case->wrap,
+   case->carton, pallet->case, trailer->pallet) was already safe: they all
+   compose orientQuat(placement.orientation) -- which orientBasis() already
+   proves, by construction, can never carry a reflection (it explicitly
+   flips a horizontal column whenever the raw basis's determinant would be
+   negative) -- with a pure translation. This file's sweep confirms that at
+   the RENDERED matrix, not just by reading orientBasis's own proof. */
+
+import {newProject, resolveActiveRow, applyPatternSelection} from '../src/core/project.js';
+import {resolveStack, cornerPostConfig, cornerPostHeightMM} from '../src/core/stack.js';
+import {resolveTrailer} from '../src/core/trailer.js';
+import {buildCornerPostSet} from '../src/render/palletmesh.js';
+import * as fold3d from '../src/render/fold3d.js';
+import * as hier from '../src/render/hierarchy3d.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+
+/* ============================================================
+   PART A: palletmesh.js buildCornerPostSet, driven directly -- no scene
+   needed, pure THREE geometry. Asymmetric legL != legW so a single-axis
+   reflection at 2 of the 4 corners is actually reachable.
+   ============================================================ */
+
+function detsOf(group){
+  group.updateMatrixWorld(true);
+  const dets = [];
+  group.traverse(o => { if(o.isMesh) dets.push(o.matrixWorld.determinant()); });
+  return dets;
+}
+
+const fp = {L: 400, W: 300}, HEIGHT = 200, LEG_L = 150, LEG_W = 40, CALIPER = 10;
+const posts = buildCornerPostSet(fp, HEIGHT, LEG_L, LEG_W, CALIPER);
+
+t('FIXTURE: buildCornerPostSet with legL != legW actually draws 8 meshes (4 corners x 2 arms)', () => {
+  const dets = detsOf(posts);
+  ok(dets.length === 8, `expected 8 arm meshes, got ${dets.length}`);
+});
+
+t('FIX: every corner-post arm mesh has det(matrixWorld) > 0 -- a rotation/translation, never a reflection', () => {
+  for(const d of detsOf(posts)) ok(d > 1e-6, `arm det ${d} is not a proper rotation`);
+});
+
+// MUTATION GUARD: reconstruct the OLD scale-based construction inline (the
+// pre-fix code, verbatim) and confirm this pin CAN fail -- 2 of the 4
+// corners genuinely reflected under it, so the fix above is not vacuous.
+function oldBuildCornerPostL(legL, legW, caliper, height){
+  const g = new THREE.Group();
+  const h = Math.max(0.1, height);
+  const armX = new THREE.Mesh(new THREE.BoxGeometry(Math.max(legL, 0.1), h, Math.max(caliper, 0.1)));
+  armX.position.set(legL/2, h/2, caliper/2);
+  g.add(armX);
+  const armZ = new THREE.Mesh(new THREE.BoxGeometry(Math.max(caliper, 0.1), h, Math.max(legW, 0.1)));
+  armZ.position.set(caliper/2, h/2, legW/2);
+  g.add(armZ);
+  return g;
+}
+function oldBuildCornerPostSet(fp, height, legL, legW, caliper){
+  const g = new THREE.Group();
+  const hx = fp.L/2 + caliper, hz = fp.W/2 + caliper;
+  const corners = [{x: hx, z: hz}, {x: -hx, z: hz}, {x: -hx, z: -hz}, {x: hx, z: -hz}];
+  for(const c of corners){
+    const post = oldBuildCornerPostL(legL, legW, caliper, height);
+    post.scale.set(-Math.sign(c.x), 1, -Math.sign(c.z));
+    post.position.set(c.x, 0, c.z);
+    g.add(post);
+  }
+  return g;
+}
+t('MUTATION GUARD: the OLD (pre-fix) negative-scale construction fails this exact pin at exactly 2 of 4 corners', () => {
+  const oldPosts = oldBuildCornerPostSet(fp, HEIGHT, LEG_L, LEG_W, CALIPER);
+  const dets = detsOf(oldPosts);
+  ok(dets.length === 8, `fixture: expected 8 arm meshes from the old builder, got ${dets.length}`);
+  const bad = dets.filter(d => d < 0).length;
+  ok(bad === 4, `expected exactly 4 reflected arm meshes (2 corners x 2 arms) under the old code, got ${bad} of ${dets.length}`);
+});
+
+t('FIXTURE: a SQUARE leg profile (legL === legW) reflects at the exact same 4 arms -- det sign does not depend on squareness', () => {
+  // det(M) < 0 is a property of the MATRIX (the negative scale factor), not
+  // of whether the resulting vertex positions happen to coincide with a
+  // valid rotation's. A square-leg L happens to look right on screen after
+  // reflection (the long/short arms are equal, so a mirrored bracket's
+  // bounding shape coincides with a rotated one) -- which is WHY the bug
+  // went unnoticed on the common default -- but the transform itself is
+  // still a reflection either way. This fixture confirms that: the count of
+  // negative dets does not drop to 0 just because the legs are square.
+  const squarePosts = oldBuildCornerPostSet(fp, HEIGHT, 76.2, 76.2, CALIPER);
+  const dets = detsOf(squarePosts);
+  const bad = dets.filter(d => d < 0).length;
+  ok(bad === 4, `expected the same 4 reflected arms as the asymmetric case (got ${bad} of ${dets.length}) -- squareness changes visibility, not the matrix`);
+});
+
+/* ============================================================
+   PART B: the REAL render pipeline, driven end to end -- case->wrap,
+   case->carton, pallet->case, trailer->pallet, plus the trailer's own
+   corner-post instancing (the second bug). fold3d.init3d needs only a bare
+   container element, not the full app skeleton.
+   ============================================================ */
+
+const rig = document.getElementById('rig');
+const container = document.createElement('div');
+rig.appendChild(container);
+fold3d.init3d(container);
+
+function caseFootprintOf(row){
+  const env = row && row.casesFit && row.casesFit.envelope;
+  return (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : null;
+}
+
+function buildBundle(proj){
+  const row = applyPatternSelection(resolveActiveRow(proj, '1mm', null), proj);
+  const {cases, cartons, wraps, pieces} = row.arr;
+  const wrapPlacements = wraps ? wraps.placements : cartons.placements;
+  const theStack = resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0, caseFootprint: caseFootprintOf(row)});
+  const cpCfg = cornerPostConfig(proj);
+  return {
+    row,
+    art: {},
+    caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: row.geo.wrap,
+    tray: row.tray || null, uboard: row.uboard || null,
+    cases: {placements: cases.placements, count: cases.count, deck: cases.deck, loadH: row.loadH, unitStackH: row.unitStackH},
+    cartons: {placements: cartons.placements},
+    wraps: (pieces && wrapPlacements) ? {
+      placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,
+      filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : pieces.envelope,
+      cellPieces: pieces.placements, piece: pieces.piece, stackAxis: pieces.stackAxis,
+      seals: pieces.seals, nx: pieces.nx, ny: pieces.ny, wrapAxis: pieces.wrapAxis
+    } : null,
+    counts: {},
+    stack: theStack,
+    cornerPost: cpCfg.enabled ? (() => {
+      const env = row.casesFit && row.casesFit.envelope;
+      const footprint = (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : {L: cases.deck.L, W: cases.deck.W};
+      return {height: cornerPostHeightMM(proj, row.loadH || 0), legL: cpCfg.legL, legW: cpCfg.legW, caliper: cpCfg.caliper, footprint};
+    })() : null,
+    cap: null,
+    trailer: resolveTrailer(proj, theStack, row.casesPerPallet || 0)
+  };
+}
+
+/** Every instance transform actually drawn under the pivot right now:
+ *  Mesh -> its matrixWorld; InstancedMesh -> matrixWorld x each per-instance
+ *  matrix, since a reflection could hide in either factor. */
+function renderedDets(){
+  const pivot = fold3d.getPivot();
+  pivot.updateMatrixWorld(true);
+  const dets = [];
+  const M = new THREE.Matrix4();
+  pivot.traverse(o => {
+    if(o.isInstancedMesh){
+      for(let i = 0; i < o.count; i++){
+        o.getMatrixAt(i, M);
+        dets.push(o.matrixWorld.clone().multiply(M).determinant());
+      }
+    }else if(o.isMesh){
+      dets.push(o.matrixWorld.determinant());
+    }
+  });
+  return dets;
+}
+
+function checkDepth(name, proj, depth){
+  const bundle = buildBundle(proj);
+  hier.buildHierarchy(bundle, depth, {}, false, null);
+  const dets = renderedDets();
+  t(`RENDERED (${name} @ ${depth}): at least one instance transform is actually on screen to check`, () => {
+    ok(dets.length > 0, `nothing rendered at depth '${depth}' -- fixture cannot exercise this relationship`);
+  });
+  t(`RENDERED (${name} @ ${depth}): det(M) > 0 for every one of ${dets.length} instance transforms`, () => {
+    const bad = dets.filter(d => d <= 1e-9);
+    ok(bad.length === 0, `${bad.length} of ${dets.length} instance transforms are reflections (det <= 0): ${bad.slice(0, 5).join(', ')}`);
+  });
+}
+
+// full default chain: wrap -> carton -> case -> pallet -> trailer.
+// carton@depth is carton->wrap; case@depth is case->carton (+ nested
+// case->...->wrap through the one opened child); pallet@depth is
+// pallet->case; trailer@depth is trailer->pallet, PLUS this project's own
+// corner posts (asymmetric legs -- the second bug's exact reproduction).
+const fullChain = newProject();
+fullChain.pallet.stack.cornerPost = {enabled: true, height: 200, legL: LEG_L, legW: LEG_W, caliper: CALIPER, density: 700, costBasis: 'perLength'};
+
+checkDepth('full chain', fullChain, 'carton');   // case->carton's own child: carton->wrap
+checkDepth('full chain', fullChain, 'case');     // case->carton
+checkDepth('full chain', fullChain, 'pallet');   // pallet->case
+checkDepth('full chain', fullChain, 'trailer');  // trailer->pallet + trailer's own corner posts
+
+// a SECOND fixture with the carton tier disabled, so the case's own
+// immediate child is the wrap directly -- the case->wrap relationship named
+// explicitly in the request, which the full chain above never reaches
+// (there, the carton sits between case and wrap).
+const caseWrap = newProject();
+caseWrap.secondary.enabled = false;
+checkDepth('carton disabled (case holds wrap directly)', caseWrap, 'case');   // case->wrap
+
+t('FIXTURE: the case-holds-wrap-directly project genuinely has no carton geometry', () => {
+  const row = resolveActiveRow(caseWrap, '1mm', null);
+  ok(!row.geo.carton, 'fixture: carton must be disabled for this to test case->wrap directly, not case->carton');
+  ok(!!row.geo.case, 'fixture: case must still be enabled');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

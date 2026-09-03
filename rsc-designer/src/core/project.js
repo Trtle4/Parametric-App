@@ -54,7 +54,22 @@ import {TRAILER_DEFAULTS} from './trailer.js';
  * @property {'tertiary'} parent
  * @property {'secondary'} child
  * @property {number} count                        // children per parent
- * @property {'auto'|{nx:number,ny:number,nz:number}} arrangement
+ * @property {'auto'|{nx:number,ny:number,nz:number,orient?:import('./containment.js').Orientation}} arrangement
+ *   A manual grid ({nx,ny,nz}) fixes COUNTS along each axis but says nothing
+ *   about which way the child is turned — a second, independent degree of
+ *   freedom that floats across the child's whole allowedOrientations unless
+ *   pinned. `orient` (one of the 6 Orientation strings, e.g. 'LWH') pins it:
+ *   present, a manual arrangement is FULLY determined and produces EXACTLY
+ *   ONE candidate layout, never a list. Absent (every arrangement stored
+ *   before this field existed): defaults to allowedOrientations[0] — same
+ *   invariant, same one-candidate guarantee, just an unpinned engineer's
+ *   choice rather than an explicit one. Manual axes are respected VERBATIM:
+ *   nx along the parent's own L axis, ny along W, exactly as entered — no
+ *   normalization, no L>=W reordering, no rotation to a preferred
+ *   presentation (that convention is auto-mode-only; see inputs.js
+ *   normalizeLW, which only ever touches a level's raw L/W params, never an
+ *   arrangement). 'auto' is completely unaffected by any of this — the
+ *   existing repertoire/ranking/normalization, untouched.
  * @property {boolean} locked                      // true: parent dims fixed, child only checked
  *
  * @typedef {Object} Project
@@ -904,9 +919,15 @@ function solveSecondaryInner(project, child, step){
     // cavity, round it, then build the REAL Arrangement inside it via
     // fitInto. No enumeration/ranking here (still one variant), just an
     // exact layout instead of the solver's best-scored one.
-    const {nx, ny, nz} = link.arrangement;
+    // Same fix as candidateCases below: orientation is pinned (explicit
+    // orient, or allowedOrientations[0] when absent) so this resolves to
+    // the ONE grid the engineer actually typed, not whichever orientation
+    // among several equally-valid ties parentCandidates/fitInto happen to
+    // pick first.
+    const {nx, ny, nz, orient} = link.arrangement;
+    const pinned = orient || child.allowedOrientations[0];
     requestedUnits = nx*ny*nz;
-    const cands = parentCandidates(child, requestedUnits, prim.clearance, {layers: nz})
+    const cands = parentCandidates(child, requestedUnits, prim.clearance, {layers: nz, orientations: [pinned]})
       .filter(c => c.nx === nx && c.ny === ny);
     if(cands.length === 0){
       // the typed grid isn't reachable for this child/orientation set —
@@ -916,8 +937,8 @@ function solveSecondaryInner(project, child, step){
     }else{
       const cavity = roundCavityUp(cands[0].cavity, step);
       params = {...sec.params, L: cavity.L, W: cavity.W, H: cavity.H};
-      const fit = fitInto(child, cavity, prim.clearance, 'column');
-      chosen = fit.placements[0] ? fit.placements[0].orientation : child.allowedOrientations[0];
+      const fit = fitInto({outer: child.outer, allowedOrientations: [pinned]}, cavity, prim.clearance, 'column');
+      chosen = fit.placements[0] ? fit.placements[0].orientation : pinned;
       arrangement = fit; fits = fit.total >= requestedUnits; capacity = fit.total;
     }
   }
@@ -1044,8 +1065,20 @@ export function candidateCases(project, rounding = '1mm'){
       for(const c of parentCandidates(child, k, child.clearance, autoOpenTopOpts))
         if(irreducible(c, k)){ c.count = k; cands.push(c); }
   }else{
-    const {nx, ny, nz} = outerLink.arrangement;
-    for(const c of parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz, ...openTopOpts}))
+    // A manual grid fixes COUNTS (nx/ny/nz) but says nothing on its own
+    // about which way the child is turned -- orientation is a second,
+    // independent degree of freedom. Pin it via opts.orientations so
+    // parentCandidates enumerates exactly the ONE orientation requested,
+    // never the child's whole allowedOrientations list -- otherwise a
+    // manual arrangement with >1 allowed orientation yields one candidate
+    // PER matching orientation (the reported "4x3x1 shows 2 candidates"
+    // defect). `orient` absent (every arrangement stored before this field
+    // existed) defaults to allowedOrientations[0] -- same one-candidate
+    // guarantee, just an unpinned engineer's choice rather than an
+    // explicit one; never the un-pinned, whole-list behaviour.
+    const {nx, ny, nz, orient} = outerLink.arrangement;
+    const pinned = orient || child.allowedOrientations[0];
+    for(const c of parentCandidates(child, nx*ny*nz, child.clearance, {layers: nz, orientations: [pinned], ...openTopOpts}))
       if(c.nx === nx && c.ny === ny){ c.count = nx*ny*nz; cands.push(c); }
   }
 
@@ -1352,7 +1385,11 @@ function decorateRow(row, project, below, outerKey, outerGeo, casesFit, childFit
  * what the pallet render now reads for its stacking height, so a drift here
  * would move pixels as well as readouts. */
 const palletLoadH   = (fit, stackH) => fit.layers*stackH;
-const deckCoveragePct = (fit, outer, pallet) =>
+// exported: the pallet-pattern comparison table (build.js) reads this SAME
+// expression for its own "Area eff. %" column, per-candidate — never a
+// second area-efficiency formula that could disagree with the committed
+// chain's own coveragePct.
+export const deckCoveragePct = (fit, outer, pallet) =>
   Math.round(fit.perLayer*outer.L*outer.W/(pallet.L*pallet.W)*100);
 const palletCubeUtilPct = (unitVol, unitCount, pallet, loadH) =>
   loadH > 0 ? Math.round(unitVol*unitCount/(pallet.L*pallet.W*loadH)*100) : 0;
