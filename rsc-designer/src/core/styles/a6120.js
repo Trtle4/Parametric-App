@@ -21,6 +21,20 @@ const DUST_SWEEP = 20 * Math.PI/180; // dust flap side-edge sweep (spec: 20°)
 const TAB_CHAMFER = 5;               // 45° chamfer legs on tuck tab corners (spec: 5 mm fixed)
 const GLUE_CHAMFER_MAX = 5;          // glue tab end chamfer cap — interpretation, flagged for sample check
 
+/** Outside dims MINUS inside dims — the board this style adds per axis, as a
+ *  function of caliper alone. L and W each gain one wall thickness per side
+ *  (+2t, the same four-wall body as any sleeve). H gains a dust-flap layer
+ *  plus the tuck panel over it at each end (+4t) — numerically the same
+ *  total as the RSC's own +4t, but a different stack (see the comment on
+ *  `outer` below). The ONE place this relation is defined — geometry()
+ *  below builds `outer` from it, and core/styles/index.js's dimension-basis
+ *  conversion (inside <-> outside manual entry) inverts it — so the two can
+ *  never disagree. */
+export function a6120OuterGrowth(p){
+  const t = p.caliper;
+  return {L: 2*t, W: 2*t, H: 4*t};
+}
+
 /**
  * @param {Object} p  {L, W, H, caliper, glueTab, dustDepth, tuckDepth, tuckTab}
  * @returns {import('../types.js').Geometry}
@@ -82,12 +96,13 @@ export function a6120(p){
   //  Total: outer.H = H + 4t. Numerically the same +4t as the FEFCO 201,
   //  but the stack is different: RSC = inner minor flap + outer major flap
   //  at each end; RTE = dust flap layer + tuck panel at each end.
+  const growth = a6120OuterGrowth(p);
   return {
     structure: 'rigid',
     cut, crease,
     bbox: {minX: 0, minY: 0, maxX: x5, maxY: yt + Math.max(T + TT, D)},
     inner: {L, W, H},
-    outer: {L: L + 2*t, W: W + 2*t, H: H + 4*t},
+    outer: {L: L + growth.L, W: W + growth.W, H: H + growth.H},
     meta: {
       style: 'a6120',
       // SHELF FRONT: the outward normal of the face this pack is merchandised

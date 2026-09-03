@@ -169,7 +169,20 @@ export function newProject(){
       // false = this tier is skipped: its own parent's child re-points to
       // whatever is next enabled below it. At least one of secondary/
       // tertiary must stay enabled — see resolveChainShape.
-      enabled: true
+      enabled: true,
+      // MANUAL DIMENSION BASIS — which way a locked (user-typed) L/W/H is
+      // read: 'inside' (the cavity, this app's long-standing convention) or
+      // 'outside' (the erected carton's outer footprint, what a spec sheet
+      // or a competitor's box usually states). `params.L/W/H` is ALWAYS the
+      // canonical INSIDE value regardless of this flag — inputs.js converts
+      // an outside entry to inside via the style's own outerGrowth() before
+      // writing here, and the outside readout is always RE-DERIVED from it,
+      // never stored — so there is exactly one number on record and it can
+      // never disagree with itself. Solve-from-contents (auto/explicit-grid
+      // arrangement) never reads this: only a LOCKED level is ever manually
+      // dimensioned. Default 'inside' is bit-identical to every project
+      // saved before this field existed.
+      dimBasis: 'inside'
     },
     tertiary: {
       styleId: 'fefco201',
@@ -179,7 +192,8 @@ export function newProject(){
       perf: {},                                      // see project.secondary.perf
       clearance: {wall: 0, between: 0},
       openTop: styleOpenTopDefault('fefco201'),      // false: fefco201 is closed
-      enabled: true
+      enabled: true,
+      dimBasis: 'inside'                             // see project.secondary.dimBasis
     },
     // Which interlayer, if any, sits between the product collation and the
     // wrap — 'none', 'tray', or 'uboard'. THE single discriminant: tray and

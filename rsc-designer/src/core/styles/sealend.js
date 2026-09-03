@@ -24,6 +24,20 @@
 const DUST_SWEEP = 20 * Math.PI/180;   // dust flap side-edge sweep — same convention as a6120
 const FLAP_CHAMFER_MAX = 5;            // seal flap's outer corners only — major/dust flaps are fully hidden under it
 
+/** Outside dims MINUS inside dims — the board this style adds per axis, as a
+ *  function of caliper alone. L and W each gain one wall thickness per side
+ *  (+2t, the universal 4-wall body). H gains THREE stacked layers at each
+ *  end — dust flaps, then the major flap over them, then the seal flap glued
+ *  over both (+6t total; see the comment on `outer` below for why this is
+ *  NOT the same +4t as fefco201/a6120). The ONE place this relation is
+ *  defined — geometry() below builds `outer` from it, and
+ *  core/styles/index.js's dimension-basis conversion (inside <-> outside
+ *  manual entry) inverts it — so the two can never disagree. */
+export function sealendOuterGrowth(p){
+  const t = p.caliper;
+  return {L: 2*t, W: 2*t, H: 6*t};
+}
+
 /**
  * @param {Object} p  {L, W, H, caliper, glueTab, dustDepth, overlap, cornerStyle}
  * @returns {import('../types.js').Geometry}
@@ -97,12 +111,13 @@ export function sealend(p){
   //  it happens to be a different number for a different, derived reason
   //  (an extra stacked layer per end from the seal-over-major-over-dust
   //  overlap this closure actually has).
+  const growth = sealendOuterGrowth(p);
   return {
     structure: 'rigid',
     cut, crease,
     bbox: {minX: 0, minY: 0, maxX: x5, maxY: yt + ext},
     inner: {L, W, H},
-    outer: {L: L + 2*t, W: W + 2*t, H: H + 6*t},
+    outer: {L: L + growth.L, W: W + growth.W, H: H + growth.H},
     meta: {
       style: 'sealend',
       // SHELF FRONT: the outward normal of the face this pack is merchandised

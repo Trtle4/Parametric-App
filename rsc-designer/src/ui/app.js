@@ -165,6 +165,9 @@ const LEVELS = {
            paramsOf: p => p.secondary.params, setParams: (p, o) => { p.secondary.params = o; },
            optionsOf: p => p.secondary.options, setOptions: (p, o) => { p.secondary.options = o; },
            lockedOf: p => linkFor(p, 'secondary').locked, setLocked: (p, v) => { linkFor(p, 'secondary').locked = v; },
+           // MANUAL DIMENSION BASIS: which way a locked L/W/H is read — see
+           // core/project.js's own doc comment on project.secondary.dimBasis.
+           dimBasisOf: p => p.secondary.dimBasis || 'inside', setDimBasis: (p, v) => { p.secondary.dimBasis = v; },
            derivedFrom: p => 'the ' + plainNoun(p.primary.wrap ? 'wrap' : 'collation'),
            fitsOf: row => row.secondaryFits,
            enabledOf: p => p.secondary.enabled !== false},
@@ -175,6 +178,7 @@ const LEVELS = {
            paramsOf: p => p.tertiary.params, setParams: (p, o) => { p.tertiary.params = o; },
            optionsOf: p => p.tertiary.options, setOptions: (p, o) => { p.tertiary.options = o; },
            lockedOf: p => linkFor(p, 'tertiary').locked, setLocked: (p, v) => { linkFor(p, 'tertiary').locked = v; },
+           dimBasisOf: p => p.tertiary.dimBasis || 'inside', setDimBasis: (p, v) => { p.tertiary.dimBasis = v; },
            // re-pointed per the enabled chain (describeChain), never hardcoded
            derivedFrom: p => `the ${plainNoun(describeChain(p).childNoun)}`,
            fitsOf: row => row.tertiaryFits,
@@ -1764,6 +1768,38 @@ function mountLockControl(){
   });
 }
 
+/** Inside/outside toggle for a LOCKED (manually-dimensioned) carton or case
+ *  whose style declares `outerGrowth` (fefco201/a6120/sealend/tray — the
+ *  rigid, manual-entry styles; a flow wrap or shrink bundle has no "inside"
+ *  to begin with, so neither carries this control). Purely a DISPLAY-mode
+ *  switch: `params.L/W/H` stay the canonical inside value regardless of
+ *  this flag (see inputs.js's `dimBasisEligibleFor` doc comment) — toggling
+ *  it never itself changes the built geometry, only how the dims fields
+ *  below interpret the next keystroke and what they currently show. */
+function mountDimBasisControl(){
+  const host = el('levelDimBasis');
+  const lvl = LEVELS[activeLevel], proj = build.project;
+  if(lvl.kind !== 'style' || !lvl.dimBasisOf || !lvl.enabledOf(proj) || !lvl.lockedOf(proj)){
+    host.innerHTML = '';
+    return;
+  }
+  const style = activeStyle();
+  if(typeof style.outerGrowth !== 'function'){ host.innerHTML = ''; return; }
+  const basis = lvl.dimBasisOf(proj);
+  host.innerHTML =
+    `<div class="field">
+      <label>Dimension basis <span class="hint">what L/W/H below mean</span></label>
+      <div class="inp"><select id="dimBasisSel">
+        <option value="inside"${basis === 'inside' ? ' selected' : ''}>Inside (cavity)</option>
+        <option value="outside"${basis === 'outside' ? ' selected' : ''}>Outside (erected footprint)</option>
+      </select></div>
+    </div>`;
+  el('dimBasisSel').addEventListener('change', e => {
+    lvl.setDimBasis(proj, e.target.value);
+    mountActiveLevel();   // re-render the dims fields under the new interpretation
+  });
+}
+
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The dimension-group label belongs to the STYLE, not the rail: "Inside
@@ -2075,6 +2111,7 @@ function mountActiveLevel(){
   mountEnableToggle();
   mountStyleSelector();
   mountLockControl();
+  mountDimBasisControl();
   mountPlacement();
   updateDimsLabel();
   update2dTabLabel();
@@ -2094,6 +2131,10 @@ function mountActiveLevel(){
       // notice (item 3) so it can say when a mapped panel just resized,
       // rather than leaving that to be discovered in the render
       hasArt: !!(proj.artwork && proj.artwork[activeLevel]),
+      // MANUAL DIMENSION BASIS — see mountDimBasisControl's own doc comment.
+      // Absent (tray/wrap/product/pallet levels have no dimBasisOf) reads as
+      // 'inside', the only interpretation those levels ever had.
+      dimBasis: lvl.dimBasisOf ? lvl.dimBasisOf(proj) : 'inside',
       // dims are read-only unless unlocked (mountLockControl's deliberate
       // toggle); this fires for material/option edits, and for dim edits
       // only once unlocked — never an implicit lock-on-type
@@ -4114,6 +4155,18 @@ notify.onRefresh('railDims', () => {
 });
 notify.onRefresh('placement', refreshPlacementControls);
 notify.onRefresh('lockControl', mountLockControl);
+notify.onRefresh('dimBasisControl', mountDimBasisControl);
+// dimension-basis counterparts: a LOCKED level's L/W/H fields are never
+// rewritten by a solve (railDims above explicitly skips them), but their
+// inside<->outside COUNTERPART readout depends on caliper, a sibling
+// material field that edits without remounting the dims fields — so it
+// needs its own live refresh, scoped to exactly the locked case railDims
+// deliberately excludes.
+notify.onRefresh('dimCounterparts', () => {
+  const lvl = LEVELS[activeLevel];
+  if(!isStyleLevel() || !lvl.enabledOf(build.project) || !lvl.lockedOf(build.project)) return;
+  inputs.refreshDimCounterparts();
+});
 notify.onRefresh('chainString', renderChainString);
 notify.onRefresh('dieline2d', refresh2d);
 notify.onRefresh('fold3d', () => { if(view === '3d' && mode3d === 'fold' && isStyleLevel()) refresh3d(); });

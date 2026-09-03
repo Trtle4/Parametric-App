@@ -13,6 +13,18 @@ const SLOT_EDGE_INSET = 0.5;   // mm
 /** Glue-flap chamfer cap. */
 const CHAMFER_MAX = 15;        // mm
 
+/** Outside dims MINUS inside dims — the board this style adds per axis,
+ *  as a function of caliper alone (never of L/W/H themselves): L and W
+ *  each gain one wall thickness per side (+2t); H gains a top AND bottom
+ *  flap stack-up, inner + outer flap layers at each end (+4t). The ONE
+ *  place this relation is defined — geometry() below builds `outer` from
+ *  it, and core/styles/index.js's dimension-basis conversion (inside <->
+ *  outside manual entry) inverts it — so the two can never disagree. */
+export function fefco201OuterGrowth(p){
+  const t = p.caliper;
+  return {L: 2*t, W: 2*t, H: 4*t};
+}
+
 /**
  * @param {import('../types.js').Params} p
  * @param {Object} [options]  style-specific build options — see
@@ -73,13 +85,14 @@ export function fefco201(p, options = {}){
   // floor — folding carton board runs 0.3–0.6 mm. Rendering guards against
   // degenerate meshes live in render/fold3d.js (RENDER_MIN_THICKNESS).
   const t = p.caliper;
+  const growth = fefco201OuterGrowth(p);
 
   return {
     structure: 'rigid',
     cut, crease,
     bbox: {minX: 0, minY: 0, maxX: x5, maxY: yt2},
     inner: {L, W, H},
-    outer: {L: L + 2*t, W: W + 2*t, H: H + 4*t},
+    outer: {L: L + growth.L, W: W + growth.W, H: H + growth.H},
     meta: {
       style: 'fefco201',
       // SHELF FRONT: the outward normal of the face this pack is merchandised
