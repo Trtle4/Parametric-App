@@ -2106,3 +2106,50 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   and clearance/arrangement suites; `explode.test.html`/`uboard.test.html`
   hit their own already-documented pre-existing timeout, confirmed
   unrelated (this task never touches either module).
+- **DIAGNOSED, NO DEFECT FOUND (pallet-pattern-pick task): the reported
+  "Build shows one pattern out of 24" does not trace to the code shape the
+  report hypothesized.** Reported as `chainMetrics`'s `selected0 =
+  patternList[0]` (project.js) ignoring `project.pallet.patternIndex`, with
+  two comments elsewhere in the file asserting the opposite. Diagnosed
+  per the report's own three questions, against the RUNNING resolver, not
+  assumed: (1) `build.js`'s `stepPattern` already writes
+  `project.pallet.patternIndex = next` directly — a real project field, not
+  a view-local index, confirmed both by reading its source and by driving
+  the real cycle arrows through a live iframe. (2) `applyPatternSelection`
+  (project.js) already exists, already reads and clamps `patternIndex`, and
+  is already called by `resolveActiveRow` in all three of its branches
+  (locked / matched-selection / default) — the committed chain's own final
+  numbers, not `chainMetrics`'s `selected0`, which is only that candidate's
+  OWN baseline (correct for what a Build-table row shows before any pattern
+  pick narrows it, same as the case-candidate table). (3) Clamping already
+  exists exactly as the report guessed. Verified numerically, not just
+  read: a fixture whose pattern list has GENUINELY DIFFERENT totals (not
+  ties — the earlier default-project probe tied at every candidate, which
+  would have made this diagnosis inconclusive) shows `casesPerPallet`,
+  `cartonsPerPallet`, `coveragePct`, the interlock schedule (`layerFlips`
+  applies to the SELECTED candidate, not candidate 0), and downstream
+  trailer fit all following `patternIndex` correctly, both through the pure
+  resolver and through the real running app (cycle arrows, BCT interlock
+  warning, opened-instance index all update live). `test/
+  patternpick.test.html` pins this as a REGRESSION GUARD, not a fix: the
+  propagation identity, the interlock-schedule-follows-selection property,
+  out-of-range clamping, and index-0 bit-identity are all pinned, plus a
+  source check that `stepPattern` writes the real field and a live DOM
+  survey that cycles the actual navigator. Mutation-tested against the
+  REAL source (not an inline stand-in, which would only prove "row !==
+  row" and test nothing): temporarily reverting `resolveActiveRow`'s three
+  `applyPatternSelection(...)` wrappers to their bare argument — the
+  reported bug shape, patternIndex never read — failed exactly the five
+  pins that exercise propagation (PROPAGATION, IDENTITY, DOWNSTREAM,
+  LAYERFLIPS, CLAMPING) while DEFAULT/SOURCE/DOM/MUTATION-CONTEXT stayed
+  green, and the existing suites this task must not disturb (containment,
+  palletpatterns, project, sensitivity, saveload, trailer) stayed FULLY
+  GREEN under that same mutation — confirming the report's own "specimen
+  problem" framing: no existing golden chain fixture ever sets
+  `patternIndex` (pinned directly, `MUTATION CONTEXT`), so a fixture that
+  never varies the pick could never have caught a pick that was never
+  read. This mechanism was evidently built in an earlier session not
+  captured by a prior entry in this file; that gap in the log, not a gap
+  in the code, is presumably what let the report read as current. No code
+  change was made — `core/project.js` is untouched by this task; only the
+  new regression pin was added.
