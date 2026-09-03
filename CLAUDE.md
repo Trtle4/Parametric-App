@@ -2459,3 +2459,112 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   both breakpoints). Full regression: `layerplan`, `patterntable`,
   `project`, `containment`, `saveload`, `palletpatterns`, `chainstrip`,
   `trailer`, `bct`, `stack`, `sensitivity` all green.
+- **RESOLVED (explode-vertical-lift task, Part 1 of 2): exploded view is
+  one-sided and upward on Y — contents lift OUT of their container, they no
+  longer spread symmetrically THROUGH its floor.** `render/explode.js`'s
+  rank-based spread (clusters positions into ranks, each rank steps by
+  `factor × EXPLODE_GAP_K × rank × unit`) was CENTRED on every axis —
+  correct on X/Z (a horizontal spread has no "up" or "down" to respect) but
+  wrong on Y, where centring sends the bottom half of a tier's contents
+  below the container floor: nothing was ever loaded through the floor, so
+  nothing should explode through it either. This was consistent across
+  every containment level (carton/case/pallet/wrap all route through the
+  same `explodeTier`), matching the reported symptom exactly — one fix, not
+  one per level.
+  **The fix**: a second ranking function, `rankOffsetsUp` (0..n-1 from the
+  LOWEST value upward, never negative — rank 0 is the anchor and never
+  moves), sits alongside the existing centred `rankOffsets`. `axisOffsets`
+  and `shellOffset` both gained a 4th `oneSidedUp` parameter selecting
+  between them; `explodeTier` computes `oneSidedUp = ax === 'y'` once per
+  axis in its own loop and threads it through, so every caller of
+  `explodeTier` — carton/case/pallet's own tiers, and the pallet-level
+  corner-post/trailer paths — gets the one-sided behavior for free with no
+  call-site change. The one call site that bypasses `explodeTier`
+  (hierarchy3d.js's wrap-depth U-board/product Y split, which uses
+  `axisOffsets` directly since a U-board/product pair is a two-value rank
+  on a synthetic centre rather than a real placement list) was updated to
+  pass `oneSidedUp: true` explicitly — found by grepping every direct
+  `axisOffsets`/`shellOffset` caller rather than assuming `explodeTier` was
+  the only entry point.
+  **The shell does not move on Y at all** (`shellOffset` returns `0`
+  unconditionally when `oneSidedUp`) — it stays at its solved position
+  while contents rise out of it, rather than stepping downward to chase
+  them the way the X/Z shell steps outward from its outermost content rank.
+  **The proof had to be RE-DERIVED, not reused**, per the task's own
+  explicit warning that `EXPLODE_GAP_K = 1.5`'s `K > 1` guarantee (the
+  shell clears the outermost content rank) rests on the X/Z geometry — an
+  outermost rank at `±(n-1)/2` from a shell CENTRE that itself steps
+  outward — which a one-sided Y explode with a FIXED shell does not share.
+  Re-derived from scratch (full derivation lives in `shellOffset`'s own doc
+  comment): with the shell fixed, "does the topmost lifted content clear
+  the shell's own open rim" reduces to `K·r·contentUnit > shellDim −
+  contentUnit`, which — UNLIKE the X/Z case — is not bounded by "one
+  content unit fits inside the shell" alone for a fixed K (shellDim can
+  exceed contentUnit by an arbitrary ratio in a tall stack). It IS bounded
+  by "content fills the shell along this axis" — true for every CLOSED
+  style in this app, since the outer H is solved FROM the stacked content
+  (`shellDim = (r+1)·contentUnit` at the tightest, zero-slack case) —
+  substituting that in reduces the inequality to exactly `K > 1`, the SAME
+  threshold X/Z needs, reached by a different argument. `EXPLODE_GAP_K`
+  stays 1.5 for both axes: a finding, confirmed by derivation, not an
+  assumption carried over because it was already there. **The one honest,
+  disclosed gap**: an `openTop` level (a tray, or any style with
+  `defaultOpenTop`) sizes H independently of stacked content — an
+  established, pre-existing simplification in this codebase — so its
+  shellDim is not bounded by `(r+1)·contentUnit`, and enough headroom slack
+  could leave the topmost content short of the rim at factor 1. Stated in
+  the header rather than silently promised away.
+  **Axis default**: every explodable level's `explodeAxis` now defaults to
+  `'y'` (was `'all'` for carton/case, already `'y'` for pallet/wrap) —
+  loading is vertical at every level in this chain, so that is the reading
+  that matches how the pack was actually built. `'all'` stays selectable in
+  the `<select>`, just no longer the first thing shown.
+  **No second writer, confirmed by reading, not assumed**: the "Exploded
+  sheet" export (`app.js`'s `explodedSheet()`) reuses `applyHierarchy()`
+  through its own `setExplode()` helper, which sets the SAME module-level
+  `explodeOn`/`explodeFactor` state the live 3D toggle uses — there is no
+  second, independently-maintained copy of the spread convention to fall
+  out of sync. Pinned as a source-read assertion (the function body
+  contains none of `axisOffsets`/`rankOffsets`/`rankOffsetsUp`/
+  `explodeTier` itself — it has no rank logic of its own to disagree with
+  the module's).
+  **`test/explode.test.html` had never actually been running its logic
+  in this sandbox, and the fix was one line.** Prior sessions' documented
+  "sandbox timeout" for this file was itself a misdiagnosis: the file wrote
+  its results to a `#out` DOM node but never set `window.__tests = {...}`,
+  the global this repo's Playwright harness (`runone.mjs`) polls for to
+  detect completion — a file that never sets it times out regardless of
+  whether its own logic runs correctly, and explode.js has zero DOM/THREE
+  dependency, so there was never a genuine hang to have. Confirmed via
+  `git stash` that the identical timeout reproduces on the unmodified
+  baseline, then found the missing assignment and added it; the file now
+  reports real pass/fail immediately. Worth re-checking other files
+  carrying an inherited "sandbox timeout" note against this same root
+  cause before trusting that label again.
+  **Mutation-tested, four separate mutations against the real source, each
+  restored and diffed byte-identical afterward**: (1) `explodeTier`'s own
+  `oneSidedUp = ax === 'y'` forced to `false` — caught only after adding a
+  dedicated `explodeTier`-level Y pin, since every other Y pin called
+  `axisOffsets`/`shellOffset` directly with an explicit `true` and so never
+  exercised `explodeTier`'s own axis-detection branch; the "axis 'all'"
+  pin caught it too, incidentally. (2) `shellOffset`'s `if(oneSidedUp)
+  return 0` removed — caught immediately. (3) the hierarchy3d.js U-board
+  call site reverted to omit the 4th argument — caught immediately by its
+  dedicated source-read pin. (4) `app.js`'s `explodeAxis` default reverted
+  to `{carton:'all', case:'all', ...}` — caught immediately by the
+  axis-default source pin. A pre-existing pin ("axis 'all' separates on
+  three axes... every instance moves on every axis") needed correcting,
+  not just re-passing: with the one-sided Y convention the LOWER of two
+  test instances correctly gets offset 0 (it's the anchor) — a deliberate
+  behavior change, not a regression, so the assertion was split into an
+  x/z `every(...)` check (unchanged) and an explicit anchor/lift check on
+  y. `render/explode.js` is render-time only, never imported from
+  `src/core/` (confirmed by grep) — X/Z golden bit-identity holds by
+  construction, since golden.json's fixtures never pass through this
+  module at all. Full regression run separately: `nestingdet`,
+  `wraporientcase`, `shelforient`, `layerplan`, `patterntable`,
+  `chainstrip`, `containment`, `project`, `saveload`, `trailer`, `stack`
+  all green (35/35 on `saveload` — the four `cornerPost` failures a much
+  earlier entry in this file called pre-existing were themselves already
+  fixed by the top-and-bottom-caps task; nothing here needed to re-fix
+  them).

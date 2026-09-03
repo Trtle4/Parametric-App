@@ -1210,6 +1210,11 @@ function buildWrapOpened(bundle, artInfo, solid, explode){
   // own vertical centres — never a bespoke gap formula — so it is bit-
   // identical in spirit to every other rank split in this app: factor 0 is
   // identity, and a single value (no U-board) collapses to one rank, offset 0.
+  // This is a Y-axis split by construction (the two are stacked, never side
+  // by side), so it takes explode.js's own `oneSidedUp` convention: the
+  // U-board (the lower of the two) never moves, and the product lifts UP off
+  // it — never the centred spread that used to send it down through the
+  // U-board instead.
   let uboardDy = 0, productDy = 0;
   if(bundle.uboard && explode && explode.level === 'wrap' && explode.factor &&
      (explode.axis === 'y' || explode.axis === 'all')){
@@ -1218,7 +1223,7 @@ function buildWrapOpened(bundle, artInfo, solid, explode){
     const uboardCenterY = -envelope.H/2 + (t + f)/2;
     const productCenterY = -envelope.H/2 + floorOffset + contentH/2;
     const unit = Math.max(t + f, contentH);
-    [uboardDy, productDy] = axisOffsets([uboardCenterY, productCenterY], unit, explode.factor);
+    [uboardDy, productDy] = axisOffsets([uboardCenterY, productCenterY], unit, explode.factor, true);
   }
   if(bundle.uboard){
     const ubGroup = buildUboard3d(bundle.uboard.geo.inner, bundle.uboard.params).group;

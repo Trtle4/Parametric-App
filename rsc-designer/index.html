@@ -1276,8 +1276,13 @@
       <!-- EXPLODED VIEW: a transform on the placements this depth already
            solved (render/explode.js) — never a re-layout, never a re-solve.
            Carton/case/pallet only; the toggle is hidden at any other depth.
-           Axis default follows the level (all axes for carton/case, vertical
-           only for the pallet) the first time it's turned on per depth. -->
+           Axis defaults to Y (vertical) at every level — loading is
+           vertical throughout this chain, so that is the reading that
+           matches how the pack is actually built. 'All axes' stays
+           selectable, just no longer the first thing shown. -->
+      <!-- Y is one-sided (contents lift OUT of their container, never
+           spread below their solved position); X/Z stay centred. See
+           render/explode.js's own header for the full rationale. -->
       <div class="seg" id="m3explode" style="display:none">
         <button id="m3explodeToggle" title="Pull the contents — and the shell itself — apart along the chosen axis">Explode</button>
         <input type="range" id="m3explodeFactor" min="0" max="100" value="60" step="1" title="Explode amount" disabled>
