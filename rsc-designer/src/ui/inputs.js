@@ -492,7 +492,7 @@ export function mountVertControl(host, idp, level, opts, onInput){
         <option value="p0"${state.facing === 'p0' ? ' selected' : ''} id="${idp}FacingP0"></option>
         <option value="p1"${state.facing === 'p1' ? ' selected' : ''} id="${idp}FacingP1"></option>
       </select></div>
-      <div class="rotinert" id="${idp}RotHint" style="display:none">No effect with a manual grid — the grid already fixes the layout.</div></div>`;
+      <div class="rotinert" id="${idp}RotHint" style="display:none">No effect with a manual grid — set the Orientation field there instead.</div></div>`;
   const boxes = () => VERTICAL_CHOICES.map(c => el(idp + 'Ax' + c.axis)).filter(Boolean);
   const checkedAxes = () => boxes().filter(b => b.checked && !b.disabled).map(b => b.value);
   const relabel = () => {
@@ -542,32 +542,92 @@ export function refreshVertControl(idp, level){
 
 /** Wall/between/headspace, bound to `clearance` (mutated in place). Skips
  *  headspace when the clearance shape doesn't carry it (tertiary's is
- *  wall/between only — cases don't get a headspace allowance). */
+ *  wall/between only — cases don't get a headspace allowance).
+ *
+ * Clearance wall is `clearance.clearanceWall = {mode:'uniform'|'perAxis', L, W}`
+ * — the mode plus BOTH values, never two numbers plus a separate "same"
+ * flag that could disagree with them. `uniform` reads L for both axes (W
+ * is not consulted); `perAxis` reads each axis's own value. An existing
+ * project (every one before this control existed) carries only the flat
+ * legacy `clearance.wall` scalar — migrated in place, once, the first time
+ * this control mounts: `clearanceWall: {mode:'uniform', L: wall, W: wall}`,
+ * a real stored object from then on, matching containment.js's own
+ * normClearance fallback exactly (so a project saved before this migration
+ * runs is bit-identical either way).
+ *
+ * "Clearance between" (child-to-child, in-plane) has the SAME axis
+ * ambiguity — packs might want a different gap along X than along Y — but
+ * it was not asked for here and is deliberately left alone: still one
+ * value, both axes. Flagged, not silently extended or silently left
+ * inconsistent — see the task report. */
 export function mountClearanceControl(host, idp, clearance, onInput){
   const L = mm => fmtInputValue(fromMM(mm, unit), unit);
   const hasHead = 'top' in clearance;
-  host.innerHTML =
-    `<div class="field"><label>Clearance wall <span class="hint">each side</span></label>
-      <div class="inp"><input id="${idp}Wall" type="number" step="0.1" value="${L(clearance.wall)}"><span class="unit">${unit}</span></div></div>
-    <div class="field"><label>Clearance between</label>
-      <div class="inp"><input id="${idp}Between" type="number" step="0.1" value="${L(clearance.between)}"><span class="unit">${unit}</span></div></div>` +
-    (hasHead ? `<div class="field"><label>Headspace <span class="hint">top, design input</span></label>
-      <div class="inp"><input id="${idp}Head" type="number" step="0.5" value="${L(clearance.top)}"><span class="unit">${unit}</span></div></div>` : '');
-  const mm = id => toMM(+el(id).value || 0, unit);
-  el(idp + 'Wall').addEventListener('input', () => { clearance.wall = mm(idp + 'Wall'); onInput(); });
-  el(idp + 'Between').addEventListener('input', () => { clearance.between = mm(idp + 'Between'); onInput(); });
-  if(hasHead) el(idp + 'Head').addEventListener('input', () => { clearance.top = mm(idp + 'Head'); onInput(); });
+  if(!clearance.clearanceWall)
+    clearance.clearanceWall = {mode: 'uniform', L: clearance.wall || 0, W: clearance.wall || 0};
+
+  const render = () => {
+    const cw = clearance.clearanceWall;
+    const perAxis = cw.mode === 'perAxis';
+    host.innerHTML =
+      `<div class="field"><label>Clearance wall <span class="hint">${perAxis ? 'independent length / width' : 'each side, both axes'}</span></label>
+        <div class="inp"><select id="${idp}WallMode">
+          <option value="uniform"${perAxis ? '' : ' selected'}>Same both axes</option>
+          <option value="perAxis"${perAxis ? ' selected' : ''}>Independent L / W</option>
+        </select></div></div>` +
+      (perAxis
+        ? `<div class="field"><label>Clearance wall — L</label>
+            <div class="inp"><input id="${idp}WallL" type="number" step="0.1" value="${L(cw.L)}"><span class="unit">${unit}</span></div></div>
+          <div class="field"><label>Clearance wall — W</label>
+            <div class="inp"><input id="${idp}WallW" type="number" step="0.1" value="${L(cw.W)}"><span class="unit">${unit}</span></div></div>`
+        : `<div class="field"><label>Clearance wall <span class="hint">each side</span></label>
+            <div class="inp"><input id="${idp}WallL" type="number" step="0.1" value="${L(cw.L)}"><span class="unit">${unit}</span></div></div>`) +
+      `<div class="field"><label>Clearance between</label>
+        <div class="inp"><input id="${idp}Between" type="number" step="0.1" value="${L(clearance.between)}"><span class="unit">${unit}</span></div></div>` +
+      (hasHead ? `<div class="field"><label>Headspace <span class="hint">top, design input</span></label>
+        <div class="inp"><input id="${idp}Head" type="number" step="0.5" value="${L(clearance.top)}"><span class="unit">${unit}</span></div></div>` : '');
+    const mm = id => toMM(+el(id).value || 0, unit);
+    el(idp + 'WallMode').addEventListener('change', () => {
+      const nowPerAxis = el(idp + 'WallMode').value === 'perAxis';
+      // switching TO perAxis seeds W from L's CURRENT value, every time —
+      // never just once — so flipping back and forth can't leave a stale W
+      // that makes the effective width clearance jump the instant perAxis
+      // is chosen. Switching back to uniform keeps L untouched; W simply
+      // stops being read (see normClearance) and is left as-is, not erased,
+      // so toggling perAxis on again doesn't lose what was there before.
+      if(nowPerAxis) cw.W = cw.L;
+      cw.mode = nowPerAxis ? 'perAxis' : 'uniform';
+      render();
+      onInput();
+    });
+    el(idp + 'WallL').addEventListener('input', () => { cw.L = mm(idp + 'WallL'); onInput(); });
+    if(perAxis) el(idp + 'WallW').addEventListener('input', () => { cw.W = mm(idp + 'WallW'); onInput(); });
+    el(idp + 'Between').addEventListener('input', () => { clearance.between = mm(idp + 'Between'); onInput(); });
+    if(hasHead) el(idp + 'Head').addEventListener('input', () => { clearance.top = mm(idp + 'Head'); onInput(); });
+  };
+  render();
 }
 
 /** Resync an already-mounted clearance control's displayed values from
- *  `clearance` in place — no-op if this idp isn't currently mounted. */
+ *  `clearance` in place — no-op if this idp isn't currently mounted. Never
+ *  rebuilds the DOM (mode/structural changes only ever arrive via a fresh
+ *  mountClearanceControl call — see setActiveLevel on file load — so this
+ *  only needs to sync values into whichever fields are already there,
+ *  exactly the split this file already draws between mount and refresh:
+ *  a full rebuild here would steal focus mid-keystroke, since every input
+ *  on this same control round-trips through onInput → recompute → this. */
 export function refreshClearanceControl(idp, clearance){
-  const wallEl = el(idp + 'Wall');
-  if(!wallEl) return;
+  const modeEl = el(idp + 'WallMode');
+  if(!modeEl) return;
   const L = mm => fmtInputValue(fromMM(mm, unit), unit);
-  if(!isFocused(wallEl)) wallEl.value = L(clearance.wall);
+  const cw = clearance.clearanceWall || {mode: 'uniform', L: clearance.wall || 0, W: clearance.wall || 0};
+  if(!isFocused(modeEl)) modeEl.value = cw.mode === 'perAxis' ? 'perAxis' : 'uniform';
+  const wallLEl = el(idp + 'WallL');
+  if(wallLEl && !isFocused(wallLEl)) wallLEl.value = L(cw.L);
+  const wallWEl = el(idp + 'WallW');
+  if(wallWEl && !isFocused(wallWEl)) wallWEl.value = L(cw.W);
   const betweenEl = el(idp + 'Between');
-  if(!isFocused(betweenEl)) betweenEl.value = L(clearance.between);
+  if(betweenEl && !isFocused(betweenEl)) betweenEl.value = L(clearance.between);
   const headEl = el(idp + 'Head');
   if(headEl && !isFocused(headEl)) headEl.value = L(clearance.top);
 }
@@ -582,15 +642,37 @@ function clampCount(raw, fallback){
   return Number.isFinite(n) && n >= 1 ? n : fallback;
 }
 
+// A manual grid names COUNTS along each axis; it says nothing about which
+// way the child is turned to fill them — that's a second, independent
+// degree of freedom (link.arrangement.orient, one of the 6 Orientation
+// strings). Labelled by naming which product axis lands on which cavity
+// axis, matching the property's own doc in project.js's Link typedef.
+const ORIENT_AXIS_NAME = {L: 'length', W: 'width', H: 'height'};
+const orientChoiceLabel = o => `${o} — ${ORIENT_AXIS_NAME[o[0]]}→X · ${ORIENT_AXIS_NAME[o[1]]}→Y · ${ORIENT_AXIS_NAME[o[2]]}→up`;
+
 /** Child count + arrangement for `link` (mutated in place) — "how many of
  *  my child fit inside me". One plain number input for the count (no
  *  preset dropdown, no separate "custom" field — that two-control split let
  *  an explicit arrangement silently ignore whatever the count field showed);
  *  an explicit arrangement shows its OWN grid, never a placeholder default,
- *  so re-rendering from a loaded project is faithful to what was loaded. */
-export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, childNoun, onInput, rangeMode = false){
+ *  so re-rendering from a loaded project is faithful to what was loaded.
+ *
+ * `childLevel` (optional — the level whose allowedOrientations the child is
+ * drawn from, e.g. project.primary for the carton's own link) is what lets
+ * a manual arrangement carry its own Orientation field, a peer of the Nx/Ny/
+ * Nz grid rather than a side-effect of paging the candidate navigator. Once
+ * explicit mode is entered, `link.arrangement.orient` is ALWAYS populated
+ * (seeded from childLevel.allowedOrientations[0] the moment it's missing or
+ * no longer a member — mirrors mountClearanceControl's migrate-on-mount
+ * idiom) so a manual arrangement is fully, unambiguously determined and the
+ * Facing control genuinely has no effect on it, not just usually. */
+export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, childNoun, onInput, rangeMode = false, childLevel = null){
   function render(){
     const explicit = link.arrangement !== 'auto';
+    const orientChoices = (childLevel && childLevel.allowedOrientations) || [];
+    if(explicit && orientChoices.length &&
+       (!link.arrangement.orient || !orientChoices.includes(link.arrangement.orient)))
+      link.arrangement.orient = orientChoices[0];
     const nx = explicit ? link.arrangement.nx : defNx;
     const ny = explicit ? link.arrangement.ny : defNy;
     const nz = explicit ? link.arrangement.nz : defNz;
@@ -611,10 +693,13 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
       countField +
       `<div class="field"><label>Arrangement ${badge}</label>
         <div class="inp"><select id="${idp}Arr"><option value="auto"${explicit ? '' : ' selected'}>auto</option><option value="explicit"${explicit ? ' selected' : ''}>nx &times; ny &times; nz</option></select></div></div>` +
-      (explicit ? `<div class="field"><label>Grid</label>
+      (explicit ? `<div class="field"><label>Grid <span class="hint">as entered — nx along X, ny along Y</span></label>
         <div class="inp"><input id="${idp}Nx" type="number" min="1" value="${nx}" style="width:30%;padding-right:10px"> &times;
         <input id="${idp}Ny" type="number" min="1" value="${ny}" style="width:30%;padding-right:10px"> &times;
         <input id="${idp}Nz" type="number" min="1" value="${nz}" style="width:30%;padding-right:10px"></div></div>` : '') +
+      (explicit && orientChoices.length ? `<div class="field"><label>Orientation <span class="hint">which product axis runs along X — fixes the layout completely, exactly one result</span></label>
+        <div class="inp"><select id="${idp}Orient">${orientChoices.map(o =>
+          `<option value="${o}"${o === link.arrangement.orient ? ' selected' : ''}>${orientChoiceLabel(o)}</option>`).join('')}</select></div></div>` : '') +
       `<div id="${idp}Warn"></div>`;
 
     // typing a count while an explicit grid is active would REPLACE that grid
@@ -664,7 +749,11 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
       render(); onInput();
     });
     if(explicit) ['Nx', 'Ny', 'Nz'].forEach(k => el(idp + k).addEventListener('input', () => {
+      // spread the EXISTING arrangement first so `orient` (and anything else
+      // it carries) survives a grid edit — a fresh {nx,ny,nz} object here
+      // used to drop it silently on every keystroke.
       link.arrangement = {
+        ...link.arrangement,
         nx: clampCount(el(idp + 'Nx').value, link.arrangement.nx),
         ny: clampCount(el(idp + 'Ny').value, link.arrangement.ny),
         nz: clampCount(el(idp + 'Nz').value, link.arrangement.nz)
@@ -672,6 +761,10 @@ export function mountCountArrangement(host, idp, link, defNx, defNy, defNz, chil
       link.count = link.arrangement.nx*link.arrangement.ny*link.arrangement.nz;
       onInput();
     }));
+    if(explicit && orientChoices.length) el(idp + 'Orient').addEventListener('change', () => {
+      link.arrangement.orient = el(idp + 'Orient').value;
+      onInput();
+    });
   }
   render();
 }
@@ -696,6 +789,8 @@ export function refreshCountArrangement(idp, link){
       if(!isFocused(nyEl)) nyEl.value = link.arrangement.ny;
       if(!isFocused(nzEl)) nzEl.value = link.arrangement.nz;
     }
+    const orientEl = el(idp + 'Orient');
+    if(orientEl && !isFocused(orientEl) && link.arrangement.orient) orientEl.value = link.arrangement.orient;
   }
 }
 

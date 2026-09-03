@@ -24,13 +24,17 @@
  * @param {number} o.parentL  parent extent along x
  * @param {number} o.parentW  parent extent along y
  * @param {'optimal'|'column'|'interlock'} o.pattern
- * @param {number} [o.wall=0]     child-to-parent clearance
+ * @param {number} [o.wall=0]     child-to-parent clearance, both axes (legacy shorthand)
+ * @param {number} [o.wallL=wall]  child-to-parent clearance along the PARENT's own L axis
+ * @param {number} [o.wallW=wall]  child-to-parent clearance along the PARENT's own W axis —
+ *        independent of which way a child rotates: L/W here name the parent's
+ *        fixed frame, never the child's current orientation.
  * @param {number} [o.between=0]  child-to-child clearance
  * @param {boolean} [o.allowRotate=true]  may children rotate 90° in plane?
  * @returns {{positions: {x:number,y:number,rot:boolean}[], perLayer: number, label: string}}
  */
-export function packLayer({childL, childW, parentL, parentW, pattern, wall = 0, between = 0, allowRotate = true}){
-  const PL = parentL - 2*wall + between, PW = parentW - 2*wall + between; // effective parent
+export function packLayer({childL, childW, parentL, parentW, pattern, wall = 0, wallL = wall, wallW = wall, between = 0, allowRotate = true}){
+  const PL = parentL - 2*wallL + between, PW = parentW - 2*wallW + between; // effective parent
   const CL = childL + between,           CW = childW + between;           // cell sizes
   const square = CL === CW;
 

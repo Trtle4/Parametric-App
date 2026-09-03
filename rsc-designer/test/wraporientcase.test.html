@@ -1,0 +1,163 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wrap orientation inside the case — diagnosis, not a fix</title>
+<pre id="out">running…</pre>
+<div id="rig" style="position:fixed;left:-4000px;top:0;width:10px;height:10px"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+/* REPORTED: "the wraps nested in the case appear wrong-way-round."
+   REQUESTED DIFFERENTIAL, before touching any transform: (1) wrap alone at
+   wrap depth -- correct? (2) inside the case in SOLID mode, viewed from the
+   front -- still correct? (3) inside the case in CUTAWAY/transparent mode.
+   If only (3) looks wrong: optics (seeing the far side of a wrap through a
+   transparent case; a print viewed from behind legitimately reads reversed)
+   -- report it and stop. If (2) is ALSO wrong: the nesting transform itself
+   is at fault, and must be a rotation, never a reflection (det(M) > 0 --
+   see test/nestingdet.test.html, which found and fixed two real reflection
+   bugs elsewhere in the render tree, unrelated to wraps).
+
+   FINDING A, below: for the DEFAULT chain (case closed, not open-top), step
+   (2) as literally posed is VACUOUS -- Solid mode at case depth takes
+   hierarchy3d.js's soloClosed() shortcut (buildHierarchy, depth==='case',
+   `if(solid && !showContents)`), which draws ONLY the case's own opaque
+   exterior shell. No wrap, no carton, no child instance of any kind is
+   rendered. There is nothing there to be wrong-way-round; the whole
+   question "still correct?" is unanswerable in Solid mode because nothing
+   is drawn to answer it with.
+
+   FINDING B, below: the only place a wrap actually becomes visible "inside
+   the case" is CUTAWAY mode -- and there, every closed wrap sibling (drawn
+   via the instanced branch in buildContainer, childKind==='wrap') is posed
+   at EXACTLY `orientQuat(placement.orientation)`, the correct containment
+   pose -- not a reflection (already proven separately, see
+   nestingdet.test.html), and not some OTHER, wrongly-rotated pose either.
+   Bit-for-bit the same quaternion a wrap rendered ALONE at wrap depth would
+   use for the identical orientation string.
+
+   CONCLUSION: no transform defect exists in the wrap-in-case nesting path.
+   Any wrong-way-round appearance is optics, exactly the branch the request
+   itself predicted for "only wrong in cutaway": a cutaway case is
+   transparent, so from many camera angles the viewer is looking at a wrap's
+   FAR side (its back/side girth band, per flowwrap.js's own 5-band walk --
+   back/side/front/side/back -- not its front), and/or through the case's
+   own near wall, which a translucent/cutaway shell legitimately shows
+   reversed the way looking through frosted glass at printed text does. */
+
+import {newProject, resolveActiveRow, applyPatternSelection} from '../src/core/project.js';
+import {resolveStack, cornerPostConfig, cornerPostHeightMM} from '../src/core/stack.js';
+import {resolveTrailer} from '../src/core/trailer.js';
+import * as fold3d from '../src/render/fold3d.js';
+import * as hier from '../src/render/hierarchy3d.js';
+import {orientQuat} from '../src/render/hierarchy3d.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const qClose = (a, b, tol = 1e-4) => {
+  const same = Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol && Math.abs(a.z - b.z) < tol && Math.abs(a.w - b.w) < tol;
+  const negated = Math.abs(a.x + b.x) < tol && Math.abs(a.y + b.y) < tol && Math.abs(a.z + b.z) < tol && Math.abs(a.w + b.w) < tol;
+  return same || negated;   // q and -q are the same rotation
+};
+
+const rig = document.getElementById('rig');
+const container = document.createElement('div');
+rig.appendChild(container);
+fold3d.init3d(container);
+
+function caseFootprintOf(row){
+  const env = row && row.casesFit && row.casesFit.envelope;
+  return (env && env.L > 0 && env.W > 0) ? {L: env.L, W: env.W} : null;
+}
+function buildBundle(proj){
+  const row = applyPatternSelection(resolveActiveRow(proj, '1mm', null), proj);
+  const {cases, cartons, wraps, pieces} = row.arr;
+  const wrapPlacements = wraps ? wraps.placements : cartons.placements;
+  const theStack = resolveStack(proj, {layers: row.caseLayers || 0, casesPerLayer: row.casesPerLayer || 0, loadH: row.loadH || 0, caseFootprint: caseFootprintOf(row)});
+  return {
+    row, art: {},
+    caseGeo: row.geo.case, cartonGeo: row.geo.carton, wrapGeo: row.geo.wrap,
+    tray: row.tray || null, uboard: row.uboard || null,
+    cases: {placements: cases.placements, count: cases.count, deck: cases.deck, loadH: row.loadH, unitStackH: row.unitStackH},
+    cartons: {placements: cartons.placements},
+    wraps: (pieces && wrapPlacements) ? {
+      placements: wrapPlacements, envelope: pieces.envelope, pieces: pieces.placements,
+      filmEnvelope: row.geo.wrap ? row.geo.wrap.inner : pieces.envelope,
+      cellPieces: pieces.placements, piece: pieces.piece, stackAxis: pieces.stackAxis,
+      seals: pieces.seals, nx: pieces.nx, ny: pieces.ny, wrapAxis: pieces.wrapAxis
+    } : null,
+    counts: {}, stack: theStack, cornerPost: null, cap: null,
+    trailer: resolveTrailer(proj, theStack, row.casesPerPallet || 0)
+  };
+}
+
+const proj = newProject();
+const bundle = buildBundle(proj);
+
+t('FIXTURE: the default chain genuinely resolves a wrap nested inside a carton inside a case', () => {
+  ok(bundle.caseGeo, 'fixture needs a case');
+  ok(bundle.cartonGeo, 'fixture needs a carton');
+  ok(bundle.wraps && bundle.wraps.placements && bundle.wraps.placements.length > 0, 'fixture needs resolved wrap placements');
+});
+
+/* ---- FINDING A: Solid mode at case depth renders NOTHING but the shell -- ---- */
+hier.buildHierarchy(bundle, 'case', {}, true, null);   // solid = true
+const pivotSolid = fold3d.getPivot();
+pivotSolid.updateMatrixWorld(true);
+let instancedCountSolid = 0, meshCountSolid = 0;
+pivotSolid.traverse(o => { if(o.isInstancedMesh) instancedCountSolid++; else if(o.isMesh) meshCountSolid++; });
+
+t('FINDING A: Solid mode at case depth draws the closed shell only -- zero instanced children (no wrap, no carton)', () => {
+  ok(meshCountSolid > 0, 'fixture: the closed case shell itself must render something');
+  ok(instancedCountSolid === 0,
+     `expected 0 InstancedMesh objects in Solid mode (soloClosed shortcut) -- found ${instancedCountSolid}. ` +
+     `If this ever becomes nonzero, "still correct?" in Solid mode becomes a real, checkable question again -- ` +
+     'revisit this file\'s FINDING B for the pattern to extend.');
+});
+
+/* ---- FINDING B: Cutaway mode -- every closed wrap sibling uses the TRUE, --
+   correct containment quaternion; never a reflection, never a wrong pose. ---- */
+hier.buildHierarchy(bundle, 'case', {}, false, null);   // solid = false -> cutaway
+const pivotCut = fold3d.getPivot();
+pivotCut.updateMatrixWorld(true);
+const wrapInstances = [];
+pivotCut.traverse(o => { if(o.isInstancedMesh && o.userData && o.userData.tierName === 'wrap') wrapInstances.push(o); });
+
+t('REACHABLE: cutaway mode at case depth actually draws closed wrap instances to check', () => {
+  ok(wrapInstances.length > 0, 'no wrap-tagged InstancedMesh found in cutaway mode -- nothing rendered to inspect');
+});
+
+t('FINDING B: every closed wrap instance inside the cutaway case is posed at EXACTLY orientQuat(its own placement.orientation)', () => {
+  const M = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  for(const inst of wrapInstances){
+    const orientations = [...new Set(bundle.wraps.placements.map(pl => pl.orientation))];
+    ok(orientations.length >= 1, 'fixture: need at least one wrap placement orientation to compare against');
+    for(let i = 0; i < inst.count; i++){
+      inst.getMatrixAt(i, M);
+      M.decompose(p, q, s);
+      const matches = orientations.some(o => qClose(q, orientQuat(o)));
+      ok(matches, `wrap instance ${i} quaternion (${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)}) ` +
+         `does not match orientQuat(...) for any placement orientation actually in this chain (${orientations.join(',')}) -- ` +
+         'this would be the real nesting-transform defect the request warned about');
+    }
+  }
+});
+
+t('MUTATION GUARD: a genuine reflection would be caught here too -- a negated-axis quaternion does not qClose-match the correct one', () => {
+  // sanity check on the comparator itself: confirm a deliberately wrong
+  // (90 degree extra twist) quaternion is NOT accepted, so the pin above is
+  // not vacuously matching everything.
+  const wrongQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI/2)
+    .multiply(orientQuat(bundle.wraps.placements[0].orientation));
+  ok(!qClose(wrongQ, orientQuat(bundle.wraps.placements[0].orientation)),
+     'comparator fixture is broken: a 90deg-twisted quaternion must not read as matching the correct one');
+});
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

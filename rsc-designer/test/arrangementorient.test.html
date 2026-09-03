@@ -1,0 +1,257 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>manual arrangement — orientation is part of the discriminant</title>
+<pre id="out">running…</pre>
+<style>#rig{position:fixed;left:-4000px;top:0}</style>
+<div id="rig"></div>
+<script type="module">
+/* Part 3: `link.arrangement` was `'auto' | {nx,ny,nz}` -- counts only. Pack
+   orientation (which product axis lands on which cavity axis) is a SECOND,
+   independent degree of freedom that kept floating even with a manual grid
+   pinned, because parentCandidates' manual-grid callers never restricted it
+   to one orientation -- one candidate PER matching orientation in the
+   child's allowedOrientations. A manual "4x3x1" with 2 allowed orientations
+   produced 2 candidates; the candidate navigator (which should not exist in
+   manual mode at all) was the only way to steer between them.
+
+   FIX: `arrangement: 'auto' | {nx,ny,nz,orient}`. `orient` pins the ONE
+   orientation parentCandidates enumerates (project.js candidateCases AND
+   solveSecondaryInner, so this applies to a case's own count-of-cartons
+   link AND a carton's own count-of-primary-units link -- cartons and cases
+   both). Absent `orient` (every arrangement stored before this field
+   existed) defaults to allowedOrientations[0] -- same one-candidate
+   guarantee. Auto mode is untouched: this file's own auto-mode pin, plus
+   golden.json's own manual-grid chains re-verified directly against
+   candidateCases (both now single-row, values bit-identical), confirm it. */
+
+import {newProject, candidateCases} from '../src/core/project.js';
+import {parentCandidates} from '../src/core/containment.js';
+
+const results = [];
+function t(name, fn){
+  if(fn.constructor.name === 'AsyncFunction') throw new Error(`async pin body: ${name}`);
+  try{ fn(); results.push(`PASS  ${name}`); }
+  catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); }
+}
+const ok = (c, m) => { if(!c) throw new Error(m); };
+const eq = (a, e, m = '') => { if(a !== e) throw new Error(`${m} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); };
+
+// fetched BEFORE any t() call (per this file's own async-pin rule, and the
+// established idiom: awaits live outside pins, pins stay synchronous)
+const inputsSrc = await (await fetch('../src/ui/inputs.js')).text();
+
+const CHILD = {outer: {L: 100, W: 60, H: 40}, allowedOrientations: ['LWH', 'WLH']};
+
+/* ============================================================
+   DETERMINISM: {3,4,1,orient} -> exactly one layout, count 1.
+   MUTATION: drop the orientation pin (simulating the pre-fix
+   parentCandidates call) and prove the count becomes 2.
+   ============================================================ */
+
+t('DETERMINISM: {nx:3,ny:4,nz:1,orient} yields EXACTLY one candidate', () => {
+  const cands = parentCandidates(CHILD, 12, {wall: 0, between: 0}, {layers: 1, orientations: ['LWH']})
+    .filter(c => c.nx === 3 && c.ny === 4);
+  eq(cands.length, 1, 'candidate count:');
+  eq(cands[0].o, 'LWH', 'the one candidate uses the pinned orientation:');
+});
+
+t('MUTATION: the SAME grid WITHOUT the orientation pin (pre-fix parentCandidates call) yields TWO candidates', () => {
+  // this is the pre-fix call shape verbatim -- opts.orientations never set,
+  // so parentCandidates enumerates the child's WHOLE allowedOrientations
+  const cands = parentCandidates(CHILD, 12, {wall: 0, between: 0}, {layers: 1})
+    .filter(c => c.nx === 3 && c.ny === 4);
+  eq(cands.length, 2, 'un-pinned candidate count (the reported defect):');
+  const os = cands.map(c => c.o).sort();
+  ok(JSON.stringify(os) === JSON.stringify(['LWH', 'WLH']), `both allowed orientations independently match this nx/ny grid: got ${JSON.stringify(os)}`);
+});
+
+/* ============================================================
+   CARTONS AND CASES BOTH -- candidateCases, driven at both tiers
+   candidateCases can be the outermost for (outerKey secondary vs tertiary).
+   ============================================================ */
+
+function projFor({caseEnabled}){
+  const p = newProject();
+  p.primary = null;                                   // legacy carton-driven, matches golden's own manual-grid fixtures
+  p.secondary.params = {...p.secondary.params, L: 100, W: 60, H: 150};
+  p.secondary.allowedOrientations = ['LWH', 'WLH'];
+  p.secondary.clearance = {wall: 0, between: 0};
+  if(!caseEnabled) p.tertiary.enabled = false;
+  p.links[0].count = 12;
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1};       // no orient -- exercises the default
+  return p;
+}
+
+t('CASE (outerKey=tertiary): manual grid with NO explicit orient still yields exactly ONE candidate (default pin)', () => {
+  const p = projFor({caseEnabled: true});
+  const rows = candidateCases(p, '1mm');
+  eq(rows.length, 1, 'row count:');
+  eq(rows[0].orientation, 'LWH', 'defaults to allowedOrientations[0]:');
+});
+
+t('CASE: setting arrangement.orient explicitly to the SECOND allowed orientation changes the resolved geometry', () => {
+  const p = projFor({caseEnabled: true});
+  const before = candidateCases(p, '1mm')[0];
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1, orient: 'WLH'};
+  const after = candidateCases(p, '1mm')[0];
+  eq(after.orientation, 'WLH', 'orient is respected:');
+  ok(before.cavity.L !== after.cavity.L || before.cavity.W !== after.cavity.W,
+     'a non-square carton must resolve a DIFFERENT case cavity under the other orientation -- else this pin cannot tell pinned from unpinned');
+});
+
+t('CARTON (outerKey=secondary, case disabled): the SAME fix applies -- manual grid, one candidate, orient pinned', () => {
+  const p = projFor({caseEnabled: false});
+  const rows = candidateCases(p, '1mm');
+  eq(rows.length, 1, 'row count:');
+  p.links[0].arrangement = {nx: 4, ny: 3, nz: 1, orient: 'WLH'};
+  const rows2 = candidateCases(p, '1mm');
+  eq(rows2.length, 1, 'still one candidate after pinning the other orientation:');
+  eq(rows2[0].orientation, 'WLH', 'orient respected at the carton tier too:');
+});
+
+/* ============================================================
+   MANUAL AXES RESPECTED VERBATIM: {4,3,1} places 4 along X (nx), 3 along Y
+   (ny) -- as entered, no normalisation. MUTATION: apply the auto-mode
+   normaliser (an L>=W-style swap) to a manual arrangement and prove it
+   fails against the verbatim expectation.
+   ============================================================ */
+
+t('VERBATIM: nx=4 places FOUR columns along cavity L (X); ny=3 places THREE along cavity W (Y) -- read off the real placements, not just the numbers', () => {
+  const cands = parentCandidates(CHILD, 12, {wall: 0, between: 0}, {layers: 1, orientations: ['LWH']})
+    .filter(c => c.nx === 4 && c.ny === 3);
+  ok(cands.length === 1, 'fixture: exactly one 4x3 LWH candidate');
+  const {cavity, l, w} = cands[0];
+  // hand-computed: cavity.L holds 4 columns of width l=100 (nx along L),
+  // cavity.W holds 3 rows of width w=60 (ny along W) -- swapped, this would
+  // be 3 columns of 100 (300) x 4 rows of 60 (240), a DIFFERENT footprint.
+  ok(Math.abs(cavity.L - 4*l) < 1e-9 && Math.abs(cavity.W - 3*w) < 1e-9,
+     `cavity ${JSON.stringify(cavity)} does not match nx=4 along L (${l} each), ny=3 along W (${w} each)`);
+});
+
+t('MUTATION: applying the auto-mode L>=W-style axis swap to a manual (nx,ny) grid produces a DIFFERENT, wrong cavity', () => {
+  // stand-in for "the auto-mode normaliser", run against the SAME fixture
+  // as the verbatim pin above -- proving this pin is capable of failing,
+  // not merely not-obviously-trivial. A real normaliser must never reach a
+  // manual arrangement (see project.js's own Link.arrangement doc); this
+  // reconstructs what would happen if it did.
+  const cands = parentCandidates(CHILD, 12, {wall: 0, between: 0}, {layers: 1, orientations: ['LWH']})
+    .filter(c => c.nx === 4 && c.ny === 3);
+  const {cavity, l, w} = cands[0];
+  const swappedNx = 3, swappedNy = 4;   // "normalized" as if L/W-convention reordering applied
+  const normalizedCavity = {L: swappedNx*l, W: swappedNy*w};
+  ok(!(Math.abs(normalizedCavity.L - cavity.L) < 1e-9 && Math.abs(normalizedCavity.W - cavity.W) < 1e-9),
+     'vacuous fixture: the swapped cavity must differ from the verbatim one for this mutation to mean anything');
+  // the actual assertion a real normalizer-on-manual regression would break:
+  const wouldBeVerbatim = Math.abs(cavity.L - 4*l) < 1e-9 && Math.abs(cavity.W - 3*w) < 1e-9;
+  const wouldBeNormalized = Math.abs(cavity.L - normalizedCavity.L) < 1e-9;
+  ok(wouldBeVerbatim && !wouldBeNormalized,
+     'the REAL resolved cavity must match verbatim nx/ny placement, never the normalized swap');
+});
+
+t('SOURCE CHECK: normalizeLW (the standing L>=W convention) touches only params.L/params.W -- never link.arrangement', () => {
+  // The task's own connection note: "whatever normalises orientation must
+  // not run on an explicit arrangement... it should be MOVED rather than
+  // bypassed with a flag." Research found normalizeLW operates purely on a
+  // level's raw dimension params, wired to the L/W fields' own `change`
+  // listener -- structurally incapable of touching an arrangement object,
+  // since it is never even called with one. Pinned at the SOURCE, the way
+  // typography.test.html reads index.html's own CSS: an allowlist a
+  // reviewer has to argue with, not a behavioural guess. If a future edit
+  // ever threads `link`/`arrangement` into this function, this fails loudly.
+  const m = inputsSrc.match(/function normalizeLW\([^)]*\)\{[\s\S]*?\n\}/);
+  ok(m, 'normalizeLW function body not found -- fixture broken, cannot check its contents');
+  const body = m[0];
+  ok(!/arrangement/i.test(body), `normalizeLW's body mentions "arrangement" -- it must stay scoped to params.L/W only:\n${body}`);
+  ok(/params\.L/.test(body) && /params\.W/.test(body), 'fixture: normalizeLW must still reference params.L/params.W (else this match found the wrong function)');
+});
+
+/* ============================================================
+   AUTO MODE: untouched. Same repertoire/count as before this task, for a
+   fixture with a genuinely multi-orientation child (so it would have been
+   sensitive to an accidental change in how orientations are enumerated).
+   ============================================================ */
+
+t('AUTO MODE: repertoire and ranking are bit-identical -- unaffected by opts.orientations, which auto mode never passes', () => {
+  const p = projFor({caseEnabled: true});
+  p.links[0].arrangement = 'auto';
+  const rows = candidateCases(p, '1mm');
+  ok(rows.length > 1, 'fixture: auto mode must still enumerate multiple candidates');
+  // cross-check against parentCandidates called exactly as candidateCases'
+  // own auto branch calls it (no opts.orientations key at all)
+  const direct = parentCandidates({outer: {L: 100, W: 60, H: 150}, allowedOrientations: ['LWH', 'WLH']}, 12, {wall: 0, between: 0});
+  ok(direct.some(c => c.o === 'WLH') && direct.some(c => c.o === 'LWH'),
+     'auto mode still enumerates BOTH orientations -- the fix never narrows auto mode');
+  ok(rows.some(r => r.orientation === 'WLH') && rows.some(r => r.orientation === 'LWH'),
+     'candidateCases itself still surfaces rows in both orientations under auto:');
+});
+
+/* ============================================================
+   UI REACHABILITY, BOTH BREAKPOINTS: the Orientation control is a peer of
+   the Nx/Ny/Nz grid in the REAL app, at both the desktop and the mobile
+   width this codebase already tests every other level control at
+   (chainstrip.test.html's own WIDE/NARROW). Drives the real index.html in
+   an iframe -- a pin that calls mountCountArrangement directly proves the
+   builder works and says nothing about whether the app wires it (this
+   file's own established rule from prior sessions).
+   ============================================================ */
+
+const WIDE = 1400, NARROW = 430;
+const settle = (ms = 130) => new Promise(r => setTimeout(r, ms));
+
+function openApp(width){
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:900px;border:0`;
+    f.src = '../index.html';
+    f.addEventListener('load', () => resolve(f), {once: true});
+    document.getElementById('rig').appendChild(f);
+  });
+}
+
+/** One full survey at a given width: switch to the case level, put the
+ *  carton-in-case arrangement into manual mode with a genuinely
+ *  multi-orientation grid, and read back what the real DOM shows. Returns
+ *  PLAIN DATA so every pin below is a synchronous assertion over an
+ *  already-measured result. */
+async function surveyOrientReachability(width){
+  const f = await openApp(width);
+  await settle(1100);
+  const d = f.contentDocument, q = s => d.querySelector(s);
+  q('.cs-node[data-node="case"]').click();
+  await settle();
+  const R = {width};
+  R.arrSelectPresent = !!q('#pInArr');
+  q('#pInArr').value = 'explicit';
+  q('#pInArr').dispatchEvent(new Event('change', {bubbles: true}));
+  await settle();
+  R.orientSelectPresent = !!q('#pInOrient');
+  R.orientOptionCount = q('#pInOrient') ? q('#pInOrient').querySelectorAll('option').length : 0;
+  R.gridPresent = !!(q('#pInNx') && q('#pInNy') && q('#pInNz'));
+  // the control must be REACHABLE without horizontal scrolling hiding it --
+  // present in the DOM is necessary but not sufficient (this repo's own
+  // "value-correct is not the same as visible" rule)
+  const orientEl = q('#pInOrient');
+  R.orientVisible = orientEl ? orientEl.getClientRects().length > 0 : false;
+  return R;
+}
+
+const wideR = await surveyOrientReachability(WIDE);
+const narrowR = await surveyOrientReachability(NARROW);
+
+for(const R of [wideR, narrowR]){
+  t(`UI @ ${R.width}px: switching to manual arrangement reveals the Orientation select as a PEER of the Nx/Ny/Nz grid`, () => {
+    ok(R.arrSelectPresent, 'Arrangement select must exist');
+    ok(R.gridPresent, 'the Nx/Ny/Nz grid fields must exist once manual is chosen');
+    ok(R.orientSelectPresent, 'the Orientation select must exist once manual is chosen -- a peer input, not a candidate-navigator side effect');
+    ok(R.orientOptionCount >= 1, 'the Orientation select must offer at least one real choice');
+  });
+  t(`UI @ ${R.width}px: the Orientation select is actually VISIBLE, not merely present in the DOM`, () => {
+    ok(R.orientVisible, 'getClientRects() must be non-empty -- present-but-hidden would fail every user who scrolled to look for it');
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent =
+  `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>
