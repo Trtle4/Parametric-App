@@ -1,0 +1,265 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pattern-thumbnail fit tests</title>
+<pre id="out">running…</pre>
+<script type="module">
+/* Explode part 2's companion task: "thumbnails are clipped and mis-scaled".
+   DIAGNOSIS FIRST, per the task's own instruction — recorded here because
+   the pins below are regression guards for requirements, not reproductions
+   of a live bug that was found:
+
+   Neither of the two suspected faults reproduces in the code as it stood
+   before this task. (1) CLIPPING: layerPlanSVG's own scale is
+   `Math.min(availW/deckL, availH/deckW)` — CONTAIN, not cover — and the
+   grid's `.bpthumb svg{width:100%;height:auto}` preserves the SVG's own
+   width/height-attribute aspect ratio exactly (a web-platform guarantee,
+   confirmed live in Chromium at 390px/1024px/1800px viewports: the
+   rendered svg's width:height ratio was 168:128 = 1.3125 at EVERY width
+   tested, and the deck rect always landed fully inside it). (2) SCALE
+   MISMATCH: the deck outline and every case rect are drawn through the
+   SAME `scale`/`sx`/`sy` closures inside ONE function call — there is only
+   one transform, so they cannot disagree by construction. A synthetic
+   sweep across FOUR deck aspects (1:1, 1.2:1, a very wide 3.33:1, a very
+   tall 0.3:1), at both a narrow and a wide viewport, found the case union
+   fully contained in the deck rect and the deck rect fully contained in
+   the svg's own box every time. Both findings hold; see the pins below,
+   which encode them as regression guards.
+
+   What WAS real, and is what this file's `layerPlanTileSize` change (Part
+   2's own explicit requirement) targets: every thumbnail used a FIXED
+   168x128 canvas (aspect 1.3125) regardless of the candidate's own deck
+   shape, so a deck far from that aspect (the wide/tall synthetic cases
+   above) letterboxed far more than necessary — not a defect, but not
+   "letterboxing is minimal" either. `layerPlanTileSize` now sizes the tile
+   to TRACK the deck's own aspect (clamped to a practical range), so a deck
+   inside that range gets a tile that matches it almost exactly and a deck
+   outside it still gets less letterbox than the old fixed canvas gave. */
+import {layerPlanGeometry} from '../src/core/layerplan.js';
+import {layerPlanSVG, layerPlanTileSize} from '../src/render/layerplan2d.js';
+
+const results = [];
+function t(name, fn){ try{ fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+async function tAsync(name, fn){ try{ await fn(); results.push(`PASS  ${name}`); } catch(e){ results.push(`FAIL  ${name}: ${e.message || e}`); } }
+function eq(a, e, msg = ''){ if(JSON.stringify(a) !== JSON.stringify(e)) throw new Error(`${msg} expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`); }
+function ok(cond, msg){ if(!cond) throw new Error(msg); }
+function close(a, e, tol, msg = ''){ if(Math.abs(a - e) > tol) throw new Error(`${msg} expected ${e} (±${tol}), got ${a}`); }
+
+/* Box-of-a-<rect>: parses the SVG string and returns {x,y,w,h} for the
+   FIRST matching selector, entirely in the SVG's own viewBox units (no
+   DOM/CSS involved — this is pure geometry, not layout). */
+function rectBox(svgStr, selector){
+  const doc = new DOMParser().parseFromString(svgStr, 'image/svg+xml');
+  const r = doc.querySelector(selector);
+  if(!r) throw new Error(`no element matches ${selector}`);
+  return {x: +r.getAttribute('x'), y: +r.getAttribute('y'), w: +r.getAttribute('width'), h: +r.getAttribute('height')};
+}
+function within(inner, outer, tol = 1e-6){
+  return inner.x >= outer.x - tol && inner.y >= outer.y - tol &&
+    inner.x + inner.w <= outer.x + outer.w + tol && inner.y + inner.h <= outer.y + outer.h + tol;
+}
+
+/* ---------- 1. layerPlanTileSize: tracks the deck's own aspect, clamped ---------- */
+
+t('layerPlanTileSize: an in-range deck aspect is matched exactly (to integer rounding)', () => {
+  // deck 1000x800mm, aspect 1.25 -- inside the default [0.6,1.8] clamp
+  const {width, height} = layerPlanTileSize({L: 1000, W: 800});
+  eq(width, 168, 'width is the base width:');
+  eq(height, Math.round(168/1.25), 'height hand-computed from the deck aspect:');
+  eq(height, 134, 'hand-verified value:');
+});
+
+t('layerPlanTileSize: an out-of-range WIDE deck clamps to maxAspect, not the raw ratio', () => {
+  // deck 3000x200mm, raw aspect 15 -- far outside [0.6,1.8]
+  const {width, height} = layerPlanTileSize({L: 3000, W: 200});
+  eq(width, 168, 'width unchanged:');
+  eq(height, Math.round(168/1.8), 'height uses the CLAMPED aspect (1.8), not 15:');
+  eq(height, 93, 'hand-verified value:');
+});
+
+t('layerPlanTileSize: an out-of-range TALL deck clamps to minAspect', () => {
+  // deck 200x3000mm, raw aspect 0.0667 -- far outside [0.6,1.8]
+  const {width, height} = layerPlanTileSize({L: 200, W: 3000});
+  eq(height, Math.round(168/0.6), 'height uses the CLAMPED aspect (0.6):');
+  eq(height, 280, 'hand-verified value:');
+});
+
+t('layerPlanTileSize: a square deck gets a square tile', () => {
+  const {width, height} = layerPlanTileSize({L: 1234, W: 1234});
+  eq(width, height, 'aspect 1 in range -> square tile:');
+});
+
+t('layerPlanTileSize reduces letterboxing vs. the OLD fixed 168x128 canvas, hand-compared', () => {
+  // The wide synthetic deck from the diagnosis sweep (2000x600, aspect
+  // 3.333, clamped to 1.8). Old fixed canvas: availH = 128-28=100,
+  // scale = min(140/2000, 100/600) = min(0.07, 0.1667) = 0.07 (L-bound),
+  // drawn deck height = 600*0.07 = 42, vertical margin = (100-42)/2 = 29 EACH SIDE.
+  const oldMargin = (128 - 2*14 - 600 * Math.min((168-28)/2000, (128-28)/600)) / 2;
+  close(oldMargin, 29, 1e-9, 'hand-verified old fixed-canvas margin:');
+  // New tracked tile: width=168, height=93 (clamped 1.8). availH=93-28=65.
+  // scale = min(140/2000, 65/600) = min(0.07, 0.10833) = 0.07 (still L-bound
+  // -- the clamp doesn't fully match this extreme deck, by design).
+  const {width, height} = layerPlanTileSize({L: 2000, W: 600});
+  const newScale = Math.min((width-28)/2000, (height-28)/600);
+  const newMargin = (height - 28 - 600*newScale) / 2;
+  ok(newMargin < oldMargin, `new margin (${newMargin}) must be smaller than the old fixed-canvas margin (${oldMargin})`);
+});
+
+t('layerPlanSVG: CONTAIN, not cover -- the drawn deck never exceeds the canvas margin box on a mismatched aspect', () => {
+  // deck 1000x800 (aspect 1.25) against a canvas whose available box is
+  // 200x150 (aspect 1.333) -- DELIBERATELY mismatched, so min and max give
+  // DIFFERENT scales (0.1875 vs 0.2) and only one of them fits.
+  const geometry = {cases: [], envelope: {L: 0, W: 0}};
+  const svg = layerPlanSVG(geometry, {L: 1000, W: 800}, {width: 220, height: 170, margin: 10});
+  const deckBox = rectBox(svg, 'rect:not([data-case])');
+  const availW = 220 - 20, availH = 170 - 20;
+  ok(deckBox.w <= availW + 1e-9 && deckBox.h <= availH + 1e-9,
+    `deck box (${deckBox.w}x${deckBox.h}) must fit inside the margin box (${availW}x${availH}) -- a cover/fit-to-width transform would exceed it`);
+});
+
+/* ---------- 2. deck outline and case rectangles agree (ONE transform) ---------- */
+
+t('layerPlanSVG: case extent lies within deck extent for a known non-overhanging layout', () => {
+  // deck 1000x800mm; case 200x150 at (100,100) -- well inside, not centred
+  // at origin (so a coordinate-space bug can't cancel out by symmetry).
+  const geometry = {cases: [{x: 100, y: 100, w: 200, h: 150}], envelope: {L: 200, W: 150}};
+  const svg = layerPlanSVG(geometry, {L: 1000, W: 800}, {width: 220, height: 170, margin: 10});
+  const deckBox = rectBox(svg, 'rect:not([data-case])');
+  const caseBox = rectBox(svg, 'rect[data-case="0"]');
+  ok(within(caseBox, deckBox), 'case box must lie within the deck box (real renderer, one shared transform)');
+});
+
+t('MUTATION: a SEPARATELY-scaled outline breaks the containment check above (the pin can fail)', () => {
+  // Reconstructs the exact bug the diagnosis ruled out: draws the deck
+  // outline through its OWN, independently-computed scale (a plausible
+  // "two transforms" bug) instead of layerPlanSVG's one shared scale, and
+  // confirms the SAME containment assertion now reports overhang.
+  const geometry = {cases: [{x: 100, y: 100, w: 200, h: 150}], envelope: {L: 200, W: 150}};
+  const pallet = {L: 1000, W: 800};
+  const svg = layerPlanSVG(geometry, pallet, {width: 220, height: 170, margin: 10});
+  const caseBox = rectBox(svg, 'rect[data-case="0"]');
+  // a SECOND, independently-scaled deck outline -- e.g. a caller that
+  // scaled the outline to the CANDIDATE's own envelope instead of the deck
+  const width = 220, height = 170, margin = 10;
+  const badScale = Math.min((width-2*margin)/geometry.envelope.L, (height-2*margin)/geometry.envelope.W);
+  const ox = width/2, oy = height/2;
+  const badDeckBox = {
+    x: ox + (-geometry.envelope.L/2)*badScale, y: oy + (-geometry.envelope.W/2)*badScale,
+    w: geometry.envelope.L*badScale, h: geometry.envelope.W*badScale
+  };
+  ok(!within(caseBox, badDeckBox) || !within(badDeckBox, rectBox(svg, 'rect:not([data-case])')),
+    'a separately-scaled outline must be catchable — this mutation must break agreement');
+});
+
+/* ---------- 3. aspect preserved: a square deck renders square ---------- */
+
+t('layerPlanSVG: a square deck renders as a square rect, even inside a non-square canvas', () => {
+  const geometry = {cases: [], envelope: {L: 0, W: 0}};
+  const svg = layerPlanSVG(geometry, {L: 1000, W: 1000}, {width: 220, height: 170, margin: 10});
+  const deckBox = rectBox(svg, 'rect:not([data-case])');
+  eq(deckBox.w, deckBox.h, 'square deck -> square drawn rect, not stretched to the canvas aspect:');
+});
+
+t('MUTATION: independent scaleX/scaleY (a genuine stretch) breaks squareness (the pin can fail)', () => {
+  // Reconstructs a plausible "used width/height ratios independently"
+  // mistake and confirms it fails the SAME squareness assertion.
+  const width = 220, height = 170, margin = 10, deckL = 1000, deckW = 1000;
+  const scaleX = (width - 2*margin)/deckL, scaleY = (height - 2*margin)/deckW;
+  const badW = deckL*scaleX, badH = deckW*scaleY;
+  ok(badW !== badH, 'independent scaleX/scaleY on a square deck must NOT stay square -- proves the squareness pin is capable of failing');
+});
+
+/* ---------- 4. build.js wiring: the real thumbnail path uses layerPlanTileSize ---------- */
+
+await tAsync('build.js: the thumbnail cache sizes its canvas from layerPlanTileSize, not a hardcoded 168x128', async () => {
+  const src = await fetch('../src/ui/build.js').then(r => r.text());
+  if(!src.includes("layerPlanTileSize"))
+    throw new Error('build.js does not import/use layerPlanTileSize at all');
+  if(/layerPlanSVG\(geo,\s*project\.pallet,\s*\{width:\s*168,\s*height:\s*128\}\)/.test(src))
+    throw new Error('build.js still hardcodes {width:168, height:128} -- the old fixed canvas is still in use');
+});
+
+/* ---------- 5. DOM-driven: the real thumbnail grid, real CSS, both breakpoints ---------- */
+
+function openApp(width){
+  const f = document.createElement('iframe');
+  f.style.width = width + 'px'; f.style.height = '900px'; f.style.border = 'none';
+  f.src = '../index.html';
+  document.body.appendChild(f);
+  return f;
+}
+function settle(ms){ return new Promise(r => setTimeout(r, ms)); }
+async function waitFor(fn, timeoutMs = 8000){
+  const start = Date.now();
+  while(Date.now() - start < timeoutMs){
+    const v = fn();
+    if(v) return v;
+    await settle(50);
+  }
+  throw new Error('waitFor timed out');
+}
+
+async function surveyThumbFit(width){
+  const f = openApp(width);
+  await waitFor(() => f.contentDocument && f.contentDocument.getElementById('tabBuild'));
+  const d = f.contentDocument;
+  // NODE FIRST, THEN THE BUILD TAB -- matches layerplan.test.html's own
+  // surveyAt order. Reversed (tabBuild first), the level switch lands
+  // inside #buildWrap while it's still display:none from the still-active
+  // 2D/3D tab, so every descendant (including the svg) reads a real, but
+  // permanently 0x0, getBoundingClientRect -- not a transient layout race.
+  await waitFor(() => d.querySelector('[data-node="pallet"]'));
+  d.querySelector('[data-node="pallet"]').click();
+  d.getElementById('tabBuild').click();
+  await waitFor(() => d.querySelector('#bPatternViewToggle [data-view="thumbs"]'));
+  d.querySelector('#bPatternViewToggle [data-view="thumbs"]').click();
+  await waitFor(() => {
+    const svg = d.querySelector('#bPatternThumbs .bpthumb svg');
+    return svg && svg.getBoundingClientRect().width > 0 && svg.getBoundingClientRect().height > 0;
+  });
+  const cards = [...d.querySelectorAll('#bPatternThumbs .bpthumb')];
+  const out = cards.map(card => {
+    const cardRect = card.getBoundingClientRect();
+    const svg = card.querySelector('svg');
+    const svgRect = svg.getBoundingClientRect();
+    const deckEl = svg.querySelector('rect:not([data-case])');
+    const deckBox = deckEl.getBoundingClientRect();
+    const caseBoxes = [...svg.querySelectorAll('rect[data-case]')].map(r => r.getBoundingClientRect());
+    const withinPx = (inner, outer, tol = 0.5) =>
+      inner.left >= outer.left - tol && inner.top >= outer.top - tol &&
+      inner.right <= outer.right + tol && inner.bottom <= outer.bottom + tol;
+    return {
+      svgWithinCard: withinPx(svgRect, cardRect),
+      deckWithinSvg: withinPx(deckBox, svgRect),
+      allCasesWithinDeck: caseBoxes.every(c => withinPx(c, deckBox)),
+      svgAspect: svgRect.width / svgRect.height,
+      viewBoxAspect: (() => {
+        const vb = svg.getAttribute('viewBox').split(' ').map(Number);
+        return vb[2] / vb[3];
+      })()
+    };
+  });
+  f.remove();
+  return out;
+}
+
+for(const width of [1400, 390]){
+  await tAsync(`pattern thumbnails: bounding box wholly within the tile at ${width}px (the pin that encodes the defect)`, async () => {
+    const cards = await surveyThumbFit(width);
+    ok(cards.length > 0, 'at least one thumbnail must render to test anything');
+    for(const c of cards){
+      ok(c.svgWithinCard, 'svg overflows its card -- CLIPPING (fault 1)');
+      ok(c.deckWithinSvg, 'deck rect overflows the svg viewBox -- contain-fit broken');
+      ok(c.allCasesWithinDeck, 'a case rect overflows the deck outline -- SCALE MISMATCH (fault 2)');
+    }
+  });
+  await tAsync(`pattern thumbnails: rendered svg aspect matches its own viewBox aspect at ${width}px (CSS preserves intrinsic ratio)`, async () => {
+    const cards = await surveyThumbFit(width);
+    for(const c of cards)
+      ok(Math.abs(c.svgAspect - c.viewBoxAspect) < 0.01, `rendered aspect ${c.svgAspect} should match viewBox aspect ${c.viewBoxAspect}`);
+  });
+}
+
+const fails = results.filter(r => r.startsWith('FAIL')).length;
+document.getElementById('out').textContent = `${results.length - fails}/${results.length} passed\n\n` + results.join('\n');
+window.__tests = {total: results.length, fails, results};
+</script>

@@ -2568,3 +2568,110 @@ HTTP (`.claude/serve.ps1`, port 8321) — ES modules don't load from `file://`.
   earlier entry in this file called pre-existing were themselves already
   fixed by the top-and-bottom-caps task; nothing here needed to re-fix
   them).
+- **DIAGNOSED, NO DEFECT FOUND, THEN A REAL FIT IMPROVEMENT (explode-
+  vertical-lift task, Part 2 of 2): the two reported thumbnail faults do
+  not reproduce — but the fixed-aspect canvas they were reported against
+  was real, and is fixed.** Reported as "clipping" (a wide tile fits the
+  drawing to width and crops the height) and "scale mismatch" (case
+  rects drawn beyond the dashed deck outline, which cannot be a real
+  overhanging layout since `deckFootprint` rejects those). Diagnosed
+  BEFORE touching any layout code, per the task's own instruction, three
+  ways: (1) source reading — `render/layerplan2d.js`'s `layerPlanSVG`
+  computes ONE `scale`/`sx`/`sy`, `Math.min(availW/deckL, availH/deckW)`
+  (CONTAIN, not cover), and draws the deck outline and every case rect
+  through that SAME closure, so a scale mismatch has no code path to
+  come from; (2) a live DOM measurement of the real thumbnail grid
+  (Chromium, both 390px and a 1800px "much wider tile" viewport) found
+  the deck rect and every case rect fully contained, symmetric margins,
+  no crop; (3) a synthetic sweep across four deck aspects — 1:1, the
+  default 1.2:1, an extreme 3.33:1, an extreme 0.3:1 — at both viewports
+  found the same: `svgWithinCard`, `deckWithinSvg`, `caseUnionWithinDeck`
+  all true, always. Neither fault reproduces as literally reported.
+
+  **What WAS real**: every thumbnail used a FIXED 168×128 canvas
+  (aspect 1.3125) regardless of the candidate's own deck shape, so a
+  deck whose aspect diverges from that wasted far more of the tile to
+  letterboxing than necessary — not a defect, but not "letterboxing is
+  minimal" either, which the task's own requirements section demands
+  unconditionally. `render/layerplan2d.js` gained `layerPlanTileSize
+  (pallet, opts)`: the tile WIDTH stays fixed (168, matching the grid's
+  own `minmax(168px,…)` track) and the HEIGHT tracks the deck's own
+  aspect, clamped to a practical `[0.6, 1.8]` range so one extreme deck
+  cannot blow a grid row's height out for every tile beside it — a deck
+  inside the clamp gets a tile of (to integer rounding) exactly its own
+  aspect, so `layerPlanSVG`'s contain-fit has nothing left to letterbox;
+  a deck outside it still letterboxes LESS than the old fixed canvas did
+  (hand-verified: the 3.33:1 synthetic deck's vertical margin drops from
+  29px to a smaller, clamp-bounded value). `build.js`'s `thumbSVGFor` is
+  the only caller changed — it computes `{width, height}` from
+  `layerPlanTileSize(project.pallet)` once per grid (one deck, shared by
+  every candidate) instead of the old literal `{width:168, height:128}`.
+  The render inset (`#layerPlanInset`, a single fixed-width card, not a
+  grid of tiles competing for a uniform look) and the Pallet PDF (a
+  full-page layout, not a tile) were deliberately left untouched — the
+  letterboxing-minimization problem is specific to a GRID of tiles that
+  need to look consistent size, which only the thumbnail grid is.
+
+  **A mutation found a gap in the pin suite's own coverage, before it
+  shipped.** The first version of the "deck and case rects agree" pin
+  and the DOM "bounding box wholly within tile" pin were both blind to a
+  real `Math.min`→`Math.max` (contain→cover) mutation on `layerPlanSVG`,
+  because — for a deck whose aspect already falls inside the new tile
+  helper's clamp — the tile's aspect now EQUALS the deck's aspect, which
+  makes `availW/deckL` and `availH/deckW` identical, so `min` and `max`
+  compute the SAME scale. The fix that minimizes letterboxing also
+  quietly disarmed the pin meant to catch a regression in the letterbox
+  logic itself. Added a THIRD, deliberately-mismatched-aspect pin
+  (canvas 220×170/margin10 against a 1000×800mm deck, where the two
+  ratios genuinely differ) asserting the drawn deck box fits inside the
+  margin box — confirmed by mutation to fail exactly this way pre-fix,
+  restored, then reconfirmed the whole suite passes clean. The general
+  lesson (this file's own "confirm the specimen" rule, one layer deeper):
+  a fix that makes two quantities agree can retroactively make the PIN
+  built to distinguish them unable to, even though neither the pin nor
+  the fix is individually wrong.
+
+  **A second, unrelated harness bug surfaced while building the DOM
+  pins and was root-caused, not worked around.** `surveyThumbFit`
+  clicked the Build tab, THEN the pallet chain-strip node — the reverse
+  of `layerplan.test.html`'s own established, working order. Clicking
+  the level node while the Build tab is already showing lands the level
+  switch while `#buildWrap` is still `display:none` (still owned by
+  whichever of the 2D/3D/Shelf tabs was previously active), so every
+  descendant — including the eventual thumbnail `<svg>` — reports a
+  real, but PERMANENTLY 0×0, `getBoundingClientRect()`: not a transient
+  layout race (raising the poll timeout from 8s to 20s made no
+  difference), and not something `requestAnimationFrame`/a forced
+  screenshot could unstick. Traced by walking the ancestor chain from
+  the thumbnail host up to `<body>`, computed-style by computed-style,
+  until the `display:none` ancestor was found. Fixed by matching the
+  order every other passing DOM survey in this suite already uses —
+  chain-strip node first, Build tab second — which is not a workaround,
+  it is the interaction order this app's own tab-switching logic
+  actually requires (a real quirk of that logic, not of the fixture, but
+  out of THIS task's scope to change). A second, genuine but unrelated
+  bug was caught in the same pass: the "build.js sizes its canvas from
+  layerPlanTileSize" pin was written with an `async` body inside the
+  synchronous `t()` instead of `tAsync()` — this file's own established
+  convention, and the exact failure shape a much earlier CLAUDE.md entry
+  already named ("t() runs the body synchronously… an async pin's throw
+  becomes an unhandled rejection and the runner reports PASS"): a real
+  mutation (reverting `build.js` to the hardcoded canvas) produced a
+  `PAGEERR` and a false "15/15 passed" simultaneously. Fixed by switching
+  to `tAsync`, which then correctly reported 14/15 with the mutation
+  applied.
+
+  **Mutation-tested, three separate mutations against the real source,
+  each restored and diffed byte-identical afterward**: (1)
+  `layerPlanSVG`'s `Math.min`→`Math.max` — caught by the new
+  mismatched-aspect pin AND the "separately-scaled outline" pin (13/15,
+  the exact two expected; the DOM/real-project pin stayed green, as
+  explained above — that gap is what the new pin exists to close); (2)
+  `layerPlanTileSize`'s clamp removed entirely — caught immediately by
+  both clamp-boundary pins (13/15: WIDE deck reports height 11 instead
+  of the clamped 93, TALL deck reports 2520 instead of 280); (3)
+  `build.js`'s tile-size call reverted to the literal `{width:168,
+  height:128}` — caught immediately once the `t`→`tAsync` fix above
+  landed (14/15). Full regression: `layerplan`, `patterntable`,
+  `chainstrip`, `project`, `containment`, `saveload` all green,
+  unchanged.
